@@ -171,6 +171,8 @@ struct TouchConfig {
   uint16_t rawMinX, rawMaxX;  // raw controller range, mapped to display coords
   uint16_t rawMinY, rawMaxY;
   bool synthesizeConfirm;     // emit a CONFIRM button event on tap
+  uint8_t i2cAddressAlt;      // alternate I2C address to probe (GT911 0x14; 0 = none)
+  bool irqActiveLow;          // touch IRQ asserted LOW (CHSC6x)
 };
 
 // PWM frontlight description (gpio == PIN_UNASSIGNED disables it).
@@ -211,7 +213,13 @@ struct BoardProfile {
 };
 
 constexpr TouchConfig NO_TOUCH = {
-    TouchController::None, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, 0, 0, 0, 0, 0, false};
+    TouchController::None, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, 0, 0, 0, 0, 0, false, 0, false};
+
+// LilyGo T5 S3 Pro Lite GT911 touch (shared I2C bus, native portrait 540x960).
+// A named config ready to drop into a LilyGo board profile once its display
+// driver lands. GT911 reports pixel coords directly, so raw range == panel size.
+constexpr TouchConfig LILYGO_T5_PRO_GT911 = {
+    TouchController::Gt911, 39, 40, 3, 9, 0x5D, 0, 539, 0, 959, false, 0x14, false};
 constexpr FrontlightConfig NO_FRONTLIGHT = {PIN_UNASSIGNED, 0, 0, true};
 constexpr AudioConfig NO_AUDIO = {AudioOutput::None, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, true};
 
@@ -265,7 +273,7 @@ constexpr BoardProfile MURPHY_M3 = {
     {PIN_UNASSIGNED, 0, PIN_UNASSIGNED, PIN_UNASSIGNED, 1, 2, 0, false},
     PIN_UNASSIGNED,
     PIN_UNASSIGNED,
-    {TouchController::Chsc6x, 13, 12, 44, 45, 0x2e, 24, 224, 24, 392, true},
+    {TouchController::Chsc6x, 13, 12, 44, 45, 0x2e, 24, 224, 24, 392, false, 0, true},
     {48, 25000, 10, true},
     NO_AUDIO};
 

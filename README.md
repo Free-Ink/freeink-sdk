@@ -78,12 +78,21 @@ new device fills in values; the generic driver consumes them.
 | **Xteink X4** | ESP32-C3 | SSD1677 | 800×480 B/W + 4-level gray | ✅ full |
 | **Xteink X3** | ESP32-C3 | UC8253 | 792×528 B/W + 4-level gray | ✅ full (runtime-selected) |
 | **de-link** | ESP32-S3 | SSD1677 | 800×480 B/W + gray, frontlight | ✅ full (SD over SPI; 4-bit SDMMC is a follow-up) |
-| **M5Stack PaperColor** | ESP32-S3 | ED2208 | 400×600 color | 🟡 driver stub + abstraction |
-| **Murphy M3** | ESP32-S3 | UC8253 | 240×416 B/W, CHSC6x touch, PWM frontlight | 🟡 driver stub + abstraction |
+| **M5Stack PaperColor** | ESP32-S3 | ED2208 | 400×600 color | 🟡 display driver stub |
+| **Murphy M3** | ESP32-S3 | UC8253 | 240×416 B/W, CHSC6x touch, PWM frontlight | 🟡 display stub; **touch + frontlight implemented** |
 
 X3 and X4 share the ESP32-C3 and one pin profile, so **a single firmware binary
 drives both** — the panel is chosen at runtime via `setDisplayX3()`. Distinct-MCU
 boards (S3) build their own binary, selected with a board macro.
+
+**Capacitive touch** is implemented for two controllers (gated by
+`FREEINK_CAP_TOUCH`): **CHSC6x** (Murphy M3 — IRQ-driven, ported from the upstream
+driver) and **GT911** (LilyGo — polled, raw register reads + the reset/address
+dance). The InputManager exposes `hasTouch/isTouchPressed/wasTouchPressed/
+wasTouchReleased/getTouchPoint`; coordinates are delivered raw-panel-oriented and
+the app owns rotation. A LilyGo T5 S3 Pro Lite GT911 touch config
+(`BoardConfig::LILYGO_T5_PRO_GT911`) is ready to drop into a LilyGo profile once
+that board's display driver lands.
 
 ## Build composition — devices × capabilities
 
@@ -190,7 +199,7 @@ automatically as a dependency of `SDCardManager`.
 libs/
   display/FreeInkDisplay/   facade + EInkDisplay shim + per-controller drivers + LUTs
   hardware/BoardConfig/     board profiles & capability descriptors
-  hardware/InputManager/    buttons (+ scaffolded touch)
+  hardware/InputManager/    buttons + capacitive touch (CHSC6x, GT911)
   hardware/BatteryMonitor/  ADC battery + optional charge-sense
   hardware/SDCardManager/   SdFat-backed storage
   hardware/FrontlightManager/  PWM frontlight (de-link)

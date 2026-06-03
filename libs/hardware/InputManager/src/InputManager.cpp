@@ -34,9 +34,7 @@ InputManager::InputManager()
       powerButtonPressFinish(0),
       confirmBackPressStart(0),
       confirmBackPhysicalPressed(false),
-      confirmBackLongPressActive(false),
-      currentTouch{false, 0, 0, 0},
-      lastTouchValid(false) {}
+      confirmBackLongPressActive(false) {}
 
 void InputManager::begin() {
   if (BoardConfig::ACTIVE.inputStyle == BoardConfig::InputStyle::XteinkAdcLadder) {
@@ -72,11 +70,13 @@ int InputManager::getButtonFromADC(const int adcValue, const int ranges[], const
 }
 
 uint8_t InputManager::getState() {
-  if (BoardConfig::ACTIVE.inputStyle != BoardConfig::InputStyle::XteinkAdcLadder) {
-    return getDigitalState();
-  }
-
   uint8_t state = 0;
+
+  if (BoardConfig::ACTIVE.inputStyle != BoardConfig::InputStyle::XteinkAdcLadder) {
+    state = getDigitalState();
+    state |= serviceTouch();  // run the touch machine; OR any synthesized button
+    return state;
+  }
 
   // Read GPIO1 buttons
   const int adcValue1 = analogRead(BUTTON_ADC_PIN_1);
@@ -98,6 +98,7 @@ uint8_t InputManager::getState() {
     state |= (1 << BTN_POWER);
   }
 
+  state |= serviceTouch();
   return state;
 }
 
@@ -188,8 +189,8 @@ void InputManager::update() {
 
   pressedEvents = 0;
   releasedEvents = 0;
-
-  updateTouch(currentTime);
+  touchPressedEvent = false;   // one-shot touch coord events, cleared each update()
+  touchReleasedEvent = false;
 
   if (BoardConfig::ACTIVE.inputStyle == BoardConfig::InputStyle::DigitalConfirmBackHold) {
     updateConfirmBackHold(currentTime);
@@ -262,24 +263,25 @@ bool InputManager::isPowerButtonPressed() const {
 // ============================================================================
 // Capacitive touch
 //
-// The public touch API is always available; the backend is a no-op on boards
-// whose BoardConfig::ACTIVE.touch.controller is None. CHSC6x / GT911 frame
-// decoding lands with the touch-capable device drivers (e.g. Murphy M3).
+// The public touch API is always available. Compiled only when FREEINK_CAP_TOUCH
+// is set; the backend dispatches on BoardConfig::ACTIVE.touch.controller:
+//   * CHSC6x (Murphy M3) — IRQ-driven, hand-rolled 16-byte frame decode.
+//   * GT911  (LilyGo)    — polled status/point registers over I2C.
+// Coordinates are delivered raw-panel-oriented; the app owns rotation.
 // ============================================================================
 
 bool InputManager::hasTouch() const {
 #if FREEINK_CAP_TOUCH
-  return BoardConfig::ACTIVE.touch.controller != BoardConfig::TouchController::None;
+  return touchDataEnabled;
 #else
   return false;  // touch code not compiled in (FREEINK_CAP_TOUCH=0)
 #endif
 }
 
-InputManager::TouchPoint InputManager::getTouchPoint() const { return currentTouch; }
-
-bool InputManager::isTouchPressed() const { return currentTouch.valid; }
-
-bool InputManager::wasTouchPressed() const { return currentTouch.valid && !lastTouchValid; }
+InputManager::TouchPoint InputManager::getTouchPoint() const { return touchPoint; }
+bool InputManager::isTouchPressed() const { return touchPressed; }
+bool InputManager::wasTouchPressed() const { return touchPressedEvent; }
+bool InputManager::wasTouchReleased() const { return touchReleasedEvent; }
 
 void InputManager::beginTouch() {
 #if FREEINK_CAP_TOUCH
@@ -287,45 +289,230 @@ void InputManager::beginTouch() {
   if (t.controller == BoardConfig::TouchController::None) {
     return;
   }
-  if (t.sda >= 0 && t.scl >= 0) {
-    Wire.begin(t.sda, t.scl, 100000);
+  if (t.controller == BoardConfig::TouchController::Gt911) {
+    beginGt911();
+    return;
   }
-  if (t.reset >= 0) {
-    pinMode(t.reset, OUTPUT);
-    digitalWrite(t.reset, HIGH);
-  }
+  // CHSC6x: IRQ pin + I2C bus.
   if (t.irq >= 0) {
-    pinMode(t.irq, INPUT_PULLUP);
+    pinMode(t.irq, INPUT);
+    touchIrqLast = digitalRead(t.irq);
+    touchIrqLastChangeTime = millis();
+    touchIrqPulseUntil = 0;
+    touchIrqEnabled = true;
+  }
+  if (t.sda >= 0 && t.scl >= 0 && t.i2cAddress != 0) {
+    Wire.begin(t.sda, t.scl, 100000);
+    Wire.setTimeOut(4);
+    touchDataEnabled = true;
   }
 #endif
 }
 
-void InputManager::updateTouch(const unsigned long currentTime) {
+uint8_t InputManager::serviceTouch() {
 #if FREEINK_CAP_TOUCH
-  if (BoardConfig::ACTIVE.touch.controller == BoardConfig::TouchController::None) {
+  if (!touchDataEnabled) {
+    return 0;
+  }
+  const unsigned long now = millis();
+  const auto& t = BoardConfig::ACTIVE.touch;
+
+  if (t.controller == BoardConfig::TouchController::Gt911) {
+    pollGt911(now);
+  } else {
+    const int raw = touchIrqEnabled ? digitalRead(t.irq) : (t.irqActiveLow ? HIGH : LOW);
+    updateTouchFromIrq(now, raw);
+    if (raw != touchIrqLast && now - touchIrqLastChangeTime >= TOUCH_IRQ_DEBOUNCE_MS) {
+      touchIrqLast = raw;
+      touchIrqLastChangeTime = now;
+      if (touchIrqActive(raw)) {
+        touchIrqPulseUntil = now + TOUCH_IRQ_PULSE_MS;
+      }
+    }
+  }
+
+  return (t.synthesizeConfirm && now < touchIrqPulseUntil) ? (1 << BTN_CONFIRM) : 0;
+#else
+  return 0;
+#endif
+}
+
+#if FREEINK_CAP_TOUCH
+
+bool InputManager::touchIrqActive(const int irqRaw) const {
+  return BoardConfig::ACTIVE.touch.irqActiveLow ? irqRaw == LOW : irqRaw == HIGH;
+}
+
+void InputManager::updateTouchFromIrq(const unsigned long now, const int irqRaw) {
+  if (irqRaw != touchIrqLast && now - touchIrqLastChangeTime >= TOUCH_IRQ_DEBOUNCE_MS && touchIrqActive(irqRaw)) {
+    touchReadPending = true;
+    touchReadAt = now + TOUCH_SAMPLE_DELAY_MS;
+  }
+
+  if (touchReadPending && now >= touchReadAt) {
+    TouchPoint point = {false, 0, 0, 0};
+    touchReadPending = false;
+    if (readChsc6xPoint(point)) {
+      touchPoint = point;
+      touchPressed = true;
+      touchPressedEvent = true;
+      touchReleaseAt = now + TOUCH_IRQ_PULSE_MS;
+    }
+  }
+
+  if (touchPressed && touchIrqActive(irqRaw)) {
+    touchReleaseAt = now + TOUCH_IRQ_PULSE_MS;
+  }
+
+  if (touchPressed && now >= touchReleaseAt) {
+    touchPressed = false;
+    touchReleasedEvent = true;
+  }
+}
+
+bool InputManager::readChsc6xPoint(TouchPoint& point) {
+  const uint8_t addr = BoardConfig::ACTIVE.touch.i2cAddress;
+  Wire.beginTransmission(addr);
+  Wire.write(TOUCH_READ_COMMAND);
+  if (Wire.endTransmission(false) != 0) {
+    return false;
+  }
+
+  uint8_t data[TOUCH_FRAME_SIZE] = {};
+  const uint8_t received = Wire.requestFrom(addr, TOUCH_FRAME_SIZE, static_cast<uint8_t>(true));
+  if (received != TOUCH_FRAME_SIZE) {
+    while (Wire.available()) Wire.read();
+    return false;
+  }
+  for (uint8_t i = 0; i < TOUCH_FRAME_SIZE; ++i) {
+    data[i] = Wire.read();
+  }
+  return decodeChsc6xFrame(data, TOUCH_FRAME_SIZE, point);
+}
+
+bool InputManager::decodeChsc6xFrame(const uint8_t* data, const size_t len, TouchPoint& point) const {
+  if (len < 7 || (data[0] != 0x00 && data[0] != 0x36)) {
+    return false;
+  }
+  const uint16_t rawX = data[4];                                          // X: one byte
+  const uint16_t rawY = (static_cast<uint16_t>(data[5]) << 8) | data[6];  // Y: 16-bit big-endian
+  if ((rawX == 0 && rawY == 0) || (rawX == 0xff && rawY == 0xffff)) {
+    return false;
+  }
+  const auto& t = BoardConfig::ACTIVE.touch;
+  point.valid = true;
+  point.x = mapTouchAxis(rawX, t.rawMinX, t.rawMaxX, BoardConfig::ACTIVE.displayWidth - 1);
+  point.y = mapTouchAxis(rawY, t.rawMinY, t.rawMaxY, BoardConfig::ACTIVE.displayHeight - 1);
+  point.timestamp = millis();
+  return true;
+}
+
+uint16_t InputManager::mapTouchAxis(uint16_t raw, const uint16_t rawMin, const uint16_t rawMax,
+                                    const uint16_t outMax) const {
+  if (raw <= rawMin) return 0;
+  if (raw >= rawMax) return outMax;
+  return static_cast<uint32_t>(raw - rawMin) * outMax / (rawMax - rawMin);
+}
+
+// --- GT911 (LilyGo) ---------------------------------------------------------
+
+void InputManager::beginGt911() {
+  const auto& t = BoardConfig::ACTIVE.touch;
+
+  // Reset + address-select dance: INT level as RST rises selects the address
+  // (LOW -> primary 0x5D, HIGH -> alt 0x14). We select the primary.
+  if (t.reset >= 0 && t.irq >= 0) {
+    pinMode(t.irq, OUTPUT);
+    pinMode(t.reset, OUTPUT);
+    digitalWrite(t.reset, LOW);
+    digitalWrite(t.irq, LOW);
+    delay(10);
+    digitalWrite(t.reset, HIGH);
+    delay(10);
+    digitalWrite(t.irq, LOW);
+    delay(50);
+    pinMode(t.irq, INPUT);
+    delay(50);
+  }
+
+  if (t.sda >= 0 && t.scl >= 0) {
+    Wire.begin(t.sda, t.scl, 400000);
+    Wire.setTimeOut(10);
+  }
+
+  // Probe primary then alternate address.
+  gt911Addr = 0;
+  const uint8_t candidates[2] = {t.i2cAddress, t.i2cAddressAlt};
+  for (uint8_t a : candidates) {
+    if (a == 0) continue;
+    Wire.beginTransmission(a);
+    if (Wire.endTransmission() == 0) {
+      gt911Addr = a;
+      break;
+    }
+  }
+  touchDataEnabled = (gt911Addr != 0);
+}
+
+bool InputManager::gt911ReadReg(const uint16_t reg, uint8_t* buf, const uint8_t len) {
+  Wire.beginTransmission(gt911Addr);
+  Wire.write(static_cast<uint8_t>(reg >> 8));
+  Wire.write(static_cast<uint8_t>(reg & 0xFF));
+  if (Wire.endTransmission(false) != 0) {
+    return false;
+  }
+  const uint8_t got = Wire.requestFrom(gt911Addr, len, static_cast<uint8_t>(true));
+  if (got != len) {
+    while (Wire.available()) Wire.read();
+    return false;
+  }
+  for (uint8_t i = 0; i < len; ++i) {
+    buf[i] = Wire.read();
+  }
+  return true;
+}
+
+void InputManager::gt911ClearStatus() {
+  Wire.beginTransmission(gt911Addr);
+  Wire.write(0x81);
+  Wire.write(0x4E);
+  Wire.write(static_cast<uint8_t>(0x00));
+  Wire.endTransmission();
+}
+
+void InputManager::pollGt911(const unsigned long now) {
+  if (gt911Addr == 0) {
+    return;
+  }
+  uint8_t status = 0;
+  if (!gt911ReadReg(0x814E, &status, 1)) {
+    return;
+  }
+  if (!(status & 0x80)) {  // buffer not ready
     return;
   }
 
-  lastTouchValid = currentTouch.valid;
-  TouchPoint sampled{false, 0, 0, currentTime};
-  if (readTouchPoint(sampled)) {
-    sampled.timestamp = currentTime;
-    currentTouch = sampled;
-    if (BoardConfig::ACTIVE.touch.synthesizeConfirm && !lastTouchValid) {
-      pressedEvents |= (1 << BTN_CONFIRM);
-      releasedEvents |= (1 << BTN_CONFIRM);
+  const uint8_t count = status & 0x0F;
+  if (count > 0) {
+    uint8_t pt[8] = {};
+    if (gt911ReadReg(0x8150, pt, 8)) {
+      const uint16_t rawX = static_cast<uint16_t>(pt[1]) | (static_cast<uint16_t>(pt[2]) << 8);
+      const uint16_t rawY = static_cast<uint16_t>(pt[3]) | (static_cast<uint16_t>(pt[4]) << 8);
+      const auto& t = BoardConfig::ACTIVE.touch;
+      touchPoint.valid = true;
+      touchPoint.x = mapTouchAxis(rawX, t.rawMinX, t.rawMaxX, BoardConfig::ACTIVE.displayWidth - 1);
+      touchPoint.y = mapTouchAxis(rawY, t.rawMinY, t.rawMaxY, BoardConfig::ACTIVE.displayHeight - 1);
+      touchPoint.timestamp = now;
+      if (!touchPressed) touchPressedEvent = true;
+      touchPressed = true;
     }
   } else {
-    currentTouch.valid = false;
+    if (touchPressed) touchReleasedEvent = true;
+    touchPressed = false;
+    touchPoint.valid = false;
   }
-#else
-  (void)currentTime;
-#endif
+
+  gt911ClearStatus();  // GT911 requires clearing 0x814E after each read
 }
 
-bool InputManager::readTouchPoint(TouchPoint& out) {
-  // Backend stub: concrete CHSC6x / GT911 I2C frame decode is added with the
-  // touch-capable panel drivers (and only when FREEINK_CAP_TOUCH is enabled).
-  (void)out;
-  return false;
-}
+#endif  // FREEINK_CAP_TOUCH

@@ -5,10 +5,6 @@
 #include <Wire.h>
 
 namespace {
-constexpr uint8_t SD_CS = BoardConfig::ACTIVE.sd.cs;
-// SD bus clock is board-overridable via BoardConfig::ACTIVE.sd.spiHz (0 = default).
-constexpr uint32_t SPI_FQ = BoardConfig::ACTIVE.sd.spiHz != 0 ? BoardConfig::ACTIVE.sd.spiHz : 40000000;
-
 bool writeI2CRegister8(const uint8_t addr, const uint8_t reg, const uint8_t value) {
   Wire.beginTransmission(addr);
   Wire.write(reg);
@@ -58,6 +54,11 @@ SDCardManager SDCardManager::instance;
 SDCardManager::SDCardManager() : sd() {}
 
 bool SDCardManager::begin() {
+  // Pins/clock come from the runtime-active profile (board-overridable via
+  // BoardConfig::ACTIVE.sd.spiHz; 0 = default). Read after device selection.
+  const uint8_t SD_CS = BoardConfig::ACTIVE.sd.cs;
+  const uint32_t SPI_FQ = BoardConfig::ACTIVE.sd.spiHz != 0 ? BoardConfig::ACTIVE.sd.spiHz : 40000000;
+
   if (BoardConfig::isM5StackPaperColor()) {
     enableM5PaperColorSdPower();
   }

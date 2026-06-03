@@ -1,6 +1,8 @@
 #include "InputManager.h"
 
+#if FREEINK_CAP_TOUCH
 #include <Wire.h>
+#endif
 
 // Recorded ADC values from real devices
 // BACK CONF LEFT RGHT   UP DOWN
@@ -40,7 +42,8 @@ void InputManager::begin() {
   if (BoardConfig::ACTIVE.inputStyle == BoardConfig::InputStyle::XteinkAdcLadder) {
     pinMode(BUTTON_ADC_PIN_1, INPUT);
     pinMode(BUTTON_ADC_PIN_2, INPUT);
-    pinMode(POWER_BUTTON_PIN, BoardConfig::ACTIVE.input.powerActiveHigh ? INPUT_PULLDOWN : INPUT_PULLUP);
+    pinMode(BoardConfig::ACTIVE.input.power,
+            BoardConfig::ACTIVE.input.powerActiveHigh ? INPUT_PULLDOWN : INPUT_PULLUP);
     analogSetAttenuation(ADC_11db);
     beginTouch();
     return;
@@ -91,7 +94,7 @@ uint8_t InputManager::getState() {
 
   // Read power button (polarity per board; X4 active-LOW, de-link active-HIGH)
   const int powerActiveLevel = BoardConfig::ACTIVE.input.powerActiveHigh ? HIGH : LOW;
-  if (digitalRead(POWER_BUTTON_PIN) == powerActiveLevel) {
+  if (digitalRead(BoardConfig::ACTIVE.input.power) == powerActiveLevel) {
     state |= (1 << BTN_POWER);
   }
 
@@ -265,7 +268,11 @@ bool InputManager::isPowerButtonPressed() const {
 // ============================================================================
 
 bool InputManager::hasTouch() const {
+#if FREEINK_CAP_TOUCH
   return BoardConfig::ACTIVE.touch.controller != BoardConfig::TouchController::None;
+#else
+  return false;  // touch code not compiled in (FREEINK_CAP_TOUCH=0)
+#endif
 }
 
 InputManager::TouchPoint InputManager::getTouchPoint() const { return currentTouch; }
@@ -275,6 +282,7 @@ bool InputManager::isTouchPressed() const { return currentTouch.valid; }
 bool InputManager::wasTouchPressed() const { return currentTouch.valid && !lastTouchValid; }
 
 void InputManager::beginTouch() {
+#if FREEINK_CAP_TOUCH
   const auto& t = BoardConfig::ACTIVE.touch;
   if (t.controller == BoardConfig::TouchController::None) {
     return;
@@ -289,9 +297,11 @@ void InputManager::beginTouch() {
   if (t.irq >= 0) {
     pinMode(t.irq, INPUT_PULLUP);
   }
+#endif
 }
 
 void InputManager::updateTouch(const unsigned long currentTime) {
+#if FREEINK_CAP_TOUCH
   if (BoardConfig::ACTIVE.touch.controller == BoardConfig::TouchController::None) {
     return;
   }
@@ -308,11 +318,14 @@ void InputManager::updateTouch(const unsigned long currentTime) {
   } else {
     currentTouch.valid = false;
   }
+#else
+  (void)currentTime;
+#endif
 }
 
 bool InputManager::readTouchPoint(TouchPoint& out) {
   // Backend stub: concrete CHSC6x / GT911 I2C frame decode is added with the
-  // touch-capable panel drivers. Until then, report no touch.
+  // touch-capable panel drivers (and only when FREEINK_CAP_TOUCH is enabled).
   (void)out;
   return false;
 }

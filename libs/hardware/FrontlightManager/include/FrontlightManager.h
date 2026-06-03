@@ -29,7 +29,13 @@ class FrontlightManager {
   // multi-channel boost-driver path lands).
   void setColorTemperature(uint8_t warmPercent);
 
-  bool present() const { return BoardConfig::ACTIVE.frontlight.gpio != BoardConfig::PIN_UNASSIGNED; }
+  bool present() const {
+#if FREEINK_CAP_FRONTLIGHT
+    return BoardConfig::ACTIVE.frontlight.gpio != BoardConfig::PIN_UNASSIGNED;
+#else
+    return false;  // frontlight code not compiled in (FREEINK_CAP_FRONTLIGHT=0)
+#endif
+  }
   uint8_t brightness() const { return _brightness; }
 
  private:

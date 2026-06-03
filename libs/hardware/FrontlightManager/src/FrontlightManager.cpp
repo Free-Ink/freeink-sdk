@@ -1,10 +1,13 @@
 #include "FrontlightManager.h"
 
+#if FREEINK_CAP_FRONTLIGHT
 namespace {
 uint32_t maxDuty(uint8_t bits) { return (1u << bits) - 1u; }
 }  // namespace
+#endif
 
 void FrontlightManager::begin() {
+#if FREEINK_CAP_FRONTLIGHT
   const auto& fl = BoardConfig::ACTIVE.frontlight;
   if (fl.gpio == BoardConfig::PIN_UNASSIGNED) return;
 
@@ -18,9 +21,11 @@ void FrontlightManager::begin() {
 #endif
   _begun = true;
   setBrightness(0);
+#endif
 }
 
 void FrontlightManager::setBrightness(uint8_t percent) {
+#if FREEINK_CAP_FRONTLIGHT
   const auto& fl = BoardConfig::ACTIVE.frontlight;
   if (!_begun || fl.gpio == BoardConfig::PIN_UNASSIGNED) return;
   if (percent > 100) percent = 100;
@@ -35,6 +40,9 @@ void FrontlightManager::setBrightness(uint8_t percent) {
   ledcWrite(fl.gpio, duty);
 #else
   ledcWrite(0, duty);
+#endif
+#else
+  (void)percent;
 #endif
 }
 

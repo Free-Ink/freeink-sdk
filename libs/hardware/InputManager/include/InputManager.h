@@ -85,10 +85,12 @@ class InputManager {
   static constexpr uint8_t BTN_DOWN = 5;
   static constexpr uint8_t BTN_POWER = 6;
 
-  // Pins
+  // Pins. POWER_BUTTON_PIN stays constexpr (consumers reference it in pin-config
+  // contexts) and is bound to the build's default device; the input code reads
+  // the runtime-active power pin internally so multi-device builds stay correct.
   static constexpr int BUTTON_ADC_PIN_1 = 1;
   static constexpr int BUTTON_ADC_PIN_2 = 2;
-  static constexpr int POWER_BUTTON_PIN = BoardConfig::ACTIVE.input.power;
+  static constexpr int POWER_BUTTON_PIN = BoardConfig::DEFAULT_DEVICE.input.power;
 
   // Power button methods
   bool isPowerButtonPressed() const;

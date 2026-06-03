@@ -219,8 +219,11 @@ void Ssd1677Driver::displayWindow(EpdBus& bus, const uint8_t* fb, const uint8_t*
   if (x % 8 != 0 || w % 8 != 0) return;  // window must be byte-aligned
   if (!fb) return;
 
+  // A windowed update can't coexist with grayscale content on the rest of the
+  // screen — drive it back to clean BW first (upstream parity; not a bare flag
+  // clear, which would leave the gray residue unreverted).
   if (_inGrayscaleMode) {
-    _inGrayscaleMode = false;
+    grayscaleRevert(bus, fb);
   }
 
   const uint16_t windowWidthBytes = w / 8;
@@ -312,6 +315,11 @@ void Ssd1677Driver::cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) {
   if (!bw) return;
   setRamArea(bus, 0, 0, _w, _h);
   writeRam(bus, CMD_WRITE_RAM_RED, bw, _bufferSize);
+  // The restored BW frame in RED RAM *is* the clean differential baseline for the
+  // next BW page turn, so no revert is needed — clear the flag (upstream parity).
+  // Leaving it set fires a spurious grayscaleRevert() on the next refresh, which
+  // drives the revert LUT against this baseline and leaves accumulating ghost.
+  _inGrayscaleMode = false;
 }
 
 void Ssd1677Driver::grayscaleRevert(EpdBus& bus, const uint8_t* fb) {

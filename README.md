@@ -178,6 +178,12 @@ configuration — it mirrors the toolchain/flags verified against the CrossPoint
 firmware and includes per-device build envs (`xteink`, `xteink_x4`, `m5paper`,
 `delink`, `murphy`) wired with the right `FREEINK_DEVICE_*` flags.
 
+Already on CrossPoint? **[`platformio.crosspoint.sample.ini`](platformio.crosspoint.sample.ini)**
+mirrors the exact working setup: drop it into the CrossPoint repo as
+`platformio.local.ini`, point the paths at your FreeInk SDK checkout, and
+`pio run -e default` builds the X3+X4 C3 binary against this SDK with **no source
+changes** (the compat shim preserves every include path and class name).
+
 The minimum is to add the libraries you need as symlink `lib_deps` (names match
 the original SDK):
 

@@ -193,6 +193,29 @@ automatically as a dependency of `SDCardManager`.
    fingerprinting + `setDisplayX3()`). Same MCU but different GPIOs, screen, or
    controller ⇒ a separate profile and a separate env, never an auto-shared bin.
 
+### Devices backed by external libraries
+
+A `PanelDriver` doesn't have to emit raw SPI — it can wrap a third-party display
+library. Some panels are best driven by an existing library rather than a
+hand-rolled controller sequence (e.g. the LilyGo T5 S3 Pro and M5 Paper S3 use
+[`EPD_Painter`](https://github.com/tonywestonuk/EPD_Painter); GT911 touch boards
+use `SensorLib`). FreeInk pulls these in **per device**, so builds that don't use
+them stay lean:
+
+1. Put the external `#include` and the driver code **inside the device's
+   `#if FREEINK_DEVICE_<NAME>` guard.** PlatformIO's LDF (chain mode) only links
+   the external library when that device's code actually compiles — other devices
+   (X4/X3/M5) are unaffected.
+2. Add the external library to **that device's env `lib_deps`** in your
+   `platformio.ini` (see `platformio.sample.ini`). It's installed for that env
+   only.
+3. Implement the device's `PanelDriver` as a thin wrapper over the library's API
+   (init/draw/refresh/sleep), exactly like the native drivers — the facade can't
+   tell the difference.
+
+This keeps the SDK's display surface uniform (`EInkDisplay` everywhere) while
+letting each device bring whatever rendering stack it needs.
+
 ## Repository layout
 
 ```

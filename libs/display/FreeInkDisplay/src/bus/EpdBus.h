@@ -61,6 +61,15 @@ class EpdBus {
   // row, optionally bit-inverting. Replaces the per-driver mirror lambdas.
   void writeMirroredPlane(const uint8_t* plane, uint16_t height, uint16_t widthBytes, bool invert);
 
+  // Send `ramCmd` then `plane` Y-flipped (gate order, bottom row first) as ONE
+  // CS-low data burst — required by UC8253 DTM writes which must not toggle CS
+  // mid-stream. (cmd uses its own CS pulse, matching the OEM sequence.)
+  void sendPlaneFlipped(uint8_t ramCmd, const uint8_t* plane, uint16_t height, uint16_t widthBytes);
+
+  // Send `ramCmd` then fill an entire RAM plane with `fillByte` (height rows of
+  // widthBytes), as one CS-low burst. No framebuffer touched.
+  void fillPlane(uint8_t ramCmd, uint8_t fillByte, uint16_t height, uint16_t widthBytes);
+
   const EpdPins& pins() const { return _pins; }
   uint32_t spiHz() const { return _spiHz; }
   BusyPolarity busyPolarity() const { return _busy; }

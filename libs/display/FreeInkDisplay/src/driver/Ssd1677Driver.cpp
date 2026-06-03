@@ -184,10 +184,10 @@ void Ssd1677Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev,
     mode = RefreshMode::Half;
   }
 
-  // A grayscale frame leaves the LUT loaded; the next normal paint clears the
-  // flag (parity with the upstream monolith, whose revert path is gated off here).
+  // A grayscale frame leaves the LUT loaded; revert to clean B/W first (main
+  // fixed the upstream dead-revert bug — this actually runs the revert waveform).
   if (_inGrayscaleMode) {
-    _inGrayscaleMode = false;
+    grayscaleRevert(bus, fb);
   }
 
   setRamArea(bus, 0, 0, _w, _h);
@@ -277,11 +277,34 @@ void Ssd1677Driver::writeGrayscalePlaneStrip(EpdBus& bus, GrayPlane plane, const
   bus.data(rows, static_cast<uint16_t>(static_cast<uint32_t>(numRows) * _wb));
 }
 
-void Ssd1677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff) {
+void Ssd1677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut,
+                                bool factoryMode) {
   (void)fb;
-  _inGrayscaleMode = true;
-  setCustomLut(bus, true, _cfg.grayLut);
-  refresh(bus, RefreshMode::Fast, turnOff);
+  // Differential mode leaves the LUT loaded (reverted before the next BW turn);
+  // factory absolute mode self-cleans.
+  _inGrayscaleMode = !factoryMode;
+
+  const unsigned char* selectedLut = lut;
+  if (selectedLut == nullptr) {
+    selectedLut = factoryMode ? lut_factory_quality : _cfg.grayLut;
+  }
+  setCustomLut(bus, true, selectedLut);
+
+  if (factoryMode) {
+    // Explicit, self-contained power cycle for 4-level absolute grayscale.
+    // Reset CTRL1 to normal — a prior HALF leaves BYPASS_RED set, which would
+    // ignore RED RAM and break 4-level grayscale.
+    bus.cmd(CMD_DISPLAY_UPDATE_CTRL1);
+    bus.data(CTRL1_NORMAL);
+    bus.cmd(CMD_DISPLAY_UPDATE_CTRL2);
+    bus.data(0xC7);  // CLOCK_ON|ANALOG_ON|DISPLAY_START|ANALOG_OFF|CLOCK_OFF
+    bus.cmd(CMD_MASTER_ACTIVATION);
+    bus.waitBusy("factory_gray");
+    _isScreenOn = false;  // 0xC7 always powers down after the update
+  } else {
+    refresh(bus, RefreshMode::Fast, turnOff);
+  }
+
   setCustomLut(bus, false, nullptr);
 }
 

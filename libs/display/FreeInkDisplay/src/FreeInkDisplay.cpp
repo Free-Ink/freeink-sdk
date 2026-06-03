@@ -199,8 +199,8 @@ void FreeInkDisplay::displayWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t 
 #endif
 }
 
-void FreeInkDisplay::displayGrayBuffer(bool turnOffScreen) {
-  _driver->displayGray(_bus, frameBuffer, turnOffScreen);
+void FreeInkDisplay::displayGrayBuffer(bool turnOffScreen, const unsigned char* lut, bool factoryMode) {
+  _driver->displayGray(_bus, frameBuffer, turnOffScreen, lut, factoryMode);
 }
 
 void FreeInkDisplay::refreshDisplay(RefreshMode mode, bool turnOffScreen) { displayBuffer(mode, turnOffScreen); }

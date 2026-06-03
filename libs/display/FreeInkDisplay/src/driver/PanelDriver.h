@@ -63,7 +63,11 @@ class PanelDriver {
                                         uint16_t numRows) {
     (void)bus; (void)plane; (void)rows; (void)yStart; (void)numRows;
   }
-  virtual void displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff) { display(bus, fb, nullptr, RefreshMode::Fast, turnOff); }
+  virtual void displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut, bool factoryMode) {
+    (void)lut;
+    (void)factoryMode;
+    display(bus, fb, nullptr, RefreshMode::Fast, turnOff);
+  }
   virtual void cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) { (void)bus; (void)bw; }
 
   // --- optional, controller-specific hooks (no-op by default) ---

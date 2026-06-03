@@ -172,4 +172,25 @@ void EpdBus::writeMirroredPlane(const uint8_t* plane, uint16_t height, uint16_t 
   }
 }
 
+void EpdBus::sendPlaneFlipped(uint8_t ramCmd, const uint8_t* plane, uint16_t height, uint16_t widthBytes) {
+  cmd(ramCmd);  // own CS pulse
+  beginTxn();   // single CS-low burst for the whole plane
+  for (int y = static_cast<int>(height) - 1; y >= 0; y--) {
+    rawWriteBytes(plane + static_cast<uint32_t>(y) * widthBytes, widthBytes);
+  }
+  endTxn();
+}
+
+void EpdBus::fillPlane(uint8_t ramCmd, uint8_t fillByte, uint16_t height, uint16_t widthBytes) {
+  uint8_t row[128];
+  if (widthBytes > sizeof(row)) widthBytes = sizeof(row);
+  memset(row, fillByte, widthBytes);
+  cmd(ramCmd);
+  beginTxn();
+  for (uint16_t y = 0; y < height; y++) {
+    rawWriteBytes(row, widthBytes);
+  }
+  endTxn();
+}
+
 }  // namespace freeink

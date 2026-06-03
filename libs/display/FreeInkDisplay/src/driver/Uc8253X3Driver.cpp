@@ -10,15 +10,44 @@ constexpr uint16_t X3_WIDTH = 792;
 constexpr uint16_t X3_HEIGHT = 528;
 constexpr uint16_t X3_WIDTH_BYTES = X3_WIDTH / 8;  // 99
 constexpr uint32_t X3_BUFFER_SIZE = static_cast<uint32_t>(X3_WIDTH_BYTES) * X3_HEIGHT;
+
+// UC8253 command set.
+constexpr uint8_t CMD_PANEL_SETTING = 0x00;
+constexpr uint8_t CMD_POWER_SETTING = 0x01;
+constexpr uint8_t CMD_POWER_OFF = 0x02;
+constexpr uint8_t CMD_POWER_OFF_SEQ = 0x03;
+constexpr uint8_t CMD_POWER_ON = 0x04;
+constexpr uint8_t CMD_BOOSTER_SOFT_START = 0x06;
+constexpr uint8_t CMD_DEEP_SLEEP = 0x07;
+constexpr uint8_t CMD_DTM1 = 0x10;
+constexpr uint8_t CMD_DATA_STOP = 0x11;
+constexpr uint8_t CMD_DISPLAY_REFRESH = 0x12;
+constexpr uint8_t CMD_DTM2 = 0x13;
+constexpr uint8_t CMD_LUT_VCOM = 0x20;
+constexpr uint8_t CMD_LUT_WW = 0x21;
+constexpr uint8_t CMD_LUT_BW = 0x22;
+constexpr uint8_t CMD_LUT_WB = 0x23;
+constexpr uint8_t CMD_LUT_BB = 0x24;
+constexpr uint8_t CMD_PLL_CONTROL = 0x30;
+constexpr uint8_t CMD_VCOM_DATA_INTERVAL = 0x50;
+constexpr uint8_t CMD_RESOLUTION = 0x61;
+constexpr uint8_t CMD_GATE_SOURCE_START = 0x65;
+constexpr uint8_t CMD_VCOM_DC = 0x82;
+constexpr uint8_t CMD_LV_SELECTION = 0xE1;
+constexpr uint8_t CMD_PARTIAL_WINDOW = 0x90;
+constexpr uint8_t CMD_PARTIAL_IN = 0x91;
+constexpr uint8_t CMD_PARTIAL_OUT = 0x92;
 }  // namespace
 
 const Uc8253X3Config& uc8253X3DefaultConfig() {
   static const Uc8253X3Config cfg = {
-      {lut_x3_vcom_full, lut_x3_ww_full, lut_x3_bw_full, lut_x3_wb_full, lut_x3_bb_full},
-      {lut_x3_vcom_gray, lut_x3_ww_gray, lut_x3_bw_gray, lut_x3_wb_gray, lut_x3_bb_gray},
-      {lut_x3_vcom_img, lut_x3_ww_img, lut_x3_bw_img, lut_x3_wb_img, lut_x3_bb_img},
+      {lut_x3_vcom_normal, lut_x3_ww_normal, lut_x3_bw_normal, lut_x3_wb_normal, lut_x3_bb_normal},
+      {lut_x3_vcom_half, lut_x3_ww_half, lut_x3_bw_half, lut_x3_wb_half, lut_x3_bb_half},
       {lut_x3_vcom_fast, lut_x3_ww_fast, lut_x3_bw_fast, lut_x3_wb_fast, lut_x3_bb_fast},
-      42,
+      {lut_x3_vcom_grayscale, lut_x3_ww_grayscale, lut_x3_bw_grayscale, lut_x3_wb_grayscale, lut_x3_bb_grayscale},
+      {lut_x3_vcom_full, lut_x3_ww_full, lut_x3_bw_full, lut_x3_wb_full, lut_x3_bb_full},
+      {lut_x3_vcom_gc, lut_x3_ww_gc, lut_x3_bw_gc, lut_x3_wb_gc, lut_x3_bb_gc},
+      42,  // controller accepts 42 bytes of each 43-byte array
   };
   return cfg;
 }
@@ -33,47 +62,74 @@ uint32_t Uc8253X3Driver::spiHz() const {
 PanelGeometry Uc8253X3Driver::geometry() const { return {_w, _h, _wb, _bufferSize}; }
 
 void Uc8253X3Driver::loadBank(EpdBus& bus, const Uc8253LutBank& bank) {
-  bus.cmdData(0x20, bank.vcom, _cfg.lutLen);
-  bus.cmdData(0x21, bank.ww, _cfg.lutLen);
-  bus.cmdData(0x22, bank.bw, _cfg.lutLen);
-  bus.cmdData(0x23, bank.wb, _cfg.lutLen);
-  bus.cmdData(0x24, bank.bb, _cfg.lutLen);
+  bus.cmdData(CMD_LUT_VCOM, bank.vcom, _cfg.lutLen);
+  bus.cmdData(CMD_LUT_WW, bank.ww, _cfg.lutLen);
+  bus.cmdData(CMD_LUT_BW, bank.bw, _cfg.lutLen);
+  bus.cmdData(CMD_LUT_WB, bank.wb, _cfg.lutLen);
+  bus.cmdData(CMD_LUT_BB, bank.bb, _cfg.lutLen);
+}
+
+void Uc8253X3Driver::loadBankCdi(EpdBus& bus, uint8_t cdi0, uint8_t cdi1, const Uc8253LutBank& bank) {
+  bus.cmdData2(CMD_VCOM_DATA_INTERVAL, cdi0, cdi1);
+  loadBank(bus, bank);
+}
+
+void Uc8253X3Driver::triggerRefresh(EpdBus& bus, bool turnOff) {
+  if (!_isScreenOn) {
+    bus.cmd(CMD_POWER_ON);
+    bus.waitBusy(" X3_PON");
+    _isScreenOn = true;
+  }
+  bus.cmd(CMD_DISPLAY_REFRESH);
+  bus.waitBusy(" X3_DRF");
+  if (turnOff) {
+    bus.cmd(CMD_POWER_OFF);
+    bus.waitBusy(" X3_POF");
+    _isScreenOn = false;
+  }
 }
 
 void Uc8253X3Driver::initController(EpdBus& bus) {
-  bus.cmd(0x00);
+  bus.cmd(CMD_PANEL_SETTING);
   bus.data(0x3F);
-  bus.data(0x08);
-  bus.cmd(0x61);
+  bus.data(0x0A);
+  bus.cmd(CMD_RESOLUTION);
   bus.data(0x03);
   bus.data(0x18);
   bus.data(0x02);
   bus.data(0x58);
-  bus.cmd(0x65);
+  bus.cmd(CMD_GATE_SOURCE_START);
   bus.data(0x00);
   bus.data(0x00);
   bus.data(0x00);
   bus.data(0x00);
-  bus.cmd(0x03);
-  bus.data(0x1D);
-  bus.cmd(0x01);
+  bus.cmd(CMD_POWER_OFF_SEQ);
+  bus.data(0x20);
+  bus.cmd(CMD_POWER_SETTING);
   bus.data(0x07);
   bus.data(0x17);
   bus.data(0x3F);
   bus.data(0x3F);
   bus.data(0x17);
-  bus.cmd(0x82);
-  bus.data(0x1D);
-  bus.cmd(0x06);
+  bus.cmd(CMD_VCOM_DC);
+  bus.data(0x24);
+  bus.cmd(CMD_BOOSTER_SOFT_START);
   bus.data(0x25);
   bus.data(0x25);
   bus.data(0x3C);
   bus.data(0x37);
-  bus.cmd(0x30);
+  bus.cmd(CMD_PLL_CONTROL);
   bus.data(0x09);
-  bus.cmd(0xE1);
+  bus.cmd(CMD_LV_SELECTION);
   bus.data(0x02);
-  loadBank(bus, _cfg.full);
+
+  // UC8253 has no auto-write RAM clear (unlike SSD1677); fill both planes white
+  // so the first differential refresh diffs against white, not stale content.
+  bus.fillPlane(CMD_DTM1, 0xFF, _h, _wb);
+  bus.cmd(CMD_DATA_STOP);
+  bus.fillPlane(CMD_DTM2, 0xFF, _h, _wb);
+  bus.cmd(CMD_DATA_STOP);
+
   _isScreenOn = false;
 }
 
@@ -83,89 +139,95 @@ void Uc8253X3Driver::begin(EpdBus& bus) {
   _initialFullSyncsRemaining = 2;
   _forceFullSyncNext = false;
   _forcedConditionPassesNext = 0;
+  _inGrayscaleMode = false;
   _grayState = {};
   initController(bus);
 }
 
 void Uc8253X3Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
   (void)prev;
-  // On X3, treat HALF as fast differential; only FULL forces the full sync.
-  const bool fastMode = (mode != RefreshMode::Full);
+  if (!_isScreenOn && !turnOff) {
+    mode = RefreshMode::Half;  // wake transition gets a stronger waveform
+  }
+  if (_inGrayscaleMode) {
+    grayscaleRevert(bus, fb);
+  }
 
+  const bool fastMode = (mode == RefreshMode::Fast);
+  const bool halfMode = (mode == RefreshMode::Half);
   const bool forcedFullSync = _forceFullSyncNext;
   const bool doFullSync =
-      !fastMode || !_redRamSynced || _initialFullSyncsRemaining > 0 || forcedFullSync;
+      (!fastMode && !halfMode) || !_redRamSynced || _initialFullSyncsRemaining > 0 || forcedFullSync;
+  const bool doHalfSync = halfMode && !doFullSync;
   _grayState.lastBaseWasPartial = !doFullSync;
 
   if (doFullSync) {
-    // Full sync: image LUTs, inverted data to both RAMs.
-    loadBank(bus, _cfg.img);
-    bus.cmd(0x13);
-    bus.writeMirroredPlane(fb, _h, _wb, true);
-    bus.cmd(0x10);
-    bus.writeMirroredPlane(fb, _h, _wb, true);
-    bus.cmdData2(0x50, 0xA9, 0x07);
+    // _full OEM bank from a white DTM1 baseline (no software prev-frame buffer).
+    loadBankCdi(bus, 0x29, 0x07, _cfg.full);
+    bus.fillPlane(CMD_DTM1, 0xFF, _h, _wb);
+    bus.cmd(CMD_DATA_STOP);
+    bus.sendPlaneFlipped(CMD_DTM2, fb, _h, _wb);
+  } else if (doHalfSync) {
+    // _half scrub: WW==BW, WB==BB -> drive every pixel to target ignoring DTM1.
+    loadBankCdi(bus, 0xA9, 0x07, _cfg.half);
+    bus.sendPlaneFlipped(CMD_DTM2, fb, _h, _wb);
   } else {
-    // Fast differential: full LUTs, RED RAM (0x10) retains the previous frame.
-    loadBank(bus, _cfg.full);
-    bus.cmd(0x13);
-    bus.writeMirroredPlane(fb, _h, _wb, false);
-    bus.cmdData2(0x50, 0x29, 0x07);
+    // _fast turbo differential; DTM1 retains the previous frame.
+    loadBankCdi(bus, 0x29, 0x07, _cfg.fast);
+    bus.sendPlaneFlipped(CMD_DTM2, fb, _h, _wb);
   }
 
+  // doFullSync re-powers the charge pump even if already on (higher current).
   if (!_isScreenOn || doFullSync) {
-    bus.cmd(0x04);
-    bus.waitBusy(" X3_CMD04");
+    bus.cmd(CMD_POWER_ON);
+    bus.waitBusy(" X3_PON");
     _isScreenOn = true;
   }
-
-  bus.cmd(0x12);
-  bus.waitBusy(" X3_CMD12");
-
+  bus.cmd(CMD_DISPLAY_REFRESH);
+  bus.waitBusy(" X3_DRF");
   if (turnOff) {
-    bus.cmd(0x02);
-    bus.waitBusy(" X3_CMD02_POWEROFF");
+    bus.cmd(CMD_POWER_OFF);
+    bus.waitBusy(" X3_POF");
     _isScreenOn = false;
   }
 
   if (!fastMode) delay(200);
 
-  // One light settle pass after the first major full sync improves early
-  // page-turn quality without the old multi-pass cost.
   uint8_t postConditionPasses = 0;
   if (doFullSync) {
     if (forcedFullSync) postConditionPasses = _forcedConditionPassesNext;
     else if (_initialFullSyncsRemaining == 1) postConditionPasses = 1;
   }
-
   if (postConditionPasses > 0) {
     const uint16_t xEnd = static_cast<uint16_t>(_w - 1);
     const uint16_t yEnd = static_cast<uint16_t>(_h - 1);
     const uint8_t w[9] = {0x00, 0x00, static_cast<uint8_t>(xEnd >> 8), static_cast<uint8_t>(xEnd & 0xFF),
                           0x00, 0x00, static_cast<uint8_t>(yEnd >> 8), static_cast<uint8_t>(yEnd & 0xFF),
                           0x01};
-    loadBank(bus, _cfg.full);
-    bus.cmdData2(0x50, 0x29, 0x07);
+    loadBankCdi(bus, 0xA9, 0x07, _cfg.normal);  // _normal: OEM normal loader CDI 0xA9
     for (uint8_t i = 0; i < postConditionPasses; i++) {
-      bus.cmd(0x91);
-      bus.cmdData(0x90, w, 9);
-      bus.cmd(0x13);
-      bus.writeMirroredPlane(fb, _h, _wb, false);
-      bus.cmd(0x92);
-      if (!_isScreenOn) {
-        bus.cmd(0x04);
-        bus.waitBusy(" X3_CMD04");
-        _isScreenOn = true;
-      }
-      bus.cmd(0x12);
-      bus.waitBusy(" X3_CMD12(cond)");
+      bus.cmd(CMD_PARTIAL_IN);
+      bus.cmdData(CMD_PARTIAL_WINDOW, w, 9);
+      bus.sendPlaneFlipped(CMD_DTM2, fb, _h, _wb);
+      bus.cmd(CMD_PARTIAL_OUT);
+      triggerRefresh(bus, false);
     }
   }
 
-  // Sync RED RAM (0x10) with the non-inverted current frame for the next diff.
-  bus.cmd(0x10);
-  bus.writeMirroredPlane(fb, _h, _wb, false);
+  // Sync DTM1 ("old" RAM) with the current frame for the next fast diff.
+  bus.sendPlaneFlipped(CMD_DTM1, fb, _h, _wb);
+  bus.cmd(CMD_DATA_STOP);
   _redRamSynced = true;
+
+  // First differential after a full garbles on X3; spend a no-op fast settle of
+  // the just-displayed frame so the caller's next diff is clean.
+  if (doFullSync) {
+    loadBankCdi(bus, 0x29, 0x07, _cfg.fast);
+    bus.sendPlaneFlipped(CMD_DTM2, fb, _h, _wb);
+    triggerRefresh(bus, turnOff);
+    bus.sendPlaneFlipped(CMD_DTM1, fb, _h, _wb);
+    bus.cmd(CMD_DATA_STOP);
+  }
 
   if (doFullSync && _initialFullSyncsRemaining > 0) {
     _initialFullSyncsRemaining--;
@@ -179,40 +241,65 @@ void Uc8253X3Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
     _grayState.lsbValid = false;
     return;
   }
-  bus.cmd(0x10);
-  bus.writeMirroredPlane(lsb, _h, _wb, false);
+  bus.sendPlaneFlipped(CMD_DTM1, lsb, _h, _wb);  // LSB plane -> "old" RAM
+  bus.cmd(CMD_DATA_STOP);
   _grayState.lsbValid = true;
 }
 
 void Uc8253X3Driver::copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
   if (!msb || !_grayState.lsbValid) return;
-  bus.cmd(0x13);
-  bus.writeMirroredPlane(msb, _h, _wb, false);
+  bus.sendPlaneFlipped(CMD_DTM2, msb, _h, _wb);  // MSB plane -> "new" RAM
+  bus.cmd(CMD_DATA_STOP);
 }
 
-void Uc8253X3Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff) {
+void Uc8253X3Driver::writeGrayscalePlaneStrip(EpdBus& bus, GrayPlane plane, const uint8_t* rows, uint16_t yStart,
+                                              uint16_t numRows) {
+  if (!rows || numRows == 0) return;
+  // PTL partial-window in GATE space (logical row y lives at gate H-1-y), rows
+  // emitted bottom-first so they land at the same gates the full-frame write
+  // uses. Fixes the AA/image banding from windowing in logical space.
+  const uint8_t ramCmd = (plane == GrayPlane::Lsb) ? CMD_DTM1 : CMD_DTM2;
+  const uint16_t xEnd = static_cast<uint16_t>(_w - 1);
+  const uint16_t yEndLogical = static_cast<uint16_t>(yStart + numRows - 1);
+  const uint16_t gateYStart = static_cast<uint16_t>((_h - 1) - yEndLogical);
+  const uint16_t gateYEnd = static_cast<uint16_t>((_h - 1) - yStart);
+  const uint8_t win[9] = {0x00,
+                          0x00,
+                          static_cast<uint8_t>(xEnd >> 8),
+                          static_cast<uint8_t>(xEnd & 0xFF),
+                          static_cast<uint8_t>(gateYStart >> 8),
+                          static_cast<uint8_t>(gateYStart & 0xFF),
+                          static_cast<uint8_t>(gateYEnd >> 8),
+                          static_cast<uint8_t>(gateYEnd & 0xFF),
+                          0x01};
+  bus.cmd(CMD_PARTIAL_IN);
+  bus.cmdData(CMD_PARTIAL_WINDOW, win, 9);
+  bus.cmd(ramCmd);
+  bus.beginTxn();
+  for (int r = static_cast<int>(numRows) - 1; r >= 0; r--) {
+    bus.rawWriteBytes(rows + static_cast<uint32_t>(r) * _wb, _wb);
+  }
+  bus.endTxn();
+  bus.cmd(CMD_PARTIAL_OUT);
+  if (plane == GrayPlane::Lsb) _grayState.lsbValid = true;
+}
+
+void Uc8253X3Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut,
+                                 bool factoryMode) {
   (void)fb;
+  (void)lut;
   if (!_grayState.lsbValid) return;
 
-  loadBank(bus, _cfg.gray);
-  bus.cmdData2(0x50, 0x29, 0x07);
-
-  if (!_isScreenOn) {
-    bus.cmd(0x04);
-    bus.waitBusy(" X3_CMD04(gray)");
-    _isScreenOn = true;
+  // Differential grayscale leaves the gray bank loaded, so the next BW turn must
+  // revert first; factory absolute mode self-cleans.
+  _inGrayscaleMode = !factoryMode;
+  if (factoryMode) {
+    loadBankCdi(bus, 0x29, 0x07, _cfg.full);  // X3 has no fast factory bank
+  } else {
+    loadBankCdi(bus, 0x29, 0x07, _cfg.gc);  // community 4-level
   }
+  triggerRefresh(bus, turnOff);
 
-  bus.cmd(0x12);
-  bus.waitBusy(" X3_CMD12(gray)");
-
-  if (turnOff) {
-    bus.cmd(0x02);
-    bus.waitBusy(" X3_CMD02_POWEROFF(gray)");
-    _isScreenOn = false;
-  }
-
-  // RAM baseline is re-established by cleanupGrayscaleBuffers() after this.
   _redRamSynced = false;
   _forceFullSyncNext = false;
   _forcedConditionPassesNext = 0;
@@ -221,15 +308,29 @@ void Uc8253X3Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff) {
 
 void Uc8253X3Driver::cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) {
   if (!bw) return;
-  // Rebase both planes from the restored BW buffer so the next differential
-  // update compares from a coherent known state.
-  bus.cmd(0x13);
-  bus.writeMirroredPlane(bw, _h, _wb, false);
-  bus.cmd(0x10);
-  bus.writeMirroredPlane(bw, _h, _wb, false);
+  // Rebase both planes from the restored BW buffer (same data to DTM1 + DTM2).
+  bus.sendPlaneFlipped(CMD_DTM2, bw, _h, _wb);
+  bus.cmd(CMD_DATA_STOP);
+  bus.sendPlaneFlipped(CMD_DTM1, bw, _h, _wb);
+  bus.cmd(CMD_DATA_STOP);
   _redRamSynced = true;
   _forceFullSyncNext = false;
   _forcedConditionPassesNext = 0;
+  _inGrayscaleMode = false;
+}
+
+void Uc8253X3Driver::grayscaleRevert(EpdBus& bus, const uint8_t* fb) {
+  (void)fb;
+  if (!_inGrayscaleMode) return;
+  _inGrayscaleMode = false;
+  // Scrub to clean white: both planes white + the _half scrub bank (CDI 0xA9).
+  bus.fillPlane(CMD_DTM1, 0xFF, _h, _wb);
+  bus.cmd(CMD_DATA_STOP);
+  bus.fillPlane(CMD_DTM2, 0xFF, _h, _wb);
+  bus.cmd(CMD_DATA_STOP);
+  loadBankCdi(bus, 0xA9, 0x07, _cfg.half);
+  triggerRefresh(bus, false);
+  _redRamSynced = true;
 }
 
 void Uc8253X3Driver::requestResync(uint8_t settlePasses) {
@@ -244,11 +345,11 @@ void Uc8253X3Driver::skipInitialResync() {
 
 void Uc8253X3Driver::deepSleep(EpdBus& bus) {
   if (_isScreenOn) {
-    bus.cmd(0x02);  // power off analog rails
+    bus.cmd(CMD_POWER_OFF);
     bus.waitBusy(" X3 power-down");
     _isScreenOn = false;
   }
-  bus.cmd(0x07);  // UC8253 deep sleep
+  bus.cmd(CMD_DEEP_SLEEP);
   bus.data(0xA5);
 }
 

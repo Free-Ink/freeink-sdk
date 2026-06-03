@@ -71,10 +71,18 @@
 #else
 #define FREEINK_DRIVER_UC8253_X3 0
 #endif
-#if FREEINK_DEVICE_M5
+// M5 PaperColor has two interchangeable display backends: the fast hand-rolled
+// ED2208 driver (default), or M5's official M5GFX/M5Unified path (opt in with
+// -DFREEINK_M5_OFFICIAL=1, which pulls the M5 libraries — see platformio.sample).
+#if FREEINK_DEVICE_M5 && defined(FREEINK_M5_OFFICIAL) && FREEINK_M5_OFFICIAL
+#define FREEINK_DRIVER_M5_OFFICIAL 1
+#define FREEINK_DRIVER_ED2208 0
+#elif FREEINK_DEVICE_M5
 #define FREEINK_DRIVER_ED2208 1
+#define FREEINK_DRIVER_M5_OFFICIAL 0
 #else
 #define FREEINK_DRIVER_ED2208 0
+#define FREEINK_DRIVER_M5_OFFICIAL 0
 #endif
 #if FREEINK_DEVICE_MURPHY
 #define FREEINK_DRIVER_UC8253_MURPHY 1

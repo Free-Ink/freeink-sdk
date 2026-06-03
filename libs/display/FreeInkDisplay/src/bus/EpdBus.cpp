@@ -104,6 +104,11 @@ void EpdBus::rawData(uint8_t d) {
   SPI.transfer(d);
 }
 
+void EpdBus::rawWriteBytes(const uint8_t* d, uint16_t len) {
+  digitalWrite(_pins.dc, HIGH);
+  SPI.writeBytes(d, len);
+}
+
 void EpdBus::waitBusy(const char* tag) { waitBusy(_busy, tag); }
 
 void EpdBus::waitBusy(BusyPolarity p, const char* tag) {

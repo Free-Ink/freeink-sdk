@@ -24,6 +24,9 @@
 #if FREEINK_DRIVER_ED2208
 #include "driver/Ed2208M5Driver.h"
 #endif
+#if FREEINK_DRIVER_M5_OFFICIAL
+#include "driver/M5OfficialDriver.h"
+#endif
 #if FREEINK_DRIVER_UC8253_MURPHY
 #include "driver/Uc8253MurphyDriver.h"
 #endif
@@ -71,8 +74,14 @@ void FreeInkDisplay::selectDriver() {
   }
 
   switch (_panelSel) {
-#if FREEINK_DRIVER_ED2208
-    case PanelSel::M5: _driver = &ed2208M5Driver(); break;
+#if FREEINK_DRIVER_M5_OFFICIAL || FREEINK_DRIVER_ED2208
+    case PanelSel::M5:
+#if FREEINK_DRIVER_M5_OFFICIAL
+      _driver = &m5OfficialDriver();  // M5 official M5GFX backend
+#else
+      _driver = &ed2208M5Driver();    // fast hand-rolled ED2208 backend
+#endif
+      break;
 #endif
 #if FREEINK_DRIVER_UC8253_X3
     case PanelSel::X3: _driver = &uc8253X3Driver(); break;
@@ -83,6 +92,8 @@ void FreeInkDisplay::selectDriver() {
       _driver = &ssd1677Driver();
 #elif FREEINK_DRIVER_UC8253_MURPHY
       _driver = &uc8253MurphyDriver();
+#elif FREEINK_DRIVER_M5_OFFICIAL
+      _driver = &m5OfficialDriver();
 #elif FREEINK_DRIVER_ED2208
       _driver = &ed2208M5Driver();
 #elif FREEINK_DRIVER_UC8253_X3
@@ -95,7 +106,11 @@ void FreeInkDisplay::selectDriver() {
 void FreeInkDisplay::begin() {
   selectDriver();
 
-  _bus.begin(_pins, _driver->spiHz(), _driver->busyPolarity(), _driver->spiMiso(), _driver->coCs());
+  // External-library drivers (e.g. M5GFX) own the SPI/display hardware; only
+  // bring up FreeInk's bus for native controller drivers.
+  if (!_driver->usesExternalBus()) {
+    _bus.begin(_pins, _driver->spiHz(), _driver->busyPolarity(), _driver->spiMiso(), _driver->coCs());
+  }
 
   const PanelGeometry geom = _driver->geometry();
   displayWidth = geom.width;

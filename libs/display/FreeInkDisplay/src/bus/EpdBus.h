@@ -49,8 +49,9 @@ class EpdBus {
   // Grouped transaction primitives (used by multi-step sequences, e.g. M5).
   void beginTxn();
   void endTxn();
-  void rawCmd(uint8_t c);   // assumes a transaction is open
-  void rawData(uint8_t d);  // assumes a transaction is open
+  void rawCmd(uint8_t c);                            // assumes a transaction is open
+  void rawData(uint8_t d);                           // assumes a transaction is open
+  void rawWriteBytes(const uint8_t* d, uint16_t len);  // bulk data, transaction open
 
   // Wait for a refresh/operation to finish using the configured (or given) polarity.
   void waitBusy(const char* tag = nullptr);

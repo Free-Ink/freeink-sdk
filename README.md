@@ -85,6 +85,23 @@ X3 and X4 share the ESP32-C3 and one pin profile, so **a single firmware binary
 drives both** — the panel is chosen at runtime via `setDisplayX3()`. Distinct-MCU
 boards (S3) build their own binary, selected with a board macro.
 
+### M5Stack PaperColor refresh behavior
+
+The PaperColor is natively a **six-color (Spectra 6), full-refresh** panel: a
+complete OTP waveform takes **~15 s** — unusable for reading. To get
+reading-compatible speeds, FreeInk's native driver **interrupts the refresh at
+~340 ms**. The colors settle in order with **white settling last**, so cutting
+off early leaves the panel **black or yellow** (depending on the inversion /
+polarity selected) rather than white — and FreeInk exploits that to produce a
+fast, high-contrast monochrome image. A true white background / full color
+requires running the complete waveform (`requestCompleteWaveformNextRefresh()`).
+
+Two backends are selectable for this device:
+- **Native ED2208 (default)** — the fast interrupted-refresh path above.
+- **M5 official (`-DFREEINK_M5_OFFICIAL=1`)** — wraps M5's own **M5Unified + M5GFX**
+  stack for users who prefer the vendor path (slower, but standard). This pulls
+  the M5 libraries only on that env; M5GFX owns the bus (`usesExternalBus()`).
+
 **Capacitive touch** is implemented for two controllers (gated by
 `FREEINK_CAP_TOUCH`): **CHSC6x** (Murphy M3 — IRQ-driven, ported from the upstream
 driver) and **GT911** (LilyGo — polled, raw register reads + the reset/address

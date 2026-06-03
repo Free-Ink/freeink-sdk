@@ -10,29 +10,10 @@
 
 #include "driver/PanelDriver.h"
 
-// --- Driver-set opt-in -------------------------------------------------------
-//
-// A build links the drivers it can reach and selects among them at runtime.
-// Boards that share the ESP32-C3 (Xteink X3 + X4) link BOTH and pick via
-// setDisplayX3(), so one binary drives both. A distinct-MCU board (M5 on S3)
-// links only its driver. Flags can also be set explicitly in platformio.ini.
-#if defined(BOARD_M5STACK_PAPERCOLOR) || defined(CROSSPOINT_BOARD_M5STACK_PAPERCOLOR)
-#ifndef FREEINK_DRIVER_ED2208
-#define FREEINK_DRIVER_ED2208 1
-#endif
-#elif defined(BOARD_MURPHY_M3) || defined(CROSSPOINT_BOARD_MURPHY_M3)
-#ifndef FREEINK_DRIVER_UC8253_MURPHY
-#define FREEINK_DRIVER_UC8253_MURPHY 1
-#endif
-#else
-// Generic Xteink ESP32-C3 / de-link S3 build: SSD1677 + UC8253-X3.
-#ifndef FREEINK_DRIVER_SSD1677
-#define FREEINK_DRIVER_SSD1677 1
-#endif
-#ifndef FREEINK_DRIVER_UC8253_X3
-#define FREEINK_DRIVER_UC8253_X3 1
-#endif
-#endif
+// Which panel drivers link is derived from the device set (-DFREEINK_DEVICE_*)
+// in BoardConfig.h, included above, which defines each FREEINK_DRIVER_* to 0/1.
+// A build links the drivers it can reach and selects among them at runtime
+// (X3 + X4 both link in the generic C3 build; setDisplayX3() picks at runtime).
 
 #if FREEINK_DRIVER_SSD1677
 #include "driver/Ssd1677Driver.h"

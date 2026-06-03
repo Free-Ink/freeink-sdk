@@ -85,18 +85,48 @@ X3 and X4 share the ESP32-C3 and one pin profile, so **a single firmware binary
 drives both** — the panel is chosen at runtime via `setDisplayX3()`. Distinct-MCU
 boards (S3) build their own binary, selected with a board macro.
 
-## Build flags
+## Build composition — devices × capabilities
+
+A build is composed along two axes.
+
+**Devices** (`-DFREEINK_DEVICE_<NAME>`) declare which hardware the binary supports.
+Each device pulls in its panel driver, adds its board profile to the runtime
+registry, and turns on its default capabilities. Compose any set that shares an
+MCU (a C3-vs-S3 mix is a compile error):
+
+| Pass | Result |
+|---|---|
+| `-DFREEINK_DEVICE_X4` | X4 only — links just SSD1677 (tightest) |
+| `-DFREEINK_DEVICE_X3 -DFREEINK_DEVICE_X4` | X3 **and** X4 in one C3 binary, runtime-selected via `setDisplayX3()` |
+| `-DFREEINK_DEVICE_DELINK` | de-link (S3, SSD1677 + frontlight) |
+| `-DFREEINK_DEVICE_M5` | M5 PaperColor (S3, ED2208 + color) |
+| `-DFREEINK_DEVICE_MURPHY` | Murphy M3 (S3, UC8253 + touch + frontlight) |
+| *(none)* | defaults from the legacy `-DBOARD_*` macro, else **X3 + X4** |
+
+Multiple **different-pinout** devices on one MCU are runtime-selected: `ACTIVE`
+defaults to a compile-time default and the consumer calls
+`BoardConfig::selectDevice(...)` after its own detection (the SDK doesn't ship a
+detector; X3/X4 detection stays in the consumer, e.g. CrossPoint's fingerprint).
+
+**Capabilities** (`-DFREEINK_CAP_<NAME>`) gate feature *code* to keep binaries
+tight. Each defaults on when an included device needs it; force with `=0`/`=1`:
+
+| Flag | Gates | Default |
+|---|---|---|
+| `FREEINK_CAP_TOUCH` | capacitive touch decoder (InputManager) | on if a device has touch |
+| `FREEINK_CAP_FRONTLIGHT` | PWM frontlight (FrontlightManager) | on if a device has a frontlight |
+| `FREEINK_CAP_COLOR` | color panel code | on for M5 |
+| `FREEINK_CAP_AUDIO` | audio output (scaffold) | off |
+| `FREEINK_CAP_NET_TLS13` | wolfSSL TLS 1.3 (≡ `FREEINK_NET_WOLFSSL`) | off |
+
+**Other flags:**
 
 | Flag | Effect |
 |---|---|
-| *(none)* | Generic Xteink C3 build: links **SSD1677 + UC8253-X3**, runtime-selected |
-| `-DBOARD_DELINK` | de-link ESP32-S3 profile (SSD1677 + frontlight) |
-| `-DBOARD_M5STACK_PAPERCOLOR` | M5Stack PaperColor profile (ED2208) |
-| `-DBOARD_MURPHY_M3` | Murphy M3 profile (UC8253 + touch + frontlight) |
-| `-DFREEINK_DISPLAY_FLIPPED` (or `-DFLIPPED`) | Vertically flip an SSD1677 panel |
-| `-DEINK_DISPLAY_SINGLE_BUFFER_MODE=1` | Single framebuffer (uses controller RAM as previous frame) |
-| `-DFREEINK_DRIVER_SSD1677` / `_UC8253_X3` / `_ED2208` / `_UC8253_MURPHY` | Force a specific driver into the link set |
-| `-DFREEINK_NET_WOLFSSL=1` | Enable the wolfSSL TLS 1.3 transport in `SecureNet` |
+| `-DBOARD_DELINK` / `_M5STACK_PAPERCOLOR` / `_MURPHY_M3` | legacy single-device selection (maps to the matching `FREEINK_DEVICE_*`) |
+| `-DFREEINK_DISPLAY_FLIPPED` (or `-DFLIPPED`) | vertically flip an SSD1677 panel |
+| `-DEINK_DISPLAY_SINGLE_BUFFER_MODE=1` | single framebuffer (uses controller RAM as previous frame) |
+| `-DFREEINK_NET_WOLFSSL=1` | enable the wolfSSL TLS 1.3 transport in `SecureNet` |
 
 ## Networking — TLS 1.3 (`SecureNet`)
 
@@ -141,8 +171,12 @@ project, as before).
 2. If it uses an existing controller, reuse that driver — supply a tuned config
    struct (its own LUTs/voltages) if the panel differs. If it's a new
    controller, add a `PanelDriver` in its own file + a `FREEINK_DRIVER_*` flag.
-3. Same-MCU boards can join the generic multi-driver binary; different-MCU boards
-   get their own build env.
+3. **Each device gets its own profile, board macro, and build env.** Two devices
+   may share one binary *only* when they have an identical pinout and are
+   distinguishable at runtime — that is the sole reason Xteink X3 and X4 share
+   the default ESP32-C3 env (they're the same board, told apart by I2C
+   fingerprinting + `setDisplayX3()`). Same MCU but different GPIOs, screen, or
+   controller ⇒ a separate profile and a separate env, never an auto-shared bin.
 
 ## Repository layout
 

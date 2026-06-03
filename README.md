@@ -146,7 +146,13 @@ off it compiles to an inert stub, so the rest of the SDK builds without wolfSSL.
 
 ## Using FreeInk from PlatformIO
 
-Add the libraries you need as symlink `lib_deps` (names match the original SDK):
+See **[`platformio.sample.ini`](platformio.sample.ini)** for a complete, ready-to-copy
+configuration — it mirrors the toolchain/flags verified against the CrossPoint
+firmware and includes per-device build envs (`xteink`, `xteink_x4`, `m5paper`,
+`delink`, `murphy`) wired with the right `FREEINK_DEVICE_*` flags.
+
+The minimum is to add the libraries you need as symlink `lib_deps` (names match
+the original SDK):
 
 ```ini
 lib_deps =
@@ -161,8 +167,8 @@ lib_deps =
 ```
 
 `#include <EInkDisplay.h>` and the `EInkDisplay` type keep working via the compat
-shim. The display lib needs `BoardConfig` and `SdFat` (provided by the consuming
-project, as before).
+shim. The display libs depend on `BoardConfig`; `SdFat` is pulled in
+automatically as a dependency of `SDCardManager`.
 
 ## Adding a new device
 

@@ -240,7 +240,7 @@ constexpr BoardProfile XTEINK_X4 = {
     800,
     480,
     {8, 10, 21, 4, 5, 6, PIN_UNASSIGNED},
-    0,  // displaySpiHz: 0 -> SSD1677 driver default (40 MHz); X3 uses UC8253 default (10 MHz)
+    0,  // displaySpiHz: 0 -> SSD1677 driver default (40 MHz); X3 uses UC8253 default (16 MHz)
     {PIN_UNASSIGNED, 7, PIN_UNASSIGNED, 12, PIN_UNASSIGNED, false, 0},
     {0, 1, 2, 3, 4, 5, 3, false},
     0,

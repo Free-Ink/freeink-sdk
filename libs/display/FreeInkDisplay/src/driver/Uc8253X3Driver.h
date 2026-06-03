@@ -13,7 +13,7 @@
 // reverted via the `_half` scrub bank. DTM1/DTM2 are the controller's old/new
 // RAM planes; CDI (cmd 0x50) selects differential (0x29) vs absolute (0xA9).
 //
-// X3TwoPhase BUSY; SPI clock board-overridable (default 10 MHz).
+// X3TwoPhase BUSY; SPI clock board-overridable (default 16 MHz).
 
 #include "PanelDriver.h"
 

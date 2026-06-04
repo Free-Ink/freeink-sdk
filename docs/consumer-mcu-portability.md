@@ -108,34 +108,50 @@ already populates per board. Same rule for the SPIWP/flash pin above.
 
 ---
 
-## Recommended: push the portable bits into the SDK
+## The SDK now owns the wakeup portability (`PowerManager`)
 
-The cleanest end state is that consumers never write chip-specific power code at
-all. The SDK already owns display/input/battery/storage/orientation/SD-transport;
-**deep sleep + wake is the remaining hardware concern it doesn't yet abstract.**
-Adding a small SDK power helper would let CrossPoint delete its per-MCU `#ifdef`s:
+Issue #1 is the SDK's job — it already knows the active board — so the SDK now
+ships `libs/hardware/PowerManager`. It picks the `SOC_PM_SUPPORT_EXT1_WAKEUP` vs
+`SOC_GPIO_SUPPORT_DEEPSLEEP_WAKEUP` branch at compile time and reads the wake pin
++ polarity from `BoardConfig::ACTIVE.input`, so consumers write no chip-specific
+power code:
 
 ```cpp
-// proposed SDK API (libs/hardware/PowerManager or similar)
 namespace freeink {
-// Arms wake-on-power-button (from BoardConfig::ACTIVE.input.power, honoring
-// powerActiveHigh) using the correct per-SoC wakeup source, then deep-sleeps.
-void deepSleepUntilPowerButton();
+class PowerManager {
+  static bool armPowerButtonWakeup();        // SoC-correct source + active pin/polarity
+  static void waitForPowerButtonRelease();   // raw GPIO poll until released
+  [[noreturn]] static void deepSleep();      // isolate GPIOs, then deep sleep
+  [[noreturn]] static void deepSleepUntilPowerButton();  // all three, in order
+};
 }
 ```
 
-The SDK is the right home for the `SOC_PM_SUPPORT_EXT1_WAKEUP` vs
-`SOC_GPIO_SUPPORT_DEEPSLEEP_WAKEUP` branch (issue #1) and the wake-pin lookup,
-because it already knows the active board. The panic backtrace (issue #2) is an
-app-level debug hook, so it can stay in CrossPoint behind an arch guard.
+Add `PowerManager` to `lib_deps` and the C3-hardcoded block collapses. CrossPoint's
+`HalGPIO::startDeepSleep` already adopts it:
+
+```cpp
+// before — C3-only, breaks on S3:
+esp_deep_sleep_enable_gpio_wakeup(1ULL << InputManager::POWER_BUTTON_PIN, ESP_GPIO_WAKEUP_GPIO_LOW);
+esp_deep_sleep_start();
+
+// after — MCU-portable:
+freeink::PowerManager::armPowerButtonWakeup();
+esp_deep_sleep_start();
+```
+
+`PowerManager.cpp` is verified to compile on **both** targets (the `gpio` branch
+links in the C3 build, the `ext1` branch compiles in the S3 build). The second
+call site (`HalPowerManager::startDeepSleep`) still needs the same one-line swap —
+that's the remaining issue-#1 adoption. The panic backtrace (issue #2) is an
+app-level debug hook, so it stays in CrossPoint behind an arch guard.
 
 ---
 
 ## Checklist for CrossPoint
 
-- [ ] Replace `esp_deep_sleep_enable_gpio_wakeup` with a `SOC_*`-guarded wakeup
-      (or call an SDK `deepSleepUntilPowerButton()` helper) — `HalGPIO.cpp`,
-      `HalPowerManager.cpp`.
+- [x] `HalGPIO.cpp` — now calls `freeink::PowerManager::armPowerButtonWakeup()`.
+- [ ] `HalPowerManager.cpp:92` — same one-line swap to `PowerManager` (still C3-only).
 - [ ] Guard the RISC-V panic backtrace with `#if __riscv`, else fall back to
       `__real_panic_print_backtrace` — `HalSystem.cpp`.
 - [ ] Guard or board-source the `GPIO_NUM_13` SPIWP pin — `HalPowerManager.cpp`.

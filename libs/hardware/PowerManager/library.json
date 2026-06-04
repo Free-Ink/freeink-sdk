@@ -1,0 +1,10 @@
+{
+  "name": "PowerManager",
+  "version": "1.0.0",
+  "description": "FreeInk power manager: per-SoC deep-sleep wake-on-power-button (RISC-V gpio-wakeup vs Xtensa ext1), with wake pin and polarity read from BoardConfig::ACTIVE. Lets consumers deep-sleep portably across ESP32-C3/S3 without chip-specific code.",
+  "keywords": "power, sleep, deepsleep, wakeup",
+  "authors": [{"name": "FreeInk SDK Contributors"}],
+  "dependencies": {},
+  "platforms": "espressif32",
+  "frameworks": ["arduino"]
+}

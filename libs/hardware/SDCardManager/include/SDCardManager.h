@@ -1,17 +1,25 @@
 #pragma once
 
-// FreeInk SDK — SD card manager (SdFat / SPI backend, singleton).
-//
-// Exposes a thin, app-friendly wrapper over SdFat plus the raw FsFile API.
-// SD power sequencing for PMIC-gated boards (e.g. M5Stack PaperColor) is
-// handled in begin(). Boards wired for SDMMC 4-bit (e.g. the de-link S3 board)
-// are a documented follow-up — they require an SDMMC-backed FsFile path so the
-// public API below stays unchanged.
+// FreeInk SDK — SD card manager (singleton). Two interchangeable backends behind
+// one FsVolume& seam, so every op returns ordinary FsFile objects:
+//   * SPI / SdFat (default) — SD power sequencing for PMIC-gated boards (e.g.
+//     M5Stack PaperColor) is handled in begin().
+//   * Native 4-bit SDMMC (FREEINK_SD_SDMMC, e.g. de-link) — SdFat can't drive
+//     SDIO, so a plain FsVolume is mounted on an esp-idf SDMMC block device
+//     (src/SdmmcBlockDevice). Requires the build to set USE_BLOCK_DEVICE_INTERFACE=1.
+// The public API below is identical for both, so consumers are unchanged.
 
 #include <WString.h>
 #include <vector>
 #include <string>
 #include <SdFat.h>
+#include <BoardConfig.h>
+
+#if FREEINK_SD_SDMMC
+namespace freeink {
+class SdmmcBlockDevice;  // native esp-idf SDMMC block device (src/SdmmcBlockDevice.h)
+}
+#endif
 
 class SDCardManager {
  public:
@@ -33,12 +41,12 @@ class SDCardManager {
   // Ensure a directory exists, creating it if necessary. Returns true on success.
   bool ensureDirectoryExists(const char* path);
 
-  FsFile open(const char* path, const oflag_t oflag = O_RDONLY) { return sd.open(path, oflag); }
-  bool mkdir(const char* path, const bool pFlag = true) { return sd.mkdir(path, pFlag); }
-  bool exists(const char* path) { return sd.exists(path); }
-  bool remove(const char* path) { return sd.remove(path); }
-  bool rmdir(const char* path) { return sd.rmdir(path); }
-  bool rename(const char* path, const char* newPath) { return sd.rename(path, newPath); }
+  FsFile open(const char* path, const oflag_t oflag = O_RDONLY) { return vol().open(path, oflag); }
+  bool mkdir(const char* path, const bool pFlag = true) { return vol().mkdir(path, pFlag); }
+  bool exists(const char* path) { return vol().exists(path); }
+  bool remove(const char* path) { return vol().remove(path); }
+  bool rmdir(const char* path) { return vol().rmdir(path); }
+  bool rename(const char* path, const char* newPath) { return vol().rename(path, newPath); }
 
   bool openFileForRead(const char* moduleName, const char* path, FsFile& file);
   bool openFileForRead(const char* moduleName, const std::string& path, FsFile& file);
@@ -54,7 +62,18 @@ class SDCardManager {
   static SDCardManager instance;
 
   bool initialized = false;
+
+  // All filesystem ops route through one FsVolume& so the backend is swappable.
+  // SPI boards: `sd` (SdFs is-a FsVolume). SDMMC boards: a bare FsVolume mounted
+  // on a native esp-idf block device — both hand back ordinary FsFile objects.
+#if FREEINK_SD_SDMMC
+  FsVolume _vol;
+  freeink::SdmmcBlockDevice* _dev = nullptr;  // owned, created in begin()
+  FsVolume& vol() { return _vol; }
+#else
   SdFat sd;
+  FsVolume& vol() { return sd; }
+#endif
 };
 
 #define SdMan SDCardManager::getInstance()

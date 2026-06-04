@@ -111,6 +111,13 @@
 #endif
 #endif
 
+// SD transport. de-link is wired for 4-bit SDMMC; SdFat can't drive SDIO, so it
+// gets a native esp-idf SDMMC block device behind SDCardManager. Every other
+// board stays on SdFat-over-SPI. Override with -DFREEINK_SD_SDMMC=0/1.
+#ifndef FREEINK_SD_SDMMC
+#define FREEINK_SD_SDMMC (FREEINK_DEVICE_DELINK)
+#endif
+
 namespace BoardConfig {
 
 // Physical device family. X3 and X4 are sibling devices on the same ESP32-C3
@@ -158,6 +165,18 @@ struct SdPins {
   uint32_t spiHz;  // 0 = use the SD manager default (40 MHz)
 };
 
+// 4-bit SDMMC/SDIO wiring (e.g. de-link). SdFat can't drive SDIO, so a board with
+// busWidth != 0 gets the native esp-idf SDMMC block device instead of SPI/SdFat.
+struct SdmmcPins {
+  int8_t clk;
+  int8_t cmd;
+  int8_t d0;
+  int8_t d1;
+  int8_t d2;
+  int8_t d3;
+  uint8_t busWidth;  // 0 = not an SDMMC board (use SdPins/SPI), 1 or 4 = SDMMC
+};
+
 struct InputPins {
   int8_t back;
   int8_t confirm;
@@ -203,6 +222,15 @@ struct AudioConfig {
   bool enableActiveHigh;
 };
 
+// How the panel is mounted relative to the driver's native scan. Any board injects
+// its own mirroring here; a 180° rotation is mirrorX && mirrorY. (90°/270° need a
+// software transpose — they swap width/height and aren't expressible by panel RAM
+// addressing alone — so they're a documented follow-up, not a flag here.)
+struct DisplayOrientation {
+  bool mirrorX;  // reverse source/column (X) order
+  bool mirrorY;  // reverse gate/row (Y) order
+};
+
 struct BoardProfile {
   Board board;
   const char* name;
@@ -219,6 +247,8 @@ struct BoardProfile {
   TouchConfig touch;
   FrontlightConfig frontlight;
   AudioConfig audio;
+  DisplayOrientation orientation;  // panel mount transform (mirrorX/mirrorY)
+  SdmmcPins sdmmc;                 // 4-bit SDMMC wiring (busWidth 0 = use SPI/SdFat)
 };
 
 constexpr TouchConfig NO_TOUCH = {
@@ -231,6 +261,12 @@ constexpr TouchConfig LILYGO_T5_PRO_GT911 = {
     TouchController::Gt911, 39, 40, 3, 9, 0x5D, 0, 539, 0, 959, false, 0x14, false};
 constexpr FrontlightConfig NO_FRONTLIGHT = {PIN_UNASSIGNED, 0, 0, true};
 constexpr AudioConfig NO_AUDIO = {AudioOutput::None, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, true};
+constexpr DisplayOrientation NO_FLIP = {false, false};            // native scan
+constexpr DisplayOrientation ROTATE_180 = {true, true};           // upside-down mount
+constexpr DisplayOrientation MIRROR_X = {true, false};            // horizontal mirror
+constexpr DisplayOrientation MIRROR_Y = {false, true};            // vertical mirror
+constexpr SdmmcPins NO_SDMMC = {PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED,
+                                PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, 0};
 
 // --- Xteink X4 — ESP32-C3, SSD1677 (800x480) ---------------------------------
 constexpr BoardProfile XTEINK_X4 = {
@@ -248,7 +284,9 @@ constexpr BoardProfile XTEINK_X4 = {
     20,
     NO_TOUCH,
     NO_FRONTLIGHT,
-    NO_AUDIO};
+    NO_AUDIO,
+    NO_FLIP,
+    NO_SDMMC};
 
 // --- Xteink X3 — ESP32-C3, UC8253 (792x528) ----------------------------------
 // Same board/pinout as X4; differs only in panel controller + size. Selected at
@@ -270,7 +308,9 @@ constexpr BoardProfile XTEINK_X3 = {
     20,
     NO_TOUCH,
     NO_FRONTLIGHT,
-    NO_AUDIO};
+    NO_AUDIO,
+    NO_FLIP,
+    NO_SDMMC};
 
 // --- M5Stack PaperColor — ESP32-S3, ED2208 color panel, M5PM1 PMIC -----------
 constexpr BoardProfile M5STACK_PAPER_COLOR = {
@@ -288,7 +328,9 @@ constexpr BoardProfile M5STACK_PAPER_COLOR = {
     PIN_UNASSIGNED,
     NO_TOUCH,
     NO_FRONTLIGHT,
-    NO_AUDIO};
+    NO_AUDIO,
+    NO_FLIP,
+    NO_SDMMC};
 
 // --- Murphy M3 (CrowPanel 3.7") — UC8253, CHSC6x touch, PWM frontlight --------
 constexpr BoardProfile MURPHY_M3 = {
@@ -306,12 +348,20 @@ constexpr BoardProfile MURPHY_M3 = {
     PIN_UNASSIGNED,
     {TouchController::Chsc6x, 13, 12, 44, 45, 0x2e, 24, 224, 24, 392, false, 0, true},
     {48, 25000, 10, true},
-    NO_AUDIO};
+    NO_AUDIO,
+    NO_FLIP,
+    NO_SDMMC};
 
 // --- de-link (X4-class GDEQ0426T82 panel on ESP32-S3) — SSD1677 + frontlight ---
 // Reuses the SSD1677 driver (same controller/panel as X4); differs at the board
-// level: S3 MCU, SDMMC SD, MCP73832 charge-sense, warm/cool PWM frontlight,
-// optional vertical flip (-DFREEINK_DISPLAY_FLIPPED).
+// level: S3 MCU, SDMMC SD, MCP73832 charge-sense, warm/cool PWM frontlight.
+//
+// Orientation: per the de-link author, the current PCB mounts the panel upside
+// down vs the X4. The next PCB revision will match the X4, so this profile ships
+// NO_FLIP (the default, correct orientation). Owners of the current PCB can drop
+// the firmware's software re-orient and set `ROTATE_180` here instead — the
+// SSD1677 driver applies it in hardware (mirrorX via RAM addressing, mirrorY via
+// gate scan). Any board injects its own mount transform the same way.
 constexpr BoardProfile DE_LINK = {
     Board::DeLink,
     "de_link",
@@ -321,8 +371,10 @@ constexpr BoardProfile DE_LINK = {
     480,
     {8, 10, 21, 4, 5, 6, PIN_UNASSIGNED},
     0,  // displaySpiHz: SSD1677 default (40 MHz)
-    // SDMMC 4-bit (CLK39/CMD40/D0=38/D1=48/D2=42/D3=41). The SdFat/SPI SD backend
-    // can't drive SDMMC yet — an SDMMC FsFile backend is a documented follow-up.
+    // SDMMC 4-bit (CLK39/CMD40/D0=38/D1=48/D2=42/D3=41). SdFat can't drive
+    // SDIO/SDMMC, so SD on de-link does NOT work with this SDK yet — the author's
+    // working port wraps native esp-idf SDMMC calls in an FsFile-compatible shim
+    // (predates HalFile). Porting that into SDCardManager is the open follow-up.
     {39, 38, 40, 41, PIN_UNASSIGNED, true, 0},
     {0, 1, 2, 3, 4, 5, 3, true},  // power button active-HIGH (INPUT_PULLDOWN) on de-link
     4,  // batteryAdc GPIO4 (charge-status GPIO8 is passed to BatteryMonitor by firmware)
@@ -331,7 +383,9 @@ constexpr BoardProfile DE_LINK = {
     // Primary brightness PWM (GPIO5). Warm/cool/rail/fault pins (GPIO6/7/17/18)
     // need the richer FrontlightManager path (follow-up).
     {5, 20000, 8, true},
-    NO_AUDIO};
+    NO_AUDIO,
+    NO_FLIP,
+    {39, 40, 38, 48, 42, 41, 4}};  // SDMMC 4-bit: CLK39 CMD40 D0=38 D1=48 D2=42 D3=41
 
 // Compile-time default device — the profile ACTIVE starts as. With a single
 // device in the build this is the only device; with several same-MCU devices it

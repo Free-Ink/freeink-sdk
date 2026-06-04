@@ -4,6 +4,8 @@
 #include <SPI.h>
 #include <Wire.h>
 
+#include "SdmmcBlockDevice.h"  // no-op unless FREEINK_SD_SDMMC
+
 namespace {
 bool writeI2CRegister8(const uint8_t addr, const uint8_t reg, const uint8_t value) {
   Wire.beginTransmission(addr);
@@ -51,6 +53,29 @@ void enableM5PaperColorSdPower() {
 
 SDCardManager SDCardManager::instance;
 
+#if FREEINK_SD_SDMMC
+SDCardManager::SDCardManager() {}
+
+bool SDCardManager::begin() {
+  // Native 4-bit SDMMC: SdFat can't drive SDIO, so mount a plain FsVolume on the
+  // esp-idf SDMMC block device. FsFile from this volume is the same type the SPI
+  // path returns, so the public API and consumers are unchanged.
+  if (!_dev) _dev = new freeink::SdmmcBlockDevice();
+  if (!_dev->begin(BoardConfig::ACTIVE.sdmmc)) {
+    if (Serial) Serial.printf("[%lu] [SD] SDMMC init failed\n", millis());
+    initialized = false;
+    return false;
+  }
+  if (!_vol.begin(_dev)) {
+    if (Serial) Serial.printf("[%lu] [SD] SDMMC volume mount failed\n", millis());
+    initialized = false;
+    return false;
+  }
+  if (Serial) Serial.printf("[%lu] [SD] SDMMC card mounted\n", millis());
+  initialized = true;
+  return initialized;
+}
+#else
 SDCardManager::SDCardManager() : sd() {}
 
 bool SDCardManager::begin() {
@@ -77,6 +102,7 @@ bool SDCardManager::begin() {
 
   return initialized;
 }
+#endif
 
 bool SDCardManager::ready() const {
   return initialized;
@@ -89,7 +115,7 @@ std::vector<String> SDCardManager::listFiles(const char* path, const int maxFile
     return ret;
   }
 
-  auto root = sd.open(path);
+  auto root = vol().open(path);
   if (!root) {
     if (Serial) Serial.printf("[%lu] [SD] Failed to open directory\n", millis());
     return ret;
@@ -209,8 +235,8 @@ bool SDCardManager::writeFile(const char* path, const String& content) {
   }
 
   // Remove existing file so we perform an overwrite rather than append
-  if (sd.exists(path)) {
-    sd.remove(path);
+  if (vol().exists(path)) {
+    vol().remove(path);
   }
 
   FsFile f;
@@ -231,8 +257,8 @@ bool SDCardManager::ensureDirectoryExists(const char* path) {
   }
 
   // Check if directory already exists
-  if (sd.exists(path)) {
-    FsFile dir = sd.open(path);
+  if (vol().exists(path)) {
+    FsFile dir = vol().open(path);
     if (dir && dir.isDirectory()) {
       dir.close();
       return true;
@@ -241,7 +267,7 @@ bool SDCardManager::ensureDirectoryExists(const char* path) {
   }
 
   // Create the directory
-  if (sd.mkdir(path)) {
+  if (vol().mkdir(path)) {
     return true;
   }
   if (Serial) Serial.printf("Failed to create directory: %s\n", path);
@@ -249,12 +275,12 @@ bool SDCardManager::ensureDirectoryExists(const char* path) {
 }
 
 bool SDCardManager::openFileForRead(const char* moduleName, const char* path, FsFile& file) {
-  if (!sd.exists(path)) {
+  if (!vol().exists(path)) {
     if (Serial) Serial.printf("[%lu] [%s] File does not exist: %s\n", millis(), moduleName, path);
     return false;
   }
 
-  file = sd.open(path, O_RDONLY);
+  file = vol().open(path, O_RDONLY);
   if (!file) {
     if (Serial) Serial.printf("[%lu] [%s] Failed to open file for reading: %s\n", millis(), moduleName, path);
     return false;
@@ -271,7 +297,7 @@ bool SDCardManager::openFileForRead(const char* moduleName, const String& path, 
 }
 
 bool SDCardManager::openFileForWrite(const char* moduleName, const char* path, FsFile& file) {
-  file = sd.open(path, O_RDWR | O_CREAT | O_TRUNC);
+  file = vol().open(path, O_RDWR | O_CREAT | O_TRUNC);
   if (!file) {
     if (Serial) Serial.printf("[%lu] [%s] Failed to open file for writing: %s\n", millis(), moduleName, path);
     return false;
@@ -289,7 +315,7 @@ bool SDCardManager::openFileForWrite(const char* moduleName, const String& path,
 
 bool SDCardManager::removeDir(const char* path) {
   // 1. Open the directory
-  auto dir = sd.open(path);
+  auto dir = vol().open(path);
   if (!dir) {
     return false;
   }
@@ -312,12 +338,12 @@ bool SDCardManager::removeDir(const char* path) {
         return false;
       }
     } else {
-      if (!sd.remove(filePath.c_str())) {
+      if (!vol().remove(filePath.c_str())) {
         return false;
       }
     }
     file = dir.openNextFile();
   }
 
-  return sd.rmdir(path);
+  return vol().rmdir(path);
 }

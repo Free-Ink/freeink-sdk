@@ -77,7 +77,7 @@ new device fills in values; the generic driver consumes them.
 |---|---|---|---|---|
 | **Xteink X4** | ESP32-C3 | SSD1677 | 800×480 B/W + 4-level gray | ✅ full |
 | **Xteink X3** | ESP32-C3 | UC8253 | 792×528 B/W + 4-level gray | ✅ full (runtime-selected) |
-| **de-link** | ESP32-S3 | SSD1677 | 800×480 B/W + gray, frontlight | ✅ full (SD over SPI; 4-bit SDMMC is a follow-up) |
+| **de-link** | ESP32-S3 | SSD1677 | 800×480 B/W + gray, frontlight | ✅ display + frontlight + native 4-bit SDMMC SD |
 | **M5Stack PaperColor** | ESP32-S3 | ED2208 | 400×600 color | 🟡 display driver stub |
 | **Murphy M3** | ESP32-S3 | UC8253 | 240×416 B/W, CHSC6x touch, PWM frontlight | 🟡 display stub; **touch + frontlight implemented** |
 
@@ -151,9 +151,15 @@ tight. Each defaults on when an included device needs it; force with `=0`/`=1`:
 | Flag | Effect |
 |---|---|
 | `-DBOARD_DELINK` / `_M5STACK_PAPERCOLOR` / `_MURPHY_M3` | legacy single-device selection (maps to the matching `FREEINK_DEVICE_*`) |
-| `-DFREEINK_DISPLAY_FLIPPED` (or `-DFLIPPED`) | vertically flip an SSD1677 panel |
+| `-DFREEINK_DISPLAY_FLIPPED` (or `-DFLIPPED`) | back-compat alias for `BoardProfile.orientation = MIRROR_Y` on SSD1677 |
+| `-DFREEINK_SD_SDMMC=1` | use the native 4-bit SDMMC backend (needs `-DUSE_BLOCK_DEVICE_INTERFACE=1`); auto-on for de-link |
 | `-DEINK_DISPLAY_SINGLE_BUFFER_MODE=1` | single framebuffer (uses controller RAM as previous frame) |
 | `-DFREEINK_NET_WOLFSSL=1` | enable the wolfSSL TLS 1.3 transport in `SecureNet` |
+
+Panel **orientation/mirroring** is per-board data, not a flag: set `BoardProfile.orientation`
+(`NO_FLIP`, `MIRROR_X`, `MIRROR_Y`, or `ROTATE_180`). The SSD1677 driver applies it in
+hardware (mirrorX via RAM column addressing, mirrorY via gate scan). 90°/270° need a
+software transpose and are a follow-up.
 
 ## Networking — TLS 1.3 (`SecureNet`)
 

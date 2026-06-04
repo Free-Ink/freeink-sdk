@@ -36,11 +36,8 @@ constexpr uint8_t CMD_WRITE_VCOM = 0x2C;
 constexpr uint8_t CMD_WRITE_TEMP = 0x1A;
 constexpr uint8_t CMD_DEEP_SLEEP = 0x10;
 
-#if defined(FREEINK_DISPLAY_FLIPPED) || defined(FLIPPED)
-constexpr uint8_t DRIVER_OUTPUT_SCAN = 0x03;  // vertically flipped
-#else
-constexpr uint8_t DRIVER_OUTPUT_SCAN = 0x02;  // SM=1 interlaced, TB=0
-#endif
+constexpr uint8_t DRIVER_OUTPUT_SCAN = 0x02;  // SM=1 interlaced, TB=0 (base)
+constexpr uint8_t SCAN_TB_FLIP = 0x01;        // OR into the scan byte for mirrorY
 
 }  // namespace
 
@@ -63,7 +60,13 @@ Ssd1677Driver::Ssd1677Driver(const Ssd1677Config& cfg)
       _w(BoardConfig::ACTIVE.displayWidth),
       _h(BoardConfig::ACTIVE.displayHeight),
       _wb(BoardConfig::ACTIVE.displayWidth / 8),
-      _bufferSize(static_cast<uint32_t>(BoardConfig::ACTIVE.displayWidth / 8) * BoardConfig::ACTIVE.displayHeight) {}
+      _bufferSize(static_cast<uint32_t>(BoardConfig::ACTIVE.displayWidth / 8) * BoardConfig::ACTIVE.displayHeight),
+      _mirrorX(BoardConfig::ACTIVE.orientation.mirrorX),
+#if defined(FREEINK_DISPLAY_FLIPPED) || defined(FLIPPED)
+      _mirrorY(true) {}  // back-compat: the old flip macro == mirrorY
+#else
+      _mirrorY(BoardConfig::ACTIVE.orientation.mirrorY) {}
+#endif
 
 uint32_t Ssd1677Driver::spiHz() const {
   return BoardConfig::ACTIVE.displaySpiHz != 0 ? BoardConfig::ACTIVE.displaySpiHz : 40000000;
@@ -91,11 +94,12 @@ void Ssd1677Driver::initController(EpdBus& bus) {
     bus.data(b);
   }
 
-  // Driver output control: display height + scan direction.
+  // Driver output control: display height + scan direction. mirrorY flips the
+  // gate scan order (TB bit) for an upside-down mount.
   bus.cmd(CMD_DRIVER_OUTPUT_CONTROL);
   bus.data((_h - 1) % 256);
   bus.data((_h - 1) / 256);
-  bus.data(_cfg.driverOutputScan);
+  bus.data(_mirrorY ? (_cfg.driverOutputScan | SCAN_TB_FLIP) : _cfg.driverOutputScan);
 
   bus.cmd(CMD_BORDER_WAVEFORM);
   bus.data(0x01);
@@ -114,19 +118,27 @@ void Ssd1677Driver::initController(EpdBus& bus) {
 }
 
 void Ssd1677Driver::setRamArea(EpdBus& bus, uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
-  constexpr uint8_t DATA_ENTRY_X_INC_Y_DEC = 0x01;
+  // Data-entry bit0 = X direction (1=increment, 0=decrement); bit1 = Y (0=dec).
+  // Default is X-increment, Y-decrement. mirrorX reverses the column direction so
+  // the controller fills RAM right-to-left, completing a horizontal flip (and,
+  // with mirrorY's gate-scan flip, a full 180°). Every RAM write routes through
+  // here, so this one branch mirrors the BW, grayscale-strip, and window paths.
+  const uint8_t dataEntry = _mirrorX ? 0x00 : 0x01;  // X dec : X inc (Y dec)
+  const uint16_t xLo = x, xHi = x + w - 1;
+  const uint16_t xStart = _mirrorX ? xHi : xLo;  // counter origin follows X dir
+  const uint16_t xEnd = _mirrorX ? xLo : xHi;
 
   // Gates are physically reversed on this panel.
   y = _h - y - h;
 
   bus.cmd(CMD_DATA_ENTRY_MODE);
-  bus.data(DATA_ENTRY_X_INC_Y_DEC);
+  bus.data(dataEntry);
 
   bus.cmd(CMD_SET_RAM_X_RANGE);
-  bus.data(x % 256);
-  bus.data(x / 256);
-  bus.data((x + w - 1) % 256);
-  bus.data((x + w - 1) / 256);
+  bus.data(xStart % 256);
+  bus.data(xStart / 256);
+  bus.data(xEnd % 256);
+  bus.data(xEnd / 256);
 
   bus.cmd(CMD_SET_RAM_Y_RANGE);
   bus.data((y + h - 1) % 256);
@@ -135,8 +147,8 @@ void Ssd1677Driver::setRamArea(EpdBus& bus, uint16_t x, uint16_t y, uint16_t w, 
   bus.data(y / 256);
 
   bus.cmd(CMD_SET_RAM_X_COUNTER);
-  bus.data(x % 256);
-  bus.data(x / 256);
+  bus.data(xStart % 256);
+  bus.data(xStart / 256);
 
   bus.cmd(CMD_SET_RAM_Y_COUNTER);
   bus.data((y + h - 1) % 256);

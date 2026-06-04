@@ -86,6 +86,12 @@ both** — it carries *both* board profiles (`XTEINK_X4` and `XTEINK_X3`) and pi
 one at runtime via `setDisplayX3()`, which swaps the active profile and driver.
 Distinct-MCU boards (S3) build their own binary, selected with a board macro.
 
+Every SDK library compiles cleanly on both ESP32-C3 and ESP32-S3. A consumer can
+still block a multi-MCU build by hardcoding chip-specific code in *its own* layer
+(deep-sleep wakeup, panic backtrace, flash pins) — see
+[`docs/consumer-mcu-portability.md`](docs/consumer-mcu-portability.md) for the
+exact changes (worked through against CrossPoint's HAL).
+
 ### M5Stack PaperColor refresh behavior
 
 The PaperColor is natively a **six-color (Spectra 6), full-refresh** panel: a

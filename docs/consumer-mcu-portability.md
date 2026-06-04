@@ -148,10 +148,80 @@ app-level debug hook, so it stays in CrossPoint behind an arch guard.
 
 ---
 
+## ⚠️ Adopting `PowerManager` couples CrossPoint to this SDK
+
+`PowerManager` is **net-new** functionality — the old `open-x4-sdk` doesn't have
+it (no `PowerManager` library, no `freeink` namespace). The rest of freeink-sdk is
+drop-in for CrossPoint's existing API via compat shims (`EInkDisplay =
+freeink::FreeInkDisplay`, etc.), so switching the SDK pointer needs zero source
+changes. But the moment CrossPoint references a freeink-only symbol like
+`freeink::PowerManager`, it can **no longer build against the old SDK.**
+
+This matters because CrossPoint's committed `platformio.ini` `[base]` still points
+`lib_deps` at `open-x4-sdk/...`; building against freeink-sdk is a *local override*
+(`platformio.local.ini`). So:
+
+| Build | SDK used | `freeink::PowerManager` adoption |
+|---|---|---|
+| with `platformio.local.ini` | freeink-sdk | ✅ compiles |
+| without it (CI / release / default) | `open-x4-sdk` (old) | ❌ `PowerManager.h` not found |
+
+**So `#include <PowerManager.h>` + `freeink::PowerManager::…` will break any build
+that still resolves to the old SDK** (header missing, namespace undefined).
+
+Note the split: of the four fixes here, only `PowerManager` adoption is
+SDK-coupled. The inline `#if SOC_*` wakeup guard, the `#if __riscv` panic guard,
+and the flash-pin guard are **pure ESP-IDF — they compile against both SDKs** and
+are safe to commit at any time.
+
+### Three ways to handle it
+
+1. **Stay dual-SDK (inline, no SDK dependency).** Do issue #1 in CrossPoint with
+   the ESP-IDF guard instead of `PowerManager`. Compiles against both SDKs; you
+   just keep the chip branch in the consumer:
+   ```cpp
+   #if SOC_PM_SUPPORT_EXT1_WAKEUP
+     esp_sleep_enable_ext1_wakeup(1ULL << InputManager::POWER_BUTTON_PIN, ESP_EXT1_WAKEUP_ANY_LOW);
+   #else
+     esp_deep_sleep_enable_gpio_wakeup(1ULL << InputManager::POWER_BUTTON_PIN, ESP_GPIO_WAKEUP_GPIO_LOW);
+   #endif
+   ```
+
+2. **`__has_include` bridge (recommended while mid-transition).** Prefer the SDK
+   helper when building against freeink-sdk, fall back to the inline path against
+   the old SDK — one snippet that compiles against either:
+   ```cpp
+   #if __has_include(<PowerManager.h>)
+     freeink::PowerManager::armPowerButtonWakeup();
+   #elif SOC_PM_SUPPORT_EXT1_WAKEUP
+     esp_sleep_enable_ext1_wakeup(1ULL << InputManager::POWER_BUTTON_PIN, ESP_EXT1_WAKEUP_ANY_LOW);
+   #else
+     esp_deep_sleep_enable_gpio_wakeup(1ULL << InputManager::POWER_BUTTON_PIN, ESP_GPIO_WAKEUP_GPIO_LOW);
+   #endif
+   esp_deep_sleep_start();
+   ```
+   (Requires `#include <PowerManager.h>` to also be guarded with `#if __has_include`.)
+
+3. **Commit to freeink-sdk.** Switch the committed `[base]` `lib_deps` (or the
+   submodule) from `open-x4-sdk` to freeink-sdk. Then the old SDK is no longer
+   built, plain `freeink::PowerManager` is fine, and nothing "breaks" because no
+   build resolves to the old SDK anymore.
+
+The straight `freeink::PowerManager` adoption shown above (and currently in
+`HalGPIO.cpp`) assumes **option 3**. If CrossPoint must keep building against the
+old SDK for now, use option 1 or 2 instead.
+
+---
+
 ## Checklist for CrossPoint
 
-- [x] `HalGPIO.cpp` — now calls `freeink::PowerManager::armPowerButtonWakeup()`.
-- [ ] `HalPowerManager.cpp:92` — same one-line swap to `PowerManager` (still C3-only).
+- [ ] Decide the adoption strategy first (see "Adopting `PowerManager` couples
+      CrossPoint to this SDK" above): inline guard / `__has_include` bridge / commit
+      to freeink-sdk. The straight `freeink::PowerManager` form below assumes the
+      committed build resolves to freeink-sdk.
+- [x] `HalGPIO.cpp` — now calls `freeink::PowerManager::armPowerButtonWakeup()`
+      (the freeink-sdk-coupled form; swap to the bridge if old-SDK builds must work).
+- [ ] `HalPowerManager.cpp:92` — same swap (still C3-only).
 - [ ] Guard the RISC-V panic backtrace with `#if __riscv`, else fall back to
       `__real_panic_print_backtrace` — `HalSystem.cpp`.
 - [ ] Guard or board-source the `GPIO_NUM_13` SPIWP pin — `HalPowerManager.cpp`.

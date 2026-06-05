@@ -24,6 +24,12 @@ public:
     // Read voltage and return percentage (0-100)
     uint16_t readPercentage() const;
 
+    // Like readPercentage(), but reports whether the read succeeded. An I2C gauge
+    // can fail transiently; on failure this returns false and leaves `out`
+    // unchanged, so a caller can keep its last good value. The ADC path always
+    // succeeds.
+    bool readPercentageChecked(uint16_t& out) const;
+
     // Read the battery voltage in millivolts (accounts for divider)
     uint16_t readMillivolts() const;
 

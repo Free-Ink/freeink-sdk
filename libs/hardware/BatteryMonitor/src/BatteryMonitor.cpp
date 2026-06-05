@@ -76,6 +76,19 @@ uint16_t BatteryMonitor::readPercentage() const {
   return percentageFromMillivolts(readMillivolts());
 }
 
+bool BatteryMonitor::readPercentageChecked(uint16_t& out) const {
+#if FREEINK_BATTERY_I2C_GAUGE
+  if (BoardConfig::ACTIVE.batteryGauge.gaugeAddr != 0) {
+    uint16_t soc = 0;
+    if (!readReg16(BoardConfig::ACTIVE.batteryGauge.gaugeAddr, BQ27220_STATE_OF_CHARGE, soc)) return false;
+    out = soc > 100 ? 100 : soc;
+    return true;
+  }
+#endif
+  out = percentageFromMillivolts(readMillivolts());
+  return true;
+}
+
 uint16_t BatteryMonitor::readMillivolts() const {
 #if FREEINK_BATTERY_I2C_GAUGE
   if (BoardConfig::ACTIVE.batteryGauge.gaugeAddr != 0) {

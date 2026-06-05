@@ -116,6 +116,9 @@ class InputManager {
   bool wasTouchPressed() const;
   // True if a touch ended between the last two #update() calls.
   bool wasTouchReleased() const;
+  // True on the press edge of the GT911 capacitive home key (controllers without
+  // one never report it). Cleared each #update().
+  bool wasHomeKeyPressed() const;
 
   // Optional board hook for buttons that aren't direct GPIOs — e.g. a key behind
   // an I2C IO-expander (the LilyGo T5 S3 user button on its PCA9535). It returns
@@ -173,6 +176,8 @@ class InputManager {
   bool touchPressed = false;
   bool touchPressedEvent = false;
   bool touchReleasedEvent = false;
+  bool touchHomeKeyEvent = false;  // GT911 capacitive home key, press edge
+  bool touchHomeKeyDown = false;
   TouchPoint touchPoint = {false, 0, 0, 0};
 
   static constexpr int NUM_BUTTONS_1 = 4;

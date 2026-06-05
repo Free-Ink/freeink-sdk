@@ -195,6 +195,7 @@ void InputManager::update() {
   releasedEvents = 0;
   touchPressedEvent = false;   // one-shot touch coord events, cleared each update()
   touchReleasedEvent = false;
+  touchHomeKeyEvent = false;
 
   if (BoardConfig::ACTIVE.inputStyle == BoardConfig::InputStyle::DigitalConfirmBackHold) {
     updateConfirmBackHold(currentTime);
@@ -286,6 +287,7 @@ InputManager::TouchPoint InputManager::getTouchPoint() const { return touchPoint
 bool InputManager::isTouchPressed() const { return touchPressed; }
 bool InputManager::wasTouchPressed() const { return touchPressedEvent; }
 bool InputManager::wasTouchReleased() const { return touchReleasedEvent; }
+bool InputManager::wasHomeKeyPressed() const { return touchHomeKeyEvent; }
 
 void InputManager::beginTouch() {
 #if FREEINK_CAP_TOUCH
@@ -405,8 +407,11 @@ bool InputManager::decodeChsc6xFrame(const uint8_t* data, const size_t len, Touc
   }
   const auto& t = BoardConfig::ACTIVE.touch;
   point.valid = true;
-  point.x = mapTouchAxis(rawX, t.rawMinX, t.rawMaxX, BoardConfig::ACTIVE.displayWidth - 1);
-  point.y = mapTouchAxis(rawY, t.rawMinY, t.rawMaxY, BoardConfig::ACTIVE.displayHeight - 1);
+  // Panel-native coordinates (the calibrated raw range, in the touch panel's own
+  // orientation); the app maps to its display/logical frame. See the touch note
+  // in the README.
+  point.x = mapTouchAxis(rawX, t.rawMinX, t.rawMaxX, t.rawMaxX - t.rawMinX);
+  point.y = mapTouchAxis(rawY, t.rawMinY, t.rawMaxY, t.rawMaxY - t.rawMinY);
   point.timestamp = millis();
   return true;
 }
@@ -496,6 +501,11 @@ void InputManager::pollGt911(const unsigned long now) {
     return;
   }
 
+  // Capacitive home key (status bit 0x10): emit one event on the press edge.
+  const bool homeKeyDown = (status & 0x10) != 0;
+  if (homeKeyDown && !touchHomeKeyDown) touchHomeKeyEvent = true;
+  touchHomeKeyDown = homeKeyDown;
+
   const uint8_t count = status & 0x0F;
   if (count > 0) {
     uint8_t pt[8] = {};
@@ -504,8 +514,10 @@ void InputManager::pollGt911(const unsigned long now) {
       const uint16_t rawY = static_cast<uint16_t>(pt[3]) | (static_cast<uint16_t>(pt[4]) << 8);
       const auto& t = BoardConfig::ACTIVE.touch;
       touchPoint.valid = true;
-      touchPoint.x = mapTouchAxis(rawX, t.rawMinX, t.rawMaxX, BoardConfig::ACTIVE.displayWidth - 1);
-      touchPoint.y = mapTouchAxis(rawY, t.rawMinY, t.rawMaxY, BoardConfig::ACTIVE.displayHeight - 1);
+      // Panel-native coordinates (calibrated raw range, touch panel's orientation);
+      // the app maps to its display/logical frame.
+      touchPoint.x = mapTouchAxis(rawX, t.rawMinX, t.rawMaxX, t.rawMaxX - t.rawMinX);
+      touchPoint.y = mapTouchAxis(rawY, t.rawMinY, t.rawMaxY, t.rawMaxY - t.rawMinY);
       touchPoint.timestamp = now;
       if (!touchPressed) touchPressedEvent = true;
       touchPressed = true;

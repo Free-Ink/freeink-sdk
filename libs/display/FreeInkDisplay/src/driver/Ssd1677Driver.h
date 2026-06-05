@@ -26,7 +26,7 @@ struct Ssd1677Config {
 
 // Standard config (Xteink X4 / GDEQ0426T82). Panel mounting (mirror/180°) is NOT
 // a config field — it comes from BoardProfile.orientation so any board injects it
-// uniformly. -DFREEINK_DISPLAY_FLIPPED stays as a back-compat alias for mirrorY.
+// uniformly. -DFREEINK_DISPLAY_FLIPPED is an alias for mirrorY.
 const Ssd1677Config& ssd1677DefaultConfig();
 
 class Ssd1677Driver : public PanelDriver {

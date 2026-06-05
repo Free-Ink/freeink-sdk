@@ -58,7 +58,7 @@ Uc8253X3Driver::Uc8253X3Driver(const Uc8253X3Config& cfg)
       _bufferSize(static_cast<uint32_t>(BoardConfig::ACTIVE.displayWidth / 8) * BoardConfig::ACTIVE.displayHeight) {}
 
 uint32_t Uc8253X3Driver::spiHz() const {
-  // X3 (UC8253) runs the SPI bus at 16 MHz, matching the upstream main lineage.
+  // X3 (UC8253) runs the SPI bus at 16 MHz.
   return BoardConfig::ACTIVE.displaySpiHz != 0 ? BoardConfig::ACTIVE.displaySpiHz : 16000000;
 }
 

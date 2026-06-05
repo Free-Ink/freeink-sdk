@@ -50,7 +50,7 @@ void FrontlightManager::off() { setBrightness(0); }
 void FrontlightManager::on() { setBrightness(_lastBrightness); }
 
 void FrontlightManager::setColorTemperature(uint8_t warmPercent) {
-  // TODO(de-link): drive the warm/cool boost-driver channels (GPIO6/7) with a
-  // make-before-break blend. Scaffold only; records intent for now.
+  // Records the requested warm percentage; it drives no channel. Warm/cool mixing
+  // on the boost-driver channels (GPIO6/7) is not implemented.
   _warmPercent = warmPercent > 100 ? 100 : warmPercent;
 }

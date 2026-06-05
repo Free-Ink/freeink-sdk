@@ -1,40 +1,30 @@
-# Making a consumer MCU-portable (CrossPoint → S3 and beyond)
+# MCU portability for consumers (C3 ↔ S3)
 
-The FreeInk SDK is MCU-agnostic: every SDK library compiles cleanly on both
-ESP32-C3 (X3/X4) and ESP32-S3 (de-link, M5, Murphy). Pins, geometry, waveforms,
-SD transport, and orientation all come from `BoardConfig::ACTIVE` or per-driver
-config, so the SDK never hardcodes a chip.
+Every FreeInk SDK library compiles on both ESP32-C3 (X3/X4) and ESP32-S3 (de-link,
+M5, Murphy, LilyGo). Pins, geometry, waveforms, SD transport, and orientation come
+from `BoardConfig::ACTIVE` or per-driver config, so the SDK hardcodes no chip.
 
-A consumer can still block a multi-MCU build by hardcoding chip-specific code in
-**its own** layer. CrossPoint does today: a `pio run -e m5paper` (ESP32-S3) build
-fails in `lib/hal/*` — **not** in any SDK library — with three errors, all because
-the HAL is written for the C3 (RISC-V) and assumes C3-only APIs. This document is
-what CrossPoint needs to change to be SDK-compatible across MCUs.
+A consumer's own layer can still tie a build to one MCU by hardcoding chip-specific
+code. CrossPoint's HAL is written for the C3 (RISC-V): a `pio run -e m5paper`
+(ESP32-S3) build fails in `lib/hal/*` — not in any SDK library — at three spots.
+This document describes those patterns and their MCU-portable forms.
 
-> Reproduce: `pio run -e m5paper` from the CrossPoint repo. Every FreeInk library
-> compiles; the build dies in `lib/hal/HalGPIO.cpp`, `HalPowerManager.cpp`, and
-> `HalSystem.cpp`.
+## Chip-specific patterns and their portable forms
 
----
+### 1. Deep-sleep GPIO wakeup
 
-## The three blockers
-
-### 1. Deep-sleep GPIO wakeup uses the C3-only API
-
-`lib/hal/HalGPIO.cpp:235` and `lib/hal/HalPowerManager.cpp:92`:
+`lib/hal/HalGPIO.cpp` and `lib/hal/HalPowerManager.cpp` use the RISC-V deep-sleep
+wakeup source:
 
 ```cpp
 esp_deep_sleep_enable_gpio_wakeup(1ULL << InputManager::POWER_BUTTON_PIN,
                                   ESP_GPIO_WAKEUP_GPIO_LOW);
 ```
 
-`esp_deep_sleep_enable_gpio_wakeup` / `ESP_GPIO_WAKEUP_GPIO_LOW` is the
-**RISC-V chips' "GPIO" deep-sleep wakeup source** (C3/C6/H2). The S3 (and S2,
-classic ESP32) wake from deep sleep through **RTC IO `ext1`** instead, which the
-compiler even suggests (`ESP_EXT1_WAKEUP_ANY_LOW`). The wake pin must be an
-RTC-capable GPIO on those parts.
-
-**Fix — branch on the SoC capability:**
+`esp_deep_sleep_enable_gpio_wakeup` / `ESP_GPIO_WAKEUP_GPIO_LOW` is the GPIO
+wakeup source on RISC-V parts (C3/C6/H2). Xtensa parts (S3/S2, classic ESP32) wake
+from deep sleep through RTC `ext1` (`esp_sleep_enable_ext1_wakeup`), and the wake
+pin must be an RTC-capable GPIO. The portable form branches on the SoC capability:
 
 ```cpp
 #include <esp_sleep.h>
@@ -52,69 +42,63 @@ void enablePowerButtonWakeup(int pin) {
 }
 ```
 
-### 2. The panic backtrace assumes a RISC-V CPU
+The SDK provides this branch in `PowerManager` (below), so a consumer can call that
+instead of writing the branch itself.
 
-`lib/hal/HalSystem.cpp:46`, inside `__wrap_panic_print_backtrace`:
+### 2. Panic backtrace
+
+`lib/hal/HalSystem.cpp`'s `__wrap_panic_print_backtrace` reads a RISC-V exception
+frame:
 
 ```cpp
-// Copied from components/esp_system/port/arch/riscv/panic_arch.c
-uint32_t sp = (uint32_t)((RvExcFrame*)frame)->sp;
+uint32_t sp = (uint32_t)((RvExcFrame*)frame)->sp;  // RISC-V panic_arch.c
 ```
 
-`RvExcFrame` is the **RISC-V** exception frame. The S3 is **Xtensa**, whose frame
-type is `XtExcFrame` with different fields, and whose stack unwinding is not the
-flat SP scan this code does (Xtensa uses windowed registers). This whole custom
-backtrace is C3-specific.
-
-**Fix — guard the custom path by architecture and fall back otherwise:**
+`RvExcFrame` is the RISC-V exception frame. Xtensa uses `XtExcFrame` with different
+fields and windowed-register unwinding, not a flat SP scan. An architecture guard
+keeps the custom RISC-V capture and falls back to the default on Xtensa:
 
 ```cpp
 void IRAM_ATTR __wrap_panic_print_backtrace(const void* frame, int core) {
   if (!frame) { __real_panic_print_backtrace(frame, core); return; }
-#if __riscv   // (or #if CONFIG_IDF_TARGET_ARCH_RISCV)
+#if __riscv   // or CONFIG_IDF_TARGET_ARCH_RISCV
   uint32_t sp = (uint32_t)((RvExcFrame*)frame)->sp;
-  ...                                   // existing RISC-V capture
+  // ... RISC-V capture ...
 #else
-  __real_panic_print_backtrace(frame, core);  // Xtensa: defer to the default
+  __real_panic_print_backtrace(frame, core);  // Xtensa: default backtrace
 #endif
 }
 ```
 
-A native Xtensa capture can come later; the fallback keeps S3 building and still
-prints a usable backtrace.
+The panic backtrace is an app-level debug hook, so it stays in the consumer behind
+this guard rather than in the SDK.
 
-### 3. Hardcoded flash/IO pin in the sleep path
+### 3. Hardcoded flash/IO pin
 
-`lib/hal/HalPowerManager.cpp:81`:
+`lib/hal/HalPowerManager.cpp` hardcodes the C3 flash WP pin:
 
 ```cpp
 constexpr gpio_num_t GPIO_SPIWP = GPIO_NUM_13;  // C3 flash WP pin
 ```
 
-GPIO13 is the C3's SPI-flash WP line; the S3 uses different flash pins. Either
-guard this per target or source it from board config — it should not be a literal
-in shared code.
+GPIO13 is the C3's SPI-flash WP line; the S3 uses different flash pins. This pin
+belongs behind a target guard or in board config, not as a literal in shared code.
 
----
-
-## Pin sourcing: use the *runtime* profile, not the compile-time default
+## Pin sourcing: runtime profile, not compile-time default
 
 `InputManager::POWER_BUTTON_PIN` is `constexpr = BoardConfig::DEFAULT_DEVICE.input.power`
-— the **compile-time default device's** pin. That's correct for a single-device
-binary, but for the X3+X4 (and any future multi-device) build the live pin is
-`BoardConfig::ACTIVE.input.power`. CrossPoint's sleep/wake code should read the
-wake pin (and any other board pin) from `BoardConfig::ACTIVE`, which the SDK
-already populates per board. Same rule for the SPIWP/flash pin above.
+— the compile-time default device's pin. For a single-device binary that pin is
+correct; for the X3+X4 (and any multi-device) binary the live pin is
+`BoardConfig::ACTIVE.input.power`. A consumer's sleep/wake code reads the wake pin
+(and any other board pin) from `BoardConfig::ACTIVE`, which the SDK populates per
+board.
 
----
+## `PowerManager`
 
-## The SDK now owns the wakeup portability (`PowerManager`)
-
-Issue #1 is the SDK's job — it already knows the active board — so the SDK now
-ships `libs/hardware/PowerManager`. It picks the `SOC_PM_SUPPORT_EXT1_WAKEUP` vs
-`SOC_GPIO_SUPPORT_DEEPSLEEP_WAKEUP` branch at compile time and reads the wake pin
-+ polarity from `BoardConfig::ACTIVE.input`, so consumers write no chip-specific
-power code:
+`libs/hardware/PowerManager` owns the deep-sleep wakeup branch. It selects
+`SOC_PM_SUPPORT_EXT1_WAKEUP` vs `SOC_GPIO_SUPPORT_DEEPSLEEP_WAKEUP` at compile time
+and reads the wake pin + polarity from `BoardConfig::ACTIVE.input`, so a consumer
+writes no chip-specific power code:
 
 ```cpp
 namespace freeink {
@@ -127,69 +111,46 @@ class PowerManager {
 }
 ```
 
-Add `PowerManager` to `lib_deps` and the C3-hardcoded block collapses. CrossPoint's
-`HalGPIO::startDeepSleep` already adopts it:
+With `PowerManager` in `lib_deps`, the C3-hardcoded wakeup collapses to:
 
 ```cpp
-// before — C3-only, breaks on S3:
-esp_deep_sleep_enable_gpio_wakeup(1ULL << InputManager::POWER_BUTTON_PIN, ESP_GPIO_WAKEUP_GPIO_LOW);
-esp_deep_sleep_start();
-
-// after — MCU-portable:
 freeink::PowerManager::armPowerButtonWakeup();
 esp_deep_sleep_start();
 ```
 
-`PowerManager.cpp` is verified to compile on **both** targets (the `gpio` branch
-links in the C3 build, the `ext1` branch compiles in the S3 build). The second
-call site (`HalPowerManager::startDeepSleep`) still needs the same one-line swap —
-that's the remaining issue-#1 adoption. The panic backtrace (issue #2) is an
-app-level debug hook, so it stays in CrossPoint behind an arch guard.
+`PowerManager.cpp` compiles on both targets — the `gpio` branch links in a C3
+build, the `ext1` branch in an S3 build. CrossPoint's `HalGPIO::startDeepSleep`
+uses it; `HalPowerManager::startDeepSleep` is the other call site.
 
----
+## `PowerManager` and the old SDK
 
-## ⚠️ Adopting `PowerManager` couples CrossPoint to this SDK
+`PowerManager` is functionality the upstream `open-x4-sdk` does not have (no
+`PowerManager` library, no `freeink` namespace). The rest of freeink-sdk is drop-in
+for CrossPoint's existing API through compat shims (`EInkDisplay =
+freeink::FreeInkDisplay`, etc.), so repointing the SDK needs no source changes. A
+reference to a freeink-only symbol such as `freeink::PowerManager`, though, requires
+that the build resolve to freeink-sdk.
 
-`PowerManager` is **net-new** functionality — the old `open-x4-sdk` doesn't have
-it (no `PowerManager` library, no `freeink` namespace). The rest of freeink-sdk is
-drop-in for CrossPoint's existing API via compat shims (`EInkDisplay =
-freeink::FreeInkDisplay`, etc.), so switching the SDK pointer needs zero source
-changes. But the moment CrossPoint references a freeink-only symbol like
-`freeink::PowerManager`, it can **no longer build against the old SDK.**
+CrossPoint's committed `platformio.ini` `[base]` points `lib_deps` at
+`open-x4-sdk`; building against freeink-sdk is a local override
+(`platformio.local.ini`):
 
-This matters because CrossPoint's committed `platformio.ini` `[base]` still points
-`lib_deps` at `open-x4-sdk/...`; building against freeink-sdk is a *local override*
-(`platformio.local.ini`). So:
-
-| Build | SDK used | `freeink::PowerManager` adoption |
+| Build | SDK | `freeink::PowerManager` |
 |---|---|---|
-| with `platformio.local.ini` | freeink-sdk | ✅ compiles |
-| without it (CI / release / default) | `open-x4-sdk` (old) | ❌ `PowerManager.h` not found |
+| with `platformio.local.ini` | freeink-sdk | compiles |
+| without it (CI / release / default) | `open-x4-sdk` | `PowerManager.h` not found |
 
-**So `#include <PowerManager.h>` + `freeink::PowerManager::…` will break any build
-that still resolves to the old SDK** (header missing, namespace undefined).
+Of the patterns here, only `PowerManager` is SDK-coupled. The inline `#if SOC_*`
+wakeup guard, the `#if __riscv` panic guard, and the flash-pin guard are pure
+ESP-IDF and compile against either SDK.
 
-Note the split: of the four fixes here, only `PowerManager` adoption is
-SDK-coupled. The inline `#if SOC_*` wakeup guard, the `#if __riscv` panic guard,
-and the flash-pin guard are **pure ESP-IDF — they compile against both SDKs** and
-are safe to commit at any time.
+Three ways to handle the coupling:
 
-### Three ways to handle it
-
-1. **Stay dual-SDK (inline, no SDK dependency).** Do issue #1 in CrossPoint with
-   the ESP-IDF guard instead of `PowerManager`. Compiles against both SDKs; you
-   just keep the chip branch in the consumer:
-   ```cpp
-   #if SOC_PM_SUPPORT_EXT1_WAKEUP
-     esp_sleep_enable_ext1_wakeup(1ULL << InputManager::POWER_BUTTON_PIN, ESP_EXT1_WAKEUP_ANY_LOW);
-   #else
-     esp_deep_sleep_enable_gpio_wakeup(1ULL << InputManager::POWER_BUTTON_PIN, ESP_GPIO_WAKEUP_GPIO_LOW);
-   #endif
-   ```
-
-2. **`__has_include` bridge (recommended while mid-transition).** Prefer the SDK
-   helper when building against freeink-sdk, fall back to the inline path against
-   the old SDK — one snippet that compiles against either:
+1. **Inline guard, no SDK dependency** — write the `#if SOC_*` wakeup branch in the
+   consumer instead of calling `PowerManager`. Compiles against either SDK; the
+   chip branch lives in the consumer.
+2. **`__has_include` bridge** — prefer the SDK helper when present, fall back to the
+   inline path otherwise, in one snippet that compiles against either SDK:
    ```cpp
    #if __has_include(<PowerManager.h>)
      freeink::PowerManager::armPowerButtonWakeup();
@@ -200,37 +161,21 @@ are safe to commit at any time.
    #endif
    esp_deep_sleep_start();
    ```
-   (Requires `#include <PowerManager.h>` to also be guarded with `#if __has_include`.)
+   (The `#include <PowerManager.h>` is guarded with `#if __has_include` too.)
+3. **Commit to freeink-sdk** — point the committed `[base]` `lib_deps` (or the
+   submodule) at freeink-sdk. The old SDK drops out of the build and plain
+   `freeink::PowerManager` resolves. The straight `freeink::PowerManager` form in
+   `HalGPIO.cpp` assumes this.
 
-3. **Commit to freeink-sdk.** Switch the committed `[base]` `lib_deps` (or the
-   submodule) from `open-x4-sdk` to freeink-sdk. Then the old SDK is no longer
-   built, plain `freeink::PowerManager` is fine, and nothing "breaks" because no
-   build resolves to the old SDK anymore.
+## What a consumer changes
 
-The straight `freeink::PowerManager` adoption shown above (and currently in
-`HalGPIO.cpp`) assumes **option 3**. If CrossPoint must keep building against the
-old SDK for now, use option 1 or 2 instead.
+- `HalGPIO.cpp` and `HalPowerManager.cpp` — call `freeink::PowerManager` or the
+  `#if SOC_*` wakeup branch instead of `esp_deep_sleep_enable_gpio_wakeup`.
+- `HalSystem.cpp` — guard the RISC-V panic backtrace with `#if __riscv`, else call
+  `__real_panic_print_backtrace`.
+- `HalPowerManager.cpp` — guard or board-source the `GPIO_NUM_13` SPIWP pin.
+- Read board pins from `BoardConfig::ACTIVE.*`, not `BoardConfig::DEFAULT_DEVICE.*`
+  or fixed constants, in multi-device builds.
 
----
-
-## Checklist for CrossPoint
-
-- [ ] Decide the adoption strategy first (see "Adopting `PowerManager` couples
-      CrossPoint to this SDK" above): inline guard / `__has_include` bridge / commit
-      to freeink-sdk. The straight `freeink::PowerManager` form below assumes the
-      committed build resolves to freeink-sdk.
-- [x] `HalGPIO.cpp` — now calls `freeink::PowerManager::armPowerButtonWakeup()`
-      (the freeink-sdk-coupled form; swap to the bridge if old-SDK builds must work).
-- [ ] `HalPowerManager.cpp:92` — same swap (still C3-only).
-- [ ] Guard the RISC-V panic backtrace with `#if __riscv`, else fall back to
-      `__real_panic_print_backtrace` — `HalSystem.cpp`.
-- [ ] Guard or board-source the `GPIO_NUM_13` SPIWP pin — `HalPowerManager.cpp`.
-- [ ] Read board pins from `BoardConfig::ACTIVE.*`, not
-      `BoardConfig::DEFAULT_DEVICE.*` / fixed constants, in multi-device builds.
-- [ ] `pio run -e m5paper` compiles (proves the HAL is MCU-portable; the M5 panel
-      driver itself is a separate stub concern).
-
-None of these are SDK changes — they are CrossPoint making its own HAL as
-MCU-neutral as the SDK already is. Once done, the same CrossPoint source builds
-for C3 (X3/X4) and S3 (de-link/M5/Murphy) by selecting the device, exactly as the
-SDK intends.
+These are consumer changes, not SDK changes. With them, one CrossPoint source tree
+builds for C3 (X3/X4) and S3 (de-link/M5/Murphy/LilyGo) by device selection.

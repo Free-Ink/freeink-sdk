@@ -42,10 +42,13 @@ firmware  ─calls─▶  EInkDisplay  (alias of freeink::FreeInkDisplay, the fa
                     PanelDriver  (interface)
               ┌───────────┼───────────────┬───────────────┐
         Ssd1677Driver  Uc8253X3Driver  Ed2208M5Driver  Uc8253MurphyDriver
-         (X4/de-link)     (X3)          (M5, stub)       (Murphy, stub)
-                          │  all share
+         (X4/de-link)     (X3)            (M5)            (Murphy)
+                          │  native controllers share
                           ▼
                        EpdBus  (SPI/GPIO framing, BUSY polarity, reset, mirror)
+
+  External-library drivers (M5OfficialDriver, LgfxEpdDriver/LilyGo) own their own
+  bus and report usesExternalBus(), so the facade leaves EpdBus down.
 ```
 
 - **`FreeInkDisplay`** (facade, exposed as `EInkDisplay`) owns the framebuffer(s)
@@ -80,25 +83,25 @@ so the SD manager itself stays device-agnostic.
 
 ## Supported devices
 
-| Device | MCU | Controller | Panel | Status |
+| Device | MCU | Controller | Panel | FreeInk support |
 |---|---|---|---|---|
-| **Xteink X4** | ESP32-C3 | SSD1677 | 800×480 B/W + 4-level gray | ✅ full |
-| **Xteink X3** | ESP32-C3 | UC8253 | 792×528 B/W + 4-level gray | ✅ full (runtime-selected) |
-| **de-link** | ESP32-S3 | SSD1677 | 800×480 B/W + gray, frontlight | ✅ display + frontlight + native 4-bit SDMMC SD |
-| **M5Stack PaperColor** | ESP32-S3 | ED2208 | 400×600 color | 🟡 display driver stub |
-| **Murphy M3** | ESP32-S3 | UC8253 | 240×416 B/W, CHSC6x touch, PWM frontlight | 🟡 display stub; **touch + frontlight implemented** |
-| **LilyGo T5 S3** | ESP32-S3 | ED047TC1 (raw parallel) | 960×540 16-gray, GT911 touch | 🟡 EPD via LovyanGFX **incl. 16-gray** + GT911 + PWM backlight + I²C battery; board-support config shipped in the reference port. Implemented, **not yet hardware-validated** |
+| **Xteink X4** | ESP32-C3 | SSD1677 | 800×480 | B/W + 4-level grayscale |
+| **Xteink X3** | ESP32-C3 | UC8253 | 792×528 | B/W + 4-level grayscale; BQ27220 I²C battery gauge; shares the C3 binary with X4 |
+| **de-link** | ESP32-S3 | SSD1677 | 800×480 | B/W + grayscale, PWM frontlight, native 4-bit SDMMC SD |
+| **M5Stack PaperColor** | ESP32-S3 | ED2208 | 400×600 Spectra-6 color | native interrupted-refresh driver, optional M5GFX backend |
+| **Murphy M3** | ESP32-S3 | UC8253 | 240×416 | CHSC6x touch, PWM frontlight; the UC8253 display driver is a scaffold |
+| **LilyGo T5 S3** | ESP32-S3 | ED047TC1 (raw parallel) | 960×540 16-gray | LovyanGFX EPD driver with 16-gray, GT911 touch, PWM backlight, BQ27220/BQ25896 I²C battery |
 
-X3 and X4 share the ESP32-C3 and a pinout, so **a single firmware binary drives
-both** — it carries *both* board profiles (`XTEINK_X4` and `XTEINK_X3`) and picks
-one at runtime via `setDisplayX3()`, which swaps the active profile and driver.
-Distinct-MCU boards (S3) build their own binary, selected with a `-DFREEINK_DEVICE_*` flag.
+X3 and X4 share the ESP32-C3 and a pinout, so **one firmware binary drives both**:
+it carries both board profiles (`XTEINK_X4` and `XTEINK_X3`) and picks one at
+runtime via `setDisplayX3()`, which swaps the active profile and driver. Each
+distinct-MCU board (S3) builds its own binary, selected with a `-DFREEINK_DEVICE_*`
+flag.
 
-Every SDK library compiles cleanly on both ESP32-C3 and ESP32-S3. A consumer can
-still block a multi-MCU build by hardcoding chip-specific code in *its own* layer
-(deep-sleep wakeup, panic backtrace, flash pins) — see
-[`docs/consumer-mcu-portability.md`](docs/consumer-mcu-portability.md) for the
-exact changes (worked through against CrossPoint's HAL).
+Every SDK library compiles on both ESP32-C3 and ESP32-S3. Chip-specific code in a
+consumer's *own* layer (deep-sleep wakeup, panic backtrace, flash pins) can block a
+multi-MCU build; [`docs/consumer-mcu-portability.md`](docs/consumer-mcu-portability.md)
+covers the changes a consumer makes.
 
 ### M5Stack PaperColor refresh behavior
 
@@ -117,14 +120,13 @@ Two backends are selectable for this device:
   stack for users who prefer the vendor path (slower, but standard). This pulls
   the M5 libraries only on that env; M5GFX owns the bus (`usesExternalBus()`).
 
-**Capacitive touch** is implemented for two controllers (gated by
-`FREEINK_CAP_TOUCH`): **CHSC6x** (Murphy M3 — IRQ-driven, ported from the upstream
-driver) and **GT911** (LilyGo — polled, raw register reads + the reset/address
-dance). The InputManager exposes `hasTouch/isTouchPressed/wasTouchPressed/
-wasTouchReleased/getTouchPoint`; coordinates are delivered raw-panel-oriented and
-the app owns rotation. The LilyGo T5 S3 profile uses the GT911 config
-(`BoardConfig::LILYGO_T5_PRO_GT911`) alongside its raw-parallel EPD driver
-(`LgfxEpdDriver`, see below).
+**Capacitive touch** (gated by `FREEINK_CAP_TOUCH`) covers two controllers:
+**CHSC6x** (Murphy M3 — IRQ-driven) and **GT911** (LilyGo — polled, raw register
+reads + the reset/address dance). The InputManager exposes `hasTouch/isTouchPressed/
+wasTouchPressed/wasTouchReleased/getTouchPoint`; it delivers coordinates
+raw-panel-oriented and the app owns rotation. The LilyGo T5 S3 profile uses the
+GT911 config (`BoardConfig::LILYGO_T5_PRO_GT911`) alongside its raw-parallel EPD
+driver (`LgfxEpdDriver`, see below).
 
 ## Build composition — devices × capabilities
 
@@ -173,8 +175,8 @@ tight. Each defaults on when an included device needs it; force with `=0`/`=1`:
 
 Panel **orientation/mirroring** is per-board data, not a flag: set `BoardProfile.orientation`
 (`NO_FLIP`, `MIRROR_X`, `MIRROR_Y`, or `ROTATE_180`). The SSD1677 driver applies it in
-hardware (mirrorX via RAM column addressing, mirrorY via gate scan). 90°/270° need a
-software transpose and are a follow-up.
+hardware (mirrorX via RAM column addressing, mirrorY via gate scan). 90° and 270°
+need a software transpose, which the driver does not do.
 
 ## Networking — TLS 1.3 (`SecureNet`)
 
@@ -190,7 +192,7 @@ source** — which supports TLS 1.3 + PSA and bypasses system mbedTLS entirely:
   sites switch with minimal churn.
 
 Opt-in: `-DFREEINK_NET_WOLFSSL=1` plus a wolfSSL source `lib_dep`. With the flag
-off it compiles to an inert stub, so the rest of the SDK builds without wolfSSL.
+off it compiles to an inert no-op, so the rest of the SDK builds without wolfSSL.
 
 ## Using FreeInk from PlatformIO
 

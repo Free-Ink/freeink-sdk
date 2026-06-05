@@ -9,8 +9,8 @@
 // are linked per build; X3 and X4 are both linked in the generic ESP32-C3 bin
 // and chosen at runtime (setDisplayX3()), so one binary drives both.
 //
-// The public surface below is kept byte-compatible with the upstream EInkDisplay
-// so existing firmware builds unchanged via the EInkDisplay.h compat alias.
+// The public surface below is byte-compatible with the EInkDisplay API, so
+// firmware builds unchanged through the EInkDisplay.h alias.
 
 #include <Arduino.h>
 #include <BoardConfig.h>  // device flags (sizes the framebuffer for the largest panel)

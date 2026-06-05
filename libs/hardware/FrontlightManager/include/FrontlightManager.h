@@ -5,10 +5,9 @@
 // Drives a PWM frontlight described by BoardConfig::ACTIVE.frontlight. Inert on
 // boards without one (e.g. Xteink X4/X3), so it is always safe to construct.
 //
-// Scope: the single brightness-PWM path is functional now (used by the de-link
-// board's primary LED). Tunable warm/cool color mixing and the boost-driver
-// fault/OVP sensing (de-link's GPIO6/7/17/18) are scaffolded as no-op hooks for
-// a follow-up.
+// The single brightness-PWM path drives the de-link board's primary LED (and the
+// LilyGo backlight). Warm/cool color mixing and boost-driver fault/OVP sensing
+// (de-link's GPIO6/7/17/18) are no-op hooks.
 
 #include <Arduino.h>
 #include <BoardConfig.h>

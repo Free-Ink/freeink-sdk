@@ -15,7 +15,7 @@
 // WiFiClient transport, independent of system mbedTLS.
 //
 // OPT-IN: enable with -DFREEINK_NET_WOLFSSL=1 and add wolfSSL to lib_deps. With
-// the flag off, this compiles to an inert stub (connectSecure() returns false)
+// the flag off, this compiles to an inert no-op (connectSecure() returns false)
 // so the rest of the SDK builds without the wolfSSL dependency present.
 
 #include <Arduino.h>

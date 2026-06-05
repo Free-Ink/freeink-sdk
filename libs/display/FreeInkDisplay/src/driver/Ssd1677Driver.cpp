@@ -63,7 +63,7 @@ Ssd1677Driver::Ssd1677Driver(const Ssd1677Config& cfg)
       _bufferSize(static_cast<uint32_t>(BoardConfig::ACTIVE.displayWidth / 8) * BoardConfig::ACTIVE.displayHeight),
       _mirrorX(BoardConfig::ACTIVE.orientation.mirrorX),
 #if defined(FREEINK_DISPLAY_FLIPPED) || defined(FLIPPED)
-      _mirrorY(true) {}  // back-compat: the old flip macro == mirrorY
+      _mirrorY(true) {}  // FREEINK_DISPLAY_FLIPPED maps to mirrorY
 #else
       _mirrorY(BoardConfig::ACTIVE.orientation.mirrorY) {}
 #endif
@@ -196,8 +196,8 @@ void Ssd1677Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev,
     mode = RefreshMode::Half;
   }
 
-  // A grayscale frame leaves the LUT loaded; revert to clean B/W first (main
-  // fixed the upstream dead-revert bug — this actually runs the revert waveform).
+  // A grayscale frame leaves the LUT loaded; revert to clean B/W first.
+  // grayscaleRevert() runs the revert waveform.
   if (_inGrayscaleMode) {
     grayscaleRevert(bus, fb);
   }

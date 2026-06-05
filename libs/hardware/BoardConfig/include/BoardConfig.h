@@ -251,7 +251,7 @@ struct AudioConfig {
 // How the panel is mounted relative to the driver's native scan. Any board injects
 // its own mirroring here; a 180° rotation is mirrorX && mirrorY. (90°/270° need a
 // software transpose — they swap width/height and aren't expressible by panel RAM
-// addressing alone — so they're a documented follow-up, not a flag here.)
+// addressing alone — so they are not a flag here.)
 struct DisplayOrientation {
   bool mirrorX;  // reverse source/column (X) order
   bool mirrorY;  // reverse gate/row (Y) order
@@ -388,12 +388,10 @@ constexpr BoardProfile MURPHY_M3 = {
 // Reuses the SSD1677 driver (same controller/panel as X4); differs at the board
 // level: S3 MCU, SDMMC SD, MCP73832 charge-sense, warm/cool PWM frontlight.
 //
-// Orientation: per the de-link author, the current PCB mounts the panel upside
-// down vs the X4. The next PCB revision will match the X4, so this profile ships
-// NO_FLIP (the default, correct orientation). Owners of the current PCB can drop
-// the firmware's software re-orient and set `ROTATE_180` here instead — the
-// SSD1677 driver applies it in hardware (mirrorX via RAM addressing, mirrorY via
-// gate scan). Any board injects its own mount transform the same way.
+// Orientation: this profile ships NO_FLIP (X4 orientation). A board that mounts
+// the panel rotated sets `ROTATE_180` (or a mirror) here, and the SSD1677 driver
+// applies it in hardware (mirrorX via RAM addressing, mirrorY via gate scan). Any
+// board injects its own mount transform the same way.
 constexpr BoardProfile DE_LINK = {
     Board::DeLink,
     "de_link",
@@ -403,17 +401,16 @@ constexpr BoardProfile DE_LINK = {
     480,
     {8, 10, 21, 4, 5, 6, PIN_UNASSIGNED},
     0,  // displaySpiHz: SSD1677 default (40 MHz)
-    // SDMMC 4-bit (CLK39/CMD40/D0=38/D1=48/D2=42/D3=41). SdFat can't drive
-    // SDIO/SDMMC, so SD on de-link does NOT work with this SDK yet — the author's
-    // working port wraps native esp-idf SDMMC calls in an FsFile-compatible shim
-    // (predates HalFile). Porting that into SDCardManager is the open follow-up.
+    // SD on de-link is 4-bit SDMMC. SdFat can't drive SDIO, so SDCardManager
+    // mounts an FsVolume on a native esp-idf SDMMC block device (FREEINK_SD_SDMMC);
+    // the wiring is in the sdmmc field below. These SPI sd pins are unused.
     {39, 38, 40, 41, PIN_UNASSIGNED, true, 0},
     {0, 1, 2, 3, 4, 5, 3, true},  // power button active-HIGH (INPUT_PULLDOWN) on de-link
     4,  // batteryAdc GPIO4 (charge-status GPIO8 is passed to BatteryMonitor by firmware)
     PIN_UNASSIGNED,
     NO_TOUCH,
     // Primary brightness PWM (GPIO5). Warm/cool/rail/fault pins (GPIO6/7/17/18)
-    // need the richer FrontlightManager path (follow-up).
+    // are not driven.
     {5, 20000, 8, true},
     NO_AUDIO,
     NO_FLIP,

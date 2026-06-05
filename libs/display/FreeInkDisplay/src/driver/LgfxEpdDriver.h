@@ -62,6 +62,15 @@ class LgfxEpdDriver : public PanelDriver {
   void deepSleep(EpdBus& bus) override;
   void display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) override;
 
+  // 16-gray path: the facade streams LSB/MSB 1-bpp planes (whole or in strips);
+  // displayGray combines them with the B/W base into the panel's 8-bit gray canvas.
+  bool supportsStripGrayscale() const override { return true; }
+  void copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) override;
+  void copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) override;
+  void writeGrayscalePlaneStrip(EpdBus& bus, GrayPlane plane, const uint8_t* rows, uint16_t yStart,
+                                uint16_t numRows) override;
+  void displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut, bool factoryMode) override;
+
  private:
   const LgfxEpdConfig& _cfg;
 };

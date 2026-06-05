@@ -2,8 +2,11 @@
 
 #include <BoardConfig.h>
 
+#include <cstring>
+
 #if FREEINK_DRIVER_LGFX_EPD
 #include <M5GFX.h>  // pulls LovyanGFX; added to lib_deps only on the LilyGo env
+#include <esp_heap_caps.h>
 #include <lgfx/v1/platforms/esp32/Bus_EPD.h>
 #include <lgfx/v1/platforms/esp32/Panel_EPD.hpp>
 #endif
@@ -91,6 +94,82 @@ lgfx::epd_mode::epd_mode_t epdModeFor(RefreshMode m) {
   }
 }
 
+// 8-bit gray canvas (PSRAM) the panel pushes from, plus the two 1-bpp planes the
+// facade streams for grayscale. Allocated once in begin().
+lgfx::LGFX_Sprite* g_canvas = nullptr;
+uint8_t* g_lsb = nullptr;
+uint8_t* g_msb = nullptr;
+uint16_t g_w = 0, g_h = 0, g_wb = 0;
+
+constexpr uint8_t kGrayBlack = 0x00, kGrayDark = 0x55, kGrayLight = 0xAA, kGrayWhite = 0xFF;
+
+// (base, lsb, msb) per pixel -> 4 gray levels, matching the reference port: a set
+// base bit is white; otherwise msb/lsb pick light/dark; clear is black.
+inline uint8_t grayValue(uint8_t base, uint8_t lsb, uint8_t msb, uint8_t mask) {
+  if (base & mask) return kGrayWhite;
+  const bool l = lsb & mask, m = msb & mask;
+  if (m && l) return kGrayDark;
+  if (m) return kGrayLight;
+  if (l) return kGrayDark;
+  return kGrayBlack;
+}
+
+void allocCanvas(uint16_t w, uint16_t h) {
+  g_w = w;
+  g_h = h;
+  g_wb = w / 8;
+  if (!g_canvas) {
+    g_canvas = new lgfx::LGFX_Sprite(&g_dev);
+    g_canvas->setPsram(true);
+    g_canvas->setColorDepth(lgfx::color_depth_t::grayscale_8bit);
+    g_canvas->createSprite(w, h);
+  }
+  const size_t planeBytes = static_cast<size_t>(g_wb) * h;
+  if (!g_lsb) g_lsb = static_cast<uint8_t*>(heap_caps_malloc(planeBytes, MALLOC_CAP_SPIRAM));
+  if (!g_msb) g_msb = static_cast<uint8_t*>(heap_caps_malloc(planeBytes, MALLOC_CAP_SPIRAM));
+}
+
+// Expand a 1-bpp B/W frame (bit set = white) into the 8-bit gray canvas.
+void fillCanvasBW(const uint8_t* fb) {
+  if (!g_canvas) return;
+  auto* dst = static_cast<uint8_t*>(g_canvas->getBuffer());
+  if (!dst) return;
+  for (uint16_t y = 0; y < g_h; ++y) {
+    const uint8_t* src = fb + static_cast<uint32_t>(y) * g_wb;
+    uint8_t* drow = dst + static_cast<uint32_t>(y) * g_w;
+    for (uint16_t bx = 0; bx < g_wb; ++bx) {
+      const uint8_t b = src[bx];
+      for (uint8_t bit = 0; bit < 8; ++bit) drow[bx * 8 + bit] = (b & (0x80 >> bit)) ? kGrayWhite : kGrayBlack;
+    }
+  }
+}
+
+// Combine the B/W base + buffered LSB/MSB planes into the 8-bit gray canvas.
+void fillCanvasGray(const uint8_t* base) {
+  if (!g_canvas || !g_lsb || !g_msb) return;
+  auto* dst = static_cast<uint8_t*>(g_canvas->getBuffer());
+  if (!dst) return;
+  for (uint16_t y = 0; y < g_h; ++y) {
+    const uint8_t* brow = base + static_cast<uint32_t>(y) * g_wb;
+    const uint8_t* lrow = g_lsb + static_cast<uint32_t>(y) * g_wb;
+    const uint8_t* mrow = g_msb + static_cast<uint32_t>(y) * g_wb;
+    uint8_t* drow = dst + static_cast<uint32_t>(y) * g_w;
+    for (uint16_t bx = 0; bx < g_wb; ++bx) {
+      for (uint8_t bit = 0; bit < 8; ++bit) {
+        const uint8_t mask = 0x80 >> bit;
+        drow[bx * 8 + bit] = grayValue(brow[bx], lrow[bx], mrow[bx], mask);
+      }
+    }
+  }
+}
+
+void pushCanvas(lgfx::epd_mode::epd_mode_t epdMode) {
+  if (!g_canvas) return;
+  g_dev.waitDisplay();
+  g_dev.setEpdMode(epdMode);
+  g_canvas->pushSprite(0, 0);  // commits to the panel; Panel_EPD runs the refresh
+}
+
 }  // namespace
 #endif  // FREEINK_DRIVER_LGFX_EPD
 
@@ -111,6 +190,7 @@ void LgfxEpdDriver::begin(EpdBus& bus) {
   g_dev.init();
   g_dev.setRotation(_cfg.rotation);
   g_dev.setEpdMode(lgfx::epd_mode::epd_fast);
+  allocCanvas(BoardConfig::ACTIVE.displayWidth, BoardConfig::ACTIVE.displayHeight);
 #endif
 }
 
@@ -118,29 +198,61 @@ void LgfxEpdDriver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev,
   (void)bus;
   (void)prev;
 #if FREEINK_DRIVER_LGFX_EPD
-  g_dev.setEpdMode(epdModeFor(mode));
-
-  // Blit the 1bpp framebuffer (bit set = white, FreeInk convention). Per-pixel is
-  // simple and correct; once validated on hardware it can be swapped for a single
-  // pushImage / pushGrayscaleImage and the 16-gray plane path for speed.
-  const uint16_t w = BoardConfig::ACTIVE.displayWidth;
-  const uint16_t h = BoardConfig::ACTIVE.displayHeight;
-  const uint16_t wb = w / 8;
-  g_dev.startWrite();
-  for (uint16_t y = 0; y < h; ++y) {
-    const uint8_t* row = fb + static_cast<uint32_t>(y) * wb;
-    for (uint16_t x = 0; x < w; ++x) {
-      const bool white = (row[x >> 3] >> (7 - (x & 7))) & 0x01;
-      g_dev.drawPixel(x, y, white ? TFT_WHITE : TFT_BLACK);
-    }
-  }
-  g_dev.endWrite();
-  g_dev.display();  // commit the e-paper refresh
-
+  fillCanvasBW(fb);          // expand the 1-bpp frame into the gray canvas
+  pushCanvas(epdModeFor(mode));
   if (turnOff) g_dev.sleep();
 #else
   (void)fb;
   (void)mode;
+  (void)turnOff;
+#endif
+}
+
+void LgfxEpdDriver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
+  (void)bus;
+#if FREEINK_DRIVER_LGFX_EPD
+  if (g_lsb && lsb) memcpy(g_lsb, lsb, static_cast<size_t>(g_wb) * g_h);
+#else
+  (void)lsb;
+#endif
+}
+
+void LgfxEpdDriver::copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
+  (void)bus;
+#if FREEINK_DRIVER_LGFX_EPD
+  if (g_msb && msb) memcpy(g_msb, msb, static_cast<size_t>(g_wb) * g_h);
+#else
+  (void)msb;
+#endif
+}
+
+void LgfxEpdDriver::writeGrayscalePlaneStrip(EpdBus& bus, GrayPlane plane, const uint8_t* rows, uint16_t yStart,
+                                             uint16_t numRows) {
+  (void)bus;
+#if FREEINK_DRIVER_LGFX_EPD
+  uint8_t* dstPlane = (plane == GrayPlane::Lsb) ? g_lsb : g_msb;
+  if (!dstPlane || !rows) return;
+  const uint32_t offset = static_cast<uint32_t>(yStart) * g_wb;
+  memcpy(dstPlane + offset, rows, static_cast<size_t>(numRows) * g_wb);
+#else
+  (void)plane;
+  (void)rows;
+  (void)yStart;
+  (void)numRows;
+#endif
+}
+
+void LgfxEpdDriver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut,
+                                bool factoryMode) {
+  (void)bus;
+  (void)lut;
+  (void)factoryMode;
+#if FREEINK_DRIVER_LGFX_EPD
+  fillCanvasGray(fb);             // combine base + LSB/MSB planes -> 4-level gray
+  pushCanvas(lgfx::epd_mode::epd_quality);
+  if (turnOff) g_dev.sleep();
+#else
+  (void)fb;
   (void)turnOff;
 #endif
 }

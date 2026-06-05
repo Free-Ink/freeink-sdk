@@ -87,7 +87,7 @@ so the SD manager itself stays device-agnostic.
 | **de-link** | ESP32-S3 | SSD1677 | 800×480 B/W + gray, frontlight | ✅ display + frontlight + native 4-bit SDMMC SD |
 | **M5Stack PaperColor** | ESP32-S3 | ED2208 | 400×600 color | 🟡 display driver stub |
 | **Murphy M3** | ESP32-S3 | UC8253 | 240×416 B/W, CHSC6x touch, PWM frontlight | 🟡 display stub; **touch + frontlight implemented** |
-| **LilyGo T5 S3** | ESP32-S3 | ED047TC1 (raw parallel) | 960×540 16-gray, GT911 touch | 🟡 EPD (LovyanGFX) + GT911 + PWM backlight + I²C battery (BQ27220/BQ25896); board supplies EPD power hooks + expander button |
+| **LilyGo T5 S3** | ESP32-S3 | ED047TC1 (raw parallel) | 960×540 16-gray, GT911 touch | 🟡 EPD via LovyanGFX **incl. 16-gray** + GT911 + PWM backlight + I²C battery; board-support config shipped in the reference port. Implemented, **not yet hardware-validated** |
 
 X3 and X4 share the ESP32-C3 and a pinout, so **a single firmware binary drives
 both** — it carries *both* board profiles (`XTEINK_X4` and `XTEINK_X3`) and picks

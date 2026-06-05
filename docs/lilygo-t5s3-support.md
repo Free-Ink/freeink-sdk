@@ -12,14 +12,22 @@ Reference port: [ShallowGreen123/t5s3-reader](https://github.com/ShallowGreen123
 
 - **`LgfxEpdDriver`** — wraps **LovyanGFX's `Panel_EPD`/`Bus_EPD`** (bundled in
   `m5stack/M5GFX`), `usesExternalBus() == true`. Gated by `FREEINK_DRIVER_LGFX_EPD`
-  (derived from `FREEINK_DEVICE_LILYGO`), so M5GFX links only on this device.
+  (derived from `FREEINK_DEVICE_LILYGO`), so M5GFX links only on this device. It
+  drives an 8-bit grayscale `LGFX_Sprite` canvas (PSRAM): B/W frames expand into
+  it, and the **16-gray reading path** is implemented (`displayGray` +
+  `copyGrayscaleLsb/Msb` + `writeGrayscalePlaneStrip` combine the base + LSB/MSB
+  planes into 4 levels, matching the reference port), then `pushSprite` runs the
+  EPD refresh at the requested `epd_mode`.
 - **`BoardConfig::LILYGO_T5S3`** profile — geometry, GT911 touch
-  (`LILYGO_T5_PRO_GT911`), `DisplayController::LgfxEpd`. `CAP_TOUCH` auto-on.
-- **GT911 touch** — already implemented in `InputManager`.
+  (`LILYGO_T5_PRO_GT911`), PWM backlight, I²C battery gauge (BQ27220/BQ25896),
+  `DisplayController::LgfxEpd`. `CAP_TOUCH`/`CAP_FRONTLIGHT`/gauge auto-on.
+- **GT911 touch**, **PWM backlight** (`FrontlightManager`), and the **I²C fuel
+  gauge** (`BatteryMonitor`) are all wired.
 
-> Status: the display driver and profile compile and follow the validated
-> reference port's LovyanGFX usage, but have **not been run on T5 S3 hardware** by
-> the SDK author. Treat as "implemented, pending on-device validation."
+> Status: the full stack (display incl. grayscale, touch, backlight, battery)
+> compiles and follows the validated reference port, but has **not been run on
+> T5 S3 hardware** by the SDK author. Treat as "implemented, pending on-device
+> validation."
 
 ## Board bring-up (what the consumer supplies)
 
@@ -46,6 +54,12 @@ Build with `-DFREEINK_DEVICE_LILYGO=1 -DFREEINK_LGFX_EPD_CONFIG=lilygoT5S3LgfxCo
 and add `m5stack/M5GFX` to that env's `lib_deps` (see `platformio.sample.ini`). The
 power-hook bodies (PCA9535 expander + TPS65185 PMIC register writes) live in the
 board-support layer, not the SDK.
+
+A **complete, ready board-support implementation** of this config (the real
+parallel pins + the PCA9535/TPS65185 power sequence, reusing the board's expander
+helpers) lives in the reference port at
+**`lib/Board_T5S3/FreeInkLgfxConfig.cpp`** — copy it as the starting point for a
+T5 S3 build against this SDK.
 
 ## What the SDK now wires (vs. the reference fork)
 

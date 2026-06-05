@@ -369,10 +369,12 @@ constexpr BoardProfile MURPHY_M3 = {
     "murphy_m3",
     InputStyle::DigitalFiveKey,
     DisplayController::UC8253,
-    240,
+    // Framebuffer is landscape 416x240: the panel is a 240x416 controller held
+    // rotated 90°, and the Murphy driver rotates each plane into controller RAM.
     416,
+    240,
     {4, 3, 5, 6, 7, 8, PIN_UNASSIGNED},
-    0,  // displaySpiHz: 0 -> UC8253 driver default (10 MHz)
+    0,  // displaySpiHz: 0 -> Murphy UC8253 driver default (4 MHz)
     {39, 13, 40, 10, PIN_UNASSIGNED, true, 0},
     {PIN_UNASSIGNED, 0, PIN_UNASSIGNED, PIN_UNASSIGNED, 1, 2, 0, false},
     PIN_UNASSIGNED,

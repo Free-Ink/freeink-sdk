@@ -13,20 +13,25 @@ API: switching to FreeInk is a matter of repointing the library path.
 
 ## Credit & lineage
 
-FreeInk is an independent, clean-room reorganization **based on** the work of
-the **OpenX4 E-Paper Community SDK** (`open-x4-epaper/community-sdk`, MIT) and its
+FreeInk is an MIT-licensed **re-architecture derived from** the
+**OpenX4 E-Paper Community SDK** (`open-x4-epaper/community-sdk`, MIT) and its
 contributors — in particular **CidVonHighwind** for the original `EInkDisplay`
 driver and the X3/X4 waveform work, and the community device ports (M5Stack
 PaperColor, Murphy M3, and the `community-sdk-de-link` ESP32-S3 port). The
 register sequences and waveform LUTs for the SSD1677 and UC8253 panels are
-derived from that project. Huge thanks to everyone who reverse-engineered and
+**derived from** that project — i.e. carried over and adapted, not
+reverse-engineered independently — so the community's panel tuning is preserved.
+Attribution is in `NOTICE`. Huge thanks to everyone who reverse-engineered and
 tuned those panels.
 
-FreeInk is **not a fork** and has no build-time or runtime dependency on the
-upstream repository — it has its own history and its own architecture. Where the
-upstream interleaved every device in one monolithic driver, FreeInk splits each
-controller into a standalone, compile-time-selectable driver behind a stable
-facade.
+What FreeInk changes is the **structure**, not the panel work: where the upstream
+interleaves every device in one monolithic driver, FreeInk splits each controller
+into a standalone, compile-time-selectable driver behind a stable facade, with
+per-device behavior supplied as injectable config. It is **not a fork** and has no
+build-time or runtime dependency on the upstream repository — its own history and
+architecture — but the inherited waveforms are the upstream's, and the
+re-architecture itself is comparatively new code that has had less multi-person
+field testing than the upstream.
 
 > License note: this repository is distributed under the **MIT License** (see
 > `LICENSE`) — the same permissive, open-source terms as the upstream. Portions

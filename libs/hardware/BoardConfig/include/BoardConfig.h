@@ -503,7 +503,15 @@ constexpr BoardProfile M5PAPER_V11 = {
     {14, 13, 12, 4, PIN_UNASSIGNED, false, 20000000},  // SD shares the SPI bus: SCLK14 MISO13 MOSI12, CS4. 20 MHz
                                                         // (not the 40 MHz default): the bus is shared with the EPD,
                                                         // and 40 MHz gives SdFat READ_TIMEOUT on the CSD/data read.
-    {PIN_UNASSIGNED, 38, 39, 37, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, false},  // rotary: push=CONFIRM, left, right (active-low)
+    // Rotary wheel is M5Paper's only button input (3 positions: KEY_LEFT=39,
+    // KEY_PUSH=38, KEY_RIGHT=37, active-low via external pull-ups). The two sides
+    // MUST drive page navigation — CrossPoint's reader pages on BTN_UP/BTN_DOWN
+    // (the fixed side buttons), so up=39, down=37 (direction is user-swappable in
+    // settings). The push (38) is CONFIRM and doubles as the power/wake button: 38
+    // is an RTC GPIO, so it's the ext1 deep-sleep wake source. Back/Left/Right have
+    // no GPIO (only 3 wheel inputs) — M5Paper uses its GT911 touch for those. So
+    // confirm and power share pin 38 by design.
+    {PIN_UNASSIGNED, 38, PIN_UNASSIGNED, PIN_UNASSIGNED, 39, 37, 38, false},
     35,  // batteryAdc GPIO35 (2:1 divider; pending hardware validation)
     PIN_UNASSIGNED,
     // GT911 touch: panel-native portrait raw range (540x960), shared I2C SDA21/SCL22,

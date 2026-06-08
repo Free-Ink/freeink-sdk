@@ -62,6 +62,8 @@ const It8951Config& it8951DefaultConfig() {
       2,                    // fullMode  = GC16 (full 16-gray, ghost-clearing)
       3,                    // halfMode  = GL16
       1,                    // fastMode  = DU   (2-level B/W, fast)
+      6,                    // grayMode  = DU4  (4-level DIRECT update: differential,
+                            //                   only changed pixels move -> no flash)
       0x001236E0,           // imgBufFallbackAddr (typical M5Paper IT8951 buffer base)
   };
   return cfg;
@@ -428,7 +430,9 @@ void It8951Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, con
   }
 #endif
   loadImageGray(base);  // base = snapshot B/W; LSB/MSB already buffered
-  displayArea(0, 0, _panelW, _panelH, _cfg.fullMode);  // GC16: clean 16-gray
+  // DU4 is a differential update: only pixels that changed (the AA glyph edges)
+  // transition, so a full-panel refresh refines the edges without a flash.
+  displayArea(0, 0, _panelW, _panelH, _cfg.grayMode);
   waitDisplayReady();
   if (turnOff) {
     writeCommand(CMD_STANDBY);

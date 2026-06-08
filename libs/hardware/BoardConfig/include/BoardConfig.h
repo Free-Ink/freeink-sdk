@@ -254,6 +254,10 @@ struct TouchConfig {
   bool synthesizeConfirm;     // emit a CONFIRM button event on tap
   uint8_t i2cAddressAlt;      // alternate I2C address to probe (GT911 0x14; 0 = none)
   bool irqActiveLow;          // touch IRQ asserted LOW (CHSC6x)
+  // GT911 point-frame layout: false = datasheet standard (track-id at 0x8150, so
+  // coords start at byte 1); true = coords start at byte 0 (no track-id), as seen
+  // on M5Paper's GT911 which boots without a reset/config dance. Ignored (CHSC6x).
+  bool gt911CoordsAtByte0;
 };
 
 // PWM frontlight description (gpio == PIN_UNASSIGNED disables it).
@@ -306,13 +310,14 @@ struct BoardProfile {
 };
 
 constexpr TouchConfig NO_TOUCH = {
-    TouchController::None, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, 0, 0, 0, 0, 0, false, 0, false};
+    TouchController::None, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, 0, 0, 0, 0, 0, false, 0, false,
+    false};
 
 // LilyGo T5 S3 Pro Lite GT911 touch (shared I2C bus, native portrait 540x960).
 // A named config ready to drop into a LilyGo board profile once its display
 // driver lands. GT911 reports pixel coords directly, so raw range == panel size.
 constexpr TouchConfig LILYGO_T5_PRO_GT911 = {
-    TouchController::Gt911, 39, 40, 3, 9, 0x5D, 0, 539, 0, 959, false, 0x14, false};
+    TouchController::Gt911, 39, 40, 3, 9, 0x5D, 0, 539, 0, 959, false, 0x14, false, false};
 constexpr FrontlightConfig NO_FRONTLIGHT = {PIN_UNASSIGNED, 0, 0, true};
 constexpr AudioConfig NO_AUDIO = {AudioOutput::None, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, true};
 constexpr DisplayOrientation NO_FLIP = {false, false};            // native scan
@@ -406,7 +411,7 @@ constexpr BoardProfile MURPHY_M3 = {
     {PIN_UNASSIGNED, 0, PIN_UNASSIGNED, PIN_UNASSIGNED, 1, 2, 0, false},
     PIN_UNASSIGNED,
     PIN_UNASSIGNED,
-    {TouchController::Chsc6x, 13, 12, 44, 45, 0x2e, 24, 224, 24, 392, false, 0, true},
+    {TouchController::Chsc6x, 13, 12, 44, 45, 0x2e, 24, 224, 24, 392, false, 0, true, false},
     {48, 25000, 10, true},
     NO_AUDIO,
     NO_FLIP,
@@ -516,7 +521,8 @@ constexpr BoardProfile M5PAPER_V11 = {
     PIN_UNASSIGNED,
     // GT911 touch: panel-native portrait raw range (540x960), shared I2C SDA21/SCL22,
     // INT36, address 0x5D (alt 0x14). No reset GPIO is exposed on M5Paper.
-    {TouchController::Gt911, 21, 22, 36, PIN_UNASSIGNED, 0x5D, 0, 539, 0, 959, false, 0x14, false},
+    {TouchController::Gt911, 21, 22, 36, PIN_UNASSIGNED, 0x5D, 0, 539, 0, 959, false, 0x14, false,
+     true},  // GT911 reports coords at byte 0 (no track-id) on M5Paper
     NO_FRONTLIGHT,
     NO_AUDIO,
     NO_FLIP,

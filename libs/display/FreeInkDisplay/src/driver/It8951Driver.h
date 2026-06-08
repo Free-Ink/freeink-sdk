@@ -34,6 +34,11 @@ struct It8951Config {
   uint8_t fullMode;   // waveform mode for RefreshMode::Full (GC16 = 2)
   uint8_t halfMode;   // waveform mode for RefreshMode::Half (GL16 = 3)
   uint8_t fastMode;   // waveform mode for RefreshMode::Fast (DU = 1)
+  uint8_t grayMode;   // waveform mode for anti-aliased grayscale pages. DU4 (6) is a
+                      // 4-level DIRECT update: differential, so only changed pixels
+                      // (the AA glyph edges) move — no full-area flash. GL16 (3) and
+                      // GC16 (2) drive every pixel in the region (whole-area flash);
+                      // DU4 ghosts faster, cleared by the periodic full refresh.
   uint32_t imgBufFallbackAddr;  // used only if GET_DEV_INFO returns no buffer address
 };
 

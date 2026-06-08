@@ -287,6 +287,26 @@ InputManager::TouchPoint InputManager::getTouchPoint() const { return touchPoint
 bool InputManager::isTouchPressed() const { return touchPressed; }
 bool InputManager::wasTouchPressed() const { return touchPressedEvent; }
 bool InputManager::wasTouchReleased() const { return touchReleasedEvent; }
+
+bool InputManager::wasTouchTap(float& nx, float& ny) const {
+#if FREEINK_CAP_TOUCH
+  if (!touchReleasedEvent) return false;
+  // touchPoint.x/y retain the last sampled position through the release frame
+  // (only .valid is cleared), mapped to 0..(rawMax-rawMin) by mapTouchAxis.
+  const auto& t = BoardConfig::ACTIVE.touch;
+  const uint16_t w = (t.rawMaxX > t.rawMinX) ? static_cast<uint16_t>(t.rawMaxX - t.rawMinX) : 1;
+  const uint16_t h = (t.rawMaxY > t.rawMinY) ? static_cast<uint16_t>(t.rawMaxY - t.rawMinY) : 1;
+  float x = static_cast<float>(touchPoint.x) / w;
+  float y = static_cast<float>(touchPoint.y) / h;
+  nx = x < 0.0f ? 0.0f : (x > 1.0f ? 1.0f : x);
+  ny = y < 0.0f ? 0.0f : (y > 1.0f ? 1.0f : y);
+  return true;
+#else
+  (void)nx;
+  (void)ny;
+  return false;
+#endif
+}
 bool InputManager::wasHomeKeyPressed() const { return touchHomeKeyEvent; }
 
 void InputManager::beginTouch() {
@@ -461,6 +481,11 @@ void InputManager::beginGt911() {
     }
   }
   touchDataEnabled = (gt911Addr != 0);
+#ifdef TOUCH_PROBE_DEBUG
+  if (Serial)
+    Serial.printf("[touch] GT911 probe: addr=0x%02X enabled=%d (sda=%d scl=%d cand=0x%02X/0x%02X)\n", gt911Addr,
+                  touchDataEnabled, t.sda, t.scl, t.i2cAddress, t.i2cAddressAlt);
+#endif
 }
 
 bool InputManager::gt911ReadReg(const uint16_t reg, uint8_t* buf, const uint8_t len) {
@@ -510,8 +535,11 @@ void InputManager::pollGt911(const unsigned long now) {
   if (count > 0) {
     uint8_t pt[8] = {};
     if (gt911ReadReg(0x8150, pt, 8)) {
-      const uint16_t rawX = static_cast<uint16_t>(pt[1]) | (static_cast<uint16_t>(pt[2]) << 8);
-      const uint16_t rawY = static_cast<uint16_t>(pt[3]) | (static_cast<uint16_t>(pt[4]) << 8);
+      // Coordinate bytes start at 0 (no track-id, e.g. M5Paper) or 1 (datasheet
+      // standard, e.g. LilyGo) depending on the board's GT911 config.
+      const uint8_t o = BoardConfig::ACTIVE.touch.gt911CoordsAtByte0 ? 0 : 1;
+      const uint16_t rawX = static_cast<uint16_t>(pt[o]) | (static_cast<uint16_t>(pt[o + 1]) << 8);
+      const uint16_t rawY = static_cast<uint16_t>(pt[o + 2]) | (static_cast<uint16_t>(pt[o + 3]) << 8);
       const auto& t = BoardConfig::ACTIVE.touch;
       touchPoint.valid = true;
       // Panel-native coordinates (calibrated raw range, touch panel's orientation);
@@ -520,6 +548,10 @@ void InputManager::pollGt911(const unsigned long now) {
       touchPoint.y = mapTouchAxis(rawY, t.rawMinY, t.rawMaxY, t.rawMaxY - t.rawMinY);
       touchPoint.timestamp = now;
       if (!touchPressed) touchPressedEvent = true;
+#ifdef TOUCH_PROBE_DEBUG
+      if (!touchPressed && Serial)
+        Serial.printf("[touch] press raw=(%u,%u) mapped=(%u,%u)\n", rawX, rawY, touchPoint.x, touchPoint.y);
+#endif
       touchPressed = true;
     }
   } else {

@@ -500,7 +500,9 @@ constexpr BoardProfile M5PAPER_V11 = {
     540,
     {14, 12, 15, PIN_UNASSIGNED, PIN_UNASSIGNED, 27, 23},  // SCLK14 MOSI12 CS15, no DC/RST, HRDY27, EPD_PWR_EN23
     0,                                  // displaySpiHz: 0 -> IT8951 driver default (10 MHz)
-    {14, 13, 12, 4, PIN_UNASSIGNED, false, 0},  // SD shares the SPI bus: SCLK14 MISO13 MOSI12, CS4
+    {14, 13, 12, 4, PIN_UNASSIGNED, false, 20000000},  // SD shares the SPI bus: SCLK14 MISO13 MOSI12, CS4. 20 MHz
+                                                        // (not the 40 MHz default): the bus is shared with the EPD,
+                                                        // and 40 MHz gives SdFat READ_TIMEOUT on the CSD/data read.
     {PIN_UNASSIGNED, 38, 39, 37, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, false},  // rotary: push=CONFIRM, left, right (active-low)
     35,  // batteryAdc GPIO35 (2:1 divider; pending hardware validation)
     PIN_UNASSIGNED,

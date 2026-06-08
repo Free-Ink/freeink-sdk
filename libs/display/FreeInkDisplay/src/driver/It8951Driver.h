@@ -73,7 +73,12 @@ class It8951Driver : public PanelDriver {
   void waitDisplayReady();                // poll LUT-busy register
 
   const It8951Config& _cfg;
-  SPIClass _spi;
+  // Reference to the Arduino global SPI bus (VSPI on ESP32) — the SAME object the
+  // SDCardManager uses. On M5Paper the SD card and the IT8951 share one physical
+  // SPI bus; two separate SPIClass instances bound to one VSPI peripheral corrupt
+  // each other's transfers, so both must drive the one global bus object (manual
+  // CS selects the device).
+  SPIClass& _spi;
 
   uint16_t _fbW;   // landscape framebuffer width (960)
   uint16_t _fbH;   // landscape framebuffer height (540)

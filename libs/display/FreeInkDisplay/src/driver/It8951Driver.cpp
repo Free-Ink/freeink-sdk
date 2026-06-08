@@ -53,7 +53,7 @@ const It8951Config& it8951DefaultConfig() {
 
 It8951Driver::It8951Driver(const It8951Config& cfg)
     : _cfg(cfg),
-      _spi(VSPI),
+      _spi(SPI),  // share the Arduino global bus with the SD card (see header)
       _fbW(BoardConfig::ACTIVE.displayWidth),
       _fbH(BoardConfig::ACTIVE.displayHeight),
       _fbWb(BoardConfig::ACTIVE.displayWidth / 8) {}
@@ -66,7 +66,12 @@ void It8951Driver::waitReady() {
   if (_busy < 0) return;
   const unsigned long start = millis();
   while (digitalRead(_busy) == LOW) {
-    if (millis() - start > READY_TIMEOUT_MS) return;  // fail open rather than hang
+    if (millis() - start > READY_TIMEOUT_MS) {  // fail open rather than hang
+#ifdef IT8951_PROBE_DEBUG
+      if (Serial) Serial.printf("[it8951] waitReady TIMEOUT (busy pin %d stuck LOW)\n", _busy);
+#endif
+      return;
+    }
   }
 }
 
@@ -134,6 +139,14 @@ void It8951Driver::getDeviceInfo() {
     _panelH = _fbH;
   }
   if (_imgBufAddr == 0) _imgBufAddr = _cfg.imgBufFallbackAddr;
+#ifdef IT8951_PROBE_DEBUG
+  // Diagnostic: raw GET_DEV_INFO read-back. Plausible values (e.g. 960x540, a
+  // non-zero buffer addr, ASCII firmware string) mean SPI reads work; all-zero or
+  // 0xFFFF means no MISO / cold controller / wrong pins.
+  if (Serial)
+    Serial.printf("[it8951] GET_DEV_INFO: panelW=%u panelH=%u imgBufAddr=0x%08lX (info[0..3]=%04X %04X %04X %04X)\n",
+                  _panelW, _panelH, (unsigned long)_imgBufAddr, info[0], info[1], info[2], info[3]);
+#endif
 }
 
 void It8951Driver::setTargetMemoryAddr(uint32_t addr) {
@@ -160,7 +173,12 @@ void It8951Driver::displayArea(uint16_t x, uint16_t y, uint16_t w, uint16_t h, u
 void It8951Driver::waitDisplayReady() {
   const unsigned long start = millis();
   while (readReg(REG_LUTAFSR) != 0) {
-    if (millis() - start > READY_TIMEOUT_MS) return;
+    if (millis() - start > READY_TIMEOUT_MS) {
+#ifdef IT8951_PROBE_DEBUG
+      if (Serial) Serial.printf("[it8951] waitDisplayReady TIMEOUT (LUTAFSR never cleared)\n");
+#endif
+      return;
+    }
   }
 }
 
@@ -234,6 +252,20 @@ void It8951Driver::begin(EpdBus& bus) {
     delay(100);
   }
 
+  // Bring up the shared global SPI bus. SDCardManager::begin() may have already
+  // begun this same object with the SD pins; that's fine *only* because a
+  // shared-bus board wires the display and SD on the same SCLK/MOSI/MISO, so both
+  // begins program identical pins (whichever runs last is a no-op re-init). The
+  // contract: on a shared bus (display.sclk == sd.sclk) the SPI pins must match —
+  // otherwise the two begins fight and only one survives. Catch a profile that
+  // violates it during bring-up.
+#ifdef IT8951_PROBE_DEBUG
+  const auto& sd = BoardConfig::ACTIVE.sd;
+  if (sd.sclk >= 0 && _sclk == sd.sclk && (_mosi != sd.mosi || _miso != sd.miso) && Serial) {
+    Serial.printf("[it8951] WARNING shared-bus pin mismatch: display sclk/mosi/miso=%d/%d/%d sd=%d/%d/%d\n", _sclk,
+                  _mosi, _miso, sd.sclk, sd.mosi, sd.miso);
+  }
+#endif
   _spi.begin(_sclk, _miso, _mosi, -1);  // manual CS toggling
 
   waitReady();
@@ -258,6 +290,12 @@ void It8951Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, 
   uint16_t dpyMode = _cfg.fastMode;
   if (mode == RefreshMode::Full) dpyMode = _cfg.fullMode;
   else if (mode == RefreshMode::Half) dpyMode = _cfg.halfMode;
+
+#ifdef IT8951_PROBE_DEBUG
+  if (Serial)
+    Serial.printf("[it8951] display() mode=%d dpyMode=%u running=%d fb=%p panel=%ux%u turnOff=%d\n", (int)mode, dpyMode,
+                  _running, fb, _panelW, _panelH, turnOff);
+#endif
 
   loadImageFull(fb);
   displayArea(0, 0, _panelW, _panelH, dpyMode);

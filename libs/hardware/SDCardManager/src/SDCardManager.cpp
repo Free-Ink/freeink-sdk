@@ -41,12 +41,25 @@ bool SDCardManager::begin() {
 
   if (_powerHook) _powerHook();  // board brings up its SD rail (e.g. PMIC) if needed
 
+  // Shared SPI bus: when the display controller sits on the same SCLK as the SD
+  // card (e.g. M5Paper's IT8951 on 14/12/13), deselect it (CS high) before
+  // probing the card. SD init runs before the display driver's begin(), so a
+  // powered, never-deselected panel can drive the shared MISO and break
+  // detection. Harmless when the display is on a separate bus or has no CS pin.
+  if (BoardConfig::ACTIVE.display.cs >= 0 && BoardConfig::ACTIVE.display.sclk == BoardConfig::ACTIVE.sd.sclk) {
+    pinMode(BoardConfig::ACTIVE.display.cs, OUTPUT);
+    digitalWrite(BoardConfig::ACTIVE.display.cs, HIGH);
+  }
+
   if (BoardConfig::ACTIVE.sd.sclk >= 0 && BoardConfig::ACTIVE.sd.mosi >= 0 && BoardConfig::ACTIVE.sd.miso >= 0) {
     SPI.begin(BoardConfig::ACTIVE.sd.sclk, BoardConfig::ACTIVE.sd.miso, BoardConfig::ACTIVE.sd.mosi, SD_CS);
   }
 
   if (!sd.begin(SD_CS, SPI_FQ)) {
-    if (Serial) Serial.printf("[%lu] [SD] SD card not detected\n", millis());
+    if (Serial)
+      Serial.printf("[%lu] [SD] SD card not detected (err=0x%02X data=0x%02X cs=%d sclk=%d miso=%d mosi=%d clk=%luHz)\n",
+                    millis(), sd.sdErrorCode(), sd.sdErrorData(), SD_CS, BoardConfig::ACTIVE.sd.sclk,
+                    BoardConfig::ACTIVE.sd.miso, BoardConfig::ACTIVE.sd.mosi, (unsigned long)SPI_FQ);
     initialized = false;
   } else {
     if (Serial) Serial.printf("[%lu] [SD] SD card detected\n", millis());

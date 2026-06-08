@@ -14,7 +14,17 @@ bool powerActiveHigh() { return BoardConfig::ACTIVE.input.powerActiveHigh; }
 void PowerManager::armWakeOnPins(uint64_t gpioMask, bool wakeLow) {
 #if SOC_PM_SUPPORT_EXT1_WAKEUP
   // Xtensa (S3/S2, classic ESP32): RTC ext1. Pins must be RTC GPIOs.
-  esp_sleep_enable_ext1_wakeup(gpioMask, wakeLow ? ESP_EXT1_WAKEUP_ANY_LOW : ESP_EXT1_WAKEUP_ANY_HIGH);
+  //
+  // The classic ESP32 RTC has no "any low" mode — only ESP_EXT1_WAKEUP_ALL_LOW
+  // ("wake when ALL selected pins are low"). For a single wake pin (the common
+  // power-button case) ALL_LOW and ANY_LOW are identical; a multi-pin low wake on
+  // classic ESP32 fires only when every pin is low. S2/S3 expose ANY_LOW directly.
+#if defined(CONFIG_IDF_TARGET_ESP32) || defined(CONFIG_IDF_TARGET_ESP32S2)
+  const esp_sleep_ext1_wakeup_mode_t lowMode = ESP_EXT1_WAKEUP_ALL_LOW;
+#else
+  const esp_sleep_ext1_wakeup_mode_t lowMode = ESP_EXT1_WAKEUP_ANY_LOW;
+#endif
+  esp_sleep_enable_ext1_wakeup(gpioMask, wakeLow ? lowMode : ESP_EXT1_WAKEUP_ANY_HIGH);
 #elif SOC_GPIO_SUPPORT_DEEPSLEEP_WAKEUP
   // RISC-V (C3/C6/H2): the deep-sleep "gpio" wakeup source.
   esp_deep_sleep_enable_gpio_wakeup(gpioMask, wakeLow ? ESP_GPIO_WAKEUP_GPIO_LOW : ESP_GPIO_WAKEUP_GPIO_HIGH);

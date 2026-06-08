@@ -47,8 +47,8 @@ firmware  ─calls─▶  EInkDisplay  (alias of freeink::FreeInkDisplay, the fa
                           ▼
                        EpdBus  (SPI/GPIO framing, BUSY polarity, reset, mirror)
 
-  External-library drivers (M5OfficialDriver, LgfxEpdDriver/LilyGo) own their own
-  bus and report usesExternalBus(), so the facade leaves EpdBus down.
+  External-bus drivers (M5OfficialDriver, LgfxEpdDriver/LilyGo, It8951Driver/M5Paper)
+  own their own bus and report usesExternalBus(), so the facade leaves EpdBus down.
 ```
 
 - **`FreeInkDisplay`** (facade, exposed as `EInkDisplay`) owns the framebuffer(s)
@@ -91,17 +91,21 @@ so the SD manager itself stays device-agnostic.
 | **M5Stack PaperColor** | ESP32-S3 | ED2208 | 400×600 Spectra-6 color | native interrupted-refresh driver, optional M5GFX backend |
 | **Murphy M3** | ESP32-S3 | UC8253 | 240×416 | B/W (90°-rotated framebuffer, full/fast LUTs), CHSC6x touch, PWM frontlight |
 | **LilyGo T5 S3** | ESP32-S3 | ED047TC1 (raw parallel) | 960×540 16-gray | LovyanGFX EPD driver with 16-gray, GT911 touch, PWM backlight, BQ27220/BQ25896 I²C battery |
+| **M5Paper v1.1** | ESP32 (classic) | IT8951E | 540×960 16-gray ED047TC1 | hand-rolled IT8951 driver (own SPI, 1bpp→4bpp load, GC16/DU/A2 modes, auto rotation onto the portrait panel), GT911 touch, GPIO35 ADC battery |
 
 X3 and X4 share the ESP32-C3 and a pinout, so **one firmware binary drives both**:
 it carries both board profiles (`XTEINK_X4` and `XTEINK_X3`) and picks one at
-runtime via `setDisplayX3()`, which swaps the active profile and driver. Each
-distinct-MCU board (S3) builds its own binary, selected with a `-DFREEINK_DEVICE_*`
-flag.
+runtime via `setDisplayX3()`, which swaps the active profile and driver. Devices
+on a different MCU build their own binary, selected with a `-DFREEINK_DEVICE_*`
+flag. A build targets exactly one of the three MCU families — ESP32-C3 (X3/X4),
+ESP32-S3 (de-link/PaperColor/Murphy/LilyGo), or classic ESP32 (M5Paper);
+`BoardConfig` rejects mixing families at compile time.
 
-Every SDK library compiles on both ESP32-C3 and ESP32-S3. Chip-specific code in a
-consumer's *own* layer (deep-sleep wakeup, panic backtrace, flash pins) can block a
-multi-MCU build; [`docs/consumer-mcu-portability.md`](docs/consumer-mcu-portability.md)
-covers the changes a consumer makes.
+Every SDK library compiles on ESP32-C3, ESP32-S3, and the classic ESP32.
+Chip-specific code in a consumer's *own* layer (deep-sleep wakeup, panic
+backtrace, flash pins) can block a multi-MCU build;
+[`docs/consumer-mcu-portability.md`](docs/consumer-mcu-portability.md) covers the
+changes a consumer makes.
 
 ### M5Stack PaperColor refresh behavior
 
@@ -121,12 +125,12 @@ Two backends are selectable for this device:
   the M5 libraries only on that env; M5GFX owns the bus (`usesExternalBus()`).
 
 **Capacitive touch** (gated by `FREEINK_CAP_TOUCH`) covers two controllers:
-**CHSC6x** (Murphy M3 — IRQ-driven) and **GT911** (LilyGo — polled, raw register
-reads + the reset/address dance). The InputManager exposes `hasTouch/isTouchPressed/
-wasTouchPressed/wasTouchReleased/getTouchPoint`; it delivers coordinates
-raw-panel-oriented and the app owns rotation. The LilyGo T5 S3 profile uses the
-GT911 config (`BoardConfig::LILYGO_T5_PRO_GT911`) alongside its raw-parallel EPD
-driver (`LgfxEpdDriver`, see below).
+**CHSC6x** (Murphy M3 — IRQ-driven) and **GT911** (LilyGo T5 S3 and M5Paper v1.1 —
+polled, raw register reads + the reset/address dance, including the capacitive home
+key). The InputManager exposes `hasTouch/isTouchPressed/wasTouchPressed/
+wasTouchReleased/getTouchPoint`; it delivers coordinates raw-panel-oriented and the
+app owns rotation. The GT911 boards set their `TouchConfig` in the board profile
+(e.g. `BoardConfig::LILYGO_T5_PRO_GT911`).
 
 ## Build composition — devices × capabilities
 

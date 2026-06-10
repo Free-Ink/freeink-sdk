@@ -1,5 +1,7 @@
 # FreeInk SDK
 
+[![Financial Contributors on Open Collective](https://opencollective.com/freeink/all/badge.svg?label=financial+contributors)](https://opencollective.com/freeink)
+
 A hardware-independent SDK for building e-paper reader firmware. FreeInk
 abstracts every device-specific detail — display controller, waveforms/LUTs,
 GPIOs, bus speeds, input style, touch, frontlight, audio — behind small,
@@ -414,7 +416,7 @@ attribution is retained in `NOTICE`.
 
 Commercial use is welcome and completely free — the MIT license asks nothing of
 you. That said, if FreeInk powers a product you sell, please consider
-**[sponsoring the project](https://app.royalty.dev/Free-Ink/freeink-sdk)** to
+**[sponsoring the project](https://opencollective.com/freeink)** to
 help fund ongoing maintenance, new device support, and waveform tuning. It's
 entirely voluntary and always appreciated. Sponsorship or support enquiries:
 hello@freeink.org.

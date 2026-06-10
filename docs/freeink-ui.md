@@ -164,6 +164,11 @@ e-reader chrome typically needs:
   built only on `measureText`. A target's `text()` reduces to drawing the
   emitted single-line runs; targets with a native bidi/kerning-aware wrapping
   pipeline (like the `GfxRenderer` adapter) keep using their own
+- `measureWrappedText()` — the bounds of text wrapped into a width (widest
+  line × line count), built on `layoutText` so it agrees exactly with what
+  renders. Use it to reserve space for wrapping titles, auto-size dialogs
+  (`optionDialogHeight()` is sugar over it), or compute row heights — never
+  estimate line counts from single-line `measureText`
 - `bitmap()` for icon masks
 
 Components build on these: `keyGrid` draws space-bar and delete-arrow glyph

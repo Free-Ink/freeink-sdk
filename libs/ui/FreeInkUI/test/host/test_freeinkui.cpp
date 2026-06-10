@@ -1308,6 +1308,50 @@ void testTouchToLogical() {
   CHECK(p.y <= 239);
 }
 
+
+void testMeasureWrappedText() {
+  FakeDrawTarget draw;  // 6px per char, 12px line height
+
+  // Two wrapped lines: height = 2 * 12, width = widest line.
+  TextStyle style;
+  style.maxLines = 3;
+  Size size = measureWrappedText(draw, "hello world again", style, 72);
+  CHECK_EQ(size.height, 24);
+  CHECK_EQ(size.width, 66);  // "hello world"
+
+  // maxLines 1 ellipsizes; the measured width includes the ellipsis tail.
+  style.maxLines = 1;
+  size = measureWrappedText(draw, "hello world again", style, 72);
+  CHECK_EQ(size.height, 12);
+  CHECK_EQ(size.width, 72);
+
+  // optionDialogHeight: padding + caption + wrapped headline + body + buttons,
+  // and a dialog rendered at exactly that height fits all six text ops.
+  OptionDialogProps d;
+  d.title = "Skip this event?";
+  d.headline = "Quarterly planning sync with the hardware and firmware teams";
+  d.headlineText.maxLines = 2;
+  d.message = "3:30 PM - 4:00 PM";
+  const DialogOption options[2] = {
+      {"Skip", 20, 0, StateNormal, true},
+      {"Cancel", 21, 0, StateNormal, true},
+  };
+  d.options = options;
+  d.optionCount = 2;
+  const int16_t h = optionDialogHeight(draw, d, 356);
+  // 24 padding + (12 + 8) caption + (24 + 8) headline + 12 message + (8 + 44) buttons
+  CHECK_EQ(h, 140);
+
+  DeviceContext device = makeDevice();
+  InputSnapshot input;
+  InteractionBuffer<8> interactions;
+  FakeDrawTarget draw2;
+  Frame<8> frame(draw2, device, input, interactions);
+  optionDialog(frame, Rect{30, 34, 356, h}, d);
+  CHECK_EQ(draw2.countKind(FakeDrawTarget::Op::Text), 6u);
+  CHECK_EQ(interactions.count(), 2u);
+}
+
 void testInvertedDrawTarget() {
   CHECK(invertedColor(Color::Black) == Color::White);
   CHECK(invertedColor(Color::White) == Color::Black);
@@ -1404,6 +1448,7 @@ int main() {
   testCoverCarousel();
   testLayoutTextWrapping();
   testTouchToLogical();
+  testMeasureWrappedText();
   testInvertedDrawTarget();
   testStyleSetUnset();
 

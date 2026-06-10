@@ -570,6 +570,23 @@ inline void layoutText(const DrawTarget& target, const Rect rect, const char* te
   }
 }
 
+// Bounds of `text` wrapped into maxWidth under `style` (honors maxLines and
+// the ellipsis tail): width = widest emitted line, height = line count times
+// lineHeight. Built on layoutText, so it agrees exactly with what
+// text()/drawText render through targets that delegate to it — use it to
+// reserve space for wrapped titles, auto-size dialogs, or compute row
+// heights, instead of estimating line counts from single-line measureText.
+inline Size measureWrappedText(const DrawTarget& target, const char* text, const TextStyle style,
+                               const int16_t maxWidth) {
+  int16_t widest = 0;
+  int16_t lines = 0;
+  layoutText(target, Rect{0, 0, maxWidth, 1}, text, style, [&](const char*, const Rect r) {
+    if (r.width > widest) widest = r.width;
+    ++lines;
+  });
+  return Size{widest, static_cast<int16_t>(lines * target.lineHeight(style.font))};
+}
+
 inline Color invertedColor(const Color color) {
   switch (color) {
     case Color::White:
@@ -1275,6 +1292,34 @@ struct OptionDialogProps {
   // inactive on e-paper.
   bool dimBackground = false;
 };
+
+// Panel height optionDialog needs at the given width — thin sugar over
+// measureWrappedText so callers size the dialog instead of guessing:
+//
+//   const int16_t h = optionDialogHeight(ui.target(), props, 340);
+//   optionDialog(ui, centeredRect(ui.safeRect(), {340, h}), props);
+inline int16_t optionDialogHeight(const DrawTarget& target, const OptionDialogProps& props, const int16_t width) {
+  const int16_t contentW = static_cast<int16_t>(width - props.padding.left - props.padding.right);
+  int16_t height = static_cast<int16_t>(props.padding.top + props.padding.bottom);
+  if (props.title) {
+    height = static_cast<int16_t>(height + target.lineHeight(props.titleText.font) + props.gap);
+  }
+  if (props.headline) {
+    height = static_cast<int16_t>(height + measureWrappedText(target, props.headline, props.headlineText, contentW).height +
+                                  props.gap);
+  }
+  if (props.message) {
+    height = static_cast<int16_t>(height + measureWrappedText(target, props.message, props.messageText, contentW).height);
+  }
+  if (props.options && props.optionCount > 0) {
+    const int16_t buttonsH =
+        props.verticalOptions
+            ? static_cast<int16_t>(props.optionCount * props.buttonHeight + (props.optionCount - 1) * props.gap)
+            : props.buttonHeight;
+    height = static_cast<int16_t>(height + props.gap + buttonsH);
+  }
+  return height;
+}
 
 StyleSet defaultButtonStyles();
 StyleSet defaultListRowStyles();

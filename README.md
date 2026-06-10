@@ -1,6 +1,6 @@
 # FreeInk SDK
 
-[![Financial Contributors on Open Collective](https://opencollective.com/freeink/all/badge.svg?label=financial+contributors)](https://opencollective.com/freeink)
+[![Sponsor on Open Collective](https://img.shields.io/badge/sponsor-Open%20Collective-7FADF2?logo=opencollective&logoColor=white)](https://opencollective.com/freeink)
 
 A hardware-independent SDK for building e-paper reader firmware. FreeInk
 abstracts every device-specific detail — display controller, waveforms/LUTs,

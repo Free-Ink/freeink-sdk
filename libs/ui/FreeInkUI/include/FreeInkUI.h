@@ -395,6 +395,10 @@ class DrawTarget {
   virtual ~DrawTarget() = default;
   virtual Size measureText(FontId font, const char* text, TextStyle style) const = 0;
   virtual int16_t lineHeight(FontId font) const = 0;
+  // text() implementations must honor style.align, style.maxLines, and
+  // ellipsis truncation. Targets with a native wrapping pipeline (bidi,
+  // kerning-aware) should use it; everyone else can delegate the whole
+  // algorithm to layoutText() below and only draw the emitted runs.
   // radius > 0 fills a rounded rect (corners selects which); targets without
   // rounded support may ignore both.
   virtual void fill(Rect rect, Paint paint, uint8_t radius = 0, uint8_t corners = CornersAll) = 0;
@@ -410,6 +414,121 @@ class DrawTarget {
   virtual void bitmap(Rect rect, BitmapRef bitmap, BitmapMode mode, Paint foreground = Paint::solid(Color::Black),
                       Rotation rotation = Rotation::None) = 0;
 };
+
+// UTF-8 horizontal ellipsis, appended to truncated lines.
+static constexpr const char* TEXT_ELLIPSIS = "\xE2\x80\xA6";
+
+// SDK-owned text layout: greedy word wrap up to style.maxLines, hard breaks
+// on '\n', character-level breaking for words wider than the rect, ellipsis
+// on the last line when text remains, alignment, and vertical centering of
+// the line block. Built only on measureText/lineHeight, so a DrawTarget's
+// text() can delegate everything here and just draw single-line runs:
+//
+//   void text(Rect rect, const char* text, TextStyle style) override {
+//     layoutText(*this, rect, text, style, [&](const char* line, Rect r) {
+//       rawDrawLine(r.x, r.y, line, style);  // line is NUL-terminated
+//     });
+//   }
+//
+// emit(line, lineRect) is called per line; `line` points to an internal
+// buffer valid only during the call. lineRect is the aligned rect of the
+// measured run (height = lineHeight). Lines cap at 16 and ~220 bytes; both
+// are far beyond e-paper chrome needs.
+template <typename Emit>
+inline void layoutText(const DrawTarget& target, const Rect rect, const char* text, const TextStyle style,
+                       Emit&& emit) {
+  if (!text || text[0] == '\0' || rect.empty()) return;
+  constexpr uint8_t MAX_LINES = 16;
+  constexpr uint16_t MAX_LINE_BYTES = 220;
+  const uint8_t maxLines = style.maxLines > 0 ? (style.maxLines < MAX_LINES ? style.maxLines : MAX_LINES) : 1;
+  const int16_t lh = target.lineHeight(style.font);
+
+  char buf[MAX_LINE_BYTES + 8];
+  const auto widthOf = [&](const char* start, const uint16_t len, const bool ellipsis) {
+    uint16_t n = len < MAX_LINE_BYTES ? len : MAX_LINE_BYTES;
+    for (uint16_t i = 0; i < n; ++i) buf[i] = start[i];
+    if (ellipsis) {
+      buf[n++] = '\xE2';
+      buf[n++] = '\x80';
+      buf[n++] = '\xA6';
+    }
+    buf[n] = '\0';
+    return target.measureText(style.font, buf, style).width;
+  };
+
+  // Pass 1: split into line ranges.
+  struct Range {
+    const char* begin;
+    uint16_t len;
+    bool ellipsis;
+  };
+  Range ranges[MAX_LINES];
+  uint8_t lineCount = 0;
+  const char* p = text;
+  while (*p != '\0' && lineCount < maxLines) {
+    while (*p == ' ') ++p;  // lines never start with spaces
+    if (*p == '\0') break;
+    if (*p == '\n') {
+      ++p;
+      ranges[lineCount++] = Range{p, 0, false};  // preserve blank lines
+      continue;
+    }
+    const char* lineStart = p;
+    uint16_t fitLen = 0;
+    const char* scan = p;
+    while (true) {
+      // advance to the end of the next word
+      const char* wordEnd = scan;
+      while (*wordEnd != '\0' && *wordEnd != ' ' && *wordEnd != '\n') ++wordEnd;
+      const uint16_t candidate = static_cast<uint16_t>(wordEnd - lineStart);
+      if (candidate > MAX_LINE_BYTES || widthOf(lineStart, candidate, false) > rect.width) break;
+      fitLen = candidate;
+      if (*wordEnd == '\0' || *wordEnd == '\n') break;
+      scan = wordEnd + 1;
+      while (*scan == ' ') ++scan;
+      if (*scan == '\0' || *scan == '\n') break;
+    }
+    if (fitLen == 0) {
+      // single word wider than the rect: break at characters (UTF-8 aware)
+      uint16_t len = 0;
+      while (lineStart[len] != '\0' && lineStart[len] != ' ' && lineStart[len] != '\n') {
+        uint16_t next = static_cast<uint16_t>(len + 1);
+        while ((lineStart[next] & 0xC0) == 0x80) ++next;  // keep codepoints whole
+        if (next > MAX_LINE_BYTES || (len > 0 && widthOf(lineStart, next, false) > rect.width)) break;
+        len = next;
+      }
+      fitLen = len > 0 ? len : 1;
+    }
+    ranges[lineCount++] = Range{lineStart, fitLen, false};
+    p = lineStart + fitLen;
+    if (*p == '\n') ++p;
+  }
+  if (lineCount == 0) return;
+
+  // Anything left over: ellipsize the last line, shrinking until it fits.
+  while (*p == ' ') ++p;
+  if (*p != '\0') {
+    Range& last = ranges[lineCount - 1];
+    last.ellipsis = true;
+    while (last.len > 0 && widthOf(last.begin, last.len, true) > rect.width) {
+      --last.len;
+      while (last.len > 0 && (last.begin[last.len] & 0xC0) == 0x80) --last.len;  // codepoint boundary
+    }
+  }
+
+  // Pass 2: emit aligned, vertically centered runs.
+  const int16_t blockH = static_cast<int16_t>(lineCount * lh);
+  int16_t y = static_cast<int16_t>(rect.y + (rect.height > blockH ? (rect.height - blockH) / 2 : 0));
+  for (uint8_t i = 0; i < lineCount; ++i) {
+    const int16_t w = widthOf(ranges[i].begin, ranges[i].len, ranges[i].ellipsis);  // also fills buf
+    int16_t x = rect.x;
+    if (style.align == TextAlign::Center) x = static_cast<int16_t>(rect.x + (rect.width - w) / 2);
+    if (style.align == TextAlign::Right) x = static_cast<int16_t>(rect.right() - w);
+    if (x < rect.x) x = rect.x;
+    emit(static_cast<const char*>(buf), Rect{x, y, w, lh});
+    y = static_cast<int16_t>(y + lh);
+  }
+}
 
 inline Color invertedColor(const Color color) {
   switch (color) {

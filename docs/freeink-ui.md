@@ -157,8 +157,13 @@ e-reader chrome typically needs:
   round only their top or bottom band
 - `line()` — underlines, dividers, key-glyph art
 - `triangle()` — selection markers, arrows, bookmark notches, battery bolts
-- `text()` with alignment, truncation, and wrapping delegated to the app's
-  renderer
+- `text()` honoring alignment, `maxLines` wrapping, and ellipsis truncation —
+  and implementors don't write that algorithm: `layoutText()` provides
+  SDK-owned greedy word wrap, hard `\\n` breaks, character breaking for
+  over-wide words, ellipsis shrinking, alignment, and vertical centering,
+  built only on `measureText`. A target's `text()` reduces to drawing the
+  emitted single-line runs; targets with a native bidi/kerning-aware wrapping
+  pipeline (like the `GfxRenderer` adapter) keep using their own
 - `bitmap()` for icon masks
 
 Components build on these: `keyGrid` draws space-bar and delete-arrow glyph

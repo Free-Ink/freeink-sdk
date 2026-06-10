@@ -1187,6 +1187,64 @@ void testCoverCarousel() {
   CHECK_EQ(slots[0].itemIndex, 4);
 }
 
+
+void testLayoutTextWrapping() {
+  // The SDK owns wrap/ellipsis so DrawTarget implementors only draw runs.
+  FakeDrawTarget draw;  // 6px per char, 12px line height
+  char lines[4][64];
+  Rect rects[4];
+  int n = 0;
+  auto collect = [&](const char* line, Rect r) {
+    std::snprintf(lines[n], sizeof(lines[n]), "%s", line);
+    rects[n] = r;
+    ++n;
+  };
+
+  // Greedy word wrap: 72px fits 12 chars.
+  TextStyle style;
+  style.maxLines = 3;
+  layoutText(draw, Rect{0, 0, 72, 100}, "hello world again", style, collect);
+  CHECK_EQ(n, 2);
+  CHECK(std::strcmp(lines[0], "hello world") == 0);
+  CHECK(std::strcmp(lines[1], "again") == 0);
+  CHECK_EQ(rects[0].width, 66);
+  // Two 12px lines centered in 100px: block starts at 38.
+  CHECK_EQ(rects[0].y, 38);
+  CHECK_EQ(rects[1].y, 50);
+
+  // maxLines 1 with leftover text: last line shrinks until line+ellipsis fits.
+  n = 0;
+  style.maxLines = 1;
+  layoutText(draw, Rect{0, 0, 72, 20}, "hello world again", style, collect);
+  CHECK_EQ(n, 1);
+  CHECK(std::strcmp(lines[0], "hello wor\xE2\x80\xA6") == 0);
+  CHECK_EQ(rects[0].width, 72);
+
+  // Hard line breaks.
+  n = 0;
+  style.maxLines = 3;
+  layoutText(draw, Rect{0, 0, 200, 60}, "one\ntwo", style, collect);
+  CHECK_EQ(n, 2);
+  CHECK(std::strcmp(lines[0], "one") == 0);
+  CHECK(std::strcmp(lines[1], "two") == 0);
+
+  // A word wider than the rect breaks at characters.
+  n = 0;
+  style.maxLines = 2;
+  layoutText(draw, Rect{0, 0, 30, 40}, "abcdefghij", style, collect);
+  CHECK_EQ(n, 2);
+  CHECK(std::strcmp(lines[0], "abcde") == 0);
+  CHECK(std::strcmp(lines[1], "fghij") == 0);
+
+  // Center alignment positions the measured run.
+  n = 0;
+  style.maxLines = 1;
+  style.align = TextAlign::Center;
+  layoutText(draw, Rect{0, 0, 100, 20}, "hi", style, collect);
+  CHECK_EQ(n, 1);
+  CHECK_EQ(rects[0].x, 44);  // (100 - 12) / 2
+}
+
 void testInvertedDrawTarget() {
   CHECK(invertedColor(Color::Black) == Color::White);
   CHECK(invertedColor(Color::White) == Color::Black);
@@ -1281,6 +1339,7 @@ int main() {
   testListSectionHeaders();
   testCrossInkSleepScreenComposition();
   testCoverCarousel();
+  testLayoutTextWrapping();
   testInvertedDrawTarget();
   testStyleSetUnset();
 

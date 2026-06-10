@@ -116,9 +116,11 @@ class InputManager {
   bool wasTouchPressed() const;
   // True if a touch ended between the last two #update() calls.
   bool wasTouchReleased() const;
-  // One-shot tap: true on the frame a touch is released, writing the release
-  // position normalized to 0..1 in the panel's native orientation (the calibrated
-  // raw range). Reusable, device-agnostic building block for corner/region
+  // One-shot tap: true on the frame a touch is released, writing the TOUCH-DOWN
+  // position (first contact sample) normalized to 0..1 in the panel's native
+  // orientation (the calibrated raw range). Down-position routing: the reported
+  // centroid drifts as a finger rolls off during lift, which made small targets
+  // unreliable when taps routed by the release position. Reusable, device-agnostic building block for corner/region
   // gestures; the app maps panel-native to its display/logical frame. Returns
   // false (leaving outputs untouched) when no release this frame or no touch HW.
   bool wasTouchTap(float& nx, float& ny) const;
@@ -180,6 +182,7 @@ class InputManager {
   bool touchHomeKeyEvent = false;  // GT911 capacitive home key, press edge
   bool touchHomeKeyDown = false;
   TouchPoint touchPoint = {false, 0, 0, 0};
+  TouchPoint touchDownPoint = {false, 0, 0, 0};  // first sample of the current contact (tap routing)
 
   static constexpr int NUM_BUTTONS_1 = 4;
   static const int ADC_RANGES_1[];

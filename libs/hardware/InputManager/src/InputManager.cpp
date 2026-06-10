@@ -291,13 +291,15 @@ bool InputManager::wasTouchReleased() const { return touchReleasedEvent; }
 bool InputManager::wasTouchTap(float& nx, float& ny) const {
 #if FREEINK_CAP_TOUCH
   if (!touchReleasedEvent) return false;
-  // touchPoint.x/y retain the last sampled position through the release frame
-  // (only .valid is cleared), mapped to 0..(rawMax-rawMin) by mapTouchAxis.
+  // Tap position = the FIRST contact sample (touch-down), not the last: the
+  // reported centroid drifts 10-20px as a finger rolls off during lift, which
+  // made small targets (steppers) feel unreliable with release-point routing.
+  // A tap routes to where the user touched, not where the finger let go.
   const auto& t = BoardConfig::ACTIVE.touch;
   const uint16_t w = (t.rawMaxX > t.rawMinX) ? static_cast<uint16_t>(t.rawMaxX - t.rawMinX) : 1;
   const uint16_t h = (t.rawMaxY > t.rawMinY) ? static_cast<uint16_t>(t.rawMaxY - t.rawMinY) : 1;
-  float x = static_cast<float>(touchPoint.x) / w;
-  float y = static_cast<float>(touchPoint.y) / h;
+  float x = static_cast<float>(touchDownPoint.x) / w;
+  float y = static_cast<float>(touchDownPoint.y) / h;
   nx = x < 0.0f ? 0.0f : (x > 1.0f ? 1.0f : x);
   ny = y < 0.0f ? 0.0f : (y > 1.0f ? 1.0f : y);
   return true;
@@ -371,6 +373,7 @@ void InputManager::updateTouchFromIrq(const unsigned long now, const int irqRaw)
       if (!touchPressed) {
         touchPressed = true;
         touchPressedEvent = true;
+        touchDownPoint = point;  // first contact sample, used for tap routing
       }
       touchReleaseAt = now + TOUCH_IRQ_PULSE_MS;
     }

@@ -518,6 +518,26 @@ void testOptionDialog() {
   InputSnapshot confirm;
   confirm.confirm = true;
   CHECK_EQ(interactions.route(confirm).action, 20);
+
+  // WakeInk-shaped dialog: caption + wrapping headline + body + two buttons,
+  // left-aligned — no hand-rolled card needed.
+  FakeDrawTarget draw5;
+  InteractionBuffer<8> interactions5;
+  Frame<8> frame5(draw5, device, input, interactions5);
+  OptionDialogProps skipDialog;
+  skipDialog.title = "Skip this event?";
+  skipDialog.headline = "Quarterly planning sync with the hardware and firmware teams";  // wraps
+  skipDialog.message = "3:30 PM - 4:00 PM";
+  skipDialog.headlineText.maxLines = 2;
+  skipDialog.options = options;
+  skipDialog.optionCount = 2;
+  const Rect card{30, 34, 356, 172};
+  optionDialog(frame5, card, skipDialog);
+  CHECK_EQ(interactions5.count(), 2u);
+  // caption + 2 headline lines + message + 2 button labels = 6 text ops
+  CHECK_EQ(draw5.countKind(FakeDrawTarget::Op::Text), 6u);
+  // Caption honors its style alignment (left) instead of being force-centered.
+  CHECK_EQ(draw5.ops[2].rect.x, 46);  // card.x + default padding.left 16
 }
 
 // CrossInk compatibility surfaces: these tests mirror the hardest screens in

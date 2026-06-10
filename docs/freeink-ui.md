@@ -224,22 +224,29 @@ scrolling for free.
 
 ### Dialogs
 
-`optionDialog` composes a panel, title, message, and a row (or column) of
-option buttons that route through the normal action table, with an optional
-dithered scrim behind the panel:
+`optionDialog` composes a panel, up to three text slots, and a row (or
+column) of option buttons that route through the normal action table, with an
+optional dithered scrim behind the panel. The slots cover the common
+confirmation shapes without hand-rolled cards: a small caption (`title`), a
+prominent multi-line headline that reserves exactly the lines it wraps to
+(`headline`), and a body line (`message`) — each honoring its own style's
+font, alignment, and maxLines:
 
 ```cpp
 const freeink::ui::DialogOption options[2] = {
+    {tr(STR_SKIP), ActionSkipConfirmed},
     {tr(STR_CANCEL), ActionDismiss},
-    {tr(STR_DELETE), ActionDeleteConfirmed},
 };
 freeink::ui::OptionDialogProps props;
-props.title = tr(STR_DELETE_BOOK);
-props.message = tr(STR_CANNOT_UNDO);
+props.title = tr(STR_SKIP_THIS_EVENT);   // small caption
+props.headline = event.title.c_str();    // large, wraps up to maxLines
+props.headlineText = theme.titleText;
+props.headlineText.maxLines = 2;
+props.message = timeRange.c_str();       // body detail
 props.options = options;
 props.optionCount = 2;
 props.dimBackground = true;
-freeink::ui::optionDialog(ui, freeink::ui::centeredRect(ui.safeRect(), {320, 200}), props);
+freeink::ui::optionDialog(ui, freeink::ui::centeredRect(ui.safeRect(), {356, 172}), props);
 ```
 
 ### Status Bars and Overlays

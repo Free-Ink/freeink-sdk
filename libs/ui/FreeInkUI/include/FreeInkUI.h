@@ -1249,11 +1249,17 @@ struct DialogOption {
 };
 
 struct OptionDialogProps {
+  // Three optional text slots, top to bottom: a small caption ("Skip this
+  // event?"), a prominent multi-line headline (an event or book title), and a
+  // body line (a time range, a detail). Each renders with its own style and
+  // honors that style's alignment and maxLines.
   const char* title = nullptr;
+  const char* headline = nullptr;
   const char* message = nullptr;
   const DialogOption* options = nullptr;
   uint8_t optionCount = 0;
   TextStyle titleText{};
+  TextStyle headlineText{};
   TextStyle messageText{};
   TextStyle buttonText{};
   StyleSet styles{};        // dialog panel
@@ -1938,11 +1944,27 @@ void optionDialog(Frame<MaxInteractions>& frame, Rect rect, const OptionDialogPr
   Rect content = rect.inset(props.padding);
   int16_t cursorY = content.y;
   if (props.title) {
-    TextStyle titleStyle = props.titleText;
-    titleStyle.align = TextAlign::Center;
-    const int16_t lh = frame.target().lineHeight(titleStyle.font);
-    drawText(frame.target(), Rect{content.x, cursorY, content.width, lh}, props.title, titleStyle);
+    const int16_t lh = frame.target().lineHeight(props.titleText.font);
+    drawText(frame.target(), Rect{content.x, cursorY, content.width, lh}, props.title, props.titleText);
     cursorY = static_cast<int16_t>(cursorY + lh + props.gap);
+  }
+
+  if (props.headline) {
+    // Wrap and draw in one layoutText pass so the reserved height always
+    // matches the rendered lines; the height-1 rect top-anchors the block at
+    // the cursor (vertical centering only engages when the rect is taller
+    // than the text).
+    const int16_t lh = frame.target().lineHeight(props.headlineText.font);
+    TextStyle lineStyle = props.headlineText;
+    lineStyle.align = TextAlign::Left;  // runs arrive already positioned
+    lineStyle.maxLines = 1;
+    int16_t lines = 0;
+    layoutText(frame.target(), Rect{content.x, cursorY, content.width, 1}, props.headline, props.headlineText,
+               [&](const char* line, Rect r) {
+                 frame.target().text(r, line, lineStyle);
+                 ++lines;
+               });
+    cursorY = static_cast<int16_t>(cursorY + lines * lh + props.gap);
   }
 
   int16_t buttonsH = 0;
@@ -1954,11 +1976,9 @@ void optionDialog(Frame<MaxInteractions>& frame, Rect rect, const OptionDialogPr
   }
 
   if (props.message) {
-    TextStyle messageStyle = props.messageText;
-    messageStyle.align = TextAlign::Center;
     Rect messageRect{content.x, cursorY, content.width,
                      static_cast<int16_t>(content.bottom() - buttonsH - (buttonsH ? props.gap : 0) - cursorY)};
-    drawText(frame.target(), messageRect, props.message, messageStyle);
+    drawText(frame.target(), messageRect, props.message, props.messageText);
   }
 
   if (!props.options || props.optionCount == 0) return;

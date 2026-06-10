@@ -176,8 +176,7 @@ class InputManager {
   int touchIrqLast = 1;
   unsigned long touchIrqLastChangeTime = 0;
   unsigned long touchIrqPulseUntil = 0;
-  bool touchReadPending = false;
-  unsigned long touchReadAt = 0;
+  unsigned long touchReadAt = 0;  // next allowed point read (throttle while active)
   unsigned long touchReleaseAt = 0;
   bool touchPressed = false;
   bool touchPressedEvent = false;

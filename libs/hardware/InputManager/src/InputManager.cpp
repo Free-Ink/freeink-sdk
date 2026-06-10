@@ -370,24 +370,23 @@ bool InputManager::touchIrqActive(const int irqRaw) const {
 }
 
 void InputManager::updateTouchFromIrq(const unsigned long now, const int irqRaw) {
-  if (irqRaw != touchIrqLast && now - touchIrqLastChangeTime >= TOUCH_IRQ_DEBOUNCE_MS && touchIrqActive(irqRaw)) {
-    touchReadPending = true;
+  // Poll the point whenever the controller signals active, throttled to
+  // TOUCH_SAMPLE_DELAY_MS — not just on the IRQ rising edge. A single
+  // edge-gated read missed quick taps and taps that landed in a gap of a
+  // pulsing IRQ, forcing the user to hold until a later edge produced another
+  // read. Reading while active catches the press within one sample interval
+  // and keeps the position fresh for the duration of the contact.
+  if (touchIrqActive(irqRaw) && now >= touchReadAt) {
     touchReadAt = now + TOUCH_SAMPLE_DELAY_MS;
-  }
-
-  if (touchReadPending && now >= touchReadAt) {
     TouchPoint point = {false, 0, 0, 0};
-    touchReadPending = false;
     if (readChsc6xPoint(point)) {
       touchPoint = point;
-      touchPressed = true;
-      touchPressedEvent = true;
+      if (!touchPressed) {
+        touchPressed = true;
+        touchPressedEvent = true;
+      }
       touchReleaseAt = now + TOUCH_IRQ_PULSE_MS;
     }
-  }
-
-  if (touchPressed && touchIrqActive(irqRaw)) {
-    touchReleaseAt = now + TOUCH_IRQ_PULSE_MS;
   }
 
   if (touchPressed && now >= touchReleaseAt) {

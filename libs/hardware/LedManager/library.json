@@ -1,0 +1,10 @@
+{
+  "name": "LedManager",
+  "version": "1.0.0",
+  "description": "FreeInk RGB LED manager: addressable LED color, brightness, and flashing support selected from BoardConfig::ACTIVE. Supports M5Stack PaperColor's two GPIO21 RGB LEDs.",
+  "keywords": "led, rgb, neopixel, sk6812, ws2812, m5stack, papercolor",
+  "authors": [{"name": "FreeInk SDK Contributors"}],
+  "dependencies": {},
+  "platforms": "espressif32",
+  "frameworks": ["arduino"]
+}

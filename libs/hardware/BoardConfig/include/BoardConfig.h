@@ -51,10 +51,10 @@
 #endif
 
 // --- 2) Coherence: exactly one MCU family, at least one device ---------------
-#if !(FREEINK_DEVICE_X4 || FREEINK_DEVICE_X3 || FREEINK_DEVICE_M5 ||         \
-      FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_DELINK || FREEINK_DEVICE_LILYGO || \
-      FREEINK_DEVICE_M5PAPER)
-#error "FreeInk: no device selected. Pass at least one -DFREEINK_DEVICE_<NAME> (X4, X3, M5, MURPHY, DELINK, LILYGO, M5PAPER) in your build env — see platformio.sample.ini."
+#if !(FREEINK_DEVICE_X4 || FREEINK_DEVICE_X3 || FREEINK_DEVICE_M5 || FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_DELINK || \
+      FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_M5PAPER)
+#error \
+    "FreeInk: no device selected. Pass at least one -DFREEINK_DEVICE_<NAME> (X4, X3, M5, MURPHY, DELINK, LILYGO, M5PAPER) in your build env — see platformio.sample.ini."
 #endif
 // Each device belongs to one MCU family; a binary targets exactly one. X3/X4 are
 // ESP32-C3; M5 PaperColor/Murphy/de-link/LilyGo are ESP32-S3; M5Paper v1.1 is the
@@ -64,7 +64,8 @@
 #define FREEINK_MCU_S3 (FREEINK_DEVICE_M5 || FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_DELINK || FREEINK_DEVICE_LILYGO)
 #define FREEINK_MCU_ESP32 (FREEINK_DEVICE_M5PAPER)
 #if (FREEINK_MCU_C3 + FREEINK_MCU_S3 + FREEINK_MCU_ESP32) != 1
-#error "FreeInk: all selected devices must share one MCU family — ESP32-C3 (X3/X4), ESP32-S3 (M5/Murphy/de-link/LilyGo), or ESP32 (M5Paper). Build one binary per family."
+#error \
+    "FreeInk: all selected devices must share one MCU family — ESP32-C3 (X3/X4), ESP32-S3 (M5/Murphy/de-link/LilyGo), or ESP32 (M5Paper). Build one binary per family."
 #endif
 
 // --- 3) Derive panel drivers from the device set -----------------------------
@@ -132,6 +133,9 @@
 #ifndef FREEINK_CAP_AUDIO
 #define FREEINK_CAP_AUDIO (FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_M5)
 #endif
+#ifndef FREEINK_CAP_LED
+#define FREEINK_CAP_LED (FREEINK_DEVICE_M5)
+#endif
 #ifndef FREEINK_CAP_NET_TLS13
 #if defined(FREEINK_NET_WOLFSSL)
 #define FREEINK_CAP_NET_TLS13 1
@@ -186,6 +190,10 @@ enum class TouchController : uint8_t { None, Chsc6x, Gt911 };
 // M5 PaperColor ships an ES8311 mono codec + AW8737A speaker amp — the
 // contract comes from the official pin map and M5Unified's speaker bring-up.
 enum class AudioOutput : uint8_t { None, I2sDac, I2sEs8388, I2sEs8311, PwmBuzzer };
+
+// Optional addressable RGB LED strip. PaperColor has two RGB LEDs on GPIO21
+// behind the M5PM1 LDO3V3 RGB rail.
+enum class LedColorOrder : uint8_t { RGB, GRB };
 
 constexpr int8_t PIN_UNASSIGNED = -1;
 
@@ -254,9 +262,9 @@ struct TouchConfig {
   uint8_t i2cAddress;
   uint16_t rawMinX, rawMaxX;  // raw controller range, mapped to display coords
   uint16_t rawMinY, rawMaxY;
-  bool synthesizeConfirm;     // emit a CONFIRM button event on tap
-  uint8_t i2cAddressAlt;      // alternate I2C address to probe (GT911 0x14; 0 = none)
-  bool irqActiveLow;          // touch IRQ asserted LOW (CHSC6x)
+  bool synthesizeConfirm;  // emit a CONFIRM button event on tap
+  uint8_t i2cAddressAlt;   // alternate I2C address to probe (GT911 0x14; 0 = none)
+  bool irqActiveLow;       // touch IRQ asserted LOW (CHSC6x)
   // GT911 point-frame layout: false = datasheet standard (track-id at 0x8150, so
   // coords start at byte 1); true = coords start at byte 0 (no track-id), as seen
   // on M5Paper's GT911 which boots without a reset/config dance. Ignored (CHSC6x).
@@ -274,18 +282,25 @@ struct FrontlightConfig {
 // Audio output description (AudioOutput::None disables it).
 struct AudioConfig {
   AudioOutput output;
-  int8_t bclk;     // I2S bit clock (unused for PWM buzzer)
-  int8_t lrclk;    // I2S word select (unused for PWM buzzer)
-  int8_t dout;     // I2S data out, or the PWM pin for a buzzer
-  int8_t mclk;     // I2S master clock (PIN_UNASSIGNED if not wired)
-  int8_t enable;   // codec power / rail enable pin (PIN_UNASSIGNED if none)
+  int8_t bclk;    // I2S bit clock (unused for PWM buzzer)
+  int8_t lrclk;   // I2S word select (unused for PWM buzzer)
+  int8_t dout;    // I2S data out, or the PWM pin for a buzzer
+  int8_t mclk;    // I2S master clock (PIN_UNASSIGNED if not wired)
+  int8_t enable;  // codec power / rail enable pin (PIN_UNASSIGNED if none)
   bool enableActiveHigh;
-  int8_t ampEnable;   // separate speaker-amp enable (e.g. AW8737A SPK_EN), held
-                      // high only while playing; PIN_UNASSIGNED if none. Active-high.
-  int8_t codecSda;    // codec control I2C — may be a shared bus (e.g. touch)
+  int8_t ampEnable;  // separate speaker-amp enable (e.g. AW8737A SPK_EN), held
+                     // high only while playing; PIN_UNASSIGNED if none. Active-high.
+  int8_t codecSda;   // codec control I2C — may be a shared bus (e.g. touch)
   int8_t codecScl;
   uint8_t codecAddr;  // 7-bit codec address, 0 = no control codec
   int8_t buzzer;      // separate LEDC tone pin (PIN_UNASSIGNED if none)
+};
+
+struct LedConfig {
+  int8_t data;
+  uint8_t count;
+  LedColorOrder colorOrder;
+  bool pmicRgbPower;  // true = enable M5PM1 RGB LED power rail before use
 };
 
 // How the panel is mounted relative to the driver's native scan. Any board injects
@@ -313,14 +328,26 @@ struct BoardProfile {
   TouchConfig touch;
   FrontlightConfig frontlight;
   AudioConfig audio;
-  DisplayOrientation orientation;  // panel mount transform (mirrorX/mirrorY)
-  SdmmcPins sdmmc;                 // 4-bit SDMMC wiring (busWidth 0 = use SPI/SdFat)
+  LedConfig leds;
+  DisplayOrientation orientation;   // panel mount transform (mirrorX/mirrorY)
+  SdmmcPins sdmmc;                  // 4-bit SDMMC wiring (busWidth 0 = use SPI/SdFat)
   BatteryGaugeConfig batteryGauge;  // I2C fuel gauge (gaugeAddr 0 = use ADC pin)
 };
 
-constexpr TouchConfig NO_TOUCH = {
-    TouchController::None, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, 0, 0, 0, 0, 0, false, 0, false,
-    false};
+constexpr TouchConfig NO_TOUCH = {TouchController::None,
+                                  PIN_UNASSIGNED,
+                                  PIN_UNASSIGNED,
+                                  PIN_UNASSIGNED,
+                                  PIN_UNASSIGNED,
+                                  0,
+                                  0,
+                                  0,
+                                  0,
+                                  0,
+                                  false,
+                                  0,
+                                  false,
+                                  false};
 
 // LilyGo T5 S3 Pro Lite GT911 touch (shared I2C bus, native portrait 540x960).
 // A named config ready to drop into a LilyGo board profile once its display
@@ -328,10 +355,20 @@ constexpr TouchConfig NO_TOUCH = {
 constexpr TouchConfig LILYGO_T5_PRO_GT911 = {
     TouchController::Gt911, 39, 40, 3, 9, 0x5D, 0, 539, 0, 959, false, 0x14, false, false};
 constexpr FrontlightConfig NO_FRONTLIGHT = {PIN_UNASSIGNED, 0, 0, true};
-constexpr AudioConfig NO_AUDIO = {AudioOutput::None,  PIN_UNASSIGNED, PIN_UNASSIGNED,
-                                  PIN_UNASSIGNED,     PIN_UNASSIGNED, PIN_UNASSIGNED,
-                                  true,               PIN_UNASSIGNED, PIN_UNASSIGNED,
-                                  PIN_UNASSIGNED,     0,              PIN_UNASSIGNED};
+constexpr AudioConfig NO_AUDIO = {AudioOutput::None,
+                                  PIN_UNASSIGNED,
+                                  PIN_UNASSIGNED,
+                                  PIN_UNASSIGNED,
+                                  PIN_UNASSIGNED,
+                                  PIN_UNASSIGNED,
+                                  true,
+                                  PIN_UNASSIGNED,
+                                  PIN_UNASSIGNED,
+                                  PIN_UNASSIGNED,
+                                  0,
+                                  PIN_UNASSIGNED};
+constexpr LedConfig NO_LEDS = {PIN_UNASSIGNED, 0, LedColorOrder::GRB, false};
+constexpr LedConfig M5_PAPERCOLOR_LEDS = {21, 2, LedColorOrder::GRB, true};
 
 // Murphy M3 audio, recovered from the OEM firmware: ES8388-compatible codec at
 // 7-bit I2C 0x10 on the shared touch bus (SDA=13/SCL=12, 100 kHz), I2S master
@@ -339,8 +376,8 @@ constexpr AudioConfig NO_AUDIO = {AudioOutput::None,  PIN_UNASSIGNED, PIN_UNASSI
 // stock board init and is preserved here as the enable line (not proven to be
 // audio-specific, but the OEM bring-up notes say keep it high). GPIO46 carries
 // a separate LEDC tone/buzzer path. No separate amp-enable pin.
-constexpr AudioConfig MURPHY_AUDIO = {AudioOutput::I2sEs8388, 40, 39, 41, 42, 43, true,
-                                      PIN_UNASSIGNED, 13, 12, 0x10, 46};
+constexpr AudioConfig MURPHY_AUDIO = {AudioOutput::I2sEs8388, 40, 39, 41,   42, 43, true,
+                                      PIN_UNASSIGNED,         13, 12, 0x10, 46};
 
 // M5 PaperColor audio, from the official pin map (docs.m5stack.com/en/core/
 // PaperColor) and M5Unified's speaker bring-up: ES8311 mono codec at 7-bit I2C
@@ -351,37 +388,36 @@ constexpr AudioConfig MURPHY_AUDIO = {AudioOutput::I2sEs8388, 40, 39, 41, 42, 43
 // GPIO45 (AUDIO_PWR_EN) powers the codec/mic rail; GPIO46 (SPK_EN) enables the
 // AW8737A speaker amp and is raised only while playing. The ES7210 mic ADC
 // (0x40) is not driven.
-constexpr AudioConfig M5_PAPERCOLOR_AUDIO = {AudioOutput::I2sEs8311, 40, 41, 38,
-                                             PIN_UNASSIGNED, 45, true, 46,
-                                             3, 2, 0x18, PIN_UNASSIGNED};
-constexpr DisplayOrientation NO_FLIP = {false, false};            // native scan
-constexpr DisplayOrientation ROTATE_180 = {true, true};           // upside-down mount
-constexpr DisplayOrientation MIRROR_X = {true, false};            // horizontal mirror
-constexpr DisplayOrientation MIRROR_Y = {false, true};            // vertical mirror
-constexpr SdmmcPins NO_SDMMC = {PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED,
-                                PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, 0};
+constexpr AudioConfig M5_PAPERCOLOR_AUDIO = {
+    AudioOutput::I2sEs8311, 40, 41, 38, PIN_UNASSIGNED, 45, true, 46, 3, 2, 0x18, PIN_UNASSIGNED};
+constexpr DisplayOrientation NO_FLIP = {false, false};   // native scan
+constexpr DisplayOrientation ROTATE_180 = {true, true};  // upside-down mount
+constexpr DisplayOrientation MIRROR_X = {true, false};   // horizontal mirror
+constexpr DisplayOrientation MIRROR_Y = {false, true};   // vertical mirror
+constexpr SdmmcPins NO_SDMMC = {
+    PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, 0};
 constexpr BatteryGaugeConfig NO_GAUGE = {PIN_UNASSIGNED, PIN_UNASSIGNED, 0, 0, 0};  // ADC battery
 
 // --- Xteink X4 — ESP32-C3, SSD1677 (800x480) ---------------------------------
-constexpr BoardProfile XTEINK_X4 = {
-    Board::XteinkX4,
-    "xteink_x4",
-    InputStyle::XteinkAdcLadder,
-    DisplayController::SSD1677,
-    800,
-    480,
-    {8, 10, 21, 4, 5, 6, PIN_UNASSIGNED},
-    0,  // displaySpiHz: 0 -> SSD1677 driver default (40 MHz)
-    {PIN_UNASSIGNED, 7, PIN_UNASSIGNED, 12, PIN_UNASSIGNED, false, 0},
-    {0, 1, 2, 3, 4, 5, 3, false},
-    0,
-    20,
-    NO_TOUCH,
-    NO_FRONTLIGHT,
-    NO_AUDIO,
-    NO_FLIP,
-    NO_SDMMC,
-    NO_GAUGE};
+constexpr BoardProfile XTEINK_X4 = {Board::XteinkX4,
+                                    "xteink_x4",
+                                    InputStyle::XteinkAdcLadder,
+                                    DisplayController::SSD1677,
+                                    800,
+                                    480,
+                                    {8, 10, 21, 4, 5, 6, PIN_UNASSIGNED},
+                                    0,  // displaySpiHz: 0 -> SSD1677 driver default (40 MHz)
+                                    {PIN_UNASSIGNED, 7, PIN_UNASSIGNED, 12, PIN_UNASSIGNED, false, 0},
+                                    {0, 1, 2, 3, 4, 5, 3, false},
+                                    0,
+                                    20,
+                                    NO_TOUCH,
+                                    NO_FRONTLIGHT,
+                                    NO_AUDIO,
+                                    NO_LEDS,
+                                    NO_FLIP,
+                                    NO_SDMMC,
+                                    NO_GAUGE};
 
 // --- Xteink X3 — ESP32-C3, UC8253 (792x528) ----------------------------------
 // Same board/pinout as X4; differs only in panel controller + size. Selected at
@@ -404,30 +440,31 @@ constexpr BoardProfile XTEINK_X3 = {
     NO_TOUCH,
     NO_FRONTLIGHT,
     NO_AUDIO,
+    NO_LEDS,
     NO_FLIP,
     NO_SDMMC,
     {20, 0, 400000, 0x55, 0}};  // BQ27220 fuel gauge (0x55) on SDA20/SCL0; no charger IC
 
 // --- M5Stack PaperColor — ESP32-S3, ED2208 color panel, M5PM1 PMIC -----------
-constexpr BoardProfile M5STACK_PAPER_COLOR = {
-    Board::M5StackPaperColor,
-    "m5stack_papercolor",
-    InputStyle::DigitalConfirmBackHold,
-    DisplayController::ED2208,
-    400,
-    600,
-    {15, 13, 44, 43, 12, 11, PIN_UNASSIGNED},
-    0,  // displaySpiHz: 0 -> ED2208 driver default (4 MHz)
-    {15, 14, 13, 47, PIN_UNASSIGNED, false, 0},
-    {1, 1, PIN_UNASSIGNED, PIN_UNASSIGNED, 10, 9, 1, false},
-    PIN_UNASSIGNED,
-    PIN_UNASSIGNED,
-    NO_TOUCH,
-    NO_FRONTLIGHT,
-    M5_PAPERCOLOR_AUDIO,
-    NO_FLIP,
-    NO_SDMMC,
-    NO_GAUGE};
+constexpr BoardProfile M5STACK_PAPER_COLOR = {Board::M5StackPaperColor,
+                                              "m5stack_papercolor",
+                                              InputStyle::DigitalConfirmBackHold,
+                                              DisplayController::ED2208,
+                                              400,
+                                              600,
+                                              {15, 13, 44, 43, 12, 11, PIN_UNASSIGNED},
+                                              0,  // displaySpiHz: 0 -> ED2208 driver default (4 MHz)
+                                              {15, 14, 13, 47, PIN_UNASSIGNED, false, 0},
+                                              {1, 1, PIN_UNASSIGNED, PIN_UNASSIGNED, 10, 9, 1, false},
+                                              PIN_UNASSIGNED,
+                                              PIN_UNASSIGNED,
+                                              NO_TOUCH,
+                                              NO_FRONTLIGHT,
+                                              M5_PAPERCOLOR_AUDIO,
+                                              M5_PAPERCOLOR_LEDS,
+                                              NO_FLIP,
+                                              NO_SDMMC,
+                                              NO_GAUGE};
 
 // --- Murphy M3 (CrowPanel 3.7") — UC8253, CHSC6x touch, PWM frontlight --------
 constexpr BoardProfile MURPHY_M3 = {
@@ -451,6 +488,7 @@ constexpr BoardProfile MURPHY_M3 = {
     // audio recovery and conflicts with the proven I2S pins (39/40/41/42) and
     // shared I2C (13). Audio is the verified owner of those pins.
     MURPHY_AUDIO,
+    NO_LEDS,
     NO_FLIP,
     NO_SDMMC,
     NO_GAUGE};
@@ -463,30 +501,30 @@ constexpr BoardProfile MURPHY_M3 = {
 // the panel rotated sets `ROTATE_180` (or a mirror) here, and the SSD1677 driver
 // applies it in hardware (mirrorX via RAM addressing, mirrorY via gate scan). Any
 // board injects its own mount transform the same way.
-constexpr BoardProfile DE_LINK = {
-    Board::DeLink,
-    "de_link",
-    InputStyle::XteinkAdcLadder,
-    DisplayController::SSD1677,
-    800,
-    480,
-    {8, 10, 21, 4, 5, 6, PIN_UNASSIGNED},
-    0,  // displaySpiHz: SSD1677 default (40 MHz)
-    // SD on de-link is 4-bit SDMMC. SdFat can't drive SDIO, so SDCardManager
-    // mounts an FsVolume on a native esp-idf SDMMC block device (FREEINK_SD_SDMMC);
-    // the wiring is in the sdmmc field below. These SPI sd pins are unused.
-    {39, 38, 40, 41, PIN_UNASSIGNED, true, 0},
-    {0, 1, 2, 3, 4, 5, 3, true},  // power button active-HIGH (INPUT_PULLDOWN) on de-link
-    4,  // batteryAdc GPIO4 (charge-status GPIO8 is passed to BatteryMonitor by firmware)
-    PIN_UNASSIGNED,
-    NO_TOUCH,
-    // Primary brightness PWM (GPIO5). Warm/cool/rail/fault pins (GPIO6/7/17/18)
-    // are not driven.
-    {5, 20000, 8, true},
-    NO_AUDIO,
-    NO_FLIP,
-    {39, 40, 38, 48, 42, 41, 4},  // SDMMC 4-bit: CLK39 CMD40 D0=38 D1=48 D2=42 D3=41
-    NO_GAUGE};
+constexpr BoardProfile DE_LINK = {Board::DeLink,
+                                  "de_link",
+                                  InputStyle::XteinkAdcLadder,
+                                  DisplayController::SSD1677,
+                                  800,
+                                  480,
+                                  {8, 10, 21, 4, 5, 6, PIN_UNASSIGNED},
+                                  0,  // displaySpiHz: SSD1677 default (40 MHz)
+                                  // SD on de-link is 4-bit SDMMC. SdFat can't drive SDIO, so SDCardManager
+                                  // mounts an FsVolume on a native esp-idf SDMMC block device (FREEINK_SD_SDMMC);
+                                  // the wiring is in the sdmmc field below. These SPI sd pins are unused.
+                                  {39, 38, 40, 41, PIN_UNASSIGNED, true, 0},
+                                  {0, 1, 2, 3, 4, 5, 3, true},  // power button active-HIGH (INPUT_PULLDOWN) on de-link
+                                  4,  // batteryAdc GPIO4 (charge-status GPIO8 is passed to BatteryMonitor by firmware)
+                                  PIN_UNASSIGNED,
+                                  NO_TOUCH,
+                                  // Primary brightness PWM (GPIO5). Warm/cool/rail/fault pins (GPIO6/7/17/18)
+                                  // are not driven.
+                                  {5, 20000, 8, true},
+                                  NO_AUDIO,
+                                  NO_LEDS,
+                                  NO_FLIP,
+                                  {39, 40, 38, 48, 42, 41, 4},  // SDMMC 4-bit: CLK39 CMD40 D0=38 D1=48 D2=42 D3=41
+                                  NO_GAUGE};
 
 // --- LilyGo T5 S3 4.7" (ED047TC1 raw-parallel EPD) — ESP32-S3 -----------------
 // 960x540 16-gray raw parallel panel driven via LovyanGFX (FREEINK_DRIVER_LGFX_EPD);
@@ -505,15 +543,17 @@ constexpr BoardProfile LILYGO_T5S3 = {
     960,
     540,
     {PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED,
-     PIN_UNASSIGNED},                   // no SPI display pins: parallel bus lives in LgfxEpdConfig
-    0,                                  // displaySpiHz n/a (external bus)
+     PIN_UNASSIGNED},                            // no SPI display pins: parallel bus lives in LgfxEpdConfig
+    0,                                           // displaySpiHz n/a (external bus)
     {14, 21, 13, 12, PIN_UNASSIGNED, false, 0},  // SD over SPI: SCLK14 MISO21 MOSI13 CS12
-    {PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, 0, false},  // power=BOOT (GPIO0), active-low
+    {PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, 0,
+     false},         // power=BOOT (GPIO0), active-low
     PIN_UNASSIGNED,  // batteryAdc: none — uses the I2C fuel gauge below
     PIN_UNASSIGNED,
     LILYGO_T5_PRO_GT911,  // GT911 touch (SDA39 SCL40 INT3 RST9, 0x5D, 540x960)
     {11, 5000, 8, true},  // backlight: BL_EN GPIO11, PWM 5 kHz / 8-bit, active-high
     NO_AUDIO,
+    NO_LEDS,
     NO_FLIP,
     NO_SDMMC,
     {39, 40, 400000, 0x55, 0x6B}};  // BQ27220 gauge (0x55) + BQ25896 charger (0x6B) on SDA39/SCL40
@@ -541,10 +581,10 @@ constexpr BoardProfile M5PAPER_V11 = {
     960,  // landscape framebuffer (byte-aligned); driver rotates onto the 540x960 panel
     540,
     {14, 12, 15, PIN_UNASSIGNED, PIN_UNASSIGNED, 27, 23},  // SCLK14 MOSI12 CS15, no DC/RST, HRDY27, EPD_PWR_EN23
-    0,                                  // displaySpiHz: 0 -> IT8951 driver default (10 MHz)
-    {14, 13, 12, 4, PIN_UNASSIGNED, false, 20000000},  // SD shares the SPI bus: SCLK14 MISO13 MOSI12, CS4. 20 MHz
-                                                        // (not the 40 MHz default): the bus is shared with the EPD,
-                                                        // and 40 MHz gives SdFat READ_TIMEOUT on the CSD/data read.
+    0,                                                     // displaySpiHz: 0 -> IT8951 driver default (10 MHz)
+    {14, 13, 12, 4, PIN_UNASSIGNED, false, 20000000},      // SD shares the SPI bus: SCLK14 MISO13 MOSI12, CS4. 20 MHz
+                                                           // (not the 40 MHz default): the bus is shared with the EPD,
+                                                           // and 40 MHz gives SdFat READ_TIMEOUT on the CSD/data read.
     // Rotary wheel is M5Paper's only button input (3 positions: 37, push=38, 39,
     // active-low via external pull-ups). The two sides MUST drive page navigation —
     // CrossPoint's reader pages on BTN_UP/BTN_DOWN (the fixed side buttons), so
@@ -562,6 +602,7 @@ constexpr BoardProfile M5PAPER_V11 = {
      true},  // GT911 reports coords at byte 0 (no track-id) on M5Paper
     NO_FRONTLIGHT,
     NO_AUDIO,
+    NO_LEDS,
     NO_FLIP,
     NO_SDMMC,
     NO_GAUGE};
@@ -575,14 +616,12 @@ constexpr uint32_t cmax(uint32_t a, uint32_t b) { return a > b ? a : b; }
 constexpr uint32_t panelBytes(const BoardProfile& p) {
   return static_cast<uint32_t>(p.displayWidth / 8) * p.displayHeight;
 }
-constexpr uint32_t MAX_FRAMEBUFFER_BYTES =
-    cmax(cmax(cmax(FREEINK_DEVICE_X4 ? panelBytes(XTEINK_X4) : 0u,
-                   FREEINK_DEVICE_X3 ? panelBytes(XTEINK_X3) : 0u),
-              cmax(FREEINK_DEVICE_M5 ? panelBytes(M5STACK_PAPER_COLOR) : 0u,
-                   FREEINK_DEVICE_MURPHY ? panelBytes(MURPHY_M3) : 0u)),
-         cmax(cmax(FREEINK_DEVICE_DELINK ? panelBytes(DE_LINK) : 0u,
-                   FREEINK_DEVICE_LILYGO ? panelBytes(LILYGO_T5S3) : 0u),
-              FREEINK_DEVICE_M5PAPER ? panelBytes(M5PAPER_V11) : 0u));
+constexpr uint32_t MAX_FRAMEBUFFER_BYTES = cmax(
+    cmax(cmax(FREEINK_DEVICE_X4 ? panelBytes(XTEINK_X4) : 0u, FREEINK_DEVICE_X3 ? panelBytes(XTEINK_X3) : 0u),
+         cmax(FREEINK_DEVICE_M5 ? panelBytes(M5STACK_PAPER_COLOR) : 0u,
+              FREEINK_DEVICE_MURPHY ? panelBytes(MURPHY_M3) : 0u)),
+    cmax(cmax(FREEINK_DEVICE_DELINK ? panelBytes(DE_LINK) : 0u, FREEINK_DEVICE_LILYGO ? panelBytes(LILYGO_T5S3) : 0u),
+         FREEINK_DEVICE_M5PAPER ? panelBytes(M5PAPER_V11) : 0u));
 
 // Compile-time default device — the profile ACTIVE starts as. With a single
 // device in the build this is the only device; with several same-MCU devices it
@@ -615,27 +654,42 @@ inline BoardProfile ACTIVE = DEFAULT_DEVICE;
 inline bool selectDevice(Board which) {
   switch (which) {
 #if FREEINK_DEVICE_X4
-    case Board::XteinkX4: ACTIVE = XTEINK_X4; return true;
+    case Board::XteinkX4:
+      ACTIVE = XTEINK_X4;
+      return true;
 #endif
 #if FREEINK_DEVICE_X3
-    case Board::XteinkX3: ACTIVE = XTEINK_X3; return true;
+    case Board::XteinkX3:
+      ACTIVE = XTEINK_X3;
+      return true;
 #endif
 #if FREEINK_DEVICE_M5
-    case Board::M5StackPaperColor: ACTIVE = M5STACK_PAPER_COLOR; return true;
+    case Board::M5StackPaperColor:
+      ACTIVE = M5STACK_PAPER_COLOR;
+      return true;
 #endif
 #if FREEINK_DEVICE_MURPHY
-    case Board::MurphyM3: ACTIVE = MURPHY_M3; return true;
+    case Board::MurphyM3:
+      ACTIVE = MURPHY_M3;
+      return true;
 #endif
 #if FREEINK_DEVICE_DELINK
-    case Board::DeLink: ACTIVE = DE_LINK; return true;
+    case Board::DeLink:
+      ACTIVE = DE_LINK;
+      return true;
 #endif
 #if FREEINK_DEVICE_LILYGO
-    case Board::LilyGoT5S3: ACTIVE = LILYGO_T5S3; return true;
+    case Board::LilyGoT5S3:
+      ACTIVE = LILYGO_T5S3;
+      return true;
 #endif
 #if FREEINK_DEVICE_M5PAPER
-    case Board::M5PaperV11: ACTIVE = M5PAPER_V11; return true;
+    case Board::M5PaperV11:
+      ACTIVE = M5PAPER_V11;
+      return true;
 #endif
-    default: break;
+    default:
+      break;
   }
   return false;
 }
@@ -647,5 +701,6 @@ inline bool isM5PaperV11() { return ACTIVE.board == Board::M5PaperV11; }
 inline bool hasTouch() { return ACTIVE.touch.controller != TouchController::None; }
 inline bool hasPwmFrontlight() { return ACTIVE.frontlight.gpio != PIN_UNASSIGNED; }
 inline bool hasAudio() { return ACTIVE.audio.output != AudioOutput::None; }
+inline bool hasLeds() { return ACTIVE.leds.data != PIN_UNASSIGNED && ACTIVE.leds.count > 0; }
 
 }  // namespace BoardConfig

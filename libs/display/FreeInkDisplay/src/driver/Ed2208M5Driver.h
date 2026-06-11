@@ -13,6 +13,14 @@
 // Full color (or a true white background) requires running the complete
 // waveform — see requestCompleteWaveformNextRefresh().
 //
+// DC BALANCE: an interrupted waveform is not charge-neutral — every fast
+// refresh leaves a small net DC bias on the pixels, and over hours of
+// interrupted-only operation the panel visibly darkens and colors fade. Only
+// the complete waveform is DC-balanced, so consumers must schedule one
+// periodically (~hourly) via requestCompleteWaveformNextRefresh(); the
+// FAST_CLEAN_INTERVAL full-panel pass is itself interrupted and clears
+// geometric ghosting only, not the accumulated charge.
+//
 // For users who prefer the vendor path over this speed hack, M5OfficialDriver
 // wraps M5GFX/M5Unified instead (opt in with -DFREEINK_M5_OFFICIAL=1).
 //

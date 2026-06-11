@@ -95,7 +95,7 @@ so the SD manager itself stays device-agnostic.
 | **Xteink X4** | ESP32-C3 | SSD1677 | 800×480 | B/W + 4-level grayscale |
 | **Xteink X3** | ESP32-C3 | UC8253 | 792×528 | B/W + 4-level grayscale; BQ27220 I²C battery gauge; shares the C3 binary with X4 |
 | **de-link** | ESP32-S3 | SSD1677 | 800×480 | B/W + grayscale, PWM frontlight, native 4-bit SDMMC SD |
-| **M5Stack PaperColor** | ESP32-S3 | ED2208 | 400×600 Spectra-6 color | native interrupted-refresh driver, optional M5GFX backend, built-in speaker (ES8311 codec + AW8737A amp) |
+| **M5Stack PaperColor** | ESP32-S3 | ED2208 | 400×600 Spectra-6 color | native interrupted-refresh driver, optional M5GFX backend, built-in speaker (ES8311 codec + AW8737A amp), 2x RGB LEDs |
 | **Murphy M3** | ESP32-S3 | UC8253 | 240×416 | B/W (90°-rotated framebuffer, full/fast LUTs), CHSC6x touch, PWM frontlight |
 | **LilyGo T5 S3** | ESP32-S3 | ED047TC1 (raw parallel) | 960×540 16-gray | LovyanGFX EPD driver with 16-gray, GT911 touch, PWM backlight, BQ27220/BQ25896 I²C battery |
 | **M5Paper v1.1** | ESP32 (classic) | IT8951E | 540×960 16-gray ED047TC1 | hand-rolled IT8951 driver (own SPI, 1bpp→4bpp load, GC16/DU/A2 modes, auto rotation onto the portrait panel), GT911 touch, GPIO35 ADC battery |
@@ -125,11 +125,38 @@ polarity selected) rather than white — and FreeInk exploits that to produce a
 fast, high-contrast monochrome image. A true white background / full color
 requires running the complete waveform (`requestCompleteWaveformNextRefresh()`).
 
+> **DC balance — schedule periodic complete waveforms.** E-paper waveforms are
+> DC-balanced only when they run to completion; the interrupted path leaves a
+> small net charge on every pixel per refresh. That charge accumulates: over
+> hours of interrupted-only operation the panel visibly darkens and color
+> intensity fades (the driver's every-6th-refresh full-panel pass is also
+> interrupted, so it does not help — it clears geometric ghosting, not charge).
+> Consumers must periodically promote a refresh to the complete waveform via
+> `requestCompleteWaveformNextRefresh()` — roughly hourly works well — timed
+> around their own UX, since the complete waveform blocks for ~15 s.
+
 Two backends are selectable for this device:
 - **Native ED2208 (default)** — the fast interrupted-refresh path above.
 - **M5 official (`-DFREEINK_M5_OFFICIAL=1`)** — wraps M5's own **M5Unified + M5GFX**
   stack for users who prefer the vendor path (slower, but standard). This pulls
   the M5 libraries only on that env; M5GFX owns the bus (`usesExternalBus()`).
+
+PaperColor's two RGB LEDs are exposed through `LedManager`. The board profile
+sets GPIO21, two GRB LEDs, and the M5PM1 RGB LED power rail, matching M5's
+published PaperColor pin map and LED-class convention. `LedManager` does not
+depend on M5Unified; it provides direct color/brightness/flashing control:
+
+```cpp
+LedManager leds;
+leds.begin();
+leds.setBrightness(64);
+leds.setAll(LedColor::blue());
+leds.flash(LedColor::green(), 3);
+
+void loop() {
+  leds.update();  // advances non-blocking flashes
+}
+```
 
 **Capacitive touch** (gated by `FREEINK_CAP_TOUCH`) covers two controllers:
 **CHSC6x** (Murphy M3 — IRQ-driven) and **GT911** (LilyGo T5 S3 and M5Paper v1.1 —
@@ -172,6 +199,7 @@ tight. Each defaults on when an included device needs it; force with `=0`/`=1`:
 | `FREEINK_CAP_FRONTLIGHT` | PWM frontlight (FrontlightManager) | on if a device has a frontlight |
 | `FREEINK_CAP_COLOR` | color panel code | on for M5 |
 | `FREEINK_CAP_AUDIO` | audio output (AudioManager: ES8388/ES8311 codec + I2S WAV playback) | on for Murphy and M5 |
+| `FREEINK_CAP_LED` | addressable RGB LEDs (LedManager) | on for M5 |
 | `FREEINK_CAP_NET_TLS13` | wolfSSL TLS 1.3 (≡ `FREEINK_NET_WOLFSSL`) | off |
 
 **Other flags:**
@@ -357,6 +385,8 @@ libs/
   hardware/SDCardManager/   SD storage (SdFat-over-SPI or native SDMMC)
   hardware/PowerManager/    per-SoC deep-sleep wake-on-power-button
   hardware/FrontlightManager/  PWM frontlight (de-link)
+  hardware/LedManager/      addressable RGB LEDs (M5 PaperColor)
+  hardware/AudioManager/    I2S codec WAV playback (Murphy, M5 PaperColor)
   network/SecureNet/        wolfSSL TLS 1.3 client + HTTP shim (opt-in)
 ```
 

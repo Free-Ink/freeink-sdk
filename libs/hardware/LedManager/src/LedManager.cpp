@@ -2,22 +2,13 @@
 
 #if FREEINK_CAP_LED
 
-#include <Wire.h>
+#include <M5Pm1.h>
 #include <esp_cpu.h>
 #include <soc/gpio_struct.h>
 
 namespace freeink {
 
 namespace {
-
-constexpr uint8_t M5PM1_ADDR = 0x6E;
-constexpr uint8_t M5PM1_POWER_CONFIG_REG = 0x06;  // PWR_CFG (official M5PM1 map)
-constexpr uint8_t M5PM1_I2C_CFG_REG = 0x09;       // I2C_CFG: 0 = 100 kHz, no idle sleep
-constexpr uint8_t M5PM1_NEO_CFG_REG = 0x50;       // PM1's OWN NeoPixel engine: [6] refresh, [5:0] LED count
-constexpr uint8_t M5PM1_POWER_LDO_EN = 1 << 2;    // = PY_RGB_PWR_EN, the LED rail
-constexpr int M5_INTERNAL_I2C_SDA = 3;
-constexpr int M5_INTERNAL_I2C_SCL = 2;
-constexpr uint32_t M5_INTERNAL_I2C_FREQ = 100000;
 
 // WS2812/SK6812-compatible 800 kHz timings. The exact high pulse separates 0
 // from 1; the full bit cell stays near 1.25 us. Two LEDs means interrupts are
@@ -54,30 +45,6 @@ inline void IRAM_ATTR gpioLow(uint8_t pin) {
   }
 }
 
-bool m5Pm1WriteReg(uint8_t reg, uint8_t value) {
-  Wire.beginTransmission(M5PM1_ADDR);
-  Wire.write(reg);
-  Wire.write(value);
-  return Wire.endTransmission() == 0;
-}
-
-bool m5Pm1ReadReg(uint8_t reg, uint8_t* value) {
-  Wire.beginTransmission(M5PM1_ADDR);
-  Wire.write(reg);
-  if (Wire.endTransmission(false) != 0) return false;
-  if (Wire.requestFrom(M5PM1_ADDR, static_cast<uint8_t>(1)) != 1) return false;
-  *value = Wire.read();
-  return true;
-}
-
-bool m5Pm1UpdateReg(uint8_t reg, uint8_t clearMask, uint8_t setMask) {
-  uint8_t value = 0;
-  if (m5Pm1ReadReg(reg, &value)) {
-    return m5Pm1WriteReg(reg, static_cast<uint8_t>((value & ~clearMask) | setMask));
-  }
-  return false;
-}
-
 }  // namespace
 
 bool LedManager::present() const {
@@ -93,10 +60,8 @@ bool LedManager::enablePower() {
   const auto& cfg = BoardConfig::ACTIVE.leds;
   if (!cfg.pmicRgbPower) return true;
 
-  Wire.begin(M5_INTERNAL_I2C_SDA, M5_INTERNAL_I2C_SCL, M5_INTERNAL_I2C_FREQ);
-  Wire.setTimeOut(4);
-  if (!m5Pm1WriteReg(M5PM1_I2C_CFG_REG, 0x00)) return false;
-  if (!m5Pm1UpdateReg(M5PM1_POWER_CONFIG_REG, 0, M5PM1_POWER_LDO_EN)) return false;
+  m5pm1::beginBus();
+  m5pm1::setRgbRail(true);
   delay(10);  // rail ramp + LED power-on reset before the first frame
   return true;
 }
@@ -104,7 +69,7 @@ bool LedManager::enablePower() {
 void LedManager::disablePower() {
   const auto& cfg = BoardConfig::ACTIVE.leds;
   if (!cfg.pmicRgbPower) return;
-  m5Pm1UpdateReg(M5PM1_POWER_CONFIG_REG, M5PM1_POWER_LDO_EN, 0);
+  m5pm1::setRgbRail(false);
 }
 
 bool LedManager::begin() {
@@ -114,19 +79,18 @@ bool LedManager::begin() {
   pinMode(BoardConfig::ACTIVE.leds.data, OUTPUT);
   digitalWrite(BoardConfig::ACTIVE.leds.data, LOW);
   // The LED rail stays OFF outside use: writePixels() powers it up lazily for
-  // the first lit frame and drops it again when everything is black.
-  // Unpowered LEDs are dark by definition — no boot clears needed — and the
-  // rail's green indicator LED only glows while the LEDs are actually in use.
-  // Force the rail off NOW: the PM1 retains state across USB reflashes, so an
-  // older firmware's LDO bit would otherwise stay latched until the first
-  // alarm cycles it.
-  Wire.begin(M5_INTERNAL_I2C_SDA, M5_INTERNAL_I2C_SCL, M5_INTERNAL_I2C_FREQ);
-  Wire.setTimeOut(4);
-  // Evict the PM1 from the LED chain: the PMIC has its own NeoPixel engine
-  // (it renders charge/status onto these same LEDs, even while the ESP
-  // sleeps) — that is the "stuck green LED". NEO_CFG = 0 is the official
-  // M5PM1::disableLeds(): LED count zero, engine off, the ESP owns the chain.
-  m5Pm1WriteReg(M5PM1_NEO_CFG_REG, 0x00);
+  // the first lit frame and drops it again when everything is black. Unpowered
+  // LEDs are dark by definition, so no boot clears are needed.
+  // Two things keep the chain dark at boot, both idempotent with the display's
+  // earlier applyBootPowerPolicy() (whichever runs first wins):
+  //   - disableLeds(): evict the PM1's own NeoPixel engine, which otherwise
+  //     renders a status pixel (the stuck green LED) onto this chain even while
+  //     the ESP sleeps, and survives a USB reflash.
+  //   - rail off: the LDO bit also persists across reflashes; force it down.
+  if (BoardConfig::ACTIVE.leds.pmicRgbPower) {
+    m5pm1::beginBus();
+    m5pm1::disableLeds();
+  }
   disablePower();
   begun_ = true;
   return true;

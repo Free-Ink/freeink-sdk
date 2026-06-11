@@ -1,7 +1,7 @@
 #include "Ed2208M5Driver.h"
 
 #include <BoardConfig.h>
-#include <Wire.h>
+#include <M5Pm1.h>
 
 #include <algorithm>
 #include <cstring>
@@ -33,47 +33,6 @@ constexpr uint8_t DARK_DISPLAY_CTRL = 0x0F;
 constexpr uint32_t PANEL_AREA = static_cast<uint32_t>(PANEL_WIDTH) * PANEL_HEIGHT;
 constexpr uint32_t PARTIAL_AREA_LIMIT = PANEL_AREA / 4;
 
-// --- M5PM1 PMIC (routes EPD panel power via GPIO0 / EPD_EN over internal I2C) ---
-constexpr uint8_t M5PM1_ADDR = 0x6E;
-constexpr uint8_t M5PM1_POWER_CONFIG_REG = 0x06;
-constexpr uint8_t M5PM1_I2C_CFG_REG = 0x09;  // I2C_CFG, not a watchdog (official M5PM1
-                                             // map); 0 = 100 kHz + no idle sleep, same as
-                                             // the M5 demo's setI2cConfig(0)
-constexpr uint8_t M5PM1_GPIO_MODE_REG = 0x10;
-constexpr uint8_t M5PM1_GPIO_OUT_REG = 0x11;
-constexpr uint8_t M5PM1_GPIO_DRV_REG = 0x13;
-constexpr uint8_t M5PM1_GPIO_FUNC0_REG = 0x16;
-constexpr uint8_t M5PM1_POWER_CHARGE_EN = 1 << 0;
-constexpr uint8_t M5PM1_POWER_LDO_EN = 1 << 2;
-constexpr uint8_t M5PM1_POWER_BOOST_EN = 1 << 3;
-constexpr uint8_t M5PM1_GPIO0 = 1 << 0;
-constexpr int M5_INTERNAL_I2C_SDA = 3;
-constexpr int M5_INTERNAL_I2C_SCL = 2;
-constexpr uint32_t M5_INTERNAL_I2C_FREQ = 100000;
-
-void m5Pm1WriteReg(uint8_t reg, uint8_t value) {
-  Wire.beginTransmission(M5PM1_ADDR);
-  Wire.write(reg);
-  Wire.write(value);
-  Wire.endTransmission();
-}
-
-bool m5Pm1ReadReg(uint8_t reg, uint8_t* value) {
-  Wire.beginTransmission(M5PM1_ADDR);
-  Wire.write(reg);
-  if (Wire.endTransmission(false) != 0) return false;
-  if (Wire.requestFrom(M5PM1_ADDR, static_cast<uint8_t>(1)) != 1) return false;
-  *value = Wire.read();
-  return true;
-}
-
-void m5Pm1UpdateReg(uint8_t reg, uint8_t clearMask, uint8_t setMask) {
-  uint8_t value = 0;
-  if (m5Pm1ReadReg(reg, &value)) {
-    m5Pm1WriteReg(reg, static_cast<uint8_t>((value & ~clearMask) | setMask));
-  }
-}
-
 }  // namespace
 
 uint32_t Ed2208M5Driver::spiHz() const {
@@ -85,27 +44,16 @@ int8_t Ed2208M5Driver::spiMiso() const { return BoardConfig::ACTIVE.sd.miso; }
 int8_t Ed2208M5Driver::coCs() const { return BoardConfig::ACTIVE.sd.cs; }
 
 void Ed2208M5Driver::enablePmicPower() {
-  Wire.begin(M5_INTERNAL_I2C_SDA, M5_INTERNAL_I2C_SCL, M5_INTERNAL_I2C_FREQ);
-  Wire.setTimeOut(4);
-  m5Pm1WriteReg(M5PM1_I2C_CFG_REG, 0x00);
-  // PWR_CFG (reg 0x06) auto-clears to 0 on every reset, so this is the boot-time
-  // power policy for the whole board — set what we want, clear what we don't:
-  //   CHG_EN (bit0): SET. The PM1 only charges the 1250 mAh cell when CHG_EN is
-  //     on; it defaults off after reset and the PM1 regulates the curve itself
-  //     (charges only when VIN is present, stops at full), so enabling it
-  //     unconditionally is safe — this is what M5's firmware does. Without it
-  //     the battery never tops up over USB.
-  //   BOOST_EN (bit3): CLEAR. 5VINOUT/Grove boost — unused on this board.
-  //   LDO_EN (bit2): CLEAR. The 3.3V RGB LED rail, owned by LedManager (re-enabled
-  //     lazily while an LED is lit). Clearing it here keeps its green indicator
-  //     LED dark from boot if an on-state is inherited before LedManager runs —
-  //     the display always comes up first.
-  m5Pm1UpdateReg(M5PM1_POWER_CONFIG_REG, M5PM1_POWER_BOOST_EN | M5PM1_POWER_LDO_EN, M5PM1_POWER_CHARGE_EN);
-  // EPD_EN is M5PM1 GPIO0.
-  m5Pm1UpdateReg(M5PM1_GPIO_FUNC0_REG, M5PM1_GPIO0, 0);
-  m5Pm1UpdateReg(M5PM1_GPIO_MODE_REG, 0, M5PM1_GPIO0);
-  m5Pm1UpdateReg(M5PM1_GPIO_DRV_REG, M5PM1_GPIO0, 0);
-  m5Pm1UpdateReg(M5PM1_GPIO_OUT_REG, 0, M5PM1_GPIO0);
+  // The display is the first M5PM1 caller at boot; it establishes the board power
+  // policy (charge on, boost/RGB rail off — see m5pm1::applyBootPowerPolicy) and
+  // then routes the EPD rail. LedManager shares the same single PM1 owner.
+  m5pm1::beginBus();
+  m5pm1::applyBootPowerPolicy();
+  // EPD_EN is PMIC GPIO0: plain push-pull output, driven high.
+  m5pm1::updateReg(m5pm1::REG_GPIO_FUNC0, m5pm1::GPIO0, 0);
+  m5pm1::updateReg(m5pm1::REG_GPIO_MODE, 0, m5pm1::GPIO0);
+  m5pm1::updateReg(m5pm1::REG_GPIO_DRV, m5pm1::GPIO0, 0);
+  m5pm1::updateReg(m5pm1::REG_GPIO_OUT, 0, m5pm1::GPIO0);
   delay(100);
 }
 

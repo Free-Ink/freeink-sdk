@@ -324,6 +324,8 @@ struct BoardProfile {
   SdPins sd;
   InputPins input;
   int8_t batteryAdc;
+  int8_t batteryChargeStatus;
+  float batteryDividerMultiplier;
   int8_t usbDetect;
   TouchConfig touch;
   FrontlightConfig frontlight;
@@ -410,6 +412,8 @@ constexpr BoardProfile XTEINK_X4 = {Board::XteinkX4,
                                     {PIN_UNASSIGNED, 7, PIN_UNASSIGNED, 12, PIN_UNASSIGNED, false, 0},
                                     {0, 1, 2, 3, 4, 5, 3, false},
                                     0,
+                                    PIN_UNASSIGNED,
+                                    2.0f,
                                     20,
                                     NO_TOUCH,
                                     NO_FRONTLIGHT,
@@ -436,6 +440,8 @@ constexpr BoardProfile XTEINK_X3 = {
     {PIN_UNASSIGNED, 7, PIN_UNASSIGNED, 12, PIN_UNASSIGNED, false, 0},
     {0, 1, 2, 3, 4, 5, 3, false},
     0,
+    PIN_UNASSIGNED,
+    2.0f,
     20,
     NO_TOUCH,
     NO_FRONTLIGHT,
@@ -457,6 +463,8 @@ constexpr BoardProfile M5STACK_PAPER_COLOR = {Board::M5StackPaperColor,
                                               {15, 14, 13, 47, PIN_UNASSIGNED, false, 0},
                                               {1, 1, PIN_UNASSIGNED, PIN_UNASSIGNED, 10, 9, 1, false},
                                               PIN_UNASSIGNED,
+                                              PIN_UNASSIGNED,
+                                              2.0f,
                                               PIN_UNASSIGNED,
                                               NO_TOUCH,
                                               NO_FRONTLIGHT,
@@ -480,7 +488,9 @@ constexpr BoardProfile MURPHY_M3 = {
     0,  // displaySpiHz: 0 -> Murphy UC8253 driver default (4 MHz)
     {39, 13, 40, 10, PIN_UNASSIGNED, true, 0},
     {PIN_UNASSIGNED, 0, PIN_UNASSIGNED, PIN_UNASSIGNED, 1, 2, 0, false},
-    PIN_UNASSIGNED,
+    9,               // batteryAdc: stock firmware samples analogRead(9) for battery voltage
+    PIN_UNASSIGNED,  // batteryChargeStatus: not identified
+    3.030303f,       // stock firmware scales ADC by 0.0016 / 0.33, implying a 1:0.33 divider
     PIN_UNASSIGNED,
     {TouchController::Chsc6x, 13, 12, 44, 45, 0x2e, 24, 224, 24, 398, false, 0, true, false},
     {48, 25000, 10, true},
@@ -495,7 +505,7 @@ constexpr BoardProfile MURPHY_M3 = {
 
 // --- de-link (X4-class GDEQ0426T82 panel on ESP32-S3) — SSD1677 + frontlight ---
 // Reuses the SSD1677 driver (same controller/panel as X4); differs at the board
-// level: S3 MCU, SDMMC SD, MCP73832 charge-sense, warm/cool PWM frontlight.
+// level: S3 MCU, SDMMC SD, warm/cool PWM frontlight.
 //
 // Orientation: this profile ships NO_FLIP (X4 orientation). A board that mounts
 // the panel rotated sets `ROTATE_180` (or a mirror) here, and the SSD1677 driver
@@ -514,7 +524,9 @@ constexpr BoardProfile DE_LINK = {Board::DeLink,
                                   // the wiring is in the sdmmc field below. These SPI sd pins are unused.
                                   {39, 38, 40, 41, PIN_UNASSIGNED, true, 0},
                                   {0, 1, 2, 3, 4, 5, 3, true},  // power button active-HIGH (INPUT_PULLDOWN) on de-link
-                                  4,  // batteryAdc GPIO4 (charge-status GPIO8 is passed to BatteryMonitor by firmware)
+                                  4,  // batteryAdc GPIO4
+                                  PIN_UNASSIGNED,
+                                  2.0f,
                                   PIN_UNASSIGNED,
                                   NO_TOUCH,
                                   // Primary brightness PWM (GPIO5). Warm/cool/rail/fault pins (GPIO6/7/17/18)
@@ -547,8 +559,10 @@ constexpr BoardProfile LILYGO_T5S3 = {
     0,                                           // displaySpiHz n/a (external bus)
     {14, 21, 13, 12, PIN_UNASSIGNED, false, 0},  // SD over SPI: SCLK14 MISO21 MOSI13 CS12
     {PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, 0,
-     false},         // power=BOOT (GPIO0), active-low
+    false},         // power=BOOT (GPIO0), active-low
     PIN_UNASSIGNED,  // batteryAdc: none — uses the I2C fuel gauge below
+    PIN_UNASSIGNED,
+    2.0f,
     PIN_UNASSIGNED,
     LILYGO_T5_PRO_GT911,  // GT911 touch (SDA39 SCL40 INT3 RST9, 0x5D, 540x960)
     {11, 5000, 8, true},  // backlight: BL_EN GPIO11, PWM 5 kHz / 8-bit, active-high
@@ -595,6 +609,8 @@ constexpr BoardProfile M5PAPER_V11 = {
     // touch for those. So confirm and power share pin 38 by design.
     {PIN_UNASSIGNED, 38, PIN_UNASSIGNED, PIN_UNASSIGNED, 37, 39, 38, false},
     35,  // batteryAdc GPIO35 (2:1 divider; pending hardware validation)
+    PIN_UNASSIGNED,
+    2.0f,
     PIN_UNASSIGNED,
     // GT911 touch: panel-native portrait raw range (540x960), shared I2C SDA21/SCL22,
     // INT36, address 0x5D (alt 0x14). No reset GPIO is exposed on M5Paper.

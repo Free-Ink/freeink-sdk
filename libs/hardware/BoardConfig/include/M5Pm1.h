@@ -59,19 +59,39 @@ inline void beginBus() {
   Wire.endTransmission();
 }
 
+// The PM1 is a PY32 MCU emulating an I2C slave in firmware, not a hardware
+// register file. M5's driver pads every transaction with 500 µs and reads
+// multi-byte values as one burst; without the pause after the pointer write
+// the slave serves stale data (e.g. VBAT reading 150 mV), and without burst
+// reads the two halves of a 16-bit value come from different sample windows.
+constexpr uint32_t XFER_DELAY_US = 500;
+
 inline bool writeReg(uint8_t reg, uint8_t value) {
   Wire.beginTransmission(ADDR);
   Wire.write(reg);
   Wire.write(value);
-  return Wire.endTransmission() == 0;
+  if (Wire.endTransmission() != 0) return false;
+  delayMicroseconds(XFER_DELAY_US);
+  return true;
 }
 
-inline bool readReg(uint8_t reg, uint8_t* value) {
+inline bool readBytes(uint8_t reg, uint8_t* data, uint8_t len) {
   Wire.beginTransmission(ADDR);
   Wire.write(reg);
   if (Wire.endTransmission(false) != 0) return false;
-  if (Wire.requestFrom(ADDR, static_cast<uint8_t>(1)) != 1) return false;
-  *value = Wire.read();
+  delayMicroseconds(XFER_DELAY_US);
+  if (Wire.requestFrom(ADDR, len) != len) return false;
+  for (uint8_t i = 0; i < len; ++i) data[i] = Wire.read();
+  return true;
+}
+
+inline bool readReg(uint8_t reg, uint8_t* value) { return readBytes(reg, value, 1); }
+
+// 16-bit little-endian burst read (voltage/ADC result registers).
+inline bool readReg16(uint8_t reg, uint16_t* value) {
+  uint8_t buf[2];
+  if (!readBytes(reg, buf, 2)) return false;
+  *value = static_cast<uint16_t>(buf[0]) | (static_cast<uint16_t>(buf[1]) << 8);
   return true;
 }
 

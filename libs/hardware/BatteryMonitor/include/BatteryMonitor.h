@@ -17,9 +17,30 @@ class BatteryMonitor {
 public:
     static constexpr int8_t PIN_NONE = -1;
 
+    struct Status {
+        bool supported = false;
+        bool percentageKnown = false;
+        bool millivoltsKnown = false;
+        bool chargingKnown = false;
+        bool externalPowerKnown = false;
+        uint16_t percentage = 0;
+        uint16_t millivolts = 0;
+        bool charging = false;
+        bool externalPower = false;
+        // Raw M5PM1 telemetry for diagnostics; -1 when not read (non-PM1 boards
+        // or failed I/O). VIN is the DC input rail, 5VINOUT the bidirectional
+        // USB-C rail, powerSource the PM1's PWR_SRC report (reg 0x04 [2:0]).
+        int32_t pm1VinMv = -1;
+        int32_t pm1VinOutMv = -1;
+        int16_t pm1PowerSource = -1;
+    };
+
+    // Uses BoardConfig::ACTIVE's battery pins/backend.
+    BatteryMonitor();
+
     // Optional divider multiplier defaults to 2.0; optional charge-status pin
     // defaults to unused.
-    explicit BatteryMonitor(uint8_t adcPin, float dividerMultiplier = 2.0f, int8_t chargeStatusPin = PIN_NONE);
+    explicit BatteryMonitor(int8_t adcPin, float dividerMultiplier = 2.0f, int8_t chargeStatusPin = PIN_NONE);
 
     // Read voltage and return percentage (0-100)
     uint16_t readPercentage() const;
@@ -29,6 +50,11 @@ public:
     // unchanged, so a caller can keep its last good value. The ADC path always
     // succeeds.
     bool readPercentageChecked(uint16_t& out) const;
+
+    // Read every battery field the active board can report. `supported` is false
+    // when the board profile has no battery telemetry path. Per-field `Known`
+    // flags distinguish a valid false/zero value from unsupported or failed I/O.
+    Status readStatus() const;
 
     // Read the battery voltage in millivolts (accounts for divider)
     uint16_t readMillivolts() const;
@@ -44,7 +70,12 @@ public:
     static uint16_t percentageFromMillivolts(uint16_t millivolts);
 
 private:
-    uint8_t _adcPin;
+    bool hasAdcBackend() const;
+    bool hasGaugeBackend() const;
+    bool hasM5Pm1Backend() const;
+    bool readM5Pm1Status(Status& status) const;
+
+    int8_t _adcPin;
     float _dividerMultiplier;
     int8_t _chargeStatusPin;
 };

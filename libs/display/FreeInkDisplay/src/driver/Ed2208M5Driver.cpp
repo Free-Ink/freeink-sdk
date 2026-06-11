@@ -88,14 +88,19 @@ void Ed2208M5Driver::enablePmicPower() {
   Wire.begin(M5_INTERNAL_I2C_SDA, M5_INTERNAL_I2C_SCL, M5_INTERNAL_I2C_FREQ);
   Wire.setTimeOut(4);
   m5Pm1WriteReg(M5PM1_I2C_CFG_REG, 0x00);
-  // Actively CLEAR the power bits this driver once set: the PM1 keeps running
-  // across USB reflashes, so bits latched by older firmware survive a flash —
-  // not setting them is not enough. CHARGE_EN/BOOST_EN are never set by M5's
-  // firmware on this board. LDO is the RGB LED rail (owned by LedManager, which
-  // re-enables it lazily while an LED is lit); clear it here too so its green
-  // indicator LED doesn't glow from boot when a stale on-state is inherited
-  // before LedManager::begin() runs — the display always comes up first.
-  m5Pm1UpdateReg(M5PM1_POWER_CONFIG_REG, M5PM1_POWER_CHARGE_EN | M5PM1_POWER_BOOST_EN | M5PM1_POWER_LDO_EN, 0);
+  // PWR_CFG (reg 0x06) auto-clears to 0 on every reset, so this is the boot-time
+  // power policy for the whole board — set what we want, clear what we don't:
+  //   CHG_EN (bit0): SET. The PM1 only charges the 1250 mAh cell when CHG_EN is
+  //     on; it defaults off after reset and the PM1 regulates the curve itself
+  //     (charges only when VIN is present, stops at full), so enabling it
+  //     unconditionally is safe — this is what M5's firmware does. Without it
+  //     the battery never tops up over USB.
+  //   BOOST_EN (bit3): CLEAR. 5VINOUT/Grove boost — unused on this board.
+  //   LDO_EN (bit2): CLEAR. The 3.3V RGB LED rail, owned by LedManager (re-enabled
+  //     lazily while an LED is lit). Clearing it here keeps its green indicator
+  //     LED dark from boot if an on-state is inherited before LedManager runs —
+  //     the display always comes up first.
+  m5Pm1UpdateReg(M5PM1_POWER_CONFIG_REG, M5PM1_POWER_BOOST_EN | M5PM1_POWER_LDO_EN, M5PM1_POWER_CHARGE_EN);
   // EPD_EN is M5PM1 GPIO0.
   m5Pm1UpdateReg(M5PM1_GPIO_FUNC0_REG, M5PM1_GPIO0, 0);
   m5Pm1UpdateReg(M5PM1_GPIO_MODE_REG, 0, M5PM1_GPIO0);

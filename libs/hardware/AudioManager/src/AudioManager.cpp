@@ -33,6 +33,25 @@ constexpr RegVal ES8388_INIT[] = {
 
 constexpr uint8_t ES8388_VOL_MAX_REG = 0x21;  // register full-scale for OUT volumes
 
+// ES8311 playback init, mirroring M5Unified's PaperColor speaker bring-up
+// (_speaker_enabled_cb_papercolor). The codec derives its internal MCLK from
+// BCLK (reg 0x01 bit7 + reg 0x02 MULT_PRE=3, i.e. 32*fs * 8 = 256*fs), so no
+// MCLK line is needed and the same init covers every sample rate. The 16-bit
+// I2S SDP format (0x09) is set explicitly — M5Unified relies on the default.
+constexpr RegVal ES8311_INIT[] = {
+    {0x00, 0x80},  // RESET: CSM power on, slave mode
+    {0x01, 0xB5},  // CLK_MANAGER: internal MCLK from BCLK pin, clocks on
+    {0x02, 0x18},  // CLK_MANAGER: MULT_PRE x8 -> internal MCLK = 256*fs
+    {0x09, 0x0C},  // SDP-in: I2S format, 16-bit
+    {0x0D, 0x01},  // SYSTEM: power up analog circuitry
+    {0x12, 0x00},  // SYSTEM: power up DAC
+    {0x13, 0x10},  // SYSTEM: enable output to HP drive
+    {0x32, 0xCF},  // DAC volume +16 dB (M5's default for the 1W speaker)
+    {0x37, 0x08},  // DAC: bypass equalizer
+};
+
+constexpr uint8_t ES8311_VOL_MAX_REG = 0xCF;  // +16 dB, 0.5 dB/step (0xBF = 0 dB)
+
 uint32_t readLE32(const uint8_t* p) {
   return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
 }
@@ -42,6 +61,7 @@ uint16_t readLE16(const uint8_t* p) { return (uint16_t)p[0] | ((uint16_t)p[1] <<
 
 bool AudioManager::present() const {
   return BoardConfig::ACTIVE.audio.output == BoardConfig::AudioOutput::I2sEs8388 ||
+         BoardConfig::ACTIVE.audio.output == BoardConfig::AudioOutput::I2sEs8311 ||
          BoardConfig::ACTIVE.audio.output == BoardConfig::AudioOutput::I2sDac;
 }
 
@@ -57,14 +77,24 @@ bool AudioManager::codecInit() {
   const auto& cfg = BoardConfig::ACTIVE.audio;
   if (cfg.codecAddr == 0) return true;  // plain I2S DAC, nothing to configure
 
+  const RegVal* seq;
+  size_t seqLen;
+  if (cfg.output == BoardConfig::AudioOutput::I2sEs8311) {
+    seq = ES8311_INIT;
+    seqLen = sizeof(ES8311_INIT) / sizeof(ES8311_INIT[0]);
+  } else {
+    seq = ES8388_INIT;
+    seqLen = sizeof(ES8388_INIT) / sizeof(ES8388_INIT[0]);
+  }
+
   Wire.begin(cfg.codecSda, cfg.codecScl, CODEC_I2C_HZ);
 
   // The OEM firmware retries until the codec ACKs; three attempts is plenty
   // for a codec already powered.
   for (int attempt = 0; attempt < 3; ++attempt) {
     bool ok = true;
-    for (const auto& rv : ES8388_INIT) {
-      if (!codecWrite(rv.reg, rv.val)) {
+    for (size_t i = 0; i < seqLen; ++i) {
+      if (!codecWrite(seq[i].reg, seq[i].val)) {
         ok = false;
         break;
       }
@@ -80,9 +110,14 @@ bool AudioManager::begin() {
   const auto& cfg = BoardConfig::ACTIVE.audio;
   if (!present()) return false;
 
+  if (cfg.ampEnable != BoardConfig::PIN_UNASSIGNED) {
+    pinMode(cfg.ampEnable, OUTPUT);
+    digitalWrite(cfg.ampEnable, LOW);  // amp comes up only during playback
+  }
   if (cfg.enable != BoardConfig::PIN_UNASSIGNED) {
     pinMode(cfg.enable, OUTPUT);
     digitalWrite(cfg.enable, cfg.enableActiveHigh ? HIGH : LOW);
+    delay(10);  // codec rail ramp before the first I2C access
   }
 
   if (!codecInit()) {
@@ -97,6 +132,12 @@ void AudioManager::setVolume(uint8_t percent) {
   if (percent > 100) percent = 100;
   const auto& cfg = BoardConfig::ACTIVE.audio;
   if (cfg.codecAddr == 0) return;
+  if (cfg.output == BoardConfig::AudioOutput::I2sEs8311) {
+    // Single DAC volume register, 0.5 dB/step; full scale matches the init
+    // value M5 ships for this speaker (+16 dB).
+    codecWrite(0x32, (uint8_t)((uint16_t)percent * ES8311_VOL_MAX_REG / 100));
+    return;
+  }
   const uint8_t reg = (uint8_t)((uint16_t)percent * ES8388_VOL_MAX_REG / 100);
   // OUT1 (0x2e/0x2f) and OUT2 (0x30/0x31) pairs, like the OEM volume path.
   codecWrite(0x2e, reg);
@@ -105,13 +146,37 @@ void AudioManager::setVolume(uint8_t percent) {
   codecWrite(0x31, reg);
 }
 
+// DAC mute between alarms so nothing residual reaches the output.
+void AudioManager::codecMute(bool mute) {
+  const auto& cfg = BoardConfig::ACTIVE.audio;
+  if (cfg.codecAddr == 0) return;
+  if (cfg.output == BoardConfig::AudioOutput::I2sEs8311) {
+    codecWrite(0x31, mute ? 0x60 : 0x00);  // DAC_MUTE bits
+  } else {
+    codecWrite(0x19, mute ? 0x04 : 0x00);  // ES8388 DACCONTROL3 soft mute
+  }
+}
+
+void AudioManager::setAmp(bool on) {
+  const auto& cfg = BoardConfig::ACTIVE.audio;
+  if (cfg.ampEnable == BoardConfig::PIN_UNASSIGNED) return;
+  digitalWrite(cfg.ampEnable, on ? HIGH : LOW);
+}
+
 void AudioManager::powerDown() {
   const auto& cfg = BoardConfig::ACTIVE.audio;
-  if (begun_ && cfg.codecAddr != 0) {
-    stop();
-    codecWrite(0x02, 0xff);  // CHIPPOWER: everything off
-    begun_ = false;
+  if (!begun_) return;
+  stop();
+  if (cfg.output == BoardConfig::AudioOutput::I2sEs8311) {
+    // Like M5Unified's disable path: drop the amp and the codec rail.
+    setAmp(false);
+    if (cfg.enable != BoardConfig::PIN_UNASSIGNED) {
+      digitalWrite(cfg.enable, cfg.enableActiveHigh ? LOW : HIGH);
+    }
+  } else if (cfg.codecAddr != 0) {
+    codecWrite(0x02, 0xff);  // ES8388 CHIPPOWER: everything off
   }
+  begun_ = false;
 }
 
 bool AudioManager::parseWavHeader(const WavSource& source, WavInfo& info) {
@@ -231,9 +296,11 @@ bool AudioManager::play(const WavSource& source, bool loop) {
   }
   if (!source.seek(info.dataStart)) return false;
 
-  // Unmute the DAC (stop() mutes it). Codec writes stay on the caller's core
-  // so the shared I2C bus is never touched from the audio task.
-  if (BoardConfig::ACTIVE.audio.codecAddr != 0) codecWrite(0x19, 0x00);
+  // Unmute the DAC (stop() mutes it) and raise the speaker amp. Codec writes
+  // stay on the caller's core so the shared I2C bus is never touched from the
+  // audio task.
+  codecMute(false);
+  setAmp(true);
 
   source_ = source;
   wav_ = info;
@@ -277,8 +344,10 @@ void AudioManager::stop() {
   for (int i = 0; i < 200 && playing_; ++i) {
     vTaskDelay(pdMS_TO_TICKS(10));
   }
-  // Mute the DAC so nothing residual reaches the output between alarms.
-  if (BoardConfig::ACTIVE.audio.codecAddr != 0) codecWrite(0x19, 0x04);
+  // Drop the amp and mute the DAC so nothing residual reaches the output
+  // between alarms.
+  setAmp(false);
+  codecMute(true);
 }
 
 void AudioManager::taskEntry(void* self) { static_cast<AudioManager*>(self)->taskLoop(); }
@@ -366,6 +435,8 @@ bool AudioManager::ensureI2s(uint32_t) { return false; }
 void AudioManager::teardownI2s() {}
 bool AudioManager::codecInit() { return false; }
 bool AudioManager::codecWrite(uint8_t, uint8_t) { return false; }
+void AudioManager::codecMute(bool) {}
+void AudioManager::setAmp(bool) {}
 void AudioManager::taskEntry(void*) {}
 void AudioManager::taskLoop() {}
 }  // namespace freeink

@@ -130,7 +130,7 @@
 #define FREEINK_CAP_COLOR (FREEINK_DEVICE_M5)
 #endif
 #ifndef FREEINK_CAP_AUDIO
-#define FREEINK_CAP_AUDIO (FREEINK_DEVICE_MURPHY)
+#define FREEINK_CAP_AUDIO (FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_M5)
 #endif
 #ifndef FREEINK_CAP_NET_TLS13
 #if defined(FREEINK_NET_WOLFSSL)
@@ -183,7 +183,9 @@ enum class TouchController : uint8_t { None, Chsc6x, Gt911 };
 // Optional audio output path. Murphy M3 ships an ES8388-compatible stereo
 // codec (I2S slave, control over the shared touch I2C bus) — the contract was
 // recovered from the OEM firmware dump; see the consumer's audio notes.
-enum class AudioOutput : uint8_t { None, I2sDac, I2sEs8388, PwmBuzzer };
+// M5 PaperColor ships an ES8311 mono codec + AW8737A speaker amp — the
+// contract comes from the official pin map and M5Unified's speaker bring-up.
+enum class AudioOutput : uint8_t { None, I2sDac, I2sEs8388, I2sEs8311, PwmBuzzer };
 
 constexpr int8_t PIN_UNASSIGNED = -1;
 
@@ -276,8 +278,10 @@ struct AudioConfig {
   int8_t lrclk;    // I2S word select (unused for PWM buzzer)
   int8_t dout;     // I2S data out, or the PWM pin for a buzzer
   int8_t mclk;     // I2S master clock (PIN_UNASSIGNED if not wired)
-  int8_t enable;   // amplifier / rail enable pin (PIN_UNASSIGNED if none)
+  int8_t enable;   // codec power / rail enable pin (PIN_UNASSIGNED if none)
   bool enableActiveHigh;
+  int8_t ampEnable;   // separate speaker-amp enable (e.g. AW8737A SPK_EN), held
+                      // high only while playing; PIN_UNASSIGNED if none. Active-high.
   int8_t codecSda;    // codec control I2C — may be a shared bus (e.g. touch)
   int8_t codecScl;
   uint8_t codecAddr;  // 7-bit codec address, 0 = no control codec
@@ -327,16 +331,29 @@ constexpr FrontlightConfig NO_FRONTLIGHT = {PIN_UNASSIGNED, 0, 0, true};
 constexpr AudioConfig NO_AUDIO = {AudioOutput::None,  PIN_UNASSIGNED, PIN_UNASSIGNED,
                                   PIN_UNASSIGNED,     PIN_UNASSIGNED, PIN_UNASSIGNED,
                                   true,               PIN_UNASSIGNED, PIN_UNASSIGNED,
-                                  0,                  PIN_UNASSIGNED};
+                                  PIN_UNASSIGNED,     0,              PIN_UNASSIGNED};
 
 // Murphy M3 audio, recovered from the OEM firmware: ES8388-compatible codec at
 // 7-bit I2C 0x10 on the shared touch bus (SDA=13/SCL=12, 100 kHz), I2S master
 // on BCLK=40/WS=39/DOUT=41/MCLK=42 (DIN unused). GPIO43 is driven HIGH by the
 // stock board init and is preserved here as the enable line (not proven to be
 // audio-specific, but the OEM bring-up notes say keep it high). GPIO46 carries
-// a separate LEDC tone/buzzer path.
+// a separate LEDC tone/buzzer path. No separate amp-enable pin.
 constexpr AudioConfig MURPHY_AUDIO = {AudioOutput::I2sEs8388, 40, 39, 41, 42, 43, true,
-                                      13, 12, 0x10, 46};
+                                      PIN_UNASSIGNED, 13, 12, 0x10, 46};
+
+// M5 PaperColor audio, from the official pin map (docs.m5stack.com/en/core/
+// PaperColor) and M5Unified's speaker bring-up: ES8311 mono codec at 7-bit I2C
+// 0x18 on the system bus (SDA=3/SCL=2 — shared with the M5PM1 PMIC, same
+// 100 kHz), I2S master on BCLK=40/WS=41/DOUT=38. The MCLK line (GPIO42) is
+// deliberately left unwired: like M5Unified, the codec derives its clock from
+// BCLK (reg 0x01=0xB5 / 0x02=0x18), which makes the init sample-rate-agnostic.
+// GPIO45 (AUDIO_PWR_EN) powers the codec/mic rail; GPIO46 (SPK_EN) enables the
+// AW8737A speaker amp and is raised only while playing. The ES7210 mic ADC
+// (0x40) is not driven.
+constexpr AudioConfig M5_PAPERCOLOR_AUDIO = {AudioOutput::I2sEs8311, 40, 41, 38,
+                                             PIN_UNASSIGNED, 45, true, 46,
+                                             3, 2, 0x18, PIN_UNASSIGNED};
 constexpr DisplayOrientation NO_FLIP = {false, false};            // native scan
 constexpr DisplayOrientation ROTATE_180 = {true, true};           // upside-down mount
 constexpr DisplayOrientation MIRROR_X = {true, false};            // horizontal mirror
@@ -407,7 +424,7 @@ constexpr BoardProfile M5STACK_PAPER_COLOR = {
     PIN_UNASSIGNED,
     NO_TOUCH,
     NO_FRONTLIGHT,
-    NO_AUDIO,
+    M5_PAPERCOLOR_AUDIO,
     NO_FLIP,
     NO_SDMMC,
     NO_GAUGE};

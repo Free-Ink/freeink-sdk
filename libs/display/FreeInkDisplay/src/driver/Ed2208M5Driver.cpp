@@ -154,10 +154,15 @@ void Ed2208M5Driver::begin(EpdBus& bus) {
 }
 
 void Ed2208M5Driver::writeFrame(EpdBus& bus, const uint8_t* fb) {
-  // Interrupted refreshes settle dark with this polarity: logical white -> physical
-  // black, logical black -> physical white.
-  static constexpr uint8_t EPD_WHITE = 0x0;
-  static constexpr uint8_t EPD_BLACK = 0x1;
+  // Pixel codes 0x0/0x1 are the controller's black/white. The interrupted
+  // refresh cuts the OTP waveform off before white settles, which flips the
+  // apparent polarity — so the fast path writes logical white as controller
+  // BLACK (the dark hack) and the image reads correctly. A complete waveform
+  // settles truthfully, so it needs the straight mapping; reusing the dark-hack
+  // polarity there displays the frame inverted (black background, white text).
+  // This runs before refresh() consumes the one-shot flag, so pick per-frame.
+  const uint8_t EPD_WHITE = _completeNextRefresh ? 0x1 : 0x0;
+  const uint8_t EPD_BLACK = _completeNextRefresh ? 0x0 : 0x1;
   uint8_t packedRow[PANEL_WIDTH / 2];
 
   bus.beginTxn();

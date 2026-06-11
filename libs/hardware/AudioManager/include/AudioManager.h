@@ -2,11 +2,13 @@
 
 // FreeInk audio output.
 //
-// Drives the audio path described by BoardConfig::ACTIVE.audio. For
-// AudioOutput::I2sEs8388 (Murphy M3) that means: bring up the ES8388-compatible
-// control codec over its (possibly shared) I2C bus using the OEM-recovered
-// register sequence, master the I2S bus with the new ESP-IDF i2s_std driver,
-// and stream 16-bit PCM WAV data from a caller-supplied byte source.
+// Drives the audio path described by BoardConfig::ACTIVE.audio: bring up the
+// control codec over its (possibly shared) I2C bus, master the I2S bus with
+// the new ESP-IDF i2s_std driver, and stream 16-bit PCM WAV data from a
+// caller-supplied byte source. Two codecs are supported, selected by
+// AudioConfig::output: ES8388 (Murphy M3, OEM-recovered register sequence)
+// and ES8311 (M5 PaperColor, mirroring M5Unified's speaker bring-up — the
+// codec clocks itself from BCLK, plus the AW8737A amp on its ampEnable pin).
 //
 // Playback runs in a dedicated FreeRTOS task (priority above typical workers,
 // like the OEM "musicTask"), so play() returns immediately; with loop=true the
@@ -70,6 +72,8 @@ class AudioManager {
 
   bool codecInit();
   bool codecWrite(uint8_t reg, uint8_t value);
+  void codecMute(bool mute);
+  void setAmp(bool on);
 
   bool begun_ = false;
   volatile bool playing_ = false;

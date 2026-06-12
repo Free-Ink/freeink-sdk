@@ -240,6 +240,37 @@ void Uc8253X3Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev
   _forcedConditionPassesNext = 0;
 }
 
+void Uc8253X3Driver::displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, RefreshMode fallback, bool turnOff) {
+  // OEM V5.6.33 grayscale base update: write the new frame to DTM2 and fire
+  // the "AA-pre-BW(mid)" bank as a differential refresh against the old frame
+  // still held in DTM1. Changed pixels get the strong 0xAA/0x55 transition
+  // drives, unchanged pixels the gentle 0x20/0x10 reinforcement -- leaving
+  // the whole region in the calibrated state the gray nudge bank expects.
+  // When the controller state cannot support a clean differential (DTM1
+  // unsynced after AA, boot full-syncs pending, or an explicit resync
+  // request), fall back to the normal display path and follow it with the
+  // settle flavor of the same bank (DTM1 == DTM2 after display()'s post-
+  // refresh sync, so only the gentle WW/BB cells fire).
+  if (_inGrayscaleMode) {
+    grayscaleRevert(bus, fb);
+  }
+  const bool cleanBaseNeeded = !_redRamSynced || _forceFullSyncNext || _initialFullSyncsRemaining > 0;
+  if (cleanBaseNeeded) {
+    display(bus, fb, nullptr, fallback, /*turnOff=*/false);
+    loadBankCdi(bus, 0xA9, 0x07, _cfg.preBwMid);
+    triggerRefresh(bus, turnOff);
+    return;
+  }
+  bus.sendPlaneFlipped(CMD_DTM2, fb, _h, _wb);
+  loadBankCdi(bus, 0xA9, 0x07, _cfg.preBwMid);
+  triggerRefresh(bus, turnOff);
+  // Keep the driver invariant that DTM1 mirrors the displayed frame; the gray
+  // plane writes that normally follow overwrite both planes anyway.
+  bus.sendPlaneFlipped(CMD_DTM1, fb, _h, _wb);
+  bus.cmd(CMD_DATA_STOP);
+  _redRamSynced = true;
+}
+
 void Uc8253X3Driver::preconditionGrayscale(EpdBus& bus, uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
   // OEM V5.6.33 "AA-pre-BW(mid)" pass: gentle settle of the displayed BW
   // frame (DTM1 == DTM2 == frame after display()'s post-refresh DTM1 sync)

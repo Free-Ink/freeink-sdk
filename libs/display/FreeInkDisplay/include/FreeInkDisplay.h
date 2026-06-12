@@ -79,6 +79,11 @@ class FreeInkDisplay {
   // Uc8253X3Driver::preconditionGrayscale.
   void preconditionGrayscale();
   void preconditionGrayscale(uint16_t x, uint16_t y, uint16_t w, uint16_t h);
+
+  // Display the framebuffer as the base frame for a grayscale overlay that
+  // follows. X3 uses the OEM differential base waveform; other panels display
+  // normally with `fallback` mode. See PanelDriver::displayGrayscaleBase.
+  void displayGrayscaleBase(RefreshMode fallback = HALF_REFRESH, bool turnOffScreen = false);
   void copyGrayscaleBuffers(const uint8_t* lsbBuffer, const uint8_t* msbBuffer);
   void copyGrayscaleLsbBuffers(const uint8_t* lsbBuffer);
   void copyGrayscaleMsbBuffers(const uint8_t* msbBuffer);

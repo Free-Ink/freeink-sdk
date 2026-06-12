@@ -57,6 +57,15 @@ class PanelDriver {
 
   // --- grayscale (dual-plane LSB/MSB) ---
   virtual bool supportsStripGrayscale() const { return false; }
+  // Display `fb` as the base frame for a grayscale overlay that follows.
+  // X3 runs the OEM pipeline (the "AA-pre-BW(mid)" bank as a differential
+  // base update with calibrated drives); panels without a dedicated base
+  // waveform fall back to a plain display() with `fallback` mode, preserving
+  // their previous behavior.
+  virtual void displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, RefreshMode fallback, bool turnOff) {
+    display(bus, fb, nullptr, fallback, turnOff);
+  }
+
   // Grayscale preconditioning settle pass (OEM X3 "AA-pre-BW(mid)"), windowed
   // to the panel rect [x, x+w) x [y, y+h) like the OEM's PTL usage; fire after
   // the BW base frame is displayed, before grayscale planes are written.

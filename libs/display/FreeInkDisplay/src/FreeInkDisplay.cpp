@@ -280,6 +280,14 @@ void FreeInkDisplay::requestCompleteWaveformNextRefresh() {
   if (_driver) _driver->requestCompleteWaveformNextRefresh();
 }
 
+void FreeInkDisplay::setFastRefreshCutoffMs(uint16_t ms) {
+  if (_driver) _driver->setFastRefreshCutoffMs(ms);
+}
+
+uint16_t FreeInkDisplay::fastRefreshCutoffMs() const {
+  return _driver ? _driver->fastRefreshCutoffMs() : 0;
+}
+
 void FreeInkDisplay::grayscaleRevert() {
   if (_driver) _driver->grayscaleRevert(_bus, frameBuffer);
 }

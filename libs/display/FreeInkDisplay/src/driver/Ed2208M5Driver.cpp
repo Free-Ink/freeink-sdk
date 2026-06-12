@@ -206,8 +206,18 @@ void Ed2208M5Driver::powerOff(EpdBus& bus) {
   _panelPowerOn = false;
 }
 
+void Ed2208M5Driver::setFastRefreshCutoffMs(uint16_t ms) {
+  _cutoffMs = ms < 100 ? 100 : (ms > 2000 ? 2000 : ms);
+}
+
+uint16_t Ed2208M5Driver::fastRefreshCutoffMs() const {
+  return _cutoffMs ? _cutoffMs : REFRESH_CUTOFF_MS;
+}
+
 void Ed2208M5Driver::interruptRefresh(EpdBus& bus) {
-  delay(REFRESH_CUTOFF_MS);  // abort the OTP waveform before white settles
+  // Abort the OTP waveform before white settles. The cutoff also picks where
+  // the gate scan freezes — see setFastRefreshCutoffMs().
+  delay(_cutoffMs ? _cutoffMs : REFRESH_CUTOFF_MS);
   bus.reset();
   initController(bus);
   _panelPowerOn = false;

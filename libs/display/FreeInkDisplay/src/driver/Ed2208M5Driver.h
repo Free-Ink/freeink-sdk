@@ -44,6 +44,13 @@ class Ed2208M5Driver : public PanelDriver {
 
   void requestCompleteWaveformNextRefresh() override { _completeNextRefresh = true; }
 
+  // Interrupted-refresh cutoff. The cut freezes the gate scan mid-frame: rows
+  // already scanned that frame got one more drive step, so the scan position at
+  // the cut shows as a hard band across the panel. Tunable so the cutoff can be
+  // swept on a live panel until the seam lands at a frame boundary (row 0).
+  void setFastRefreshCutoffMs(uint16_t ms) override;
+  uint16_t fastRefreshCutoffMs() const override;
+
  private:
   void enablePmicPower();
   void initController(EpdBus& bus);
@@ -64,6 +71,7 @@ class Ed2208M5Driver : public PanelDriver {
 
   bool _panelPowerOn = false;
   bool _completeNextRefresh = false;
+  uint16_t _cutoffMs = 0;  // 0 -> REFRESH_CUTOFF_MS default (set in .cpp)
   bool _lastFrameValid = false;
   uint8_t _fastRefreshesSinceFullPanel = 0;
   uint8_t _prevFrame[LOGICAL_BUF];  // previous frame, for the dirty-window diff

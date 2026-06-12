@@ -37,6 +37,10 @@ class FreeInkDisplay {
   // M5 PaperColor: run the next refresh's OTP waveform to completion (one-shot).
   void requestCompleteWaveformNextRefresh();
 
+  // M5 PaperColor: interrupted-refresh cutoff (ms). The cut freezes the gate
+  void setFastRefreshCutoffMs(uint16_t ms);
+  uint16_t fastRefreshCutoffMs() const;
+
   void begin();
 
   // Legacy compile-time dimensions kept for compatibility.

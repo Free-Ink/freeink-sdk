@@ -301,7 +301,23 @@ void Ed2208M5Driver::refresh(EpdBus& bus, uint16_t dirtyX, uint16_t dirtyY, uint
   bus.endTxn();
 
   if (completeWaveform) {
-    waitBusy(bus);  // run the full OTP waveform to completion
+    // Run the full OTP waveform to completion. waitBusy()'s generic 100 ms
+    // assert window is too short here: the controller preps (power ramp,
+    // on-die temperature read) for a variable time before BUSY drops, and
+    // when prep exceeds the window waitBusy() concludes the panel is idle —
+    // so the POWER_OFF below lands mid-waveform, turning the "complete"
+    // refresh into an accidental interrupted one (nondeterministic blue
+    // gate-scan band, the very artifact this path exists to avoid). Wait
+    // generously for the drive to actually start, then for it to finish.
+    const int8_t busyPin = bus.pins().busy;
+    const unsigned long start = millis();
+    while (digitalRead(busyPin) == HIGH && millis() - start < 2000) {
+      delay(1);
+    }
+    while (digitalRead(busyPin) == LOW && millis() - start < 60000) {
+      delay(10);
+    }
+    delay(BUSY_SETTLE_MS);
     bus.beginTxn();
     bus.rawCmd(0x02);  // POWER_OFF
     bus.rawData(0x00);

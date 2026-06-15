@@ -319,6 +319,15 @@ struct TouchConfig {
   // controller is always powered; driven HIGH before the reset/probe on boards
   // that gate it (e.g. Sticky's TOUCH_EN). Default keeps existing initializers valid.
   int8_t powerEnable = PIN_UNASSIGNED;
+  // Touch-to-panel mounting correction, applied to the raw coords so the touch
+  // frame aligns with the display's NATIVE (panel) frame before orientation
+  // mapping. swapXY first (digitizer rotated 90° vs panel, e.g. Sticky's portrait
+  // sensor on a landscape panel), then per-axis flip. rawMinX/MaxX/etc describe the
+  // POST-swap (panel) axes. Defaults = aligned. The display orientation is handled
+  // separately by GfxRenderer::tapToLogical, so taps follow rotation automatically.
+  bool swapXY = false;
+  bool flipX = false;
+  bool flipY = false;
 };
 
 // PWM frontlight description (gpio == PIN_UNASSIGNED disables it).
@@ -755,7 +764,10 @@ constexpr BoardProfile STICKY = {
     // layout (RST wired -> reset/config dance runs, track-id present).
     // gt911CoordsAtByte0=true: this panel's GT911 reports coords at byte 0 (no
     // track-id), like M5Paper — confirmed by raw point dumps during bring-up.
-    {TouchController::Gt911, 3, 2, 21, 41, 0x5D, 0, 799, 0, 479, false, 0x14, false, true, 42},  // TOUCH_EN=GPIO42
+    // Portrait digitizer on a landscape panel: swapXY + flip both maps the sensor
+    // frame onto the panel-native frame (confirmed by corner + menu bring-up taps).
+    // rawMax* are the panel axes (post-swap). powerEnable=GPIO42 (TOUCH_EN).
+    {TouchController::Gt911, 3, 2, 21, 41, 0x5D, 0, 799, 0, 479, false, 0x14, false, true, 42, true, true, true},
     NO_FRONTLIGHT,  // e-paper, no frontlight (charge LED is board-support)
     STICKY_AUDIO,   // no output codec; LEDC buzzer on GPIO48 (Buzzer lib). PDM mic is separate (mic field)
     NO_LEDS,        // charge-state LED is charger-driven, not an addressable strip

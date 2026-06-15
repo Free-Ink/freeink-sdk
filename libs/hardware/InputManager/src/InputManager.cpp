@@ -552,8 +552,15 @@ void InputManager::pollGt911(const unsigned long now) {
       touchPoint.valid = true;
       // Panel-native coordinates (calibrated raw range, touch panel's orientation);
       // the app maps to its display/logical frame.
-      touchPoint.x = mapTouchAxis(rawX, t.rawMinX, t.rawMaxX, t.rawMaxX - t.rawMinX);
-      touchPoint.y = mapTouchAxis(rawY, t.rawMinY, t.rawMaxY, t.rawMaxY - t.rawMinY);
+      // Correct digitizer mounting so the touch frame matches the display NATIVE
+      // (panel) frame before any orientation mapping: swap axes first (rotated 90°
+      // sensor), then map with the panel-axis ranges, then per-axis flip.
+      const uint16_t sx = t.swapXY ? rawY : rawX;
+      const uint16_t sy = t.swapXY ? rawX : rawY;
+      touchPoint.x = mapTouchAxis(sx, t.rawMinX, t.rawMaxX, t.rawMaxX - t.rawMinX);
+      touchPoint.y = mapTouchAxis(sy, t.rawMinY, t.rawMaxY, t.rawMaxY - t.rawMinY);
+      if (t.flipX) touchPoint.x = static_cast<uint16_t>((t.rawMaxX - t.rawMinX) - touchPoint.x);
+      if (t.flipY) touchPoint.y = static_cast<uint16_t>((t.rawMaxY - t.rawMinY) - touchPoint.y);
       touchPoint.timestamp = now;
       if (!touchPressed) {
         touchPressedEvent = true;

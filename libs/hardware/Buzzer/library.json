@@ -1,0 +1,10 @@
+{
+  "name": "Buzzer",
+  "version": "1.0.0",
+  "description": "FreeInk buzzer: LEDC PWM tone beeper on the BoardConfig::ACTIVE.audio.buzzer pin (tone/beep/noTone). Independent of AudioManager; gated by FREEINK_CAP_BUZZER.",
+  "keywords": "buzzer, ledc, pwm, tone, eink",
+  "authors": [{"name": "FreeInk SDK Contributors"}],
+  "dependencies": {},
+  "platforms": "espressif32",
+  "frameworks": ["arduino"]
+}

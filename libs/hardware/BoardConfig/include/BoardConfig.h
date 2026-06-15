@@ -158,6 +158,12 @@
 #ifndef FREEINK_CAP_IMU
 #define FREEINK_CAP_IMU (FREEINK_DEVICE_STICKY)
 #endif
+// LEDC PWM buzzer (tone beeper). The Buzzer lib drives the AudioConfig.buzzer
+// pin; on for boards that wire one (Sticky GPIO48, Murphy GPIO46). Separate from
+// FREEINK_CAP_AUDIO — a buzzer is a tone device, not a WAV/codec output.
+#ifndef FREEINK_CAP_BUZZER
+#define FREEINK_CAP_BUZZER (FREEINK_DEVICE_STICKY || FREEINK_DEVICE_MURPHY)
+#endif
 #ifndef FREEINK_CAP_LED
 #define FREEINK_CAP_LED (FREEINK_DEVICE_M5)
 #endif
@@ -455,6 +461,13 @@ constexpr AudioConfig MURPHY_AUDIO = {AudioOutput::I2sEs8388, 40, 39, 41,   42, 
 // (0x40) is not driven.
 constexpr AudioConfig M5_PAPERCOLOR_AUDIO = {
     AudioOutput::I2sEs8311, 40, 41, 38, PIN_UNASSIGNED, 45, true, 46, 3, 2, 0x18, PIN_UNASSIGNED};
+
+// Sticky has no output codec (PDM mic in only) — just the LEDC buzzer on GPIO48,
+// driven by the Buzzer lib. output=None so hasAudio() stays false; the buzzer
+// field carries the tone pin (mirrors how MURPHY_AUDIO carries its buzzer).
+constexpr AudioConfig STICKY_AUDIO = {AudioOutput::None,    PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED,
+                                      PIN_UNASSIGNED,       PIN_UNASSIGNED, true,           PIN_UNASSIGNED,
+                                      PIN_UNASSIGNED,       PIN_UNASSIGNED, 0,              48};
 constexpr DisplayOrientation NO_FLIP = {false, false};   // native scan
 constexpr DisplayOrientation ROTATE_180 = {true, true};  // upside-down mount
 constexpr DisplayOrientation MIRROR_X = {true, false};   // horizontal mirror
@@ -729,8 +742,8 @@ constexpr BoardProfile STICKY = {
     // reports pixel coords, so raw range == panel size; standard datasheet frame
     // layout (RST wired -> reset/config dance runs, track-id present).
     {TouchController::Gt911, 3, 2, 21, 41, 0x5D, 0, 799, 0, 479, false, 0x14, false, false},
-    NO_FRONTLIGHT,  // e-paper, no frontlight (BUZZER on GPIO48 + charge LED are board-support)
-    NO_AUDIO,       // PDM mic is input-only (the SDK audio path is output); no output codec
+    NO_FRONTLIGHT,  // e-paper, no frontlight (charge LED is board-support)
+    STICKY_AUDIO,   // no output codec; LEDC buzzer on GPIO48 (Buzzer lib). PDM mic is separate (mic field)
     NO_LEDS,        // charge-state LED is charger-driven, not an addressable strip
     NO_FLIP,        // UNVERIFIED mount — see note above
     NO_SDMMC,       // SD is SPI, not 4-bit SDMMC
@@ -850,6 +863,7 @@ inline bool hasTouch() { return ACTIVE.touch.controller != TouchController::None
 inline bool hasPwmFrontlight() { return ACTIVE.frontlight.gpio != PIN_UNASSIGNED; }
 inline bool hasAudio() { return ACTIVE.audio.output != AudioOutput::None; }
 inline bool hasMic() { return ACTIVE.mic.input != MicInput::None; }
+inline bool hasBuzzer() { return ACTIVE.audio.buzzer != PIN_UNASSIGNED; }
 inline bool hasRtc() { return ACTIVE.sensors.rtcAddr != 0; }
 inline bool hasTempHumidity() { return ACTIVE.sensors.tempHumidityAddr != 0; }
 inline bool hasImu() { return ACTIVE.sensors.imuAddr != 0; }

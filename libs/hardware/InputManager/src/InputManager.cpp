@@ -1,5 +1,7 @@
 #include "InputManager.h"
 
+#include <esp_rom_sys.h>  // esp_rom_printf: always-on console (Serial/HWCDC drops on S3)
+
 #if FREEINK_CAP_TOUCH
 #include <Wire.h>
 #endif
@@ -489,9 +491,8 @@ void InputManager::beginGt911() {
   }
   touchDataEnabled = (gt911Addr != 0);
 #ifdef TOUCH_PROBE_DEBUG
-  if (Serial)
-    Serial.printf("[touch] GT911 probe: addr=0x%02X enabled=%d (sda=%d scl=%d cand=0x%02X/0x%02X)\n", gt911Addr,
-                  touchDataEnabled, t.sda, t.scl, t.i2cAddress, t.i2cAddressAlt);
+  esp_rom_printf("[touch] GT911 probe: addr=0x%02X enabled=%d (sda=%d scl=%d cand=0x%02X/0x%02X)\n", gt911Addr,
+                 touchDataEnabled, t.sda, t.scl, t.i2cAddress, t.i2cAddressAlt);
 #endif
 }
 
@@ -554,10 +555,14 @@ void InputManager::pollGt911(const unsigned long now) {
       touchPoint.x = mapTouchAxis(rawX, t.rawMinX, t.rawMaxX, t.rawMaxX - t.rawMinX);
       touchPoint.y = mapTouchAxis(rawY, t.rawMinY, t.rawMaxY, t.rawMaxY - t.rawMinY);
       touchPoint.timestamp = now;
-      if (!touchPressed) touchPressedEvent = true;
+      if (!touchPressed) {
+        touchPressedEvent = true;
+        touchDownPoint = touchPoint;  // first contact sample, used for tap routing (wasTouchTap)
+      }
 #ifdef TOUCH_PROBE_DEBUG
-      if (!touchPressed && Serial)
-        Serial.printf("[touch] press raw=(%u,%u) mapped=(%u,%u)\n", rawX, rawY, touchPoint.x, touchPoint.y);
+      if (!touchPressed)
+        esp_rom_printf("[touch] press pt=[%02X %02X %02X %02X %02X %02X %02X %02X] raw=(%u,%u) mapped=(%u,%u)\n", pt[0],
+                       pt[1], pt[2], pt[3], pt[4], pt[5], pt[6], pt[7], rawX, rawY, touchPoint.x, touchPoint.y);
 #endif
       touchPressed = true;
     }

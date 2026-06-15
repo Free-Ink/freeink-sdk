@@ -753,7 +753,9 @@ constexpr BoardProfile STICKY = {
     // GT911 touch on its own I2C bus (SDA3 SCL2 INT21 RST41, 0x5D alt 0x14). GT911
     // reports pixel coords, so raw range == panel size; standard datasheet frame
     // layout (RST wired -> reset/config dance runs, track-id present).
-    {TouchController::Gt911, 3, 2, 21, 41, 0x5D, 0, 799, 0, 479, false, 0x14, false, false, 42},  // TOUCH_EN=GPIO42
+    // gt911CoordsAtByte0=true: this panel's GT911 reports coords at byte 0 (no
+    // track-id), like M5Paper — confirmed by raw point dumps during bring-up.
+    {TouchController::Gt911, 3, 2, 21, 41, 0x5D, 0, 799, 0, 479, false, 0x14, false, true, 42},  // TOUCH_EN=GPIO42
     NO_FRONTLIGHT,  // e-paper, no frontlight (charge LED is board-support)
     STICKY_AUDIO,   // no output codec; LEDC buzzer on GPIO48 (Buzzer lib). PDM mic is separate (mic field)
     NO_LEDS,        // charge-state LED is charger-driven, not an addressable strip

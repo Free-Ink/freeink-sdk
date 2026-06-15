@@ -70,21 +70,6 @@ void EpdBus::data(const uint8_t* d, uint16_t len) {
   SPI.endTransaction();
 }
 
-void EpdBus::dataInverted(const uint8_t* d, uint16_t len) {
-  SPI.beginTransaction(_spi);
-  digitalWrite(_pins.dc, HIGH);
-  digitalWrite(_pins.cs, LOW);
-  uint8_t chunk[64];
-  for (uint16_t off = 0; off < len;) {
-    const uint16_t n = static_cast<uint16_t>((len - off) < sizeof(chunk) ? (len - off) : sizeof(chunk));
-    for (uint16_t i = 0; i < n; ++i) chunk[i] = static_cast<uint8_t>(~d[off + i]);
-    SPI.writeBytes(chunk, n);
-    off += n;
-  }
-  digitalWrite(_pins.cs, HIGH);
-  SPI.endTransaction();
-}
-
 void EpdBus::cmdData(uint8_t c, const uint8_t* d, uint16_t len) {
   SPI.beginTransaction(_spi);
   digitalWrite(_pins.cs, LOW);

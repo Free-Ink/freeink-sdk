@@ -72,10 +72,8 @@ static const Ssd1677Config& ssd1677StickyConfig() {
       lut_grayscale_revert,
       0xF7,  // fullSeqOverride: vendor FULL update sequence
       0xFF,  // fastSeqOverride: vendor PARTIAL/DU update sequence (the actual fast path)
-      false,  // useOtpGray4: use the (non-flashing) custom LUT now that the power-state
-              // fix lets it run — the hang was the panel being off, not the LUT.
-      0x01,   // borderWaveformFull: vendor FULL/partial-clear border
-      0x80,   // borderWaveformFast: vendor PARTIAL/DU border (stops the dark edge ring)
+      0x01,  // borderWaveformFull: vendor FULL/partial-clear border
+      0x80,  // borderWaveformFast: vendor PARTIAL/DU border (stops the dark edge ring)
   };
   return cfg;
 }
@@ -371,17 +369,6 @@ void Ssd1677Driver::writeGrayscalePlaneStrip(EpdBus& bus, GrayPlane plane, const
                                              uint16_t numRows) {
   if (!rows || numRows == 0) return;
   const uint16_t len = static_cast<uint16_t>(static_cast<uint32_t>(numRows) * _wb);
-  if (_cfg.useOtpGray4) {
-    // OTP gray4 plane mapping is the opposite of the X4 LUT path: MSB plane -> BW RAM
-    // (0x24), LSB plane -> RED RAM (0x26). The renderer's planes are already in the
-    // panel's polarity (the X4 path writes them un-inverted), so NO bit-invert here —
-    // inverting produced a photo-negative. The swap alone fixes the washed-out levels.
-    const uint8_t ramCmd = (plane == GrayPlane::Lsb) ? CMD_WRITE_RAM_RED : CMD_WRITE_RAM_BW;
-    setRamArea(bus, 0, yStart, _w, numRows);
-    bus.cmd(ramCmd);
-    bus.data(rows, len);
-    return;
-  }
   const uint8_t ramCmd = (plane == GrayPlane::Lsb) ? CMD_WRITE_RAM_BW : CMD_WRITE_RAM_RED;
   setRamArea(bus, 0, yStart, _w, numRows);
   bus.cmd(ramCmd);
@@ -391,33 +378,6 @@ void Ssd1677Driver::writeGrayscalePlaneStrip(EpdBus& bus, GrayPlane plane, const
 void Ssd1677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut,
                                 bool factoryMode) {
   (void)fb;
-
-  // OTP gray4 path (panels whose custom-LUT waveform hangs, e.g. Sticky): no custom
-  // LUT — force the temperature and run the panel's built-in gray4 update sequence
-  // (0x22=0xD7) against the two RAM planes. Self-contained (powers down after), so no
-  // differential revert is needed. LSB/MSB planes were already written to BW/RED RAM.
-  if (_cfg.useOtpGray4) {
-    (void)lut;
-    (void)factoryMode;
-    (void)turnOff;
-    _inGrayscaleMode = false;
-    bus.cmd(CMD_BORDER_WAVEFORM);  // 0x3C: gray4 border (vendor uses 0x00, not the BW 0x01)
-    bus.data(0x00);
-    bus.cmd(CMD_WRITE_TEMP);  // 0x1A: force temperature so the OTP gray4 LUT is used
-    bus.data(0x67);
-    bus.data(0x00);
-    bus.cmd(CMD_DISPLAY_UPDATE_CTRL1);  // 0x21 normal: gray4 uses BOTH RAM planes
-    bus.data(CTRL1_NORMAL);
-    bus.cmd(CMD_DISPLAY_UPDATE_CTRL2);  // 0x22
-    bus.data(0xD7);                     // vendor gray4 sequence
-    bus.cmd(CMD_MASTER_ACTIVATION);     // 0x20
-    bus.waitBusy("gray4_otp");
-    // Restore the normal BW border so the next B/W page isn't left with the gray border.
-    bus.cmd(CMD_BORDER_WAVEFORM);
-    bus.data(0x01);
-    _isScreenOn = false;  // the gray4 sequence powers down at the end
-    return;
-  }
 
   // Differential mode leaves the LUT loaded (reverted before the next BW turn);
   // factory absolute mode self-cleans.

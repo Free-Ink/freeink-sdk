@@ -45,9 +45,6 @@ class EpdBus {
   void cmd(uint8_t c);
   void data(uint8_t d);
   void data(const uint8_t* d, uint16_t len);
-  // data(), but each byte bit-inverted (XOR 0xFF) on the way out, as one CS-low burst.
-  // Inverts in small chunks (no full-frame scratch). Used by the OTP gray4 plane write.
-  void dataInverted(const uint8_t* d, uint16_t len);
 
   // Command followed by payload inside a single CS-low transaction — X3 style.
   void cmdData(uint8_t c, const uint8_t* d, uint16_t len);

@@ -32,19 +32,10 @@ struct Ssd1677Config {
   // SSD1677 driver.) Ignored while a custom grayscale LUT is active.
   uint8_t fullSeqOverride = 0;  // FULL and HALF (cold/first) refreshes
   uint8_t fastSeqOverride = 0;  // FAST (UI) refreshes
-  // 4-level grayscale via the panel's built-in OTP waveform instead of a custom LUT.
-  // false (X4): load grayLut and run a custom-LUT refresh. true (Sticky, whose panel
-  // hangs on the X4 LUT — 30s busy timeout): no custom LUT, force temperature and run
-  // the OTP gray4 sequence (0x22=0xD7), self-contained. LSB/MSB planes in BW/RED RAM
-  // are written the same way either path.
-  bool useOtpGray4 = false;
-  // Border waveform (CMD 0x3C) re-written per refresh in the seqOverride path,
-  // matching the vendor driver (full/half = 0x01, partial/DU/fast = 0x80). The
-  // driver writes 0x01 once at init; a board whose partial-refresh border is left
-  // driven dark (Sticky shows a black ring around the page after fast page turns)
-  // supplies its vendor border values here so the border tracks the refresh mode.
-  // 0 = don't touch the border (keep the init value). Only consulted when
-  // fullSeqOverride / fastSeqOverride are set.
+  // Border waveform (CMD 0x3C) re-written per refresh in the seqOverride path so
+  // it tracks the refresh mode (vendor parity); without this a partial/DU refresh
+  // leaves the border driven dark (Sticky's black ring). 0 = keep the init value.
+  // Only consulted when fullSeqOverride / fastSeqOverride are set.
   uint8_t borderWaveformFull = 0;  // FULL and HALF refreshes
   uint8_t borderWaveformFast = 0;  // FAST (UI / page-turn) refreshes
 };

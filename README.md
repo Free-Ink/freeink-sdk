@@ -266,10 +266,13 @@ off it compiles to an inert no-op, so the rest of the SDK builds without wolfSSL
 - freestanding C++17 with no Arduino dependency, covered by host-side unit
   tests (`libs/ui/FreeInkUI/test/host/run.sh`)
 
-Optional header-only adapters bridge it to a `GfxRenderer`-based drawing
-stack (`FreeInkUIGfxRenderer.h`) and to this SDK's `InputManager`
-(`FreeInkUIInputManager.h`), so existing fonts, bidi, localization, and page
-rendering stay where they are. See [`docs/freeink-ui.md`](docs/freeink-ui.md).
+It renders through `DisplayTarget` (`FreeInkUIDisplayTarget.h`), a self-contained
+target that draws into `FreeInkDisplay`'s framebuffer with no external graphics
+library and bundles a Noto Sans bitmap font — swap in your own with
+`tools/gen_font.py`. Optional header-only adapters bridge it to a CrossPoint
+`GfxRenderer` drawing stack (`FreeInkUIGfxRenderer.h`, compiled only where
+`<GfxRenderer.h>` is available) and to this SDK's `InputManager`
+(`FreeInkUIInputManager.h`). See [`docs/freeink-ui.md`](docs/freeink-ui.md).
 
 ## Using FreeInk from PlatformIO
 

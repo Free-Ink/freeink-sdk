@@ -8,11 +8,13 @@
 // owns a 416x240 framebuffer (BoardProfile.displayWidth/Height) and this driver
 // rotates each plane when writing to the UC8253. OEM LUTs are loaded per refresh.
 //
-// Refresh: the OEM sends the current frame to both DTM1 and DTM2 — with old==new
-// for every pixel, only the WW/BB waveforms fire and drive each pixel to its
-// target. The DEFAULT LUTs do a full 3-phase (ghost-clearing) drive; the FAST LUTs
-// keep only the destination-drive phase (quick, flash-free) and the driver
-// promotes a fast refresh to a full one every ghostClearInterval refreshes.
+// Refresh: differential. The previous frame goes to DTM1 (old) and the new frame
+// to DTM2 (new), so the UC8253 picks a per-pixel waveform — unchanged pixels take
+// WW/BB, changed pixels take the manufacturer's BW/WB transition waveforms. The
+// DEFAULT (GC) LUTs do a ghost-clearing multi-level drive; the FAST (DU) LUTs do a
+// quick single-direction drive, and the driver promotes a fast refresh to a full
+// one every ghostClearInterval refreshes. When no previous frame is available
+// (single-buffer builds) the new frame is written to both planes (WW/BB only).
 //
 // Selection: linked only when -DFREEINK_DRIVER_UC8253_MURPHY (Murphy board env).
 
@@ -29,10 +31,21 @@ struct Uc8253MurphyLutBank {
   const uint8_t* bb;    // 0x24
 };
 
+// Per-register LUT lengths. The UC8253 expects VCOM (0x20) and BW (0x22) at 56
+// bytes and WW/WB/BB at 42 (manufacturer reference); each register is written at
+// its own length so the controller latches the full waveform.
+struct Uc8253MurphyLutLens {
+  uint8_t vcom;  // 0x20
+  uint8_t ww;    // 0x21
+  uint8_t bw;    // 0x22
+  uint8_t wb;    // 0x23
+  uint8_t bb;    // 0x24
+};
+
 struct Uc8253MurphyConfig {
-  Uc8253MurphyLutBank def;     // full 3-phase (ghost-clearing) waveforms
-  Uc8253MurphyLutBank fast;    // destination-drive-only waveforms
-  uint8_t lutLen;              // bytes per LUT (42)
+  Uc8253MurphyLutBank def;     // GC (ghost-clearing) waveforms
+  Uc8253MurphyLutBank fast;    // DU (quick) waveforms
+  Uc8253MurphyLutLens lens;    // per-register LUT byte counts
   uint8_t ghostClearInterval;  // promote FAST -> full every N refreshes
 };
 

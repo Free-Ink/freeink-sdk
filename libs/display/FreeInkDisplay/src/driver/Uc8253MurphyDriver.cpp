@@ -40,8 +40,8 @@ const Uc8253MurphyConfig& uc8253MurphyDefaultConfig() {
   static const Uc8253MurphyConfig cfg = {
       {MURPHY_LUT_20_DEFAULT, MURPHY_LUT_21_DEFAULT, MURPHY_LUT_22_DEFAULT, MURPHY_LUT_23_DEFAULT, MURPHY_LUT_24_DEFAULT},
       {MURPHY_LUT_20_FAST, MURPHY_LUT_21_FAST, MURPHY_LUT_22_FAST, MURPHY_LUT_23_FAST, MURPHY_LUT_24_FAST},
-      MURPHY_LUT_LEN,  // 42
-      8,               // promote FAST -> full every 8 refreshes
+      {MURPHY_LUT_LEN_VCOM, MURPHY_LUT_LEN_WW, MURPHY_LUT_LEN_BW, MURPHY_LUT_LEN_WB, MURPHY_LUT_LEN_BB},  // 56/42/56/42/42
+      8,  // promote FAST -> full every 8 refreshes
   };
   return cfg;
 }
@@ -61,11 +61,11 @@ PanelGeometry Uc8253MurphyDriver::geometry() const {
 }
 
 void Uc8253MurphyDriver::loadLut(EpdBus& bus, const Uc8253MurphyLutBank& bank) {
-  bus.cmdData(CMD_LUT_VCOM, bank.vcom, _cfg.lutLen);
-  bus.cmdData(CMD_LUT_WW, bank.ww, _cfg.lutLen);
-  bus.cmdData(CMD_LUT_BW, bank.bw, _cfg.lutLen);
-  bus.cmdData(CMD_LUT_WB, bank.wb, _cfg.lutLen);
-  bus.cmdData(CMD_LUT_BB, bank.bb, _cfg.lutLen);
+  bus.cmdData(CMD_LUT_VCOM, bank.vcom, _cfg.lens.vcom);
+  bus.cmdData(CMD_LUT_WW, bank.ww, _cfg.lens.ww);
+  bus.cmdData(CMD_LUT_BW, bank.bw, _cfg.lens.bw);
+  bus.cmdData(CMD_LUT_WB, bank.wb, _cfg.lens.wb);
+  bus.cmdData(CMD_LUT_BB, bank.bb, _cfg.lens.bb);
 }
 
 // Rotate the landscape framebuffer (416x240) into the controller's portrait RAM
@@ -147,10 +147,8 @@ void Uc8253MurphyDriver::begin(EpdBus& bus) {
 }
 
 void Uc8253MurphyDriver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
-  (void)prev;  // B/W path writes the current frame to both planes; no software prev buffer
-
-  // FAST keeps only the destination-drive phase; ghosting accumulates, so promote
-  // to a full (ghost-clearing) refresh every ghostClearInterval refreshes.
+  // FAST (DU) ghosts over time, so promote to a full (GC) refresh every
+  // ghostClearInterval refreshes.
   bool useFast = (mode == RefreshMode::Fast);
   if (useFast) {
     if (_cfg.ghostClearInterval != 0 && _fastRefreshCount >= _cfg.ghostClearInterval) {
@@ -165,9 +163,11 @@ void Uc8253MurphyDriver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* 
 
   loadLut(bus, useFast ? _cfg.fast : _cfg.def);
 
-  // Old==new on both planes -> only the WW/BB waveforms fire, driving every pixel
-  // to its target.
-  writePlane(bus, CMD_DTM1, fb);
+  // Differential refresh: old frame -> DTM1, new frame -> DTM2, so the UC8253
+  // selects WW/BB for unchanged pixels and BW/WB transition waveforms for changed
+  // ones. With no previous frame (single-buffer builds) write new to both planes,
+  // leaving only WW/BB to drive every pixel to its target.
+  writePlane(bus, CMD_DTM1, prev != nullptr ? prev : fb);
   writePlane(bus, CMD_DTM2, fb);
 
   triggerRefresh(bus, turnOff);

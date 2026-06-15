@@ -3,6 +3,7 @@
 // device in the loop. Run with test/host/run.sh.
 
 #include <FreeInkUI.h>
+#include <FreeInkUIDisplayTarget.h>
 
 #include <cstdio>
 #include <cstring>
@@ -117,6 +118,65 @@ void testRect() {
   CHECK_EQ(inset.height, 40);
   CHECK((Rect{0, 0, 0, 10}.empty()));
   CHECK(!r.empty());
+}
+
+// Framebuffer-backed native target: draws into a real 1-bit buffer with no
+// GfxRenderer. Convention: set bit = white, clear bit = black ink.
+void testDisplayTarget() {
+  constexpr int16_t W = 64, H = 32, WB = W / 8;
+  uint8_t fb[WB * H];
+  std::memset(fb, 0xFF, sizeof(fb));  // white page
+  DisplayTarget target(fb, W, H, WB);
+
+  const auto pixelInk = [&](int16_t x, int16_t y) {
+    return ((fb[y * WB + (x >> 3)] >> (7 - (x & 7))) & 0x01) == 0;  // clear bit = ink
+  };
+
+  // Solid black fill flips the covered region to ink and leaves the rest white.
+  target.fill(Rect{2, 2, 8, 8}, Paint::solid(Color::Black));
+  CHECK(pixelInk(2, 2));
+  CHECK(pixelInk(9, 9));
+  CHECK(!pixelInk(10, 10));  // outside the rect stays white
+  CHECK(!pixelInk(1, 1));
+
+  // White fill clears ink back to white (idempotent on a white page).
+  target.fill(Rect{2, 2, 8, 8}, Paint::solid(Color::White));
+  CHECK(!pixelInk(5, 5));
+
+  // measureText is proportional and positive; lineHeight matches the font.
+  const TextStyle style{};
+  CHECK_EQ(target.lineHeight(0), kNotoSansFont.yAdvance);
+  const Size w1 = target.measureText(0, "i", style);
+  const Size w2 = target.measureText(0, "W", style);
+  CHECK(w1.width > 0);
+  CHECK(w2.width > w1.width);  // 'W' is wider than 'i' (proportional)
+
+  // Text lays down ink somewhere in its rect.
+  std::memset(fb, 0xFF, sizeof(fb));
+  target.text(Rect{0, 0, W, H}, "Ag", style);
+  size_t inkCount = 0;
+  for (int16_t y = 0; y < H; ++y)
+    for (int16_t x = 0; x < W; ++x)
+      if (pixelInk(x, y)) ++inkCount;
+  CHECK(inkCount > 0);
+
+  // Inverted text (color White) draws nothing onto an already-white page.
+  std::memset(fb, 0xFF, sizeof(fb));
+  TextStyle white = style;
+  white.color = Color::White;
+  target.text(Rect{0, 0, W, H}, "Ag", white);
+  for (int16_t y = 0; y < H; ++y)
+    for (int16_t x = 0; x < W; ++x) CHECK(!pixelInk(x, y));
+
+  // The ellipsis codepoint measures as three dots, not one unknown box.
+  const Size dots = target.measureText(0, "...", style);
+  const Size ell = target.measureText(0, "\xE2\x80\xA6", style);
+  CHECK_EQ(dots.width, ell.width);
+
+  // Swapping a slot's font changes its metrics independently of slot 0.
+  // (Re-pointing at the same font is a no-op; just exercise the API.)
+  target.setFont(2, kNotoSansFont);
+  CHECK_EQ(target.lineHeight(2), kNotoSansFont.yAdvance);
 }
 
 void testStackFillsExactly() {
@@ -1466,6 +1526,7 @@ void testStyleSetUnset() {
 
 int main() {
   testRect();
+  testDisplayTarget();
   testStackFillsExactly();
   testStackFlexRemainderWithTrailingFixed();
   testStackGaps();

@@ -24,7 +24,11 @@ The design goal is "Tailwind for e-ink" without a web-style runtime:
 ```cpp
 freeink::ui::InteractionBuffer<32> interactions;
 freeink::ui::InputSnapshot input = readInput();
-freeink::ui::GfxRendererTarget draw(renderer);  // FreeInkUIGfxRenderer.h
+
+// Native render path — no external graphics library. Draws into the
+// framebuffer FreeInkDisplay already owns (FreeInkUIDisplayTarget.h).
+freeink::ui::DisplayTarget draw(display.getFrameBuffer(), display.getDisplayWidth(),
+                                display.getDisplayHeight(), display.getDisplayWidthBytes());
 freeink::ui::DeviceContext device = draw.deviceContext();
 
 freeink::ui::Frame<32> ui(draw, device, input, interactions);
@@ -48,6 +52,73 @@ if (auto event = ui.finish()) {
 during the render pass. The app owns persistent state such as selected row,
 focused index, scroll offset, clock buffers, reading statistics, and visibility
 flags.
+
+## Rendering
+
+FreeInkUI draws through a `DrawTarget` — an interface of primitives (`fill`,
+`stroke`, `line`, `triangle`, `text`, `bitmap`). The SDK ships two:
+
+- **`DisplayTarget` (`FreeInkUIDisplayTarget.h`) — the default.** A
+  self-contained renderer that needs nothing but a raw 1-bit framebuffer, so it
+  has no external dependency and the same drawing code runs in host tests. It
+  bundles a compact Noto Sans bitmap font and reproduces gray paints on a 1-bit
+  panel with an ordered dither. Construct it over `FreeInkDisplay`'s buffer:
+
+  ```cpp
+  freeink::ui::DisplayTarget draw(display.getFrameBuffer(), display.getDisplayWidth(),
+                                  display.getDisplayHeight(), display.getDisplayWidthBytes());
+  ```
+
+  The framebuffer convention matches `FreeInkDisplay`: 1bpp, MSB-first, a set
+  bit is white and a clear bit is black ink. After a frame, push the buffer with
+  the display's normal refresh call.
+
+- **`GfxRendererTarget` (`FreeInkUIGfxRenderer.h`) — optional.** An adapter for
+  firmwares that already provide CrossPoint's `GfxRenderer` (its fonts, bidi,
+  truncation, dithering). It compiles **only** where `<GfxRenderer.h>` is on the
+  include path (guarded by `__has_include`), so it never interferes with apps
+  that use the native target.
+
+## Fonts
+
+`DisplayTarget` bundles one font (Noto Sans, rasterized to a compact 1-bit
+bitmap). Every logical font slot — `ThemeTokens::fontSmall`, `fontBody`,
+`fontTitle`, which are just `FontId` values your app assigns — points at it by
+default, so text works with zero setup.
+
+### Swapping the font
+
+Fonts are plain data (`freeink::ui::BitmapFont`): a concatenated 1-bit glyph
+bitmap plus a per-glyph metrics table. To use your own typeface:
+
+1. **Generate a font header from any TTF/OTF** with the bundled tool:
+
+   ```sh
+   pip install pillow
+   python3 libs/ui/FreeInkUI/tools/gen_font.py \
+       --ttf MyFont.ttf --size 16 --name MyFont \
+       --out libs/ui/FreeInkUI/include/MyFontFont.h
+   ```
+
+   This emits `freeink::ui::kMyFontFont` (a `BitmapFont`). Pick `--size` for the
+   pixel height you want; the tool prints the resulting line height and flash
+   cost. Covers printable ASCII (`U+0020..U+007E`) by default — widen with
+   `--first`/`--last`. Confirm the source font's license permits embedding.
+
+2. **Point the target at it** — globally, or per slot so titles differ from body
+   text:
+
+   ```cpp
+   #include <MyFontFont.h>
+
+   draw.setFont(freeink::ui::kMyFontFont);                 // every slot
+   draw.setFont(theme.tokens.fontTitle, freeink::ui::kMyFontFont);  // one slot
+   ```
+
+That's the whole process — no rebuild of the SDK, no driver changes.
+`FreeInkUIFont.h` is the canonical home of the `FontGlyph`/`BitmapFont` struct
+definitions and carries the bundled Noto Sans data; generated font headers
+`#include` it for those structs.
 
 ## Actions, Not Hardware
 

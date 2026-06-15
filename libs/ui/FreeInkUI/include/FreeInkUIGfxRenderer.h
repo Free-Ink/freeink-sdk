@@ -12,6 +12,13 @@
 // setFont() binds each slot to a real GfxRenderer font id.
 
 #include <FreeInkUI.h>
+
+// Only compile the adapter when the firmware actually provides GfxRenderer.
+// Without this guard, merely including this header (directly or transitively)
+// in an SDK app that has no GfxRenderer hard-fails the build. Apps that don't
+// use CrossPoint should draw through FreeInkUIDisplayTarget.h instead.
+#if __has_include(<GfxRenderer.h>)
+#define FREEINK_HAVE_GFX_RENDERER 1
 #include <GfxRenderer.h>
 
 #include <algorithm>
@@ -235,3 +242,5 @@ class GfxRendererTarget final : public DrawTarget {
 
 }  // namespace ui
 }  // namespace freeink
+
+#endif  // __has_include(<GfxRenderer.h>)

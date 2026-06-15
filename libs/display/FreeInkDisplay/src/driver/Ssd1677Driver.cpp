@@ -55,6 +55,27 @@ const Ssd1677Config& ssd1677DefaultConfig() {
   return cfg;
 }
 
+// Seeed Sticky. Same SSD1677 controller, resolution, and RAM polarity as the X4
+// (Seeed's driver uses "1bpp MSB, 0xFF=white", bit1=white — identical to the SDK
+// framebuffer). The one real difference is the waveform: the X4's fast update
+// sequence (0x1C) does NOT select this panel's partial/DU waveform — it runs the
+// full OTP waveform every refresh (~1.7s, UI unusably slow). Seeed's own SSD1677
+// driver uses 0x22 = 0xF7 (full) / 0xFF (partial); those load temperature and
+// select the DU waveform. Supplied here as per-board sequences — tune here
+// (booster, LUTs, sequences), never in the driver body.
+static const Ssd1677Config& ssd1677StickyConfig() {
+  static const Ssd1677Config cfg = {
+      {0xAE, 0xC7, 0xC3, 0xC0, 0x80},  // booster soft-start (matches Seeed's panel driver)
+      DRIVER_OUTPUT_SCAN,
+      0x5A,  // halfRefreshTemp (unused once fullSeqOverride loads temperature itself)
+      lut_grayscale,
+      lut_grayscale_revert,
+      0xF7,  // fullSeqOverride: vendor FULL update sequence
+      0xFF,  // fastSeqOverride: vendor PARTIAL/DU update sequence (the actual fast path)
+  };
+  return cfg;
+}
+
 Ssd1677Driver::Ssd1677Driver(const Ssd1677Config& cfg)
     : _cfg(cfg),
       _w(BoardConfig::ACTIVE.displayWidth),
@@ -161,8 +182,36 @@ void Ssd1677Driver::writeRam(EpdBus& bus, uint8_t ramCmd, const uint8_t* data, u
 }
 
 void Ssd1677Driver::refresh(EpdBus& bus, RefreshMode mode, bool turnOff) {
+#if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
+  const uint32_t dbgStart = millis();
+  const char* dbgMode = (mode == RefreshMode::Full) ? "FULL" : (mode == RefreshMode::Half) ? "HALF" : "FAST";
+#endif
   bus.cmd(CMD_DISPLAY_UPDATE_CTRL1);
   bus.data((mode == RefreshMode::Fast) ? CTRL1_NORMAL : CTRL1_BYPASS_RED);
+
+  // Per-board absolute update sequence (vendor 0x22 values). When set, it selects
+  // the panel's waveform directly — including load-temperature and the partial/DU
+  // display mode — and self-cycles power. The X4's incremental bit assembly below
+  // doesn't trigger some panels' DU waveform (they then run the full waveform on
+  // every "fast" refresh); these values fix that. Skipped while a custom grayscale
+  // LUT is active (that path needs the 0x0C sequence with the loaded LUT).
+  const uint8_t seqOverride = (mode == RefreshMode::Fast) ? _cfg.fastSeqOverride : _cfg.fullSeqOverride;
+  if (seqOverride != 0 && !_customLutActive) {
+    bus.cmd(CMD_DISPLAY_UPDATE_CTRL2);
+    bus.data(seqOverride);
+    bus.cmd(CMD_MASTER_ACTIVATION);
+    bus.waitBusy("refresh");
+    // The sequence powered the panel down at the end, but keep the flag truthful
+    // to intent: leave it "on" between active updates so display() doesn't force a
+    // full HALF refresh next time (which would defeat fast refresh). turnOff marks
+    // it off for the sleep path.
+    _isScreenOn = !turnOff;
+#if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
+    esp_rom_printf("[SSD1677] %s refresh %ums (ctrl2=0x%x, seq)\n", dbgMode, (unsigned)(millis() - dbgStart),
+                   seqOverride);
+#endif
+    return;
+  }
 
   uint8_t displayMode = 0x00;
   if (!_isScreenOn) {
@@ -188,6 +237,10 @@ void Ssd1677Driver::refresh(EpdBus& bus, RefreshMode mode, bool turnOff) {
   bus.data(displayMode);
   bus.cmd(CMD_MASTER_ACTIVATION);
   bus.waitBusy("refresh");
+#if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
+  // esp_rom_printf hits the always-on IDF console; Serial (HWCDC) drops on S3.
+  esp_rom_printf("[SSD1677] %s refresh %ums (ctrl2=0x%x)\n", dbgMode, (unsigned)(millis() - dbgStart), displayMode);
+#endif
 }
 
 void Ssd1677Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
@@ -392,7 +445,15 @@ void Ssd1677Driver::deepSleep(EpdBus& bus) {
 const Ssd1677Config& FREEINK_SSD1677_CONFIG();
 static const Ssd1677Config& ssd1677ActiveConfig() { return FREEINK_SSD1677_CONFIG(); }
 #else
-static const Ssd1677Config& ssd1677ActiveConfig() { return ssd1677DefaultConfig(); }
+// Select the per-board config from the active profile — no extra build flag, it
+// follows the -DFREEINK_DEVICE_<NAME> selection (ACTIVE.board). Boards not listed
+// use the X4/GDEQ0426T82 defaults.
+static const Ssd1677Config& ssd1677ActiveConfig() {
+  switch (BoardConfig::ACTIVE.board) {
+    case BoardConfig::Board::Sticky: return ssd1677StickyConfig();
+    default: return ssd1677DefaultConfig();
+  }
+}
 #endif
 
 PanelDriver& ssd1677Driver() {

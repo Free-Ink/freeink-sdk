@@ -230,6 +230,9 @@ void FreeInkDisplay::swapBuffers() {
 // ============================================================================
 
 void FreeInkDisplay::displayBuffer(RefreshMode mode, bool turnOffScreen) {
+#if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
+  Serial.printf("[EPD] displayBuffer mode=%d off=%d\n", (int)mode, (int)turnOffScreen);
+#endif
 #ifdef EINK_DISPLAY_SINGLE_BUFFER_MODE
   _driver->display(_bus, frameBuffer, nullptr, toInternal(mode), turnOffScreen);
 #else
@@ -239,6 +242,9 @@ void FreeInkDisplay::displayBuffer(RefreshMode mode, bool turnOffScreen) {
 }
 
 void FreeInkDisplay::displayWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t h, bool turnOffScreen) {
+#if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
+  Serial.printf("[EPD] displayWindow %u,%u %ux%u\n", x, y, w, h);
+#endif
 #ifdef EINK_DISPLAY_SINGLE_BUFFER_MODE
   _driver->displayWindow(_bus, frameBuffer, nullptr, x, y, w, h, turnOffScreen);
 #else
@@ -247,6 +253,9 @@ void FreeInkDisplay::displayWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t 
 }
 
 void FreeInkDisplay::displayGrayBuffer(bool turnOffScreen, const unsigned char* lut, bool factoryMode) {
+#if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
+  Serial.printf("[EPD] displayGrayBuffer\n");
+#endif
   _driver->displayGray(_bus, frameBuffer, turnOffScreen, lut, factoryMode);
 }
 

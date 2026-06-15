@@ -22,6 +22,16 @@ struct Ssd1677Config {
   uint8_t halfRefreshTemp;          // temperature byte written for HALF refresh
   const unsigned char* grayLut;     // 110-byte custom LUT for grayscale display
   const unsigned char* grayRevertLut;  // 110-byte custom LUT to revert grayscale
+  // Absolute Display Update Control 2 (0x22) sequence values, per refresh type.
+  // 0 = use the driver's built-in X4 values (incremental, keeps the panel powered
+  // between fast refreshes). A panel whose OTP waveform isn't selected by the X4
+  // values supplies its vendor-published values here — they pick the waveform
+  // (full vs partial/DU), load temperature, and self-cycle power. Setting these
+  // makes fast refreshes use the panel's real DU waveform instead of running the
+  // full waveform every time. (e.g. Sticky: full 0xF7 / fast 0xFF, from Seeed's
+  // SSD1677 driver.) Ignored while a custom grayscale LUT is active.
+  uint8_t fullSeqOverride = 0;  // FULL and HALF (cold/first) refreshes
+  uint8_t fastSeqOverride = 0;  // FAST (UI) refreshes
 };
 
 // Standard config (Xteink X4 / GDEQ0426T82). Panel mounting (mirror/180°) is NOT

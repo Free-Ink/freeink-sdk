@@ -279,6 +279,12 @@ struct BatteryGaugeConfig {
   uint32_t i2cHz;
   uint8_t gaugeAddr;    // BQ27220 = 0x55; 0 = no I2C gauge (use ADC)
   uint8_t chargerAddr;  // BQ25896 = 0x6B; 0 = none
+  // Arduino I2C controller index: 0 = Wire, 1 = Wire1. Default 0. Set to 1 on
+  // boards where the gauge sits on a different physical bus than another I2C
+  // peripheral (e.g. Sticky's GT911 touch on Wire/SDA3-SCL2 vs gauge on
+  // Wire1/SDA1-SCL0) so they don't fight over one controller. Only honored on
+  // multi-bus SoCs (SOC_I2C_NUM > 1); single-bus parts (ESP32-C3) ignore it.
+  uint8_t i2cBus = 0;
 };
 
 struct InputPins {
@@ -750,7 +756,9 @@ constexpr BoardProfile STICKY = {
     // BQ27220 fuel gauge at 0x55 on the BFG/MISC I2C bus: SDA=GPIO1, SCL=GPIO0.
     // NOTE: GPIO0 is an ESP32-S3 strapping pin — the board init must not leave a
     // pull state that corrupts boot mode. No I2C charger (BQ25616 status is GPIO40).
-    {1, 0, 400000, 0x55, 0},
+    // Bus 1 (Wire1): the GT911 touch above owns Wire (SDA3/SCL2); the gauge is on a
+    // separate physical bus, so it gets the second I2C controller to avoid a clash.
+    {1, 0, 400000, 0x55, 0, 1},
     // Microphone: PDM mic (MSM261DDB020) — PDM_CLK GPIO19, PDM_DATA GPIO20, mic
     // power/enable (PDM_EN) GPIO38 (active-high via a load switch).
     {MicInput::Pdm, 19, 20, 38, true},

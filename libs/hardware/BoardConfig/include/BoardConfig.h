@@ -49,27 +49,34 @@
 #ifndef FREEINK_DEVICE_M5PAPER
 #define FREEINK_DEVICE_M5PAPER 0
 #endif
+#ifndef FREEINK_DEVICE_STICKY
+#define FREEINK_DEVICE_STICKY 0
+#endif
 
 // --- 2) Coherence: exactly one MCU family, at least one device ---------------
 #if !(FREEINK_DEVICE_X4 || FREEINK_DEVICE_X3 || FREEINK_DEVICE_M5 || FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_DELINK || \
-      FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_M5PAPER)
+      FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_M5PAPER || FREEINK_DEVICE_STICKY)
 #error \
-    "FreeInk: no device selected. Pass at least one -DFREEINK_DEVICE_<NAME> (X4, X3, M5, MURPHY, DELINK, LILYGO, M5PAPER) in your build env — see platformio.sample.ini."
+    "FreeInk: no device selected. Pass at least one -DFREEINK_DEVICE_<NAME> (X4, X3, M5, MURPHY, DELINK, LILYGO, M5PAPER, STICKY) in your build env — see platformio.sample.ini."
 #endif
 // Each device belongs to one MCU family; a binary targets exactly one. X3/X4 are
 // ESP32-C3; M5 PaperColor/Murphy/de-link/LilyGo are ESP32-S3; M5Paper v1.1 is the
 // classic ESP32 (ESP32-D0WDQ6). The three families differ in deep-sleep wakeup,
 // SPI peripheral count, and toolchain, so they never share a binary.
 #define FREEINK_MCU_C3 (FREEINK_DEVICE_X3 || FREEINK_DEVICE_X4)
-#define FREEINK_MCU_S3 (FREEINK_DEVICE_M5 || FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_DELINK || FREEINK_DEVICE_LILYGO)
+#define FREEINK_MCU_S3 \
+  (FREEINK_DEVICE_M5 || FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_DELINK || FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_STICKY)
 #define FREEINK_MCU_ESP32 (FREEINK_DEVICE_M5PAPER)
 #if (FREEINK_MCU_C3 + FREEINK_MCU_S3 + FREEINK_MCU_ESP32) != 1
 #error \
-    "FreeInk: all selected devices must share one MCU family — ESP32-C3 (X3/X4), ESP32-S3 (M5/Murphy/de-link/LilyGo), or ESP32 (M5Paper). Build one binary per family."
+    "FreeInk: all selected devices must share one MCU family — ESP32-C3 (X3/X4), ESP32-S3 (M5/Murphy/de-link/LilyGo/Sticky), or ESP32 (M5Paper). Build one binary per family."
 #endif
 
 // --- 3) Derive panel drivers from the device set -----------------------------
-#if FREEINK_DEVICE_X4 || FREEINK_DEVICE_DELINK
+// Sticky reuses SSD1677: its 800x480 panel rides a 24-pin FPC whose GDR/RESE/BS1
+// + dual VSH1/VSH2 + external VGH/VGL/VSL/VCOM charge pump is the SSD1677
+// application circuit (same controller + resolution as X4 / de-link).
+#if FREEINK_DEVICE_X4 || FREEINK_DEVICE_DELINK || FREEINK_DEVICE_STICKY
 #define FREEINK_DRIVER_SSD1677 1
 #else
 #define FREEINK_DRIVER_SSD1677 0
@@ -113,7 +120,8 @@
 
 // --- 4) Derive default capabilities (override with -DFREEINK_CAP_*=0/1) -------
 #ifndef FREEINK_CAP_TOUCH
-#define FREEINK_CAP_TOUCH (FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_M5PAPER)
+#define FREEINK_CAP_TOUCH \
+  (FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_M5PAPER || FREEINK_DEVICE_STICKY)
 #endif
 #ifndef FREEINK_CAP_FRONTLIGHT
 #define FREEINK_CAP_FRONTLIGHT (FREEINK_DEVICE_DELINK || FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_LILYGO)
@@ -125,13 +133,30 @@
 // ACTIVE.batteryGauge.gaugeAddr != 0) — required because X3 (gauge) and X4 (ADC)
 // share one C3 binary.
 #ifndef FREEINK_BATTERY_I2C_GAUGE
-#define FREEINK_BATTERY_I2C_GAUGE (FREEINK_DEVICE_X3 || FREEINK_DEVICE_LILYGO)
+#define FREEINK_BATTERY_I2C_GAUGE (FREEINK_DEVICE_X3 || FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_STICKY)
 #endif
 #ifndef FREEINK_CAP_COLOR
 #define FREEINK_CAP_COLOR (FREEINK_DEVICE_M5)
 #endif
 #ifndef FREEINK_CAP_AUDIO
 #define FREEINK_CAP_AUDIO (FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_M5)
+#endif
+// Microphone capture (PDM in). Separate from FREEINK_CAP_AUDIO (output): the
+// Sticky has a PDM mic but no output codec. The Microphone lib compiles its
+// i2s_pdm RX path only when this is set; otherwise it links stub bodies.
+#ifndef FREEINK_CAP_MIC
+#define FREEINK_CAP_MIC (FREEINK_DEVICE_STICKY)
+#endif
+// On-board I2C sensors. Each lib (Rtc / EnvironmentSensor / Imu) compiles its
+// I2C driver only when its flag is set; otherwise it links stub bodies.
+#ifndef FREEINK_CAP_RTC
+#define FREEINK_CAP_RTC (FREEINK_DEVICE_STICKY)
+#endif
+#ifndef FREEINK_CAP_TEMP_HUMIDITY
+#define FREEINK_CAP_TEMP_HUMIDITY (FREEINK_DEVICE_STICKY)
+#endif
+#ifndef FREEINK_CAP_IMU
+#define FREEINK_CAP_IMU (FREEINK_DEVICE_STICKY)
 #endif
 #ifndef FREEINK_CAP_LED
 #define FREEINK_CAP_LED (FREEINK_DEVICE_M5)
@@ -166,7 +191,16 @@ namespace BoardConfig {
 // Physical device family. X3 and X4 are sibling devices on the same ESP32-C3
 // board (identical pinout, different panel/size): both profiles compile into the
 // C3 binary and one is chosen at runtime (setDisplayX3() -> selectDevice).
-enum class Board : uint8_t { XteinkX4, XteinkX3, M5StackPaperColor, MurphyM3, DeLink, LilyGoT5S3, M5PaperV11 };
+enum class Board : uint8_t {
+  XteinkX4,
+  XteinkX3,
+  M5StackPaperColor,
+  MurphyM3,
+  DeLink,
+  LilyGoT5S3,
+  M5PaperV11,
+  Sticky,
+};
 
 // How the board reports button presses.
 enum class InputStyle : uint8_t {
@@ -303,6 +337,29 @@ struct LedConfig {
   bool pmicRgbPower;  // true = enable M5PM1 RGB LED power rail before use
 };
 
+// Microphone input path (MicInput::None disables it). PDM mics (e.g. the Sticky's
+// MSM261DDB020) need a clock out + data in; `enable` powers the mic rail.
+enum class MicInput : uint8_t { None, Pdm };
+struct MicConfig {
+  MicInput input;
+  int8_t clk;     // PDM clock (output to mic)
+  int8_t data;    // PDM data (input from mic)
+  int8_t enable;  // mic power/enable pin (PIN_UNASSIGNED if none)
+  bool enableActiveHigh;
+};
+
+// On-board I2C sensors sharing one bus (e.g. the Sticky's RTC + temp/humidity +
+// IMU on SDA1/SCL0, the same bus as its fuel gauge). Each addr is 0 when that
+// sensor is absent; the matching sensor lib reads its addr from here.
+struct SensorsConfig {
+  int8_t i2cSda;
+  int8_t i2cScl;
+  uint32_t i2cHz;
+  uint8_t rtcAddr;           // PCF8563 = 0x51; 0 = none
+  uint8_t tempHumidityAddr;  // SHT40 = 0x44; 0 = none
+  uint8_t imuAddr;           // LSM6DS3TR-C = 0x6A; 0 = none
+};
+
 // How the panel is mounted relative to the driver's native scan. Any board injects
 // its own mirroring here; a 180° rotation is mirrorX && mirrorY. (90°/270° need a
 // software transpose — they swap width/height and aren't expressible by panel RAM
@@ -334,6 +391,12 @@ struct BoardProfile {
   DisplayOrientation orientation;   // panel mount transform (mirrorX/mirrorY)
   SdmmcPins sdmmc;                  // 4-bit SDMMC wiring (busWidth 0 = use SPI/SdFat)
   BatteryGaugeConfig batteryGauge;  // I2C fuel gauge (gaugeAddr 0 = use ADC pin)
+  // Microphone (PDM in). Defaulted so existing profiles need no change; a board
+  // with a mic sets it. PIN_UNASSIGNED is -1 — do NOT rely on zero-init here.
+  MicConfig mic = {MicInput::None, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, true};
+  // On-board I2C sensors (RTC / temp+humidity / IMU). Defaulted to "none"; a
+  // board with sensors sets the bus pins + each present sensor's address.
+  SensorsConfig sensors = {PIN_UNASSIGNED, PIN_UNASSIGNED, 0, 0, 0, 0};
 };
 
 constexpr TouchConfig NO_TOUCH = {TouchController::None,
@@ -623,6 +686,65 @@ constexpr BoardProfile M5PAPER_V11 = {
     NO_SDMMC,
     NO_GAUGE};
 
+// --- Sticky (Seeed reTerminal Sticky) — ESP32-S3R8, SSD1677 + GT911 touch -----
+// 3.97" 800x480 B/W e-paper on a 24-pin FPC, controller confirmed SSD1677 by the
+// vendor peripheral demo (pin_config.h: "E-paper SSD1677 (SPI)") — same driver,
+// controller, and resolution as X4/de-link; its GDR/RESE/BS1 + dual VSH1/VSH2 +
+// external VGH/VGL/VSL/VCOM charge pump is the SSD1677 reference circuit.
+// Capacitive GT911 touch on its own I2C bus, MicroSD over SPI (shared display
+// bus), BQ27220 fuel gauge, PDM mic + buzzer. Pins are triple-sourced (V01
+// schematic 2026-06-05 + porting spec + vendor demo pin_config.h).
+//
+// UNVERIFIED, pending hardware:
+//   * orientation — panel mount transform unknown; ships NO_FLIP (set ROTATE_180/
+//     a mirror here once the reader's "up" is confirmed on a unit).
+//   * GT911 raw range assumes panel-native landscape 800x480; a hardware test may
+//     show coords need axis swap/flip (adjust raw range or touch transform).
+//   * MicroSD shares the display SPI bus; the vendor demo doesn't exercise SD, so
+//     bus-sharing / CS arbitration with the panel needs a hardware check.
+//   * PDM mic pins (19/20/38) are from the schematic/spec; no vendor demo uses the
+//     mic, so they're unconfirmed in code.
+constexpr BoardProfile STICKY = {
+    Board::Sticky,
+    "sticky",
+    InputStyle::DigitalButtons,  // PWR/UP/DOWN active-low GPIO buttons; confirm/back come from touch
+    DisplayController::SSD1677,
+    800,
+    480,
+    {13, 14, 15, 16, 17, 18, 47},  // SCK13 MOSI(SDI)14 CS15 DC16 RST17 BUSY18, EP_PWR_EN47
+    10000000,                      // displaySpiHz: vendor demo runs SSD1677 at 10 MHz (bus shared w/ SD)
+    // SD over SPI, sharing the display's SPI bus: SCLK13 / MOSI14 / MISO12 (the
+    // vendor demo's pin_config.h confirms these as the EPD bus pins), SD_CS8,
+    // SD_PWR_EN10. SD bus-sharing is inferred (the demo doesn't exercise SD) —
+    // verify CS/transactions don't collide with the panel on hardware.
+    {13, 12, 14, 8, 10, false, 0},
+    // up5 down6; OK/confirm == power button GPIO4 (vendor demo: PIN_BTN_OK = PIN_POWER_BTN).
+    // back/left/right come from touch. Active-low (10K pull-ups to VDD_3V3, button to GND).
+    {PIN_UNASSIGNED, 4, PIN_UNASSIGNED, PIN_UNASSIGNED, 5, 6, 4, false},
+    PIN_UNASSIGNED,  // batteryAdc: none — uses the I2C fuel gauge below
+    40,              // batteryChargeStatus: CHARGE_STATE GPIO40 (from BQ25616)
+    2.0f,
+    PIN_UNASSIGNED,  // usbDetect: PWR_IN_VOLT (GPIO9 ADC) is board-support, not a digital detect
+    // GT911 touch on its own I2C bus (SDA3 SCL2 INT21 RST41, 0x5D alt 0x14). GT911
+    // reports pixel coords, so raw range == panel size; standard datasheet frame
+    // layout (RST wired -> reset/config dance runs, track-id present).
+    {TouchController::Gt911, 3, 2, 21, 41, 0x5D, 0, 799, 0, 479, false, 0x14, false, false},
+    NO_FRONTLIGHT,  // e-paper, no frontlight (BUZZER on GPIO48 + charge LED are board-support)
+    NO_AUDIO,       // PDM mic is input-only (the SDK audio path is output); no output codec
+    NO_LEDS,        // charge-state LED is charger-driven, not an addressable strip
+    NO_FLIP,        // UNVERIFIED mount — see note above
+    NO_SDMMC,       // SD is SPI, not 4-bit SDMMC
+    // BQ27220 fuel gauge at 0x55 on the BFG/MISC I2C bus: SDA=GPIO1, SCL=GPIO0.
+    // NOTE: GPIO0 is an ESP32-S3 strapping pin — the board init must not leave a
+    // pull state that corrupts boot mode. No I2C charger (BQ25616 status is GPIO40).
+    {1, 0, 400000, 0x55, 0},
+    // Microphone: PDM mic (MSM261DDB020) — PDM_CLK GPIO19, PDM_DATA GPIO20, mic
+    // power/enable (PDM_EN) GPIO38 (active-high via a load switch).
+    {MicInput::Pdm, 19, 20, 38, true},
+    // Sensors on the shared sensor I2C bus (SDA1/SCL0, same as the fuel gauge):
+    // PCF8563 RTC (0x51), SHT40 temp/humidity (0x44), LSM6DS3TR-C IMU (0x6A).
+    {1, 0, 400000, 0x51, 0x44, 0x6A}};
+
 // Largest framebuffer (bytes) over the devices compiled into this build, derived
 // from the profiles above. The display facade sizes its static framebuffer to
 // this so one binary holds whichever panel is runtime-selected; a single-device
@@ -636,8 +758,10 @@ constexpr uint32_t MAX_FRAMEBUFFER_BYTES = cmax(
     cmax(cmax(FREEINK_DEVICE_X4 ? panelBytes(XTEINK_X4) : 0u, FREEINK_DEVICE_X3 ? panelBytes(XTEINK_X3) : 0u),
          cmax(FREEINK_DEVICE_M5 ? panelBytes(M5STACK_PAPER_COLOR) : 0u,
               FREEINK_DEVICE_MURPHY ? panelBytes(MURPHY_M3) : 0u)),
-    cmax(cmax(FREEINK_DEVICE_DELINK ? panelBytes(DE_LINK) : 0u, FREEINK_DEVICE_LILYGO ? panelBytes(LILYGO_T5S3) : 0u),
-         FREEINK_DEVICE_M5PAPER ? panelBytes(M5PAPER_V11) : 0u));
+    cmax(cmax(cmax(FREEINK_DEVICE_DELINK ? panelBytes(DE_LINK) : 0u,
+                   FREEINK_DEVICE_LILYGO ? panelBytes(LILYGO_T5S3) : 0u),
+              FREEINK_DEVICE_M5PAPER ? panelBytes(M5PAPER_V11) : 0u),
+         FREEINK_DEVICE_STICKY ? panelBytes(STICKY) : 0u));
 
 // Compile-time default device — the profile ACTIVE starts as. With a single
 // device in the build this is the only device; with several same-MCU devices it
@@ -652,6 +776,8 @@ constexpr BoardProfile DEFAULT_DEVICE = DE_LINK;
 constexpr BoardProfile DEFAULT_DEVICE = LILYGO_T5S3;
 #elif FREEINK_DEVICE_M5PAPER
 constexpr BoardProfile DEFAULT_DEVICE = M5PAPER_V11;
+#elif FREEINK_DEVICE_STICKY
+constexpr BoardProfile DEFAULT_DEVICE = STICKY;
 #elif FREEINK_DEVICE_X3 && !FREEINK_DEVICE_X4
 constexpr BoardProfile DEFAULT_DEVICE = XTEINK_X3;  // X3-only binary
 #else
@@ -704,6 +830,11 @@ inline bool selectDevice(Board which) {
       ACTIVE = M5PAPER_V11;
       return true;
 #endif
+#if FREEINK_DEVICE_STICKY
+    case Board::Sticky:
+      ACTIVE = STICKY;
+      return true;
+#endif
     default:
       break;
   }
@@ -714,9 +845,14 @@ inline bool isM5StackPaperColor() { return ACTIVE.board == Board::M5StackPaperCo
 inline bool isMurphyM3() { return ACTIVE.board == Board::MurphyM3; }
 inline bool isDeLink() { return ACTIVE.board == Board::DeLink; }
 inline bool isM5PaperV11() { return ACTIVE.board == Board::M5PaperV11; }
+inline bool isSticky() { return ACTIVE.board == Board::Sticky; }
 inline bool hasTouch() { return ACTIVE.touch.controller != TouchController::None; }
 inline bool hasPwmFrontlight() { return ACTIVE.frontlight.gpio != PIN_UNASSIGNED; }
 inline bool hasAudio() { return ACTIVE.audio.output != AudioOutput::None; }
+inline bool hasMic() { return ACTIVE.mic.input != MicInput::None; }
+inline bool hasRtc() { return ACTIVE.sensors.rtcAddr != 0; }
+inline bool hasTempHumidity() { return ACTIVE.sensors.tempHumidityAddr != 0; }
+inline bool hasImu() { return ACTIVE.sensors.imuAddr != 0; }
 inline bool hasLeds() { return ACTIVE.leds.data != PIN_UNASSIGNED && ACTIVE.leds.count > 0; }
 
 }  // namespace BoardConfig

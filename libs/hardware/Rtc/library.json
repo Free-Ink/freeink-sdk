@@ -1,0 +1,10 @@
+{
+  "name": "Rtc",
+  "version": "1.0.0",
+  "description": "FreeInk real-time clock: read/set wall-clock time on a PCF8563 I2C RTC described by BoardConfig::ACTIVE.sensors. Gated by FREEINK_CAP_RTC.",
+  "keywords": "rtc, pcf8563, clock, i2c, eink",
+  "authors": [{"name": "FreeInk SDK Contributors"}],
+  "dependencies": {},
+  "platforms": "espressif32",
+  "frameworks": ["arduino"]
+}

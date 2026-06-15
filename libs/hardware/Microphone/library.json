@@ -1,0 +1,10 @@
+{
+  "name": "Microphone",
+  "version": "1.0.0",
+  "description": "FreeInk microphone capture: 16-bit mono PCM from a PDM mic described by BoardConfig::ACTIVE.mic, via the ESP-IDF i2s_pdm RX driver. Input counterpart to AudioManager; gated by FREEINK_CAP_MIC.",
+  "keywords": "microphone, pdm, i2s, audio, eink",
+  "authors": [{"name": "FreeInk SDK Contributors"}],
+  "dependencies": {},
+  "platforms": "espressif32",
+  "frameworks": ["arduino"]
+}

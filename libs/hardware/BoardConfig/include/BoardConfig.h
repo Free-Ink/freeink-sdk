@@ -715,8 +715,13 @@ constexpr BoardProfile M5PAPER_V11 = {
     PIN_UNASSIGNED,
     // GT911 touch: panel-native portrait raw range (540x960), shared I2C SDA21/SCL22,
     // INT36, address 0x5D (alt 0x14). No reset GPIO is exposed on M5Paper.
+    // flipX=true: this unit's GT911 X axis is mounted inverted vs the reference (LilyGo).
+    // The landscape UI maps logical-Y from panel-native X, so this flips taps top↔bottom
+    // (the back gesture at the UI's top-left was landing bottom-left) while leaving
+    // left/right correct. (powerEnable PIN_UNASSIGNED, swapXY false.)
     {TouchController::Gt911, 21, 22, 36, PIN_UNASSIGNED, 0x5D, 0, 539, 0, 959, false, 0x14, false,
-     true},  // GT911 reports coords at byte 0 (no track-id) on M5Paper
+     true,  // gt911CoordsAtByte0: reports coords at byte 0 (no track-id) on M5Paper
+     PIN_UNASSIGNED, false, true},  // powerEnable, swapXY, flipX
     NO_FRONTLIGHT,
     NO_AUDIO,
     NO_LEDS,
@@ -791,7 +796,7 @@ constexpr BoardProfile STICKY = {
     // Sensors on the shared sensor I2C bus (SDA1/SCL0, same as the fuel gauge):
     // PCF8563 RTC (0x51), SHT40 temp/humidity (0x44), LSM6DS3TR-C IMU (0x6A).
     {1, 0, 400000, 0x51, 0x44, 0x6A},
-    1.5f};  // uiScale: touch device, 3.97" 800x480 — bump chrome to finger size
+    1.2f};  // uiScale: touch device, 3.97" 800x480 — bump chrome to finger size
 
 // Largest framebuffer (bytes) over the devices compiled into this build, derived
 // from the profiles above. The display facade sizes its static framebuffer to

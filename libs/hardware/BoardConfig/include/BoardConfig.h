@@ -466,6 +466,11 @@ constexpr AudioConfig NO_AUDIO = {AudioOutput::None,
 constexpr LedConfig NO_LEDS = {PIN_UNASSIGNED, 0, LedColorOrder::GRB, false};
 constexpr LedConfig M5_PAPERCOLOR_LEDS = {21, 2, LedColorOrder::GRB, true};  // bench-verified GRB
 
+// Defaults matching the BoardProfile member initializers, so a profile can set a
+// trailing field (e.g. uiScale) positionally without spelling out the literals.
+constexpr MicConfig NO_MIC = {MicInput::None, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, true};
+constexpr SensorsConfig NO_SENSORS = {PIN_UNASSIGNED, PIN_UNASSIGNED, 0, 0, 0, 0};
+
 // Murphy M3 audio, recovered from the OEM firmware: ES8388-compatible codec at
 // 7-bit I2C 0x10 on the shared touch bus (SDA=13/SCL=12, 100 kHz), I2S master
 // on BCLK=40/WS=39/DOUT=41/MCLK=42 (DIN unused). GPIO43 is driven HIGH by the
@@ -671,7 +676,10 @@ constexpr BoardProfile LILYGO_T5S3 = {
     NO_LEDS,
     NO_FLIP,
     NO_SDMMC,
-    {39, 40, 400000, 0x55, 0x6B}};  // BQ27220 gauge (0x55) + BQ25896 charger (0x6B) on SDA39/SCL40
+    {39, 40, 400000, 0x55, 0x6B},  // BQ27220 gauge (0x55) + BQ25896 charger (0x6B) on SDA39/SCL40
+    NO_MIC,
+    NO_SENSORS,
+    1.2f};  // uiScale: 4.7" 960x540 touch (~234 PPI) — finger-sized chrome, like Sticky
 
 // --- M5Paper v1.1 4.7" (ED047TC1 behind an IT8951E controller) — ESP32 --------
 // 540x960 16-gray panel driven through an IT8951E timing controller over SPI
@@ -727,7 +735,10 @@ constexpr BoardProfile M5PAPER_V11 = {
     NO_LEDS,
     NO_FLIP,
     NO_SDMMC,
-    NO_GAUGE};
+    NO_GAUGE,
+    NO_MIC,
+    NO_SENSORS,
+    1.2f};  // uiScale: 4.7" 960x540 touch (~234 PPI) — finger-sized chrome, like Sticky
 
 // --- Sticky (Seeed Sticky) — ESP32-S3R8, SSD1677 + GT911 touch ---------------
 // 3.97" 800x480 B/W e-paper on a 24-pin FPC, controller confirmed SSD1677 by the

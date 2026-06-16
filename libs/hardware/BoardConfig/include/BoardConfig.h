@@ -723,13 +723,15 @@ constexpr BoardProfile M5PAPER_V11 = {
     PIN_UNASSIGNED,
     // GT911 touch: panel-native portrait raw range (540x960), shared I2C SDA21/SCL22,
     // INT36, address 0x5D (alt 0x14). No reset GPIO is exposed on M5Paper.
-    // flipX=true: this unit's GT911 X axis is mounted inverted vs the reference (LilyGo).
-    // The landscape UI maps logical-Y from panel-native X, so this flips taps top↔bottom
-    // (the back gesture at the UI's top-left was landing bottom-left) while leaving
-    // left/right correct. (powerEnable PIN_UNASSIGNED, swapXY false.)
+    // flipY=true: this unit's touch Y axis is mounted inverted vs the panel — the back
+    // gesture at the UI's top-left was landing bottom-left (Y flipped, X correct). Touch
+    // maps straight to the logical frame on M5Paper (no 90° swap), so logical-Y =
+    // panel-native Y; flipY corrects top↔bottom and leaves left/right alone. Confirmed on
+    // hardware: flipX instead moved it left↔right (→ bottom-right), so flipY is the axis.
+    // (powerEnable PIN_UNASSIGNED, swapXY false, flipX false.)
     {TouchController::Gt911, 21, 22, 36, PIN_UNASSIGNED, 0x5D, 0, 539, 0, 959, false, 0x14, false,
      true,  // gt911CoordsAtByte0: reports coords at byte 0 (no track-id) on M5Paper
-     PIN_UNASSIGNED, false, true},  // powerEnable, swapXY, flipX
+     PIN_UNASSIGNED, false, false, true},  // powerEnable, swapXY, flipX, flipY
     NO_FRONTLIGHT,
     NO_AUDIO,
     NO_LEDS,

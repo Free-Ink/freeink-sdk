@@ -341,6 +341,38 @@ unsigned long InputManager::lastTouchHeldMs() const {
 #endif
 }
 
+bool InputManager::wasSwipe(float& nxStart, float& nyStart, float& nxEnd, float& nyEnd) const {
+#if FREEINK_CAP_TOUCH
+  if (!touchReleasedEvent) return false;
+  // A flick: travelled past a distance threshold within a time window. Distance is
+  // measured in native px; the dominant axis is left to the app (after mapping to
+  // its logical frame).
+  static constexpr int SWIPE_MIN_PX = 60;
+  static constexpr unsigned long SWIPE_MAX_MS = 700;
+  if (lastTouchHeldDurationMs > SWIPE_MAX_MS) return false;
+  const int dx = static_cast<int>(touchUpPoint.x) - static_cast<int>(touchDownPoint.x);
+  const int dy = static_cast<int>(touchUpPoint.y) - static_cast<int>(touchDownPoint.y);
+  const int adx = dx < 0 ? -dx : dx;
+  const int ady = dy < 0 ? -dy : dy;
+  if (adx < SWIPE_MIN_PX && ady < SWIPE_MIN_PX) return false;
+  const auto& t = BoardConfig::ACTIVE.touch;
+  const uint16_t w = (t.rawMaxX > t.rawMinX) ? static_cast<uint16_t>(t.rawMaxX - t.rawMinX) : 1;
+  const uint16_t h = (t.rawMaxY > t.rawMinY) ? static_cast<uint16_t>(t.rawMaxY - t.rawMinY) : 1;
+  auto clamp01 = [](float v) { return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); };
+  nxStart = clamp01(static_cast<float>(touchDownPoint.x) / w);
+  nyStart = clamp01(static_cast<float>(touchDownPoint.y) / h);
+  nxEnd = clamp01(static_cast<float>(touchUpPoint.x) / w);
+  nyEnd = clamp01(static_cast<float>(touchUpPoint.y) / h);
+  return true;
+#else
+  (void)nxStart;
+  (void)nyStart;
+  (void)nxEnd;
+  (void)nyEnd;
+  return false;
+#endif
+}
+
 bool InputManager::wasHomeKeyPressed() const { return touchHomeKeyEvent; }
 
 void InputManager::beginTouch() {
@@ -608,6 +640,7 @@ void InputManager::pollGt911(const unsigned long now) {
     if (touchPressed) {
       touchReleasedEvent = true;
       lastTouchHeldDurationMs = now - touchDownPoint.timestamp;
+      touchUpPoint = touchPoint;  // last contact sample, used for swipe routing
     }
     touchPressed = false;
     touchPoint.valid = false;

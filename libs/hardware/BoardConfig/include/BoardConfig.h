@@ -422,6 +422,12 @@ struct BoardProfile {
   // On-board I2C sensors (RTC / temp+humidity / IMU). Defaulted to "none"; a
   // board with sensors sets the bus pins + each present sensor's address.
   SensorsConfig sensors = {PIN_UNASSIGNED, PIN_UNASSIGNED, 0, 0, 0, 0};
+  // UI scale multiplier the firmware applies to its theme metrics and chrome fonts.
+  // 1.0 keeps the original button-era pixel sizes. Touch devices bump this so rows,
+  // buttons, and tap targets are finger-sized: these panels are ~220-235 PPI, so a
+  // 30px row is only ~3mm. Per-board and hand-tuned (PPI alone can't tell the 4.26"
+  // X4 from the 3.97" Sticky); the firmware owns how it maps to metrics/fonts.
+  float uiScale = 1.0f;
 };
 
 constexpr TouchConfig NO_TOUCH = {TouchController::None,
@@ -784,7 +790,8 @@ constexpr BoardProfile STICKY = {
     {MicInput::Pdm, 19, 20, 38, true},
     // Sensors on the shared sensor I2C bus (SDA1/SCL0, same as the fuel gauge):
     // PCF8563 RTC (0x51), SHT40 temp/humidity (0x44), LSM6DS3TR-C IMU (0x6A).
-    {1, 0, 400000, 0x51, 0x44, 0x6A}};
+    {1, 0, 400000, 0x51, 0x44, 0x6A},
+    1.5f};  // uiScale: touch device, 3.97" 800x480 — bump chrome to finger size
 
 // Largest framebuffer (bytes) over the devices compiled into this build, derived
 // from the profiles above. The display facade sizes its static framebuffer to

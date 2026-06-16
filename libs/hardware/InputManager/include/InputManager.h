@@ -132,6 +132,14 @@ class InputManager {
   // release frame (when wasTouchReleased()/wasTouchTap() are true). Raw primitive
   // for the app's tap-vs-long-press gesture policy; 0 if no touch HW.
   unsigned long lastTouchHeldMs() const;
+  // Swipe (flick) gesture, valid on the release frame: true if the contact moved
+  // past a distance threshold within a time window. Writes the start (touch-down)
+  // and end (release) positions, each normalized 0..1 in the panel's native frame
+  // — the app maps both to its logical frame (e.g. via tapToLogical) and takes the
+  // dominant axis, so orientation/mount is handled app-side. A swipe also raises
+  // wasTouchTap(); the app checks wasSwipe() first to disambiguate. False when no
+  // touch HW or the movement was below threshold (a plain tap).
+  bool wasSwipe(float& nxStart, float& nyStart, float& nxEnd, float& nyEnd) const;
   // True on the press edge of the GT911 capacitive home key (controllers without
   // one never report it). Cleared each #update().
   bool wasHomeKeyPressed() const;
@@ -191,6 +199,7 @@ class InputManager {
   bool touchHomeKeyDown = false;
   TouchPoint touchPoint = {false, 0, 0, 0};
   TouchPoint touchDownPoint = {false, 0, 0, 0};  // first sample of the current contact (tap routing)
+  TouchPoint touchUpPoint = {false, 0, 0, 0};    // last sample before release (swipe routing)
   unsigned long lastTouchHeldDurationMs = 0;     // contact duration, latched at release
 
   static constexpr int NUM_BUTTONS_1 = 4;

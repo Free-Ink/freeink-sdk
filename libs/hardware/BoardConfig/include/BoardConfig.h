@@ -721,17 +721,19 @@ constexpr BoardProfile M5PAPER_V11 = {
     PIN_UNASSIGNED,
     2.0f,
     PIN_UNASSIGNED,
-    // GT911 touch: panel-native portrait raw range (540x960), shared I2C SDA21/SCL22,
-    // INT36, address 0x5D (alt 0x14). No reset GPIO is exposed on M5Paper.
-    // flipY=true: this unit's touch Y axis is mounted inverted vs the panel — the back
-    // gesture at the UI's top-left was landing bottom-left (Y flipped, X correct). Touch
-    // maps straight to the logical frame on M5Paper (no 90° swap), so logical-Y =
-    // panel-native Y; flipY corrects top↔bottom and leaves left/right alone. Confirmed on
-    // hardware: flipX instead moved it left↔right (→ bottom-right), so flipY is the axis.
-    // (powerEnable PIN_UNASSIGNED, swapXY false, flipX false.)
-    {TouchController::Gt911, 21, 22, 36, PIN_UNASSIGNED, 0x5D, 0, 539, 0, 959, false, 0x14, false,
+    // GT911 touch, shared I2C SDA21/SCL22, INT36, 0x5D (alt 0x14), no reset GPIO.
+    // The GT911 reports in the silicon's native PORTRAIT frame (540x960), but the IT8951
+    // driver rotates the 960x540 framebuffer 90° onto that silicon, so the renderer + tap
+    // pipeline (GfxRenderer::tapToLogical) work in the 960x540 FRAMEBUFFER frame. Align
+    // touch to that frame like every other board (cf. Sticky): swapXY=true with rawMax in
+    // FB-landscape order (959 x 539). Without the swap the tap normalizes over 540x960 while
+    // tapToLogical scales by 960x540 — aspect/axis-swapped coords: the back corner still
+    // roughly hits but mid-screen taps are way off (worst along the tall 960 axis).
+    // flipY=true keeps the back gesture upright (silicon (0,0) = physical top-left, from the
+    // working back-gesture corner); flipX=false (X was never mirrored).
+    {TouchController::Gt911, 21, 22, 36, PIN_UNASSIGNED, 0x5D, 0, 959, 0, 539, false, 0x14, false,
      true,  // gt911CoordsAtByte0: reports coords at byte 0 (no track-id) on M5Paper
-     PIN_UNASSIGNED, false, false, true},  // powerEnable, swapXY, flipX, flipY
+     PIN_UNASSIGNED, true, false, true},  // powerEnable, swapXY=true, flipX=false, flipY=true
     NO_FRONTLIGHT,
     NO_AUDIO,
     NO_LEDS,

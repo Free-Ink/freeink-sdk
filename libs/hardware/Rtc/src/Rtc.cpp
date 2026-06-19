@@ -5,6 +5,7 @@
 #if FREEINK_CAP_RTC
 
 #include <Wire.h>
+#include <soc/soc_caps.h>
 
 namespace freeink {
 namespace {
@@ -16,12 +17,28 @@ constexpr uint8_t REG_CLKOUT = 0x0D;
 constexpr uint8_t CLKOUT_DISABLED = 0x00;
 constexpr uint8_t VL_FLAG = 0x80;  // seconds reg bit7: oscillator stopped / voltage-low
 
-bool g_wireReady = false;
-void ensureWire() {
-  if (g_wireReady) return;
+bool g_wireReady[2] = {false, false};
+TwoWire& sensorWire() {
   const auto& s = BoardConfig::ACTIVE.sensors;
-  Wire.begin(s.i2cSda, s.i2cScl, s.i2cHz);
-  g_wireReady = true;
+#if SOC_I2C_NUM > 1
+  return s.i2cBus == 1 ? Wire1 : Wire;
+#else
+  return Wire;
+#endif
+}
+
+void ensureWire() {
+  const auto& s = BoardConfig::ACTIVE.sensors;
+  const uint8_t bus =
+#if SOC_I2C_NUM > 1
+      s.i2cBus == 1 ? 1 : 0;
+#else
+      0;
+#endif
+  if (g_wireReady[bus]) return;
+  auto& wire = sensorWire();
+  wire.begin(s.i2cSda, s.i2cScl, s.i2cHz);
+  g_wireReady[bus] = true;
 }
 
 uint8_t bcdToDec(uint8_t v) { return static_cast<uint8_t>((v >> 4) * 10U + (v & 0x0FU)); }
@@ -29,19 +46,21 @@ uint8_t decToBcd(uint8_t v) { return static_cast<uint8_t>((v / 10U) << 4 | (v % 
 
 bool writeReg(uint8_t addr, uint8_t reg, uint8_t value) {
   ensureWire();
-  Wire.beginTransmission(addr);
-  Wire.write(reg);
-  Wire.write(value);
-  return Wire.endTransmission() == 0;
+  auto& wire = sensorWire();
+  wire.beginTransmission(addr);
+  wire.write(reg);
+  wire.write(value);
+  return wire.endTransmission() == 0;
 }
 
 bool readRegs(uint8_t addr, uint8_t reg, uint8_t* dst, uint8_t len) {
   ensureWire();
-  Wire.beginTransmission(addr);
-  Wire.write(reg);
-  if (Wire.endTransmission(false) != 0) return false;
-  if (Wire.requestFrom(addr, len, static_cast<uint8_t>(true)) < len) return false;
-  for (uint8_t i = 0; i < len; ++i) dst[i] = Wire.read();
+  auto& wire = sensorWire();
+  wire.beginTransmission(addr);
+  wire.write(reg);
+  if (wire.endTransmission(false) != 0) return false;
+  if (wire.requestFrom(addr, len, static_cast<uint8_t>(true)) < len) return false;
+  for (uint8_t i = 0; i < len; ++i) dst[i] = wire.read();
   return true;
 }
 
@@ -50,6 +69,8 @@ bool readRegs(uint8_t addr, uint8_t reg, uint8_t* dst, uint8_t len) {
 bool Rtc::begin() {
   const uint8_t addr = BoardConfig::ACTIVE.sensors.rtcAddr;
   if (addr == 0) return false;
+  const auto& s = BoardConfig::ACTIVE.sensors;
+  if (s.i2cSda < 0 || s.i2cScl < 0 || s.i2cHz == 0) return false;
   ensureWire();
   // Probe: a bus read of control/status 1 must ACK.
   uint8_t status;
@@ -83,16 +104,17 @@ bool Rtc::set(const DateTime& dt) {
   if (!begun_ || addr == 0) return false;
   const uint8_t centuryBit = dt.year < 2000 ? 0x80U : 0x00U;
   ensureWire();
-  Wire.beginTransmission(addr);
-  Wire.write(REG_TIME);
-  Wire.write(decToBcd(dt.second));  // also clears VL once a valid time is written
-  Wire.write(decToBcd(dt.minute));
-  Wire.write(decToBcd(dt.hour));
-  Wire.write(decToBcd(dt.day));
-  Wire.write(decToBcd(dt.weekday));
-  Wire.write(static_cast<uint8_t>(decToBcd(dt.month) | centuryBit));
-  Wire.write(decToBcd(static_cast<uint8_t>(dt.year % 100)));
-  return Wire.endTransmission() == 0;
+  auto& wire = sensorWire();
+  wire.beginTransmission(addr);
+  wire.write(REG_TIME);
+  wire.write(decToBcd(dt.second));  // also clears VL once a valid time is written
+  wire.write(decToBcd(dt.minute));
+  wire.write(decToBcd(dt.hour));
+  wire.write(decToBcd(dt.day));
+  wire.write(decToBcd(dt.weekday));
+  wire.write(static_cast<uint8_t>(decToBcd(dt.month) | centuryBit));
+  wire.write(decToBcd(static_cast<uint8_t>(dt.year % 100)));
+  return wire.endTransmission() == 0;
 }
 
 }  // namespace freeink

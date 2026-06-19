@@ -5,6 +5,7 @@
 #if FREEINK_CAP_TEMP_HUMIDITY
 
 #include <Wire.h>
+#include <soc/soc_caps.h>
 
 namespace freeink {
 namespace {
@@ -14,19 +15,36 @@ constexpr uint8_t CMD_MEASURE_HIGH_PRECISION = 0xFD;
 constexpr uint8_t CMD_SOFT_RESET = 0x94;
 constexpr uint32_t MEASURE_DELAY_MS = 10;  // high-precision conversion time (~8.3 ms max)
 
-bool g_wireReady = false;
-void ensureWire() {
-  if (g_wireReady) return;
+bool g_wireReady[2] = {false, false};
+TwoWire& sensorWire() {
   const auto& s = BoardConfig::ACTIVE.sensors;
-  Wire.begin(s.i2cSda, s.i2cScl, s.i2cHz);
-  g_wireReady = true;
+#if SOC_I2C_NUM > 1
+  return s.i2cBus == 1 ? Wire1 : Wire;
+#else
+  return Wire;
+#endif
+}
+
+void ensureWire() {
+  const auto& s = BoardConfig::ACTIVE.sensors;
+  const uint8_t bus =
+#if SOC_I2C_NUM > 1
+      s.i2cBus == 1 ? 1 : 0;
+#else
+      0;
+#endif
+  if (g_wireReady[bus]) return;
+  auto& wire = sensorWire();
+  wire.begin(s.i2cSda, s.i2cScl, s.i2cHz);
+  g_wireReady[bus] = true;
 }
 
 bool sendCommand(uint8_t addr, uint8_t cmd) {
   ensureWire();
-  Wire.beginTransmission(addr);
-  Wire.write(cmd);
-  return Wire.endTransmission() == 0;
+  auto& wire = sensorWire();
+  wire.beginTransmission(addr);
+  wire.write(cmd);
+  return wire.endTransmission() == 0;
 }
 
 // Sensirion CRC-8: polynomial 0x31, init 0xFF, over the two data bytes.
@@ -45,6 +63,8 @@ uint8_t crc8(uint8_t msb, uint8_t lsb) {
 bool EnvironmentSensor::begin() {
   const uint8_t addr = BoardConfig::ACTIVE.sensors.tempHumidityAddr;
   if (addr == 0) return false;
+  const auto& s = BoardConfig::ACTIVE.sensors;
+  if (s.i2cSda < 0 || s.i2cScl < 0 || s.i2cHz == 0) return false;
   ensureWire();
   if (!sendCommand(addr, CMD_SOFT_RESET)) return false;  // also probes the ACK
   delay(2);                                              // soft-reset settle (~1 ms)
@@ -58,9 +78,10 @@ bool EnvironmentSensor::read(float& tempC, float& humidityPct) {
   if (!sendCommand(addr, CMD_MEASURE_HIGH_PRECISION)) return false;
   delay(MEASURE_DELAY_MS);
 
-  if (Wire.requestFrom(addr, static_cast<uint8_t>(6), static_cast<uint8_t>(true)) < 6) return false;
+  auto& wire = sensorWire();
+  if (wire.requestFrom(addr, static_cast<uint8_t>(6), static_cast<uint8_t>(true)) < 6) return false;
   uint8_t b[6];
-  for (uint8_t i = 0; i < 6; ++i) b[i] = Wire.read();
+  for (uint8_t i = 0; i < 6; ++i) b[i] = wire.read();
   if (crc8(b[0], b[1]) != b[2] || crc8(b[3], b[4]) != b[5]) return false;
 
   const uint16_t tRaw = static_cast<uint16_t>(b[0] << 8 | b[1]);

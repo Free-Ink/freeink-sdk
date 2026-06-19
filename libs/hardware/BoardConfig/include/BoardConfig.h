@@ -466,7 +466,7 @@ constexpr TouchConfig NO_TOUCH = {TouchController::None,
 // portrait 540x960 frame on the landscape 960x540 panel, so swap axes into the
 // panel-native display frame before app-level orientation mapping.
 constexpr TouchConfig LILYGO_T5_PRO_GT911 = {
-    TouchController::Gt911, 39, 40, 3, 9, 0x5D, 0, 959, 0, 539, false, 0x14, false, false, PIN_UNASSIGNED, true};
+    TouchController::Gt911, 39, 40, 3, 9, 0x5D, 0, 959, 0, 539, false, 0x14, false, true, PIN_UNASSIGNED, true};
 constexpr FrontlightConfig NO_FRONTLIGHT = {PIN_UNASSIGNED, 0, 0, true};
 constexpr AudioConfig NO_AUDIO = {AudioOutput::None,
                                   PIN_UNASSIGNED,

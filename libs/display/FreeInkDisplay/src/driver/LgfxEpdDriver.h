@@ -46,6 +46,7 @@ class LgfxEpdDriver : public PanelDriver {
   void writeGrayscalePlaneStrip(EpdBus& bus, GrayPlane plane, const uint8_t* rows, uint16_t yStart,
                                 uint16_t numRows) override;
   void displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut, bool factoryMode) override;
+  void cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) override;
 
  private:
   const LgfxEpdConfig& _cfg;

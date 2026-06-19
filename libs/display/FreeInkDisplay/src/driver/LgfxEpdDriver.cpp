@@ -65,6 +65,22 @@ class FreeInkLgfxEpd : public lgfx::LGFX_Device {
 
     auto dc = _panel.config_detail();
     dc.line_padding = c.linePadding;
+    if (c.lutQuality && c.lutQualityStep) {
+      dc.lut_quality = c.lutQuality;
+      dc.lut_quality_step = c.lutQualityStep;
+    }
+    if (c.lutText && c.lutTextStep) {
+      dc.lut_text = c.lutText;
+      dc.lut_text_step = c.lutTextStep;
+    }
+    if (c.lutFast && c.lutFastStep) {
+      dc.lut_fast = c.lutFast;
+      dc.lut_fast_step = c.lutFastStep;
+    }
+    if (c.lutFastest && c.lutFastestStep) {
+      dc.lut_fastest = c.lutFastest;
+      dc.lut_fastest_step = c.lutFastestStep;
+    }
     _panel.config_detail(dc);
 
     auto pc = _panel.config();
@@ -88,7 +104,7 @@ FreeInkLgfxEpd g_dev;
 
 lgfx::epd_mode::epd_mode_t epdModeFor(RefreshMode m) {
   switch (m) {
-    case RefreshMode::Full: return lgfx::epd_mode::epd_quality;
+    case RefreshMode::Full: return lgfx::epd_mode::epd_text;
     case RefreshMode::Half: return lgfx::epd_mode::epd_text;
     default: return lgfx::epd_mode::epd_fast;
   }
@@ -168,6 +184,7 @@ void pushCanvas(lgfx::epd_mode::epd_mode_t epdMode) {
   g_dev.waitDisplay();
   g_dev.setEpdMode(epdMode);
   g_canvas->pushSprite(0, 0);  // commits to the panel; Panel_EPD runs the refresh
+  g_dev.waitDisplay();
 }
 
 }  // namespace
@@ -249,11 +266,21 @@ void LgfxEpdDriver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
   (void)factoryMode;
 #if FREEINK_DRIVER_LGFX_EPD
   fillCanvasGray(fb);             // combine base + LSB/MSB planes -> 4-level gray
-  pushCanvas(lgfx::epd_mode::epd_quality);
+  pushCanvas(lgfx::epd_mode::epd_fastest);
   if (turnOff) g_dev.sleep();
 #else
   (void)fb;
   (void)turnOff;
+#endif
+}
+
+void LgfxEpdDriver::cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) {
+  (void)bus;
+#if FREEINK_DRIVER_LGFX_EPD
+  if (!bw) return;
+  fillCanvasBW(bw);
+#else
+  (void)bw;
 #endif
 }
 

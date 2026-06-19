@@ -28,6 +28,14 @@ struct LgfxEpdConfig {
   uint8_t linePadding;
   uint8_t rotation;
   LgfxEpdPowerHooks power;
+  const uint32_t* lutQuality = nullptr;
+  size_t lutQualityStep = 0;
+  const uint32_t* lutText = nullptr;
+  size_t lutTextStep = 0;
+  const uint32_t* lutFast = nullptr;
+  size_t lutFastStep = 0;
+  const uint32_t* lutFastest = nullptr;
+  size_t lutFastestStep = 0;
 };
 
 }  // namespace freeink

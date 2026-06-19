@@ -10,6 +10,20 @@ constexpr uint8_t kTpsRegVcom = 0x03;
 constexpr uint8_t kTpsRegPowerGood = 0x0F;
 constexpr uint8_t kTpsEnableOutputs = 0x3F;
 
+#define LUT_MAKE(d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, da, db, dc, dd, de, df) \
+  (uint32_t)((d0 << 0) | (d1 << 2) | (d2 << 4) | (d3 << 6) | (d4 << 8) | (d5 << 10) | (d6 << 12) | \
+             (d7 << 14) | (d8 << 16) | (d9 << 18) | (da << 20) | (db << 22) | (dc << 24) | \
+             (dd << 26) | (de << 28) | (df << 30))
+
+constexpr uint32_t kAaOverlayLut[] = {
+    // Hold pure black/white; nudge only the 4-bit gray levels produced by AA.
+    LUT_MAKE(3, 1, 1, 1, 1, 1, 1, 3, 3, 2, 2, 2, 2, 2, 2, 3),
+    LUT_MAKE(3, 3, 1, 1, 1, 1, 3, 3, 3, 3, 2, 2, 2, 2, 3, 3),
+    0u,
+};
+
+#undef LUT_MAKE
+
 bool writeTpsRegister(uint8_t reg, const uint8_t* data, size_t len) {
   BoardT5S3::ScopedI2CLock lock;
   Wire.beginTransmission(T5S3_TPS65185_ADDR);
@@ -137,6 +151,14 @@ const LgfxEpdConfig& lilygoT5S3LgfxConfig() {
       8,
       0,
       {&prepareEpdPower, &epdPowerOn, &epdPowerOff},
+      nullptr,
+      0,
+      nullptr,
+      0,
+      nullptr,
+      0,
+      kAaOverlayLut,
+      sizeof(kAaOverlayLut) / sizeof(kAaOverlayLut[0]),
   };
   return cfg;
 }

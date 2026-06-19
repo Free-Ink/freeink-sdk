@@ -192,6 +192,22 @@
 #define FREEINK_SD_SDMMC (FREEINK_DEVICE_DELINK)
 #endif
 
+// Serial log transport hint for consumer firmware. Boards can share the same MCU
+// but expose logs differently: LilyGo T5 S3 is monitored over native USB CDC,
+// while Sticky bring-up is more reliable through the IDF/ROM console path.
+#define FREEINK_LOG_TRANSPORT_SERIAL 0
+#define FREEINK_LOG_TRANSPORT_USB_CDC_WRITE 1
+#define FREEINK_LOG_TRANSPORT_ROM_PRINTF 2
+#ifndef FREEINK_LOG_TRANSPORT
+#if FREEINK_DEVICE_LILYGO
+#define FREEINK_LOG_TRANSPORT FREEINK_LOG_TRANSPORT_USB_CDC_WRITE
+#elif FREEINK_DEVICE_STICKY
+#define FREEINK_LOG_TRANSPORT FREEINK_LOG_TRANSPORT_ROM_PRINTF
+#else
+#define FREEINK_LOG_TRANSPORT FREEINK_LOG_TRANSPORT_SERIAL
+#endif
+#endif
+
 namespace BoardConfig {
 
 // Physical device family. X3 and X4 are sibling devices on the same ESP32-C3
@@ -445,11 +461,11 @@ constexpr TouchConfig NO_TOUCH = {TouchController::None,
                                   false,
                                   false};
 
-// LilyGo T5 S3 Pro Lite GT911 touch (shared I2C bus, native portrait 540x960).
-// A named config ready to drop into a LilyGo board profile once its display
-// driver lands. GT911 reports pixel coords directly, so raw range == panel size.
+// LilyGo T5 S3 Pro Lite GT911 touch (shared I2C bus). The digitizer reports a
+// portrait 540x960 frame on the landscape 960x540 panel, so swap axes into the
+// panel-native display frame before app-level orientation mapping.
 constexpr TouchConfig LILYGO_T5_PRO_GT911 = {
-    TouchController::Gt911, 39, 40, 3, 9, 0x5D, 0, 539, 0, 959, false, 0x14, false, false};
+    TouchController::Gt911, 39, 40, 3, 9, 0x5D, 0, 959, 0, 539, false, 0x14, false, false, PIN_UNASSIGNED, true};
 constexpr FrontlightConfig NO_FRONTLIGHT = {PIN_UNASSIGNED, 0, 0, true};
 constexpr AudioConfig NO_AUDIO = {AudioOutput::None,
                                   PIN_UNASSIGNED,
@@ -648,8 +664,8 @@ constexpr BoardProfile DE_LINK = {Board::DeLink,
 // 960x540 16-gray raw parallel panel driven via LovyanGFX (FREEINK_DRIVER_LGFX_EPD);
 // the panel can't power up without the board's PMIC (TPS65185) + PCA9535 expander
 // sequence, which the board injects through LgfxEpdConfig::power (see the LilyGo
-// support doc). Geometry is the physical scan size; the driver's rotation puts the
-// reader UI in portrait. Display + GT911 touch + PWM backlight + the I2C fuel gauge
+// support doc). Geometry is the physical/native landscape scan size; app-level
+// orientation handles rotated reader layouts. Display + GT911 touch + PWM backlight + the I2C fuel gauge
 // (BQ27220/BQ25896) are wired here. The user button (behind the PCA9535 expander),
 // PCF85063 RTC, and LoRa/GPS remain board-support — see docs/lilygo-t5s3-support.md.
 constexpr BoardProfile LILYGO_T5S3 = {
@@ -665,12 +681,12 @@ constexpr BoardProfile LILYGO_T5S3 = {
     0,                                           // displaySpiHz n/a (external bus)
     {14, 21, 13, 12, PIN_UNASSIGNED, false, 0},  // SD over SPI: SCLK14 MISO21 MOSI13 CS12
     {PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, 0,
-    false},         // power=BOOT (GPIO0), active-low
+     false},         // power=BOOT (GPIO0), active-low
     PIN_UNASSIGNED,  // batteryAdc: none — uses the I2C fuel gauge below
     PIN_UNASSIGNED,
     2.0f,
     PIN_UNASSIGNED,
-    LILYGO_T5_PRO_GT911,  // GT911 touch (SDA39 SCL40 INT3 RST9, 0x5D, 540x960)
+    LILYGO_T5_PRO_GT911,  // GT911 touch (SDA39 SCL40 INT3 RST9, 0x5D, portrait sensor -> landscape panel)
     {11, 5000, 8, true},  // backlight: BL_EN GPIO11, PWM 5 kHz / 8-bit, active-high
     NO_AUDIO,
     NO_LEDS,

@@ -267,9 +267,15 @@ void LgfxEpdDriver::deepSleep(EpdBus& bus) {
 // Per-board config injection. This driver has NO universal default — the bus pins
 // and power hooks are entirely board-specific — so a LilyGo-class board defines
 // `const LgfxEpdConfig& yourConfig();` in namespace freeink and builds with
-// -DFREEINK_LGFX_EPD_CONFIG=yourConfig (its PMIC/expander glue stays in the
-// board-support layer, injected via LgfxEpdConfig::power).
-#ifdef FREEINK_LGFX_EPD_CONFIG
+// -DFREEINK_LGFX_EPD_CONFIG=yourConfig. The SDK's LilyGo board-support library
+// provides the default config for FREEINK_DEVICE_LILYGO builds.
+#if FREEINK_DEVICE_LILYGO
+const LgfxEpdConfig& lilygoT5S3LgfxConfig();
+PanelDriver& lgfxEpdDriver() {
+  static LgfxEpdDriver instance(lilygoT5S3LgfxConfig());
+  return instance;
+}
+#elif defined(FREEINK_LGFX_EPD_CONFIG)
 const LgfxEpdConfig& FREEINK_LGFX_EPD_CONFIG();
 PanelDriver& lgfxEpdDriver() {
   static LgfxEpdDriver instance(FREEINK_LGFX_EPD_CONFIG());

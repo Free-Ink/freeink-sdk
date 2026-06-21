@@ -771,11 +771,9 @@ constexpr BoardProfile M5PAPER_V11 = {
 // bus), BQ27220 fuel gauge, PDM mic + buzzer. Pins are triple-sourced (V01
 // schematic 2026-06-05 + porting spec + vendor demo pin_config.h).
 //
-// UNVERIFIED, pending hardware:
+// Pending hardware validation:
 //   * orientation — panel mount transform unknown; ships NO_FLIP (set ROTATE_180/
 //     a mirror here once the reader's "up" is confirmed on a unit).
-//   * GT911 raw range assumes panel-native landscape 800x480; a hardware test may
-//     show coords need axis swap/flip (adjust raw range or touch transform).
 //   * MicroSD shares the display SPI bus; the vendor demo doesn't exercise SD, so
 //     bus-sharing / CS arbitration with the panel needs a hardware check.
 //   * PDM mic pins (19/20/38) are from the schematic/spec; no vendor demo uses the
@@ -815,7 +813,7 @@ constexpr BoardProfile STICKY = {
     NO_FRONTLIGHT,  // e-paper, no frontlight (charge LED is board-support)
     STICKY_AUDIO,   // no output codec; LEDC buzzer on GPIO48 (Buzzer lib). PDM mic is separate (mic field)
     NO_LEDS,        // charge-state LED is charger-driven, not an addressable strip
-    NO_FLIP,        // UNVERIFIED mount — see note above
+    NO_FLIP,        // mount orientation pending validation; see note above
     NO_SDMMC,       // SD is SPI, not 4-bit SDMMC
     // BQ27220 fuel gauge at 0x55 on the BFG/MISC I2C bus: SDA=GPIO1, SCL=GPIO0.
     // NOTE: GPIO0 is an ESP32-S3 strapping pin — the board init must not leave a

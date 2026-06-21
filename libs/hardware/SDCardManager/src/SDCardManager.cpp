@@ -209,7 +209,6 @@ bool SDCardManager::writeFile(const char* path, const String& content) {
     return false;
   }
 
-  // Remove existing file so we perform an overwrite rather than append
   if (vol().exists(path)) {
     vol().remove(path);
   }
@@ -231,7 +230,6 @@ bool SDCardManager::ensureDirectoryExists(const char* path) {
     return false;
   }
 
-  // Check if directory already exists
   if (vol().exists(path)) {
     FsFile dir = vol().open(path);
     if (dir && dir.isDirectory()) {
@@ -241,7 +239,6 @@ bool SDCardManager::ensureDirectoryExists(const char* path) {
     dir.close();
   }
 
-  // Create the directory
   if (vol().mkdir(path)) {
     return true;
   }
@@ -289,7 +286,6 @@ bool SDCardManager::openFileForWrite(const char* moduleName, const String& path,
 }
 
 bool SDCardManager::removeDir(const char* path) {
-  // 1. Open the directory
   auto dir = vol().open(path);
   if (!dir) {
     return false;

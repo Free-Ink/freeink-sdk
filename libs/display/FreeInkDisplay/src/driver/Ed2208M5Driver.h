@@ -17,9 +17,7 @@
 // refresh leaves a small net DC bias on the pixels, and over hours of
 // interrupted-only operation the panel visibly darkens and colors fade. Only
 // the complete waveform is DC-balanced, so consumers must schedule one
-// periodically (~hourly) via requestCompleteWaveformNextRefresh(); the
-// FAST_CLEAN_INTERVAL full-panel pass is itself interrupted and clears
-// geometric ghosting only, not the accumulated charge.
+// periodically (~hourly) via requestCompleteWaveformNextRefresh().
 //
 // For users who prefer the vendor path over this speed hack, M5OfficialDriver
 // wraps M5GFX/M5Unified instead (opt in with -DFREEINK_M5_OFFICIAL=1).
@@ -73,7 +71,6 @@ class Ed2208M5Driver : public PanelDriver {
   bool _completeNextRefresh = false;
   uint16_t _cutoffMs = 0;  // 0 -> REFRESH_CUTOFF_MS default (set in .cpp)
   bool _lastFrameValid = false;
-  uint8_t _fastRefreshesSinceFullPanel = 0;
   uint8_t _prevFrame[LOGICAL_BUF];  // previous frame, for the dirty-window diff
 };
 

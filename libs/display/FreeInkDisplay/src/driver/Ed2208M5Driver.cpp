@@ -28,17 +28,8 @@ constexpr uint16_t PANEL_WIDTH = 400;
 constexpr uint16_t PANEL_HEIGHT = 600;
 constexpr uint16_t REFRESH_CUTOFF_MS = 340;
 constexpr uint16_t BUSY_SETTLE_MS = 20;
-constexpr uint8_t FAST_CLEAN_INTERVAL = 6;
 constexpr uint8_t DARK_DISPLAY_CTRL = 0x0F;
 constexpr uint32_t PANEL_AREA = static_cast<uint32_t>(PANEL_WIDTH) * PANEL_HEIGHT;
-// Windowed (partial) refreshes are DISABLED: an interrupted refresh is not a
-// stable end state — the pigments keep relaxing toward blue/grey for minutes
-// afterwards, so regions refreshed at different times settle to different
-// colors and the partial-window edge shows as a hard color band (observed as
-// a blue band over the clock area, reappearing within a minute of any full
-// pass). Driving the whole panel every time keeps it uniformly "aged".
-// getDirtyWindow() is still used as the no-change early-out.
-constexpr uint32_t PARTIAL_AREA_LIMIT = 0;
 
 }  // namespace
 
@@ -128,7 +119,6 @@ void Ed2208M5Driver::begin(EpdBus& bus) {
   memset(_prevFrame, 0xFF, LOGICAL_BUF);
   _panelPowerOn = false;
   _lastFrameValid = false;
-  _fastRefreshesSinceFullPanel = 0;
   _completeNextRefresh = false;
 }
 
@@ -332,7 +322,6 @@ void Ed2208M5Driver::refresh(EpdBus& bus, uint16_t dirtyX, uint16_t dirtyY, uint
 void Ed2208M5Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
   if (!fb) return;
 
-  uint16_t refreshX = 0, refreshY = 0, refreshW = PANEL_WIDTH, refreshH = PANEL_HEIGHT;
   uint16_t dirtyX = 0, dirtyY = 0, dirtyW = PANEL_WIDTH, dirtyH = PANEL_HEIGHT;
   const bool forceFullPanelRefresh = (mode == RefreshMode::Full);
 
@@ -346,25 +335,10 @@ void Ed2208M5Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev
     return;
   }
 
-  if (!forceFullPanelRefresh && _lastFrameValid && _fastRefreshesSinceFullPanel < FAST_CLEAN_INTERVAL) {
-    const uint32_t dirtyArea = static_cast<uint32_t>(dirtyW) * dirtyH;
-    if (dirtyArea <= PARTIAL_AREA_LIMIT) {
-      refreshX = dirtyX;
-      refreshY = dirtyY;
-      refreshW = dirtyW;
-      refreshH = dirtyH;
-    }
-  }
-
-  // ED2208 0x10 expects a coherent full-frame upload; only the refresh window is limited.
+  // ED2208 interrupted refreshes must age the whole panel uniformly; windowed
+  // refreshes leave hard color bands as pigments continue settling.
   writeFrame(bus, fb);
-  refresh(bus, refreshX, refreshY, refreshW, refreshH);
-
-  if (refreshX == 0 && refreshY == 0 && refreshW == PANEL_WIDTH && refreshH == PANEL_HEIGHT) {
-    _fastRefreshesSinceFullPanel = 0;
-  } else if (_fastRefreshesSinceFullPanel < 0xFF) {
-    ++_fastRefreshesSinceFullPanel;
-  }
+  refresh(bus, 0, 0, PANEL_WIDTH, PANEL_HEIGHT);
 
   memcpy(_prevFrame, fb, LOGICAL_BUF);
   _lastFrameValid = true;

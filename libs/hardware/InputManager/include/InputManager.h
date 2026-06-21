@@ -17,66 +17,30 @@ class InputManager {
   void begin();
   uint8_t getState();
 
-  /**
-   * Updates the button states. Should be called regularly in the main loop.
-   */
+  // Call regularly from the main loop to update button and touch edge state.
   void update();
 
-  /**
-   * Returns true if the button was being held at the time of the last #update() call.
-   *
-   * @param buttonIndex the button indexes
-   * @return the button current press state
-   */
+  // Level state from the last update().
   bool isPressed(uint8_t buttonIndex) const;
 
- /**
-   * Returns true if the button went from unpressed to pressed between the last two #update() calls.
-   *
-   * This differs from #isPressed() in that pressing and holding a button will cause this function
-   * to return true after the first #update() call, but false on subsequent calls, whereas #isPressed()
-   * will continue to return true.
-   *
-   * @param buttonIndex
-   * @return the button pressed state
-   */
+  // Press edge since the previous update().
   bool wasPressed(uint8_t buttonIndex) const;
 
-  /**
-   * Returns true if any button started being pressed between the last two #update() calls
-   *
-   * @return true if any button started being pressed between the last two #update() calls
-   */
+  // Any button press edge since the previous update().
   bool wasAnyPressed() const;
 
-  /**
-   * Returns true if the button went from pressed to unpressed between the last two #update() calls
-   *
-   * @param buttonIndex the button indexes
-   * @return the button release state
-   */
+  // Release edge since the previous update().
   bool wasReleased(uint8_t buttonIndex) const;
 
-  /**
-   * Returns true if any button was released between the last two #update() calls
-   *
-   * @return  true if any button was released between the last two #update() calls
-   */
+  // Any button release edge since the previous update().
   bool wasAnyReleased() const;
 
-  /**
-   * Returns the time between any button starting to be depressed and all buttons between released
-   *
-   * @return duration in milliseconds
-   */
+  // Duration between the first button press and final release.
   unsigned long getHeldTime() const;
 
-  /**
-   * Returns the time the power button has been held.
-   */
+  // Duration of the current or most recent power-button hold.
   unsigned long getPowerButtonHeldTime() const;
 
-  // Button indices
   static constexpr uint8_t BTN_BACK = 0;
   static constexpr uint8_t BTN_CONFIRM = 1;
   static constexpr uint8_t BTN_LEFT = 2;
@@ -92,10 +56,8 @@ class InputManager {
   static constexpr int BUTTON_ADC_PIN_2 = 2;
   static constexpr int POWER_BUTTON_PIN = BoardConfig::DEFAULT_DEVICE.input.power;
 
-  // Power button methods
   bool isPowerButtonPressed() const;
 
-  // Button names
   static const char* getButtonName(uint8_t buttonIndex);
 
   // --- Capacitive touch (inert unless BoardConfig::ACTIVE.touch is configured) ---
@@ -116,33 +78,18 @@ class InputManager {
   bool wasTouchPressed() const;
   // True if a touch ended between the last two #update() calls.
   bool wasTouchReleased() const;
-  // One-shot tap: true on the frame a touch is released, writing the TOUCH-DOWN
-  // position (first contact sample) normalized to 0..1 in the panel's native
-  // orientation (the calibrated raw range). Down-position routing: the reported
-  // centroid drifts as a finger rolls off during lift, which made small targets
-  // unreliable when taps routed by the release position. Reusable, device-agnostic building block for corner/region
-  // gestures; the app maps panel-native to its display/logical frame. Returns
-  // false (leaving outputs untouched) when no release this frame, no touch HW,
-  // or the contact moved far enough to be a drag/scroll rather than a tap.
+  // One-shot tap on release. Returns the original touch-down position normalized
+  // to 0..1 in the panel's native frame; false when no tap completed this update.
   bool wasTouchTap(float& nx, float& ny) const;
-  // Press-edge analogue of wasTouchTap: true on the frame a touch begins, with the
-  // touch-down position normalized 0..1 in the panel's native frame. For showing a
-  // selected/pressed state under the finger on touch-down (release activates).
+  // Press edge with the touch-down position normalized in the panel's native frame.
   bool wasTouchPressedAt(float& nx, float& ny) const;
   // True while the current touch is still a tap candidate: finger down, movement
   // remains within tap slop. Writes the original touch-down position and held time.
   bool isTouchTapCandidate(float& nx, float& ny, unsigned long& heldMs) const;
-  // Duration (ms) of the last touch contact, latched on release — valid on the
-  // release frame (when wasTouchReleased()/wasTouchTap() are true). Raw primitive
-  // for the app's tap-vs-long-press gesture policy; 0 if no touch HW.
+  // Duration (ms) of the last touch contact, latched on release.
   unsigned long lastTouchHeldMs() const;
-  // Swipe (flick) gesture, valid on the release frame: true if the contact moved
-  // past a distance threshold within a time window. Writes the start (touch-down)
-  // and end (release) positions, each normalized 0..1 in the panel's native frame
-  // — the app maps both to its logical frame (e.g. via tapToLogical) and takes the
-  // dominant axis, so orientation/mount is handled app-side. A swipe also raises
-  // wasTouchTap(); the app checks wasSwipe() first to disambiguate. False when no
-  // touch HW or the movement was below threshold (a plain tap).
+  // Swipe gesture on release. Returns start/end positions normalized in the
+  // panel's native frame; callers map orientation and check this before tap.
   bool wasSwipe(float& nxStart, float& nyStart, float& nxEnd, float& nyEnd) const;
   // True if a touch press or release happened this frame. Coarse "the user touched
   // the screen" signal (the touch analogue of wasAnyPressed/Released) for resetting
@@ -194,7 +141,6 @@ class InputManager {
   bool confirmBackPhysicalPressed;
   bool confirmBackLongPressActive;
 
-  // Touch state machine
   bool touchDataEnabled = false;      // I2C up, controller present
   uint8_t gt911Addr = 0;              // resolved GT911 address (0 until probed)
   unsigned long touchIrqPulseUntil = 0;  // synthesized-confirm window after a press

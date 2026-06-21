@@ -49,27 +49,34 @@
 #ifndef FREEINK_DEVICE_M5PAPER
 #define FREEINK_DEVICE_M5PAPER 0
 #endif
+#ifndef FREEINK_DEVICE_STICKY
+#define FREEINK_DEVICE_STICKY 0
+#endif
 
 // --- 2) Coherence: exactly one MCU family, at least one device ---------------
 #if !(FREEINK_DEVICE_X4 || FREEINK_DEVICE_X3 || FREEINK_DEVICE_M5 || FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_DELINK || \
-      FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_M5PAPER)
+      FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_M5PAPER || FREEINK_DEVICE_STICKY)
 #error \
-    "FreeInk: no device selected. Pass at least one -DFREEINK_DEVICE_<NAME> (X4, X3, M5, MURPHY, DELINK, LILYGO, M5PAPER) in your build env — see platformio.sample.ini."
+    "FreeInk: no device selected. Pass at least one -DFREEINK_DEVICE_<NAME> (X4, X3, M5, MURPHY, DELINK, LILYGO, M5PAPER, STICKY) in your build env — see platformio.sample.ini."
 #endif
 // Each device belongs to one MCU family; a binary targets exactly one. X3/X4 are
 // ESP32-C3; M5 PaperColor/Murphy/de-link/LilyGo are ESP32-S3; M5Paper v1.1 is the
 // classic ESP32 (ESP32-D0WDQ6). The three families differ in deep-sleep wakeup,
 // SPI peripheral count, and toolchain, so they never share a binary.
 #define FREEINK_MCU_C3 (FREEINK_DEVICE_X3 || FREEINK_DEVICE_X4)
-#define FREEINK_MCU_S3 (FREEINK_DEVICE_M5 || FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_DELINK || FREEINK_DEVICE_LILYGO)
+#define FREEINK_MCU_S3 \
+  (FREEINK_DEVICE_M5 || FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_DELINK || FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_STICKY)
 #define FREEINK_MCU_ESP32 (FREEINK_DEVICE_M5PAPER)
 #if (FREEINK_MCU_C3 + FREEINK_MCU_S3 + FREEINK_MCU_ESP32) != 1
 #error \
-    "FreeInk: all selected devices must share one MCU family — ESP32-C3 (X3/X4), ESP32-S3 (M5/Murphy/de-link/LilyGo), or ESP32 (M5Paper). Build one binary per family."
+    "FreeInk: all selected devices must share one MCU family — ESP32-C3 (X3/X4), ESP32-S3 (M5/Murphy/de-link/LilyGo/Sticky), or ESP32 (M5Paper). Build one binary per family."
 #endif
 
 // --- 3) Derive panel drivers from the device set -----------------------------
-#if FREEINK_DEVICE_X4 || FREEINK_DEVICE_DELINK
+// Sticky reuses SSD1677: its 800x480 panel rides a 24-pin FPC whose GDR/RESE/BS1
+// + dual VSH1/VSH2 + external VGH/VGL/VSL/VCOM charge pump is the SSD1677
+// application circuit (same controller + resolution as X4 / de-link).
+#if FREEINK_DEVICE_X4 || FREEINK_DEVICE_DELINK || FREEINK_DEVICE_STICKY
 #define FREEINK_DRIVER_SSD1677 1
 #else
 #define FREEINK_DRIVER_SSD1677 0
@@ -113,7 +120,8 @@
 
 // --- 4) Derive default capabilities (override with -DFREEINK_CAP_*=0/1) -------
 #ifndef FREEINK_CAP_TOUCH
-#define FREEINK_CAP_TOUCH (FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_M5PAPER)
+#define FREEINK_CAP_TOUCH \
+  (FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_M5PAPER || FREEINK_DEVICE_STICKY)
 #endif
 #ifndef FREEINK_CAP_FRONTLIGHT
 #define FREEINK_CAP_FRONTLIGHT (FREEINK_DEVICE_DELINK || FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_LILYGO)
@@ -125,13 +133,36 @@
 // ACTIVE.batteryGauge.gaugeAddr != 0) — required because X3 (gauge) and X4 (ADC)
 // share one C3 binary.
 #ifndef FREEINK_BATTERY_I2C_GAUGE
-#define FREEINK_BATTERY_I2C_GAUGE (FREEINK_DEVICE_X3 || FREEINK_DEVICE_LILYGO)
+#define FREEINK_BATTERY_I2C_GAUGE (FREEINK_DEVICE_X3 || FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_STICKY)
 #endif
 #ifndef FREEINK_CAP_COLOR
 #define FREEINK_CAP_COLOR (FREEINK_DEVICE_M5)
 #endif
 #ifndef FREEINK_CAP_AUDIO
 #define FREEINK_CAP_AUDIO (FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_M5)
+#endif
+// Microphone capture (PDM in). Separate from FREEINK_CAP_AUDIO (output): the
+// Sticky has a PDM mic but no output codec. The Microphone lib compiles its
+// i2s_pdm RX path only when this is set; otherwise it links stub bodies.
+#ifndef FREEINK_CAP_MIC
+#define FREEINK_CAP_MIC (FREEINK_DEVICE_STICKY)
+#endif
+// On-board I2C sensors. Each lib (Rtc / EnvironmentSensor / Imu) compiles its
+// I2C driver only when its flag is set; otherwise it links stub bodies.
+#ifndef FREEINK_CAP_RTC
+#define FREEINK_CAP_RTC (FREEINK_DEVICE_STICKY)
+#endif
+#ifndef FREEINK_CAP_TEMP_HUMIDITY
+#define FREEINK_CAP_TEMP_HUMIDITY (FREEINK_DEVICE_STICKY)
+#endif
+#ifndef FREEINK_CAP_IMU
+#define FREEINK_CAP_IMU (FREEINK_DEVICE_STICKY)
+#endif
+// LEDC PWM buzzer (tone beeper). The Buzzer lib drives the AudioConfig.buzzer
+// pin; on for boards that wire one (Sticky GPIO48, Murphy GPIO46). Separate from
+// FREEINK_CAP_AUDIO — a buzzer is a tone device, not a WAV/codec output.
+#ifndef FREEINK_CAP_BUZZER
+#define FREEINK_CAP_BUZZER (FREEINK_DEVICE_STICKY || FREEINK_DEVICE_MURPHY)
 #endif
 #ifndef FREEINK_CAP_LED
 #define FREEINK_CAP_LED (FREEINK_DEVICE_M5)
@@ -161,12 +192,37 @@
 #define FREEINK_SD_SDMMC (FREEINK_DEVICE_DELINK)
 #endif
 
+// Serial log transport hint for consumer firmware. Boards can share the same MCU
+// but expose logs differently: LilyGo T5 S3 is monitored over native USB CDC,
+// while Sticky bring-up is more reliable through the IDF/ROM console path.
+#define FREEINK_LOG_TRANSPORT_SERIAL 0
+#define FREEINK_LOG_TRANSPORT_USB_CDC_WRITE 1
+#define FREEINK_LOG_TRANSPORT_ROM_PRINTF 2
+#ifndef FREEINK_LOG_TRANSPORT
+#if FREEINK_DEVICE_LILYGO
+#define FREEINK_LOG_TRANSPORT FREEINK_LOG_TRANSPORT_USB_CDC_WRITE
+#elif FREEINK_DEVICE_STICKY
+#define FREEINK_LOG_TRANSPORT FREEINK_LOG_TRANSPORT_ROM_PRINTF
+#else
+#define FREEINK_LOG_TRANSPORT FREEINK_LOG_TRANSPORT_SERIAL
+#endif
+#endif
+
 namespace BoardConfig {
 
 // Physical device family. X3 and X4 are sibling devices on the same ESP32-C3
 // board (identical pinout, different panel/size): both profiles compile into the
 // C3 binary and one is chosen at runtime (setDisplayX3() -> selectDevice).
-enum class Board : uint8_t { XteinkX4, XteinkX3, M5StackPaperColor, MurphyM3, DeLink, LilyGoT5S3, M5PaperV11 };
+enum class Board : uint8_t {
+  XteinkX4,
+  XteinkX3,
+  M5StackPaperColor,
+  MurphyM3,
+  DeLink,
+  LilyGoT5S3,
+  M5PaperV11,
+  Sticky,
+};
 
 // How the board reports button presses.
 enum class InputStyle : uint8_t {
@@ -239,6 +295,12 @@ struct BatteryGaugeConfig {
   uint32_t i2cHz;
   uint8_t gaugeAddr;    // BQ27220 = 0x55; 0 = no I2C gauge (use ADC)
   uint8_t chargerAddr;  // BQ25896 = 0x6B; 0 = none
+  // Arduino I2C controller index: 0 = Wire, 1 = Wire1. Default 0. Set to 1 on
+  // boards where the gauge sits on a different physical bus than another I2C
+  // peripheral (e.g. Sticky's GT911 touch on Wire/SDA3-SCL2 vs gauge on
+  // Wire1/SDA1-SCL0) so they don't fight over one controller. Only honored on
+  // multi-bus SoCs (SOC_I2C_NUM > 1); single-bus parts (ESP32-C3) ignore it.
+  uint8_t i2cBus = 0;
 };
 
 struct InputPins {
@@ -269,6 +331,19 @@ struct TouchConfig {
   // coords start at byte 1); true = coords start at byte 0 (no track-id), as seen
   // on M5Paper's GT911 which boots without a reset/config dance. Ignored (CHSC6x).
   bool gt911CoordsAtByte0;
+  // Touch power-rail enable (active-high). PIN_UNASSIGNED on boards whose touch
+  // controller is always powered; driven HIGH before the reset/probe on boards
+  // that gate it (e.g. Sticky's TOUCH_EN). Default keeps existing initializers valid.
+  int8_t powerEnable = PIN_UNASSIGNED;
+  // Touch-to-panel mounting correction, applied to the raw coords so the touch
+  // frame aligns with the display's NATIVE (panel) frame before orientation
+  // mapping. swapXY first (digitizer rotated 90° vs panel, e.g. Sticky's portrait
+  // sensor on a landscape panel), then per-axis flip. rawMinX/MaxX/etc describe the
+  // POST-swap (panel) axes. Defaults = aligned. The display orientation is handled
+  // separately by GfxRenderer::tapToLogical, so taps follow rotation automatically.
+  bool swapXY = false;
+  bool flipX = false;
+  bool flipY = false;
 };
 
 // PWM frontlight description (gpio == PIN_UNASSIGNED disables it).
@@ -303,6 +378,30 @@ struct LedConfig {
   bool pmicRgbPower;  // true = enable M5PM1 RGB LED power rail before use
 };
 
+// Microphone input path (MicInput::None disables it). PDM mics (e.g. the Sticky's
+// MSM261DDB020) need a clock out + data in; `enable` powers the mic rail.
+enum class MicInput : uint8_t { None, Pdm };
+struct MicConfig {
+  MicInput input;
+  int8_t clk;     // PDM clock (output to mic)
+  int8_t data;    // PDM data (input from mic)
+  int8_t enable;  // mic power/enable pin (PIN_UNASSIGNED if none)
+  bool enableActiveHigh;
+};
+
+// On-board I2C sensors sharing one bus (e.g. the Sticky's RTC + temp/humidity +
+// IMU on SDA1/SCL0, the same bus as its fuel gauge). Each addr is 0 when that
+// sensor is absent; the matching sensor lib reads its addr from here.
+struct SensorsConfig {
+  int8_t i2cSda;
+  int8_t i2cScl;
+  uint32_t i2cHz;
+  uint8_t rtcAddr;           // PCF8563 = 0x51; 0 = none
+  uint8_t tempHumidityAddr;  // SHT40 = 0x44; 0 = none
+  uint8_t imuAddr;           // LSM6DS3TR-C = 0x6A; 0 = none
+  uint8_t i2cBus = 0;        // 0 = Wire, 1 = Wire1 on multi-bus SoCs
+};
+
 // How the panel is mounted relative to the driver's native scan. Any board injects
 // its own mirroring here; a 180° rotation is mirrorX && mirrorY. (90°/270° need a
 // software transpose — they swap width/height and aren't expressible by panel RAM
@@ -334,6 +433,18 @@ struct BoardProfile {
   DisplayOrientation orientation;   // panel mount transform (mirrorX/mirrorY)
   SdmmcPins sdmmc;                  // 4-bit SDMMC wiring (busWidth 0 = use SPI/SdFat)
   BatteryGaugeConfig batteryGauge;  // I2C fuel gauge (gaugeAddr 0 = use ADC pin)
+  // Microphone (PDM in). Defaulted so existing profiles need no change; a board
+  // with a mic sets it. PIN_UNASSIGNED is -1 — do NOT rely on zero-init here.
+  MicConfig mic = {MicInput::None, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, true};
+  // On-board I2C sensors (RTC / temp+humidity / IMU). Defaulted to "none"; a
+  // board with sensors sets the bus pins + each present sensor's address.
+  SensorsConfig sensors = {PIN_UNASSIGNED, PIN_UNASSIGNED, 0, 0, 0, 0, 0};
+  // UI scale multiplier the firmware applies to its theme metrics and chrome fonts.
+  // 1.0 keeps the original button-era pixel sizes. Touch devices bump this so rows,
+  // buttons, and tap targets are finger-sized: these panels are ~220-235 PPI, so a
+  // 30px row is only ~3mm. Per-board and hand-tuned (PPI alone can't tell the 4.26"
+  // X4 from the 3.97" Sticky); the firmware owns how it maps to metrics/fonts.
+  float uiScale = 1.0f;
 };
 
 constexpr TouchConfig NO_TOUCH = {TouchController::None,
@@ -351,11 +462,12 @@ constexpr TouchConfig NO_TOUCH = {TouchController::None,
                                   false,
                                   false};
 
-// LilyGo T5 S3 Pro Lite GT911 touch (shared I2C bus, native portrait 540x960).
-// A named config ready to drop into a LilyGo board profile once its display
-// driver lands. GT911 reports pixel coords directly, so raw range == panel size.
+// LilyGo T5 S3 Pro Lite GT911 touch (shared I2C bus). The digitizer reports a
+// portrait 540x960 frame on the landscape 960x540 panel, so swap axes into the
+// panel-native display frame before app-level orientation mapping.
 constexpr TouchConfig LILYGO_T5_PRO_GT911 = {
-    TouchController::Gt911, 39, 40, 3, 9, 0x5D, 0, 539, 0, 959, false, 0x14, false, false};
+    TouchController::Gt911, 39, 40, 3, 9, 0x5D, 0, 959, 0, 539, false, 0x14, false, true, PIN_UNASSIGNED, true,
+    false, true};  // powerEnable, swapXY=true, flipX=false, flipY=true
 constexpr FrontlightConfig NO_FRONTLIGHT = {PIN_UNASSIGNED, 0, 0, true};
 constexpr AudioConfig NO_AUDIO = {AudioOutput::None,
                                   PIN_UNASSIGNED,
@@ -371,6 +483,11 @@ constexpr AudioConfig NO_AUDIO = {AudioOutput::None,
                                   PIN_UNASSIGNED};
 constexpr LedConfig NO_LEDS = {PIN_UNASSIGNED, 0, LedColorOrder::GRB, false};
 constexpr LedConfig M5_PAPERCOLOR_LEDS = {21, 2, LedColorOrder::GRB, true};  // bench-verified GRB
+
+// Defaults matching the BoardProfile member initializers, so a profile can set a
+// trailing field (e.g. uiScale) positionally without spelling out the literals.
+constexpr MicConfig NO_MIC = {MicInput::None, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, true};
+constexpr SensorsConfig NO_SENSORS = {PIN_UNASSIGNED, PIN_UNASSIGNED, 0, 0, 0, 0, 0};
 
 // Murphy M3 audio, recovered from the OEM firmware: ES8388-compatible codec at
 // 7-bit I2C 0x10 on the shared touch bus (SDA=13/SCL=12, 100 kHz), I2S master
@@ -392,6 +509,13 @@ constexpr AudioConfig MURPHY_AUDIO = {AudioOutput::I2sEs8388, 40, 39, 41,   42, 
 // (0x40) is not driven.
 constexpr AudioConfig M5_PAPERCOLOR_AUDIO = {
     AudioOutput::I2sEs8311, 40, 41, 38, PIN_UNASSIGNED, 45, true, 46, 3, 2, 0x18, PIN_UNASSIGNED};
+
+// Sticky has no output codec (PDM mic in only) — just the LEDC buzzer on GPIO48,
+// driven by the Buzzer lib. output=None so hasAudio() stays false; the buzzer
+// field carries the tone pin (mirrors how MURPHY_AUDIO carries its buzzer).
+constexpr AudioConfig STICKY_AUDIO = {AudioOutput::None,    PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED,
+                                      PIN_UNASSIGNED,       PIN_UNASSIGNED, true,           PIN_UNASSIGNED,
+                                      PIN_UNASSIGNED,       PIN_UNASSIGNED, 0,              48};
 constexpr DisplayOrientation NO_FLIP = {false, false};   // native scan
 constexpr DisplayOrientation ROTATE_180 = {true, true};  // upside-down mount
 constexpr DisplayOrientation MIRROR_X = {true, false};   // horizontal mirror
@@ -542,8 +666,8 @@ constexpr BoardProfile DE_LINK = {Board::DeLink,
 // 960x540 16-gray raw parallel panel driven via LovyanGFX (FREEINK_DRIVER_LGFX_EPD);
 // the panel can't power up without the board's PMIC (TPS65185) + PCA9535 expander
 // sequence, which the board injects through LgfxEpdConfig::power (see the LilyGo
-// support doc). Geometry is the physical scan size; the driver's rotation puts the
-// reader UI in portrait. Display + GT911 touch + PWM backlight + the I2C fuel gauge
+// support doc). Geometry is the physical/native landscape scan size; app-level
+// orientation handles rotated reader layouts. Display + GT911 touch + PWM backlight + the I2C fuel gauge
 // (BQ27220/BQ25896) are wired here. The user button (behind the PCA9535 expander),
 // PCF85063 RTC, and LoRa/GPS remain board-support — see docs/lilygo-t5s3-support.md.
 constexpr BoardProfile LILYGO_T5S3 = {
@@ -559,18 +683,21 @@ constexpr BoardProfile LILYGO_T5S3 = {
     0,                                           // displaySpiHz n/a (external bus)
     {14, 21, 13, 12, PIN_UNASSIGNED, false, 0},  // SD over SPI: SCLK14 MISO21 MOSI13 CS12
     {PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, 0,
-    false},         // power=BOOT (GPIO0), active-low
+     false},         // power=BOOT (GPIO0), active-low
     PIN_UNASSIGNED,  // batteryAdc: none — uses the I2C fuel gauge below
     PIN_UNASSIGNED,
     2.0f,
     PIN_UNASSIGNED,
-    LILYGO_T5_PRO_GT911,  // GT911 touch (SDA39 SCL40 INT3 RST9, 0x5D, 540x960)
+    LILYGO_T5_PRO_GT911,  // GT911 touch (SDA39 SCL40 INT3 RST9, 0x5D, portrait sensor -> landscape panel)
     {11, 5000, 8, true},  // backlight: BL_EN GPIO11, PWM 5 kHz / 8-bit, active-high
     NO_AUDIO,
     NO_LEDS,
     NO_FLIP,
     NO_SDMMC,
-    {39, 40, 400000, 0x55, 0x6B}};  // BQ27220 gauge (0x55) + BQ25896 charger (0x6B) on SDA39/SCL40
+    {39, 40, 400000, 0x55, 0x6B},  // BQ27220 gauge (0x55) + BQ25896 charger (0x6B) on SDA39/SCL40
+    NO_MIC,
+    NO_SENSORS,
+    1.2f};  // uiScale: 4.7" 960x540 touch (~234 PPI) — finger-sized chrome, like Sticky
 
 // --- M5Paper v1.1 4.7" (ED047TC1 behind an IT8951E controller) — ESP32 --------
 // 540x960 16-gray panel driven through an IT8951E timing controller over SPI
@@ -612,16 +739,97 @@ constexpr BoardProfile M5PAPER_V11 = {
     PIN_UNASSIGNED,
     2.0f,
     PIN_UNASSIGNED,
-    // GT911 touch: panel-native portrait raw range (540x960), shared I2C SDA21/SCL22,
-    // INT36, address 0x5D (alt 0x14). No reset GPIO is exposed on M5Paper.
-    {TouchController::Gt911, 21, 22, 36, PIN_UNASSIGNED, 0x5D, 0, 539, 0, 959, false, 0x14, false,
-     true},  // GT911 reports coords at byte 0 (no track-id) on M5Paper
+    // GT911 touch, shared I2C SDA21/SCL22, INT36, 0x5D (alt 0x14), no reset GPIO.
+    // The GT911 reports in the silicon's native PORTRAIT frame (540x960), but the IT8951
+    // driver rotates the 960x540 framebuffer 90° onto that silicon, so the renderer + tap
+    // pipeline (GfxRenderer::tapToLogical) work in the 960x540 FRAMEBUFFER frame. Align
+    // touch to that frame like every other board (cf. Sticky): swapXY=true with rawMax in
+    // FB-landscape order (959 x 539). Without the swap the tap normalizes over 540x960 while
+    // tapToLogical scales by 960x540 — aspect/axis-swapped coords: the back corner still
+    // roughly hits but mid-screen taps are way off (worst along the tall 960 axis).
+    // flipY=true keeps the back gesture upright (silicon (0,0) = physical top-left, from the
+    // working back-gesture corner); flipX=false (X was never mirrored).
+    {TouchController::Gt911, 21, 22, 36, PIN_UNASSIGNED, 0x5D, 0, 959, 0, 539, false, 0x14, false,
+     true,  // gt911CoordsAtByte0: reports coords at byte 0 (no track-id) on M5Paper
+     PIN_UNASSIGNED, true, false, true},  // powerEnable, swapXY=true, flipX=false, flipY=true
     NO_FRONTLIGHT,
     NO_AUDIO,
     NO_LEDS,
     NO_FLIP,
     NO_SDMMC,
-    NO_GAUGE};
+    NO_GAUGE,
+    NO_MIC,
+    NO_SENSORS,
+    1.2f};  // uiScale: 4.7" 960x540 touch (~234 PPI) — finger-sized chrome, like Sticky
+
+// --- Sticky (Seeed Sticky) — ESP32-S3R8, SSD1677 + GT911 touch ---------------
+// 3.97" 800x480 B/W e-paper on a 24-pin FPC, controller confirmed SSD1677 by the
+// vendor peripheral demo (pin_config.h: "E-paper SSD1677 (SPI)") — same driver,
+// controller, and resolution as X4/de-link; its GDR/RESE/BS1 + dual VSH1/VSH2 +
+// external VGH/VGL/VSL/VCOM charge pump is the SSD1677 reference circuit.
+// Capacitive GT911 touch on its own I2C bus, MicroSD over SPI (shared display
+// bus), BQ27220 fuel gauge, PDM mic + buzzer. Pins are triple-sourced (V01
+// schematic 2026-06-05 + porting spec + vendor demo pin_config.h).
+//
+// UNVERIFIED, pending hardware:
+//   * orientation — panel mount transform unknown; ships NO_FLIP (set ROTATE_180/
+//     a mirror here once the reader's "up" is confirmed on a unit).
+//   * GT911 raw range assumes panel-native landscape 800x480; a hardware test may
+//     show coords need axis swap/flip (adjust raw range or touch transform).
+//   * MicroSD shares the display SPI bus; the vendor demo doesn't exercise SD, so
+//     bus-sharing / CS arbitration with the panel needs a hardware check.
+//   * PDM mic pins (19/20/38) are from the schematic/spec; no vendor demo uses the
+//     mic, so they're unconfirmed in code.
+constexpr BoardProfile STICKY = {
+    Board::Sticky,
+    "sticky",
+    InputStyle::DigitalButtons,  // PWR/UP/DOWN active-low GPIO buttons; confirm/back come from touch
+    DisplayController::SSD1677,
+    800,
+    480,
+    {13, 14, 15, 16, 17, 18, 47},  // SCK13 MOSI(SDI)14 CS15 DC16 RST17 BUSY18, EP_PWR_EN47
+    0,  // displaySpiHz: 0 -> SSD1677 driver default (40 MHz), as on X4/de-link (same controller). The
+        // vendor peripheral demo clocks it at a conservative 10 MHz; if the SD-shared bus proves flaky on
+        // hardware, pin this to 10000000.
+    // SD over SPI, sharing the display's SPI bus: SCLK13 / MOSI14 / MISO12 (the
+    // vendor demo's pin_config.h confirms these as the EPD bus pins), SD_CS8,
+    // SD_PWR_EN10. SD bus-sharing is inferred (the demo doesn't exercise SD) —
+    // verify CS/transactions don't collide with the panel on hardware.
+    {13, 12, 14, 8, 10, false, 0},
+    // up5 down6; OK/confirm == power button GPIO4 (vendor demo: PIN_BTN_OK = PIN_POWER_BTN).
+    // back/left/right come from touch. Active-low (10K pull-ups to VDD_3V3, button to GND).
+    {PIN_UNASSIGNED, 4, PIN_UNASSIGNED, PIN_UNASSIGNED, 5, 6, 4, false},
+    PIN_UNASSIGNED,  // batteryAdc: none — uses the I2C fuel gauge below
+    40,              // batteryChargeStatus: CHARGE_STATE GPIO40 (from BQ25616)
+    2.0f,
+    PIN_UNASSIGNED,  // usbDetect: PWR_IN_VOLT (GPIO9 ADC) is board-support, not a digital detect
+    // GT911 touch on its own I2C bus (SDA3 SCL2 INT21 RST41, 0x5D alt 0x14). GT911
+    // reports pixel coords, so raw range == panel size; standard datasheet frame
+    // layout (RST wired -> reset/config dance runs, track-id present).
+    // gt911CoordsAtByte0=true: this panel's GT911 reports coords at byte 0 (no
+    // track-id), like M5Paper — confirmed by raw point dumps during bring-up.
+    // Portrait digitizer on a landscape panel: swapXY + flip both maps the sensor
+    // frame onto the panel-native frame (confirmed by corner + menu bring-up taps).
+    // rawMax* are the panel axes (post-swap). powerEnable=GPIO42 (TOUCH_EN).
+    {TouchController::Gt911, 3, 2, 21, 41, 0x5D, 0, 799, 0, 479, false, 0x14, false, true, 42, true, true, true},
+    NO_FRONTLIGHT,  // e-paper, no frontlight (charge LED is board-support)
+    STICKY_AUDIO,   // no output codec; LEDC buzzer on GPIO48 (Buzzer lib). PDM mic is separate (mic field)
+    NO_LEDS,        // charge-state LED is charger-driven, not an addressable strip
+    NO_FLIP,        // UNVERIFIED mount — see note above
+    NO_SDMMC,       // SD is SPI, not 4-bit SDMMC
+    // BQ27220 fuel gauge at 0x55 on the BFG/MISC I2C bus: SDA=GPIO1, SCL=GPIO0.
+    // NOTE: GPIO0 is an ESP32-S3 strapping pin — the board init must not leave a
+    // pull state that corrupts boot mode. No I2C charger (BQ25616 status is GPIO40).
+    // Bus 1 (Wire1): the GT911 touch above owns Wire (SDA3/SCL2); the gauge is on a
+    // separate physical bus, so it gets the second I2C controller to avoid a clash.
+    {1, 0, 400000, 0x55, 0, 1},
+    // Microphone: PDM mic (MSM261DDB020) — PDM_CLK GPIO19, PDM_DATA GPIO20, mic
+    // power/enable (PDM_EN) GPIO38 (active-high via a load switch).
+    {MicInput::Pdm, 19, 20, 38, true},
+    // Sensors on the shared sensor I2C bus (SDA1/SCL0, same as the fuel gauge):
+    // PCF8563 RTC (0x51), SHT40 temp/humidity (0x44), LSM6DS3TR-C IMU (0x6A).
+    {1, 0, 400000, 0x51, 0x44, 0x6A, 1},
+    1.2f};  // uiScale: touch device, 3.97" 800x480 — bump chrome to finger size
 
 // Largest framebuffer (bytes) over the devices compiled into this build, derived
 // from the profiles above. The display facade sizes its static framebuffer to
@@ -636,8 +844,10 @@ constexpr uint32_t MAX_FRAMEBUFFER_BYTES = cmax(
     cmax(cmax(FREEINK_DEVICE_X4 ? panelBytes(XTEINK_X4) : 0u, FREEINK_DEVICE_X3 ? panelBytes(XTEINK_X3) : 0u),
          cmax(FREEINK_DEVICE_M5 ? panelBytes(M5STACK_PAPER_COLOR) : 0u,
               FREEINK_DEVICE_MURPHY ? panelBytes(MURPHY_M3) : 0u)),
-    cmax(cmax(FREEINK_DEVICE_DELINK ? panelBytes(DE_LINK) : 0u, FREEINK_DEVICE_LILYGO ? panelBytes(LILYGO_T5S3) : 0u),
-         FREEINK_DEVICE_M5PAPER ? panelBytes(M5PAPER_V11) : 0u));
+    cmax(cmax(cmax(FREEINK_DEVICE_DELINK ? panelBytes(DE_LINK) : 0u,
+                   FREEINK_DEVICE_LILYGO ? panelBytes(LILYGO_T5S3) : 0u),
+              FREEINK_DEVICE_M5PAPER ? panelBytes(M5PAPER_V11) : 0u),
+         FREEINK_DEVICE_STICKY ? panelBytes(STICKY) : 0u));
 
 // Compile-time default device — the profile ACTIVE starts as. With a single
 // device in the build this is the only device; with several same-MCU devices it
@@ -652,6 +862,8 @@ constexpr BoardProfile DEFAULT_DEVICE = DE_LINK;
 constexpr BoardProfile DEFAULT_DEVICE = LILYGO_T5S3;
 #elif FREEINK_DEVICE_M5PAPER
 constexpr BoardProfile DEFAULT_DEVICE = M5PAPER_V11;
+#elif FREEINK_DEVICE_STICKY
+constexpr BoardProfile DEFAULT_DEVICE = STICKY;
 #elif FREEINK_DEVICE_X3 && !FREEINK_DEVICE_X4
 constexpr BoardProfile DEFAULT_DEVICE = XTEINK_X3;  // X3-only binary
 #else
@@ -704,6 +916,11 @@ inline bool selectDevice(Board which) {
       ACTIVE = M5PAPER_V11;
       return true;
 #endif
+#if FREEINK_DEVICE_STICKY
+    case Board::Sticky:
+      ACTIVE = STICKY;
+      return true;
+#endif
     default:
       break;
   }
@@ -714,9 +931,15 @@ inline bool isM5StackPaperColor() { return ACTIVE.board == Board::M5StackPaperCo
 inline bool isMurphyM3() { return ACTIVE.board == Board::MurphyM3; }
 inline bool isDeLink() { return ACTIVE.board == Board::DeLink; }
 inline bool isM5PaperV11() { return ACTIVE.board == Board::M5PaperV11; }
+inline bool isSticky() { return ACTIVE.board == Board::Sticky; }
 inline bool hasTouch() { return ACTIVE.touch.controller != TouchController::None; }
 inline bool hasPwmFrontlight() { return ACTIVE.frontlight.gpio != PIN_UNASSIGNED; }
 inline bool hasAudio() { return ACTIVE.audio.output != AudioOutput::None; }
+inline bool hasMic() { return ACTIVE.mic.input != MicInput::None; }
+inline bool hasBuzzer() { return ACTIVE.audio.buzzer != PIN_UNASSIGNED; }
+inline bool hasRtc() { return ACTIVE.sensors.rtcAddr != 0; }
+inline bool hasTempHumidity() { return ACTIVE.sensors.tempHumidityAddr != 0; }
+inline bool hasImu() { return ACTIVE.sensors.imuAddr != 0; }
 inline bool hasLeds() { return ACTIVE.leds.data != PIN_UNASSIGNED && ACTIVE.leds.count > 0; }
 
 }  // namespace BoardConfig

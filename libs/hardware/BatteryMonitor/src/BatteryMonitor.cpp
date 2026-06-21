@@ -23,23 +23,33 @@ constexpr uint8_t BQ27220_VOLTAGE = 0x08;          // battery voltage, mV (u16 L
 constexpr uint8_t BQ27220_STATE_OF_CHARGE = 0x2C;  // SoC, percent (u16 LE)
 constexpr uint8_t BQ25896_REG_STATUS = 0x0B;       // CHRG_STAT in bits [4:3]
 
+// The gauge's I2C controller (Wire or Wire1) per BoardConfig. On single-bus SoCs
+// (ESP32-C3, SOC_I2C_NUM == 1) Wire1 doesn't exist, so always use Wire there.
+TwoWire& gaugeWire() {
+#if SOC_I2C_NUM > 1
+  if (BoardConfig::ACTIVE.batteryGauge.i2cBus == 1) return Wire1;
+#endif
+  return Wire;
+}
+
 bool g_wireReady = false;
 void ensureWire() {
   if (g_wireReady) return;
   const auto& g = BoardConfig::ACTIVE.batteryGauge;
-  Wire.begin(g.i2cSda, g.i2cScl, g.i2cHz);
+  gaugeWire().begin(g.i2cSda, g.i2cScl, g.i2cHz);
   g_wireReady = true;
 }
 
 bool readReg16(uint8_t addr, uint8_t reg, uint16_t& out) {
   if (addr == 0) return false;
   ensureWire();
-  Wire.beginTransmission(addr);
-  Wire.write(reg);
-  if (Wire.endTransmission(false) != 0) return false;
-  if (Wire.requestFrom(addr, static_cast<uint8_t>(2), static_cast<uint8_t>(true)) < 2) return false;
-  const uint8_t lo = Wire.read();
-  const uint8_t hi = Wire.read();
+  TwoWire& w = gaugeWire();
+  w.beginTransmission(addr);
+  w.write(reg);
+  if (w.endTransmission(false) != 0) return false;
+  if (w.requestFrom(addr, static_cast<uint8_t>(2), static_cast<uint8_t>(true)) < 2) return false;
+  const uint8_t lo = w.read();
+  const uint8_t hi = w.read();
   out = static_cast<uint16_t>(lo) | (static_cast<uint16_t>(hi) << 8);
   return true;
 }
@@ -47,11 +57,12 @@ bool readReg16(uint8_t addr, uint8_t reg, uint16_t& out) {
 bool readReg8(uint8_t addr, uint8_t reg, uint8_t& out) {
   if (addr == 0) return false;
   ensureWire();
-  Wire.beginTransmission(addr);
-  Wire.write(reg);
-  if (Wire.endTransmission(false) != 0) return false;
-  if (Wire.requestFrom(addr, static_cast<uint8_t>(1), static_cast<uint8_t>(true)) < 1) return false;
-  out = Wire.read();
+  TwoWire& w = gaugeWire();
+  w.beginTransmission(addr);
+  w.write(reg);
+  if (w.endTransmission(false) != 0) return false;
+  if (w.requestFrom(addr, static_cast<uint8_t>(1), static_cast<uint8_t>(true)) < 1) return false;
+  out = w.read();
   return true;
 }
 }  // namespace

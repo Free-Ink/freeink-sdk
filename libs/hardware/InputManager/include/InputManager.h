@@ -122,8 +122,32 @@ class InputManager {
   // centroid drifts as a finger rolls off during lift, which made small targets
   // unreliable when taps routed by the release position. Reusable, device-agnostic building block for corner/region
   // gestures; the app maps panel-native to its display/logical frame. Returns
-  // false (leaving outputs untouched) when no release this frame or no touch HW.
+  // false (leaving outputs untouched) when no release this frame, no touch HW,
+  // or the contact moved far enough to be a drag/scroll rather than a tap.
   bool wasTouchTap(float& nx, float& ny) const;
+  // Press-edge analogue of wasTouchTap: true on the frame a touch begins, with the
+  // touch-down position normalized 0..1 in the panel's native frame. For showing a
+  // selected/pressed state under the finger on touch-down (release activates).
+  bool wasTouchPressedAt(float& nx, float& ny) const;
+  // True while the current touch is still a tap candidate: finger down, movement
+  // remains within tap slop. Writes the original touch-down position and held time.
+  bool isTouchTapCandidate(float& nx, float& ny, unsigned long& heldMs) const;
+  // Duration (ms) of the last touch contact, latched on release — valid on the
+  // release frame (when wasTouchReleased()/wasTouchTap() are true). Raw primitive
+  // for the app's tap-vs-long-press gesture policy; 0 if no touch HW.
+  unsigned long lastTouchHeldMs() const;
+  // Swipe (flick) gesture, valid on the release frame: true if the contact moved
+  // past a distance threshold within a time window. Writes the start (touch-down)
+  // and end (release) positions, each normalized 0..1 in the panel's native frame
+  // — the app maps both to its logical frame (e.g. via tapToLogical) and takes the
+  // dominant axis, so orientation/mount is handled app-side. A swipe also raises
+  // wasTouchTap(); the app checks wasSwipe() first to disambiguate. False when no
+  // touch HW or the movement was below threshold (a plain tap).
+  bool wasSwipe(float& nxStart, float& nyStart, float& nxEnd, float& nyEnd) const;
+  // True if a touch press or release happened this frame. Coarse "the user touched
+  // the screen" signal (the touch analogue of wasAnyPressed/Released) for resetting
+  // idle/sleep timers and restoring CPU frequency. False on non-touch boards.
+  bool wasTouchActivity() const;
   // True on the press edge of the GT911 capacitive home key (controllers without
   // one never report it). Cleared each #update().
   bool wasHomeKeyPressed() const;
@@ -183,6 +207,9 @@ class InputManager {
   bool touchHomeKeyDown = false;
   TouchPoint touchPoint = {false, 0, 0, 0};
   TouchPoint touchDownPoint = {false, 0, 0, 0};  // first sample of the current contact (tap routing)
+  TouchPoint touchUpPoint = {false, 0, 0, 0};    // last sample before release (swipe routing)
+  unsigned long lastTouchHeldDurationMs = 0;     // contact duration, latched at release
+  bool touchMovedBeyondTapSlop = false;          // suppresses tap activation after a drag/scroll
 
   static constexpr int NUM_BUTTONS_1 = 4;
   static const int ADC_RANGES_1[];
@@ -197,6 +224,9 @@ class InputManager {
   // Touch timing / protocol constants (ported from the Murphy M3 CHSC6x driver).
   static constexpr unsigned long TOUCH_IRQ_PULSE_MS = 120;   // release hold-over after last valid read
   static constexpr unsigned long TOUCH_SAMPLE_DELAY_MS = 8;  // I2C poll cadence
+  static constexpr int TOUCH_TAP_SLOP_PX = 28;
+  static constexpr int TOUCH_SWIPE_MIN_PX = 60;
+  static constexpr unsigned long TOUCH_SWIPE_MAX_MS = 700;
   static constexpr uint8_t TOUCH_READ_COMMAND = 0x00;
   static constexpr uint8_t TOUCH_FRAME_SIZE = 16;
 

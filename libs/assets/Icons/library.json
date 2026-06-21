@@ -1,0 +1,11 @@
+{
+  "name": "Icons",
+  "version": "1.0.0",
+  "description": "FreeInk icon assets: the freeink::Icon 1-bpp format with baked-in optical-center metadata, a vendored Lucide SVG set, and a generator (tools/gen_icons.py) that emits Icon structs at any size. Consumers reference Lucide icons by name and generate only what they use.",
+  "keywords": "icons, lucide, ui, bitmap",
+  "authors": [{"name": "FreeInk SDK Contributors"}],
+  "dependencies": {},
+  "platforms": "espressif32",
+  "frameworks": ["arduino"],
+  "export": {"exclude": ["lucide"]}
+}

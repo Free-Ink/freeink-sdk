@@ -19,7 +19,7 @@ void PowerManager::armWakeOnPins(uint64_t gpioMask, bool wakeLow) {
   // ("wake when ALL selected pins are low"). For a single wake pin (the common
   // power-button case) ALL_LOW and ANY_LOW are identical; a multi-pin low wake on
   // classic ESP32 fires only when every pin is low. S2/S3 expose ANY_LOW directly.
-#if defined(CONFIG_IDF_TARGET_ESP32) || defined(CONFIG_IDF_TARGET_ESP32S2)
+#if defined(CONFIG_IDF_TARGET_ESP32)
   const esp_sleep_ext1_wakeup_mode_t lowMode = ESP_EXT1_WAKEUP_ALL_LOW;
 #else
   const esp_sleep_ext1_wakeup_mode_t lowMode = ESP_EXT1_WAKEUP_ANY_LOW;

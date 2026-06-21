@@ -99,13 +99,14 @@ so the SD manager itself stays device-agnostic.
 | **Murphy M3** | ESP32-S3 | UC8253 | 240×416 | B/W (90°-rotated framebuffer, full/fast LUTs), CHSC6x touch, PWM frontlight |
 | **LilyGo T5 S3** | ESP32-S3 | ED047TC1 (raw parallel) | 960×540 16-gray | LovyanGFX EPD driver with 16-gray, GT911 touch, PWM backlight, BQ27220/BQ25896 I²C battery |
 | **M5Paper v1.1** | ESP32 (classic) | IT8951E | 540×960 16-gray ED047TC1 | hand-rolled IT8951 driver (own SPI, 1bpp→4bpp load, GC16/DU/A2 modes, auto rotation onto the portrait panel), GT911 touch, GPIO35 ADC battery |
+| **Sticky** (Seeed reTerminal Sticky) | ESP32-S3 | SSD1677 | 3.97" 800×480 B/W | reuses the SSD1677 driver (X4-class), GT911 touch, PDM microphone (Microphone lib), BQ27220 I²C battery gauge, PCF8563 RTC + SHT40 temp/humidity + LSM6DS3TR-C IMU (Rtc / EnvironmentSensor / Imu libs), SPI MicroSD (shares the display bus), LEDC buzzer (Buzzer lib); orientation/SD-sharing pending hardware validation |
 
 X3 and X4 share the ESP32-C3 and a pinout, so **one firmware binary drives both**:
 it carries both board profiles (`XTEINK_X4` and `XTEINK_X3`) and picks one at
 runtime via `setDisplayX3()`, which swaps the active profile and driver. Devices
 on a different MCU build their own binary, selected with a `-DFREEINK_DEVICE_*`
 flag. A build targets exactly one of the three MCU families — ESP32-C3 (X3/X4),
-ESP32-S3 (de-link/PaperColor/Murphy/LilyGo), or classic ESP32 (M5Paper);
+ESP32-S3 (de-link/PaperColor/Murphy/LilyGo/Sticky), or classic ESP32 (M5Paper);
 `BoardConfig` rejects mixing families at compile time.
 
 Every SDK library compiles on ESP32-C3, ESP32-S3, and the classic ESP32.
@@ -183,6 +184,7 @@ MCU (a C3-vs-S3 mix is a compile error):
 | `-DFREEINK_DEVICE_M5` | M5 PaperColor (S3, ED2208 + color) |
 | `-DFREEINK_DEVICE_MURPHY` | Murphy M3 (S3, UC8253 + touch + frontlight) |
 | `-DFREEINK_DEVICE_LILYGO` | LilyGo T5 S3 (S3, ED047TC1 raw-parallel EPD via LovyanGFX) |
+| `-DFREEINK_DEVICE_STICKY` | Sticky (S3, SSD1677 800×480 + GT911 touch + PDM mic) |
 | *(none)* | **compile error** — a build must select at least one device |
 
 Multiple **different-pinout** devices on one MCU are runtime-selected: `ACTIVE`
@@ -199,6 +201,11 @@ tight. Each defaults on when an included device needs it; force with `=0`/`=1`:
 | `FREEINK_CAP_FRONTLIGHT` | PWM frontlight (FrontlightManager) | on if a device has a frontlight |
 | `FREEINK_CAP_COLOR` | color panel code | on for M5 |
 | `FREEINK_CAP_AUDIO` | audio output (AudioManager: ES8388/ES8311 codec + I2S WAV playback) | on for Murphy and M5 |
+| `FREEINK_CAP_MIC` | microphone capture (Microphone lib: PDM mic → 16-bit PCM via i2s_pdm RX) | on for Sticky |
+| `FREEINK_CAP_RTC` | real-time clock (Rtc lib: PCF8563 over I²C) | on for Sticky |
+| `FREEINK_CAP_TEMP_HUMIDITY` | temperature + humidity (EnvironmentSensor lib: SHT40 over I²C) | on for Sticky |
+| `FREEINK_CAP_IMU` | 6-axis IMU (Imu lib: LSM6DS3TR-C over I²C) | on for Sticky |
+| `FREEINK_CAP_BUZZER` | LEDC PWM tone buzzer (Buzzer lib: tone/beep on `audio.buzzer`) | on for Sticky and Murphy |
 | `FREEINK_CAP_LED` | addressable RGB LEDs (LedManager) | on for M5 |
 | `FREEINK_CAP_NET_TLS13` | wolfSSL TLS 1.3 (≡ `FREEINK_NET_WOLFSSL`) | off |
 
@@ -208,7 +215,7 @@ tight. Each defaults on when an included device needs it; force with `=0`/`=1`:
 |---|---|
 | `-DFREEINK_DISPLAY_FLIPPED` (or `-DFLIPPED`) | back-compat alias for `BoardProfile.orientation = MIRROR_Y` on SSD1677 |
 | `-DFREEINK_SD_SDMMC=1` | use the native 4-bit SDMMC backend (needs `-DUSE_BLOCK_DEVICE_INTERFACE=1`); auto-on for de-link |
-| `-DFREEINK_BATTERY_I2C_GAUGE=1` | compile the I²C fuel-gauge backend (BQ27220/BQ25896); auto-on for X3 and LilyGo. Gauge-vs-ADC is then runtime per profile, so X3 (gauge) + X4 (ADC) coexist in one binary |
+| `-DFREEINK_BATTERY_I2C_GAUGE=1` | compile the I²C fuel-gauge backend (BQ27220/BQ25896); auto-on for X3, LilyGo, and Sticky. Gauge-vs-ADC is then runtime per profile, so X3 (gauge) + X4 (ADC) coexist in one binary |
 | `-DEINK_DISPLAY_SINGLE_BUFFER_MODE=1` | single framebuffer (uses controller RAM as previous frame) |
 | `-DFREEINK_FB_PSRAM=1` | place the facade framebuffer(s) in PSRAM heap (`MALLOC_CAP_SPIRAM`, allocated in `begin()`) instead of static DRAM `.bss`; auto-on for M5Paper, off everywhere else |
 | `-DFREEINK_NET_WOLFSSL=1` | enable the wolfSSL TLS 1.3 transport in `SecureNet` |
@@ -274,12 +281,78 @@ library and bundles a Noto Sans bitmap font — swap in your own with
 `<GfxRenderer.h>` is available) and to this SDK's `InputManager`
 (`FreeInkUIInputManager.h`). See [`docs/freeink-ui.md`](docs/freeink-ui.md).
 
+## Icons (`libs/assets/Icons`)
+
+A 1-bpp icon format with baked-in alignment metadata, the full [Lucide](https://lucide.dev)
+SVG set vendored as source, and a generator that turns any of them into ready-to-draw
+C structs. The goal: crisp icons at any UI scale, vertically centered on text with no
+per-icon tweaking, correct in every orientation.
+
+### The `freeink::Icon` format
+
+```c
+struct Icon {
+  uint16_t w, h;
+  int16_t  opticalCenterY;  // row of the artwork's center of mass
+  const uint8_t* bits;      // rows top-to-bottom, (w+7)/8 bytes each, MSB-first;
+                            // bit 1 = transparent, bit 0 = black (drawn)
+};
+```
+
+- **Not pre-rotated.** The renderer maps logical→panel coordinates itself, so one
+  asset is correct in all four orientations (draw it through an orientation-aware
+  blit — e.g. CrossPoint's `GfxRenderer::drawIcon(const freeink::Icon&, x, y)`,
+  which routes each pixel through `drawPixel`).
+- **`opticalCenterY` is measured from the art**, so asymmetric icons (a clock, a
+  wifi fan, arrows) center correctly without hand-nudging. Align an icon to a line
+  of text by putting its optical center on the text's optical center:
+
+  ```cpp
+  // textTop is where the text is drawn; the renderer supplies the text's optical
+  // center offset from the font's real x-height (no guessed ascender fractions).
+  const int textCenter = textTop + renderer.getTextVisualCenterOffset(fontId);
+  renderer.drawIcon(icon, x, textCenter - icon.opticalCenterY);
+  ```
+
+### Generating icons
+
+Don't bake the whole library into flash — generate only what you use. List the icons
+you want in a manifest (`alias = lucide-name`) and run the generator:
+
+```
+# icons.txt
+settings = settings
+recent   = clock
+transfer = arrow-down-up
+wifi     = wifi
+
+python libs/assets/Icons/tools/gen_icons.py \
+    --manifest icons.txt \
+    --svgdir   libs/assets/Icons/lucide/icons \
+    --sizes    24,32,40,48 \
+    --out      generated_icons.h
+```
+
+This emits, per icon per size, a `static const freeink::Icon icon_<alias>_<px>` with
+its bits and optical center precomputed. Pick the size nearest your scaled target at
+runtime (`24/32/40/48`) so a scaled-up UI gets a genuinely higher-resolution asset
+instead of a blocky upscale. Requires `rsvg-convert` (librsvg) and Pillow; tune the
+black/transparent threshold at the top of the script if your SVGs aren't Lucide.
+
+### Browsing the set
+
+Lucide is vendored as a **git submodule** at `libs/assets/Icons/lucide` (run
+`git submodule update --init` to fetch it). All 1735 names live in
+`libs/assets/Icons/lucide/icons/*.svg` — reference any by filename (minus `.svg`) in
+a manifest. Lucide is MIT-licensed (`libs/assets/Icons/lucide/LICENSE`).
+
 ## Using FreeInk from PlatformIO
 
 See **[`platformio.sample.ini`](platformio.sample.ini)** for a complete, ready-to-copy
 configuration — it mirrors the toolchain/flags verified against the CrossPoint
 firmware and includes per-device build envs (`xteink`, `xteink_x4`, `m5paper`,
-`delink`, `murphy`) wired with the right `FREEINK_DEVICE_*` flags.
+`delink`, `murphy`, `m5paper_v11`, `sticky`) wired with the right
+`FREEINK_DEVICE_*` flags.
 
 Already on CrossPoint? **[`platformio.crosspoint.sample.ini`](platformio.crosspoint.sample.ini)**
 mirrors the exact working setup: drop it into the CrossPoint repo as
@@ -381,6 +454,7 @@ gaps (I²C battery gauge, expander button).
 
 ```
 libs/
+  assets/Icons/             freeink::Icon format + vendored Lucide SVGs + generator
   display/FreeInkDisplay/   facade + EInkDisplay shim + per-controller drivers + LUTs
   hardware/BoardConfig/     board profiles & capability descriptors
   hardware/InputManager/    buttons + capacitive touch (CHSC6x, GT911)

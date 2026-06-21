@@ -41,6 +41,15 @@ bool SDCardManager::begin() {
 
   if (_powerHook) _powerHook();  // board brings up its SD rail (e.g. PMIC) if needed
 
+  // Boards that gate the SD rail with a plain GPIO (e.g. Sticky's SD_PWR_EN on
+  // GPIO10) must power it before probing. Active-high enable + a brief settle.
+  // No-op when unassigned, and complements _powerHook for PMIC-gated boards.
+  if (BoardConfig::ACTIVE.sd.powerEnable >= 0) {
+    pinMode(BoardConfig::ACTIVE.sd.powerEnable, OUTPUT);
+    digitalWrite(BoardConfig::ACTIVE.sd.powerEnable, HIGH);
+    delay(10);
+  }
+
   // Shared SPI bus: when the display controller sits on the same SCLK as the SD
   // card (e.g. M5Paper's IT8951 on 14/12/13), deselect it (CS high) before
   // probing the card. SD init runs before the display driver's begin(), so a

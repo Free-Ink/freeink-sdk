@@ -1,0 +1,10 @@
+{
+  "name": "Imu",
+  "version": "1.0.0",
+  "description": "FreeInk 6-axis IMU: accel (g) + gyro (deg/s) from an ST LSM6DS3TR-C I2C sensor described by BoardConfig::ACTIVE.sensors. Gated by FREEINK_CAP_IMU.",
+  "keywords": "imu, lsm6ds3, accelerometer, gyroscope, i2c, eink",
+  "authors": [{"name": "FreeInk SDK Contributors"}],
+  "dependencies": {},
+  "platforms": "espressif32",
+  "frameworks": ["arduino"]
+}

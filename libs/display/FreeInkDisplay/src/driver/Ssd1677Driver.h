@@ -22,6 +22,22 @@ struct Ssd1677Config {
   uint8_t halfRefreshTemp;          // temperature byte written for HALF refresh
   const unsigned char* grayLut;     // 110-byte custom LUT for grayscale display
   const unsigned char* grayRevertLut;  // 110-byte custom LUT to revert grayscale
+  // Absolute Display Update Control 2 (0x22) sequence values, per refresh type.
+  // 0 = use the driver's built-in X4 values (incremental, keeps the panel powered
+  // between fast refreshes). A panel whose OTP waveform isn't selected by the X4
+  // values supplies its vendor-published values here — they pick the waveform
+  // (full vs partial/DU), load temperature, and self-cycle power. Setting these
+  // makes fast refreshes use the panel's real DU waveform instead of running the
+  // full waveform every time. (e.g. Sticky: full 0xF7 / fast 0xFF, from Seeed's
+  // SSD1677 driver.) Ignored while a custom grayscale LUT is active.
+  uint8_t fullSeqOverride = 0;  // FULL and HALF (cold/first) refreshes
+  uint8_t fastSeqOverride = 0;  // FAST (UI) refreshes
+  // Border waveform (CMD 0x3C) re-written per refresh in the seqOverride path so
+  // it tracks the refresh mode (vendor parity); without this a partial/DU refresh
+  // leaves the border driven dark (Sticky's black ring). 0 = keep the init value.
+  // Only consulted when fullSeqOverride / fastSeqOverride are set.
+  uint8_t borderWaveformFull = 0;  // FULL and HALF refreshes
+  uint8_t borderWaveformFast = 0;  // FAST (UI / page-turn) refreshes
 };
 
 // Standard config (Xteink X4 / GDEQ0426T82). Panel mounting (mirror/180°) is NOT
@@ -76,6 +92,11 @@ class Ssd1677Driver : public PanelDriver {
   bool _isScreenOn = false;
   bool _inGrayscaleMode = false;
   bool _customLutActive = false;
+  // First paint after begin() (boot or deep-sleep wake) must be a full refresh to
+  // clear whatever is physically on the panel (e.g. the black boot screen) and set
+  // a clean differential baseline. Only armed for boards whose self-powering fast
+  // sequence makes _isScreenOn useless as a cold-start signal (fullSeqOverride set).
+  bool _needsInitialFull = false;
 };
 
 // Singleton accessor (Meyers, zero-heap). Selects the config for the active board.

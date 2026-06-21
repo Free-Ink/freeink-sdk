@@ -26,6 +26,10 @@ struct EpdPins {
   int8_t dc;
   int8_t rst;
   int8_t busy;
+  // EPD power-rail enable (active-high). PIN_UNASSIGNED (-1) on boards whose panel
+  // is always powered; driven HIGH in begin() on boards that gate it (e.g. Sticky's
+  // EP_PWR_EN GPIO47). Default -1 keeps existing 6-field aggregate initializers valid.
+  int8_t powerEnable = -1;
 };
 
 class EpdBus {

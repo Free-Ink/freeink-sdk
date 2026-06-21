@@ -3,6 +3,13 @@
 #if FREEINK_CAP_TOUCH
 #include <Wire.h>
 #endif
+#if defined(TOUCH_PROBE_DEBUG)
+#include <esp_rom_sys.h>
+
+#include <cstdarg>
+#include <cstdio>
+#include <cstring>
+#endif
 
 // Recorded ADC values from real devices
 // BACK CONF LEFT RGHT   UP DOWN
@@ -21,6 +28,31 @@
 const int InputManager::ADC_RANGES_1[] = {ADC_NO_BUTTON, 3100, 2090, 750, INT32_MIN};
 const int InputManager::ADC_RANGES_2[] = {ADC_NO_BUTTON, 1120, INT32_MIN};
 const char* InputManager::BUTTON_NAMES[] = {"Back", "Confirm", "Left", "Right", "Up", "Down", "Power"};
+
+namespace {
+int absInt(const int value) { return value < 0 ? -value : value; }
+
+#if defined(TOUCH_PROBE_DEBUG)
+void touchDebugPrintf(const char* format, ...) {
+  char buf[192];
+  va_list args;
+  va_start(args, format);
+  const int len = vsnprintf(buf, sizeof(buf), format, args);
+  va_end(args);
+  if (len < 0) return;
+  const size_t n = strnlen(buf, sizeof(buf));
+#if FREEINK_LOG_TRANSPORT == FREEINK_LOG_TRANSPORT_USB_CDC_WRITE
+  Serial.write(reinterpret_cast<const uint8_t*>(buf), n);
+#elif FREEINK_LOG_TRANSPORT == FREEINK_LOG_TRANSPORT_ROM_PRINTF
+  esp_rom_printf("%s", buf);
+#else
+  if (Serial) {
+    Serial.print(buf);
+  }
+#endif
+}
+#endif
+}  // namespace
 
 InputManager::InputManager()
     : currentState(0),
@@ -291,6 +323,7 @@ bool InputManager::wasTouchReleased() const { return touchReleasedEvent; }
 bool InputManager::wasTouchTap(float& nx, float& ny) const {
 #if FREEINK_CAP_TOUCH
   if (!touchReleasedEvent) return false;
+  if (touchMovedBeyondTapSlop) return false;
   // Tap position = the FIRST contact sample (touch-down), not the last: the
   // reported centroid drifts 10-20px as a finger rolls off during lift, which
   // made small targets (steppers) feel unreliable with release-point routing.
@@ -309,6 +342,94 @@ bool InputManager::wasTouchTap(float& nx, float& ny) const {
   return false;
 #endif
 }
+
+bool InputManager::wasTouchPressedAt(float& nx, float& ny) const {
+#if FREEINK_CAP_TOUCH
+  // Press-edge analogue of wasTouchTap: true on the frame a touch begins, writing
+  // the touch-down position normalized 0..1 in the panel's native frame. Lets the
+  // app highlight what's under the finger on touch-down (before release).
+  if (!touchPressedEvent) return false;
+  const auto& t = BoardConfig::ACTIVE.touch;
+  const uint16_t w = (t.rawMaxX > t.rawMinX) ? static_cast<uint16_t>(t.rawMaxX - t.rawMinX) : 1;
+  const uint16_t h = (t.rawMaxY > t.rawMinY) ? static_cast<uint16_t>(t.rawMaxY - t.rawMinY) : 1;
+  float x = static_cast<float>(touchDownPoint.x) / w;
+  float y = static_cast<float>(touchDownPoint.y) / h;
+  nx = x < 0.0f ? 0.0f : (x > 1.0f ? 1.0f : x);
+  ny = y < 0.0f ? 0.0f : (y > 1.0f ? 1.0f : y);
+  return true;
+#else
+  (void)nx;
+  (void)ny;
+  return false;
+#endif
+}
+
+bool InputManager::isTouchTapCandidate(float& nx, float& ny, unsigned long& heldMs) const {
+#if FREEINK_CAP_TOUCH
+  if (!touchPressed || touchMovedBeyondTapSlop) return false;
+  const auto& t = BoardConfig::ACTIVE.touch;
+  const uint16_t w = (t.rawMaxX > t.rawMinX) ? static_cast<uint16_t>(t.rawMaxX - t.rawMinX) : 1;
+  const uint16_t h = (t.rawMaxY > t.rawMinY) ? static_cast<uint16_t>(t.rawMaxY - t.rawMinY) : 1;
+  float x = static_cast<float>(touchDownPoint.x) / w;
+  float y = static_cast<float>(touchDownPoint.y) / h;
+  nx = x < 0.0f ? 0.0f : (x > 1.0f ? 1.0f : x);
+  ny = y < 0.0f ? 0.0f : (y > 1.0f ? 1.0f : y);
+  heldMs = millis() - touchDownPoint.timestamp;
+  return true;
+#else
+  (void)nx;
+  (void)ny;
+  (void)heldMs;
+  return false;
+#endif
+}
+
+unsigned long InputManager::lastTouchHeldMs() const {
+#if FREEINK_CAP_TOUCH
+  return lastTouchHeldDurationMs;
+#else
+  return 0;
+#endif
+}
+
+bool InputManager::wasTouchActivity() const {
+#if FREEINK_CAP_TOUCH
+  return touchPressedEvent || touchReleasedEvent;
+#else
+  return false;
+#endif
+}
+
+bool InputManager::wasSwipe(float& nxStart, float& nyStart, float& nxEnd, float& nyEnd) const {
+#if FREEINK_CAP_TOUCH
+  if (!touchReleasedEvent) return false;
+  // A flick: travelled past a distance threshold within a time window. Distance is
+  // measured in native px; the dominant axis is left to the app (after mapping to
+  // its logical frame).
+  if (lastTouchHeldDurationMs > TOUCH_SWIPE_MAX_MS) return false;
+  const int dx = static_cast<int>(touchUpPoint.x) - static_cast<int>(touchDownPoint.x);
+  const int dy = static_cast<int>(touchUpPoint.y) - static_cast<int>(touchDownPoint.y);
+  const int adx = absInt(dx);
+  const int ady = absInt(dy);
+  if (adx < TOUCH_SWIPE_MIN_PX && ady < TOUCH_SWIPE_MIN_PX) return false;
+  const auto& t = BoardConfig::ACTIVE.touch;
+  const uint16_t w = (t.rawMaxX > t.rawMinX) ? static_cast<uint16_t>(t.rawMaxX - t.rawMinX) : 1;
+  const uint16_t h = (t.rawMaxY > t.rawMinY) ? static_cast<uint16_t>(t.rawMaxY - t.rawMinY) : 1;
+  auto clamp01 = [](float v) { return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); };
+  nxStart = clamp01(static_cast<float>(touchDownPoint.x) / w);
+  nyStart = clamp01(static_cast<float>(touchDownPoint.y) / h);
+  nxEnd = clamp01(static_cast<float>(touchUpPoint.x) / w);
+  nyEnd = clamp01(static_cast<float>(touchUpPoint.y) / h);
+  return true;
+#else
+  (void)nxStart;
+  (void)nyStart;
+  (void)nxEnd;
+  (void)nyEnd;
+  return false;
+#endif
+}
+
 bool InputManager::wasHomeKeyPressed() const { return touchHomeKeyEvent; }
 
 void InputManager::beginTouch() {
@@ -374,6 +495,15 @@ void InputManager::updateTouchFromIrq(const unsigned long now, const int irqRaw)
         touchPressed = true;
         touchPressedEvent = true;
         touchDownPoint = point;  // first contact sample, used for tap routing
+        touchUpPoint = point;
+        touchMovedBeyondTapSlop = false;
+      } else {
+        touchUpPoint = point;
+        const int dx = static_cast<int>(touchUpPoint.x) - static_cast<int>(touchDownPoint.x);
+        const int dy = static_cast<int>(touchUpPoint.y) - static_cast<int>(touchDownPoint.y);
+        if (absInt(dx) > TOUCH_TAP_SLOP_PX || absInt(dy) > TOUCH_TAP_SLOP_PX) {
+          touchMovedBeyondTapSlop = true;
+        }
       }
       touchReleaseAt = now + TOUCH_IRQ_PULSE_MS;
     }
@@ -382,6 +512,7 @@ void InputManager::updateTouchFromIrq(const unsigned long now, const int irqRaw)
   if (touchPressed && now >= touchReleaseAt) {
     touchPressed = false;
     touchReleasedEvent = true;
+    lastTouchHeldDurationMs = now - touchDownPoint.timestamp;
   }
 }
 
@@ -446,19 +577,12 @@ uint16_t InputManager::mapTouchAxis(uint16_t raw, const uint16_t rawMin, const u
 void InputManager::beginGt911() {
   const auto& t = BoardConfig::ACTIVE.touch;
 
-  // Reset + address-select dance: INT level as RST rises selects the address
-  // (LOW -> primary 0x5D, HIGH -> alt 0x14). We select the primary.
-  if (t.reset >= 0 && t.irq >= 0) {
-    pinMode(t.irq, OUTPUT);
-    pinMode(t.reset, OUTPUT);
-    digitalWrite(t.reset, LOW);
-    digitalWrite(t.irq, LOW);
-    delay(10);
-    digitalWrite(t.reset, HIGH);
-    delay(10);
-    digitalWrite(t.irq, LOW);
-    delay(50);
-    pinMode(t.irq, INPUT);
+  // Power the touch rail first (boards that gate it, e.g. Sticky's TOUCH_EN on
+  // GPIO42). Active-high + settle, before the reset dance and I2C probe; without
+  // this the GT911 never ACKs and touch is reported absent. No-op when unassigned.
+  if (t.powerEnable >= 0) {
+    pinMode(t.powerEnable, OUTPUT);
+    digitalWrite(t.powerEnable, HIGH);
     delay(50);
   }
 
@@ -467,22 +591,49 @@ void InputManager::beginGt911() {
     Wire.setTimeOut(10);
   }
 
-  // Probe primary then alternate address.
-  gt911Addr = 0;
-  const uint8_t candidates[2] = {t.i2cAddress, t.i2cAddressAlt};
-  for (uint8_t a : candidates) {
-    if (a == 0) continue;
-    Wire.beginTransmission(a);
-    if (Wire.endTransmission() == 0) {
-      gt911Addr = a;
-      break;
+  auto resetWithIntLevel = [&](const uint8_t level) {
+    if (t.reset < 0 || t.irq < 0) return;
+    pinMode(t.irq, OUTPUT);
+    pinMode(t.reset, OUTPUT);
+    digitalWrite(t.reset, LOW);
+    digitalWrite(t.irq, level);
+    delay(10);
+    digitalWrite(t.reset, HIGH);
+    delay(10);
+    digitalWrite(t.irq, level);
+    delay(50);
+    pinMode(t.irq, INPUT);
+    delay(50);
+  };
+
+  auto probeCandidates = [&]() {
+    const uint8_t candidates[2] = {t.i2cAddress, t.i2cAddressAlt};
+    for (uint8_t a : candidates) {
+      if (a == 0) continue;
+      Wire.beginTransmission(a);
+      if (Wire.endTransmission() == 0) {
+        gt911Addr = a;
+        return true;
+      }
     }
+    return false;
+  };
+
+  // Reset + address-select dance: INT level as RST rises selects the address.
+  // Boards differ in which strapped address survives their module wiring, so try
+  // the primary-select level first, then the alternate level before declaring the
+  // touch controller absent.
+  gt911Addr = 0;
+  resetWithIntLevel(LOW);
+  if (!probeCandidates()) {
+    resetWithIntLevel(HIGH);
+    probeCandidates();
   }
+
   touchDataEnabled = (gt911Addr != 0);
 #ifdef TOUCH_PROBE_DEBUG
-  if (Serial)
-    Serial.printf("[touch] GT911 probe: addr=0x%02X enabled=%d (sda=%d scl=%d cand=0x%02X/0x%02X)\n", gt911Addr,
-                  touchDataEnabled, t.sda, t.scl, t.i2cAddress, t.i2cAddressAlt);
+  touchDebugPrintf("[touch] GT911 probe: addr=0x%02X enabled=%d (sda=%d scl=%d cand=0x%02X/0x%02X)\n", gt911Addr,
+                   touchDataEnabled, t.sda, t.scl, t.i2cAddress, t.i2cAddressAlt);
 #endif
 }
 
@@ -542,18 +693,41 @@ void InputManager::pollGt911(const unsigned long now) {
       touchPoint.valid = true;
       // Panel-native coordinates (calibrated raw range, touch panel's orientation);
       // the app maps to its display/logical frame.
-      touchPoint.x = mapTouchAxis(rawX, t.rawMinX, t.rawMaxX, t.rawMaxX - t.rawMinX);
-      touchPoint.y = mapTouchAxis(rawY, t.rawMinY, t.rawMaxY, t.rawMaxY - t.rawMinY);
+      // Correct digitizer mounting so the touch frame matches the display NATIVE
+      // (panel) frame before any orientation mapping: swap axes first (rotated 90°
+      // sensor), then map with the panel-axis ranges, then per-axis flip.
+      const uint16_t sx = t.swapXY ? rawY : rawX;
+      const uint16_t sy = t.swapXY ? rawX : rawY;
+      touchPoint.x = mapTouchAxis(sx, t.rawMinX, t.rawMaxX, t.rawMaxX - t.rawMinX);
+      touchPoint.y = mapTouchAxis(sy, t.rawMinY, t.rawMaxY, t.rawMaxY - t.rawMinY);
+      if (t.flipX) touchPoint.x = static_cast<uint16_t>((t.rawMaxX - t.rawMinX) - touchPoint.x);
+      if (t.flipY) touchPoint.y = static_cast<uint16_t>((t.rawMaxY - t.rawMinY) - touchPoint.y);
       touchPoint.timestamp = now;
-      if (!touchPressed) touchPressedEvent = true;
+      if (!touchPressed) {
+        touchPressedEvent = true;
+        touchDownPoint = touchPoint;  // first contact sample, used for tap routing (wasTouchTap)
+        touchMovedBeyondTapSlop = false;
+      }
+      touchUpPoint = touchPoint;
+      const int dx = static_cast<int>(touchUpPoint.x) - static_cast<int>(touchDownPoint.x);
+      const int dy = static_cast<int>(touchUpPoint.y) - static_cast<int>(touchDownPoint.y);
+      if (absInt(dx) > TOUCH_TAP_SLOP_PX || absInt(dy) > TOUCH_TAP_SLOP_PX) {
+        touchMovedBeyondTapSlop = true;
+      }
 #ifdef TOUCH_PROBE_DEBUG
-      if (!touchPressed && Serial)
-        Serial.printf("[touch] press raw=(%u,%u) mapped=(%u,%u)\n", rawX, rawY, touchPoint.x, touchPoint.y);
+      if (!touchPressed)
+        touchDebugPrintf("[touch] press pt=[%02X %02X %02X %02X %02X %02X %02X %02X] raw=(%u,%u) mapped=(%u,%u)\n",
+                         pt[0], pt[1], pt[2], pt[3], pt[4], pt[5], pt[6], pt[7], rawX, rawY, touchPoint.x,
+                         touchPoint.y);
 #endif
       touchPressed = true;
     }
   } else {
-    if (touchPressed) touchReleasedEvent = true;
+    if (touchPressed) {
+      touchReleasedEvent = true;
+      lastTouchHeldDurationMs = now - touchDownPoint.timestamp;
+      touchUpPoint = touchPoint;  // last contact sample, used for swipe routing
+    }
     touchPressed = false;
     touchPoint.valid = false;
   }

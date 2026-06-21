@@ -9,6 +9,14 @@ void EpdBus::begin(const EpdPins& pins, uint32_t spiHz, BusyPolarity busy, int8_
   _coCs = coCs;
   _spi = SPISettings(spiHz, MSBFIRST, SPI_MODE0);
 
+  // Power the EPD rail first (boards that gate it, e.g. Sticky's EP_PWR_EN), so the
+  // panel is alive before SPI bring-up and the reset pulse. No-op when unassigned.
+  if (pins.powerEnable >= 0) {
+    pinMode(pins.powerEnable, OUTPUT);
+    digitalWrite(pins.powerEnable, HIGH);
+    delay(100);
+  }
+
   SPI.begin(pins.sclk, spiMiso, pins.mosi, pins.cs);
 
   pinMode(pins.cs, OUTPUT);

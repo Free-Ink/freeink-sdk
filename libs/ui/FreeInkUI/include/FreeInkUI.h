@@ -1340,6 +1340,46 @@ uint16_t listVisibleRows(Rect rect, int16_t rowHeight, int16_t rowGap = 0);
 // to the valid scroll range. Pass the current topIndex to keep the window
 // stable when the selection is already on-screen.
 uint16_t listTopIndexFor(int16_t selectedIndex, uint16_t topIndex, uint16_t visibleRows, uint16_t count);
+// Shared immediate-mode list navigation helpers for apps that render lists
+// with their own theme/renderer but want SDK-owned selection semantics.
+inline int listClampedIndex(const int index, const int count) {
+  if (count <= 0) return 0;
+  if (index < 0) return 0;
+  if (index >= count) return count - 1;
+  return index;
+}
+inline bool listSelectIndex(int& selectedIndex, const int requestedIndex, const int count) {
+  if (count <= 0 || requestedIndex < 0 || requestedIndex >= count || selectedIndex == requestedIndex) return false;
+  selectedIndex = requestedIndex;
+  return true;
+}
+inline bool listSelectIndex(size_t& selectedIndex, const int requestedIndex, const int count) {
+  if (count <= 0 || requestedIndex < 0 || requestedIndex >= count ||
+      selectedIndex == static_cast<size_t>(requestedIndex))
+    return false;
+  selectedIndex = static_cast<size_t>(requestedIndex);
+  return true;
+}
+inline bool listMoveIndex(int& selectedIndex, const int delta, const int count) {
+  if (count <= 0 || delta == 0) return false;
+  const int oldIndex = selectedIndex;
+  selectedIndex = (selectedIndex + delta + count) % count;
+  return selectedIndex != oldIndex;
+}
+inline bool listMoveIndex(size_t& selectedIndex, const int delta, const int count) {
+  if (count <= 0 || delta == 0) return false;
+  int selected = static_cast<int>(selectedIndex);
+  const bool changed = listMoveIndex(selected, delta, count);
+  selectedIndex = static_cast<size_t>(selected);
+  return changed;
+}
+inline bool listPageIndex(int& selectedIndex, const int deltaPages, const int count, int pageItems) {
+  if (count <= 0 || deltaPages == 0) return false;
+  if (pageItems < 1) pageItems = 1;
+  const int oldIndex = selectedIndex;
+  selectedIndex = listClampedIndex(selectedIndex + deltaPages * pageItems, count);
+  return selectedIndex != oldIndex;
+}
 void drawText(DrawTarget& target, Rect rect, const char* text, TextStyle style);
 void drawBitmap(DrawTarget& target, Rect rect, BitmapRef bitmap, BitmapMode mode,
                 Paint foreground = Paint::solid(Color::Black));

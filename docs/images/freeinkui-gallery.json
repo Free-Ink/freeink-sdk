@@ -1,0 +1,57 @@
+{
+  "schema": 1,
+  "generatedBy": "libs/ui/FreeInkUI/tools/render_gallery.cpp",
+  "images": [
+    {
+      "file": "freeinkui-settings.svg",
+      "category": "settings",
+      "title": "Settings and controls",
+      "components": ["settingRow", "toggleRow", "stepperRow", "radioGroup", "textField", "tabBar", "list"]
+    },
+    {
+      "file": "freeinkui-reader.svg",
+      "category": "reader",
+      "title": "Reader screen controls",
+      "components": ["tapZones", "readerChrome", "statusBar", "progressBar", "toast"]
+    },
+    {
+      "file": "freeinkui-library.svg",
+      "category": "library",
+      "title": "Library and book surfaces",
+      "components": ["bookCard", "coverGrid", "coverCarousel", "metricCard", "batteryIndicator"]
+    },
+    {
+      "file": "freeinkui-overlays.svg",
+      "category": "overlays",
+      "title": "Overlays, dialogs, keyboard, and actions",
+      "components": ["contextMenu", "optionDialog", "messagePanel", "textField", "qwertyKeyboard", "keyGrid", "gestureBar", "toast"]
+    }
+  ],
+  "palette": [
+    {"component": "button", "category": "controls", "file": "freeinkui-components/button.svg"},
+    {"component": "settingRow", "category": "settings", "file": "freeinkui-components/setting-row.svg"},
+    {"component": "toggleRow", "category": "settings", "file": "freeinkui-components/toggle-row.svg"},
+    {"component": "stepperRow", "category": "settings", "file": "freeinkui-components/stepper-row.svg"},
+    {"component": "radioGroup", "category": "settings", "file": "freeinkui-components/radio-group.svg"},
+    {"component": "list", "category": "settings", "file": "freeinkui-components/list.svg"},
+    {"component": "tabBar", "category": "navigation", "file": "freeinkui-components/tab-bar.svg"},
+    {"component": "textField", "category": "input", "file": "freeinkui-components/text-field.svg"},
+    {"component": "keyGrid", "category": "input", "file": "freeinkui-components/key-grid.svg"},
+    {"component": "qwertyKeyboard", "category": "input", "file": "freeinkui-components/qwerty-keyboard.svg"},
+    {"component": "gestureBar", "category": "navigation", "file": "freeinkui-components/gesture-bar.svg"},
+    {"component": "statusBar", "category": "reader", "file": "freeinkui-components/status-bar.svg"},
+    {"component": "progressBar", "category": "reader", "file": "freeinkui-components/progress-bar.svg"},
+    {"component": "readerChrome", "category": "reader", "file": "freeinkui-components/reader-chrome.svg"},
+    {"component": "tapZones", "category": "reader", "file": "freeinkui-components/tap-zones.svg"},
+    {"component": "bookCard", "category": "library", "file": "freeinkui-components/book-card.svg"},
+    {"component": "coverGrid", "category": "library", "file": "freeinkui-components/cover-grid.svg"},
+    {"component": "coverCarousel", "category": "library", "file": "freeinkui-components/cover-carousel.svg"},
+    {"component": "metricCard", "category": "library", "file": "freeinkui-components/metric-card.svg"},
+    {"component": "batteryIndicator", "category": "status", "file": "freeinkui-components/battery-indicator.svg"},
+    {"component": "contextMenu", "category": "overlays", "file": "freeinkui-components/context-menu.svg"},
+    {"component": "optionDialog", "category": "overlays", "file": "freeinkui-components/option-dialog.svg"},
+    {"component": "messagePanel", "category": "overlays", "file": "freeinkui-components/message-panel.svg"},
+    {"component": "toast", "category": "overlays", "file": "freeinkui-components/toast.svg"},
+    {"component": "popup", "category": "overlays", "file": "freeinkui-components/popup.svg"}
+  ]
+}

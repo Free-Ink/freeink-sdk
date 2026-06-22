@@ -21,6 +21,285 @@ The design goal is "Tailwind for e-ink" without a web-style runtime:
 
 ## Core Flow
 
+### App Runtime
+
+For most firmware, start with `FreeInkApp.h`. It is the "easy mode" wrapper over
+the immediate-mode primitives in `FreeInkUI.h`.
+
+`FreeInkApp` does:
+
+- owns one fixed-capacity `InteractionBuffer`
+- calls your active screen function each render pass
+- routes the latest `InputSnapshot` through the interactions that screen
+  registered
+- dispatches semantic `ActionId` events to callbacks registered with `on(...)`
+- tracks whether another render is needed after a callback changes app state
+- carries a `RefreshHint` so firmware can choose an e-paper refresh mode
+
+`FreeInkApp` deliberately does not:
+
+- allocate or copy screen state
+- own the display driver
+- read hardware buttons/touch directly
+- push pixels to the panel
+- parse JSON or keep a retained widget tree
+
+The app still owns persistent state, input sampling, and the final panel refresh.
+That keeps it predictable on small MCUs and lets each board choose the right
+refresh policy.
+
+#### Minimal Screen
+
+```cpp
+#include <FreeInkApp.h>
+
+using App = freeink::ui::FreeInkApp<32, 16>;
+
+enum : freeink::ui::ActionId {
+  ActionOpen = 1,
+  ActionBack = 2,
+};
+
+struct AppState {
+  freeink::ui::ListItem books[2] = {
+      {.label = "Book one", .actionValue = 0},
+      {.label = "Book two", .actionValue = 1},
+  };
+  int16_t selected = 0;
+};
+
+void homeScreen(App::ScreenType& screen, void* user) {
+  auto& state = *static_cast<AppState*>(user);
+  screen.header("Library");
+
+  const freeink::ui::FooterAction footer[] = {
+      {.label = "Open", .action = ActionOpen},
+      {.label = "Back", .action = ActionBack},
+  };
+  screen.footer(footer, 2);
+
+  screen.list(state.books, 2, state.selected, ActionOpen);
+}
+
+void handleOpen(const freeink::ui::ActionEvent& event, void* user) {
+  auto& state = *static_cast<AppState*>(user);
+  state.selected = event.value;
+}
+```
+
+The screen function is re-run whenever you call `app.render(...)`. It should be
+cheap and deterministic: read app state, draw components, and register actions.
+Do not store pointers to `screen`, `Frame`, or component-local props after the
+function returns.
+
+#### Firmware Loop
+
+Wire the app to your display target and input layer:
+
+```cpp
+freeink::ui::DisplayTarget target(display.getFrameBuffer(), display.getDisplayWidth(),
+                                  display.getDisplayHeight(), display.getDisplayWidthBytes());
+AppState state;
+App app(target, target.deviceContext());
+
+void setup() {
+  app.setScreen(homeScreen, &state);
+  app.on(ActionOpen, handleOpen, &state);
+}
+
+void loop() {
+  freeink::ui::InputSnapshot input = readInputSnapshot();
+  freeink::ui::ActionEvent event = app.render(input);
+  switch (app.lastRenderRefreshHint()) {
+    case freeink::ui::RefreshHint::Full:
+    case freeink::ui::RefreshHint::Clean:
+      display.displayBuffer(FreeInkDisplay::FULL_REFRESH);
+      break;
+    case freeink::ui::RefreshHint::Fast:
+      display.displayBuffer(FreeInkDisplay::FAST_REFRESH);
+      break;
+    case freeink::ui::RefreshHint::None:
+      break;
+  }
+
+  if (app.invalidated()) {
+    // An action handler changed state after this render pass. Render again on
+    // the next loop iteration, or immediately if your firmware wants synchronous
+    // UI updates.
+  }
+}
+```
+
+`FreeInkApp` does not own your display refresh policy. `lastRenderRefreshHint()`
+describes the frame just drawn, while `invalidated()` / `refreshHint()` describe
+whether an action handler changed state and a follow-up render is needed.
+
+#### Input Snapshot
+
+Your board-support code converts hardware into `InputSnapshot`:
+
+```cpp
+freeink::ui::InputSnapshot readInputSnapshot() {
+  freeink::ui::InputSnapshot input;
+
+  input.confirm = buttons.wasPressed(InputManager::BTN_CONFIRM);
+  input.back = buttons.wasPressed(InputManager::BTN_BACK);
+  input.focusNext = buttons.wasPressed(InputManager::BTN_DOWN);
+  input.focusPrev = buttons.wasPressed(InputManager::BTN_UP);
+
+  float nx, ny;
+  if (buttons.wasTouchTap(nx, ny)) {
+    freeink::ui::Point p = freeink::ui::touchToLogical(app.device(), nx, ny);
+    input.touchReleased = true;
+    input.touchX = p.x;
+    input.touchY = p.y;
+  }
+
+  return input;
+}
+```
+
+Use semantic fields (`confirm`, `back`, `focusNext`, `swipeLeft`) rather than
+physical pin names inside UI code. The same screen can then run on touch-first
+and button-first boards.
+
+#### Screen Builder API
+
+`Screen<MaxInteractions>` is a thin builder over existing FreeInkUI components.
+It manages a remaining content rectangle from `safeRect()`:
+
+- `header(title, subtitle, rightLabel)` consumes the top header band
+- `status(props)` consumes the top status band
+- `footer(actions, count)` consumes the bottom footer band
+- `button(label, action, value, state)` adds one full-width row button
+- `list(items, count, selected, action, topIndex)` fills the remaining body
+- `list(props)` uses a full `ListProps` when you need detailed styling
+- `popup(message)` draws a centered popup over the current screen
+- `dialog(props, width)` sizes and draws an `optionDialog`
+- `spacer(height)`, `takeTop(...)`, `takeBottom(...)`, and `body()` let custom
+  code reserve or draw into exact regions
+
+Use the builder for common screens, then drop down to `screen.frame()` or
+`screen.target()` for custom surfaces:
+
+```cpp
+void readerScreen(App::ScreenType& screen, void* user) {
+  auto& state = *static_cast<ReaderState*>(user);
+  screen.header(state.title);
+
+  freeink::ui::Rect page = screen.body();
+  renderPageText(screen.target(), page, state.currentPage);
+}
+```
+
+#### Actions And Callbacks
+
+Register handlers once during setup:
+
+```cpp
+app.on(ActionOpen, [](const freeink::ui::ActionEvent& event, void* user) {
+  auto& state = *static_cast<AppState*>(user);
+  state.selected = event.value;
+}, &state);
+```
+
+Callbacks run after the current render pass finishes. If they change state,
+`FreeInkApp` marks itself invalidated with `RefreshHint::Fast`. A callback can
+request a stronger refresh:
+
+```cpp
+void handleThemeChange(const freeink::ui::ActionEvent&, void*) {
+  settings.darkMode = !settings.darkMode;
+  app.invalidate(freeink::ui::RefreshHint::Full);
+}
+```
+
+If you register more handlers than `MaxHandlers`, `handlerOverflowed()` becomes
+true. If a screen registers more interactions than `MaxInteractions`,
+`interactionOverflowed()` becomes true and dropped controls will not receive
+input. Size both template parameters deliberately.
+
+#### Refresh Hints
+
+`RefreshHint` is a policy hint, not a panel command:
+
+- `None`: this render did not request a panel update
+- `Fast`: use the board's fast/partial/user-interface refresh
+- `Full`: use a full clean refresh
+- `Clean`: use the firmware's cleanest practical refresh policy
+
+For simple projects, map `Fast` to `FreeInkDisplay::FAST_REFRESH` and
+`Full`/`Clean` to `FreeInkDisplay::FULL_REFRESH`. More advanced firmware can
+map `Clean` to a board-specific sequence, such as a ghost-clearing pass or an
+hourly full refresh on panels that need DC balancing.
+
+### Generated Screens
+
+The `Screen` API is also the target for design-time tooling. The bundled
+`tools/gen_screen.py` turns a small JSON schema into ordinary C++ that uses
+`FreeInkApp.h`:
+
+```json
+{
+  "screen": "settings",
+  "maxInteractions": 32,
+  "children": [
+    {"type": "header", "title": "Settings"},
+    {
+      "type": "footer",
+      "buttons": [
+        {"label": "Back", "action": "back"},
+        {"label": "Apply", "action": "apply"}
+      ]
+    },
+    {"type": "toggleRow", "label": "Dark mode", "checked": false, "action": "darkMode"},
+    {
+      "type": "stepperRow",
+      "label": "Font size",
+      "value": "12",
+      "decrement": "fontSmaller",
+      "increment": "fontLarger",
+      "controlSize": 14
+    },
+    {
+      "type": "qwertyKeyboard",
+      "action": "keyboardKey",
+      "shiftAction": "keyboardShift",
+      "deleteAction": "keyboardDelete",
+      "okAction": "keyboardOk",
+      "height": 144
+    },
+    {
+      "type": "list",
+      "action": "selectSetting",
+      "selectedIndex": 0,
+      "items": [
+        {"label": "Wi-Fi", "value": "On", "actionValue": 1},
+        {"label": "Frontlight", "value": "42%", "actionValue": 2}
+      ]
+    }
+  ]
+}
+```
+
+Generate a header:
+
+```sh
+python3 libs/ui/FreeInkUI/tools/gen_screen.py settings.freeinkui.json \
+    --out SettingsScreen.h
+```
+
+The output contains an inline `settingsScreen(...)`-style function plus
+generated `ActionId` constants. Supported schema component types currently
+include `header`, `footer`, `list`, `button`, `settingRow`, `toggleRow`,
+`stepperRow`, `radioGroup`, `qwertyKeyboard`, `spacer`, and `popup`. A future drag-and-drop
+builder can edit this same schema and preview real device profiles, then emit
+the same static C++ so firmware carries no JSON parser or GUI-builder runtime.
+
+### Manual Frame API
+
+The lower-level API is still available when a screen needs exact control:
+
 ```cpp
 freeink::ui::InteractionBuffer<32> interactions;
 freeink::ui::InputSnapshot input = readInput();
@@ -191,13 +470,20 @@ tied to any application's screen structure:
 - `header`
 - `list` (virtualized; see below — supports hug-content pill rows and
   selection markers)
+- settings rows: `settingRow`, `toggleRow`, `stepperRow`, `radioGroup`
+- reader surfaces: `readerChrome`, `tapZones`
+- book surfaces: `bookCard`, `coverGrid`, `coverCarousel`
 - `progressBar`
 - `statusBar`
 - `tabBar` (pill or underline-style tabs with optional divider)
 - `popup`
+- `toast`
+- `contextMenu`
+- `messagePanel` (empty/error/loading panels)
 - `optionDialog`
 - `textField`
 - `keyGrid`
+- `qwertyKeyboard`
 - `metricCard`
 - `batteryIndicator`
 - `coverCarousel` (prev/center/next cover slots with selection chrome and
@@ -206,9 +492,98 @@ tied to any application's screen structure:
 
 These cover the shared surfaces of a typical e-reader or appliance UI: home
 menus, settings lists, button hints, status/progress bars, popups,
-confirmation dialogs, text entry fields, keyboard grids, statistics cards,
-and battery glyphs. Applications draw app-specific content directly into a
+confirmation dialogs, text entry fields, keyboard grids, full QWERTY entry
+surfaces, statistics cards, and battery glyphs. Applications draw app-specific content directly into a
 slot, such as a book page renderer or a cover image.
+
+### E-Reader Components
+
+The e-reader-specific components are still immediate-mode: every frame gets a
+props struct, draws into a rect, and registers semantic actions.
+
+Settings rows cover common device preferences:
+
+```cpp
+freeink::ui::ToggleRowProps dark;
+dark.row.label = "Dark mode";
+dark.row.action = ActionDarkMode;
+dark.checked = settings.darkMode;
+dark.radius = 3;       // rectangular by default; raise for pill-style tracks
+dark.knobRadius = 1;
+toggleRow(ui, rowRect, dark);
+
+freeink::ui::StepperRowProps font;
+font.row.label = "Font size";
+font.value = fontSizeLabel;
+font.decrement = ActionFontSmaller;
+font.increment = ActionFontLarger;
+font.controlSize = 14; // explicit plus/minus strokes, independent of font glyphs
+stepperRow(ui, rowRect, font);
+```
+
+Text-entry screens can use the generic `keyGrid` for compact custom pads or
+`qwertyKeyboard` for a full four-row keyboard with Shift, mode, space, delete,
+and OK keys:
+
+```cpp
+freeink::ui::QwertyKeyboardProps keyboard;
+keyboard.keyAction = ActionKeyboardKey;     // letter/space values are ASCII
+keyboard.shiftAction = ActionKeyboardShift;
+keyboard.modeAction = ActionKeyboardMode;
+keyboard.deleteAction = ActionKeyboardDelete;
+keyboard.okAction = ActionKeyboardOk;
+keyboard.selectedIndex = focusedKey;
+qwertyKeyboard(ui, keyboardRect, keyboard);
+```
+
+Reader screens can register invisible tap zones over the page while drawing
+chrome separately:
+
+```cpp
+const freeink::ui::TapZone zones[] = {
+    {leftThird, ActionPrevPage},
+    {centerThird, ActionShowMenu},
+    {rightThird, ActionNextPage},
+};
+freeink::ui::TapZonesProps taps;
+taps.zones = zones;
+taps.count = 3;
+taps.swipeLeft = ActionNextPage;
+taps.swipeRight = ActionPrevPage;
+tapZones(ui, pageRect, taps);
+
+freeink::ui::ReaderChromeProps chrome;
+chrome.top.title = bookTitle;
+chrome.bottom.trailing = progressLabel;
+chrome.bottom.showProgress = true;
+chrome.bottom.progress.value = percent;
+chrome.bottom.progress.max = 100;
+readerChrome(ui, ui.safeRect(), chrome);
+```
+
+Library screens can use `bookCard` for list views or `coverGrid` for visual
+selection:
+
+```cpp
+freeink::ui::BookCardProps card;
+card.title = book.title;
+card.author = book.author;
+card.meta = book.progressLabel;
+card.progress = book.percent;
+card.coverSize = {62, 84};
+card.gap = 14;              // cover-to-title/author/bar spacing
+card.textProgressGap = 8;   // keeps title/author clear of the bottom bar
+card.action = ActionOpenBook;
+card.value = bookIndex;
+bookCard(ui, rowRect, card);
+```
+
+Transient and edge-case surfaces are included too:
+
+- `contextMenu`: long-press/menu-button command list for a selected book
+- `toast`: static e-paper-safe notice such as "Saved" or "Sync failed"
+- `messagePanel`: empty/error/loading panel with optional progress and retry
+  action
 
 ### Styling
 
@@ -242,11 +617,12 @@ e-reader chrome typically needs:
   estimate line counts from single-line `measureText`
 - `bitmap()` for icon masks
 
-Components build on these: `keyGrid` draws space-bar and delete-arrow glyph
-art itself for `KeyKind::Space`/`KeyKind::Delete` keys without labels, the
-`list` component offers `Underline` and `Triangle` selection markers
-alongside fill/outline/pill styles, and `batteryIndicator` draws a
-triangle-built lightning bolt while charging (or an app-supplied icon).
+Components build on these: `keyGrid` and `qwertyKeyboard` draw space-bar and
+delete-arrow glyph art themselves for special keys without labels,
+`stepperRow` draws plus/minus controls as centered strokes instead of relying
+on font glyph sizing, the `list` component offers `Underline` and `Triangle`
+selection markers alongside fill/outline/pill styles, and `batteryIndicator`
+draws a triangle-built lightning bolt while charging (or an app-supplied icon).
 `testThemePrimitiveParity` in the host suite locks this in.
 
 ### Rotation and Scaling

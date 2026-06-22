@@ -3,6 +3,7 @@
 // device in the loop. Run with test/host/run.sh.
 
 #include <FreeInkUI.h>
+#include <FreeInkApp.h>
 #include <FreeInkUIDisplayTarget.h>
 
 #include <cstdio>
@@ -1522,6 +1523,270 @@ void testStyleSetUnset() {
   CHECK(!selectedOnly.unset());
 }
 
+void testEReaderSettingsComponents() {
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice();
+  InputSnapshot input;
+  InteractionBuffer<24> interactions;
+  Frame<24> frame(draw, device, input, interactions);
+
+  SettingRowProps row;
+  row.label = "Wi-Fi";
+  row.value = "On";
+  row.action = 300;
+  row.valueId = 1;
+  row.labelText.maxLines = 1;
+  row.valueText.maxLines = 1;
+  settingRow(frame, Rect{0, 0, 240, 44}, row);
+
+  ToggleRowProps toggle;
+  toggle.row.label = "Dark mode";
+  toggle.row.labelText.maxLines = 1;
+  toggle.row.action = 301;
+  toggle.checked = true;
+  toggle.radius = 3;
+  toggle.knobRadius = 1;
+  toggleRow(frame, Rect{0, 48, 240, 44}, toggle);
+
+  StepperRowProps stepper;
+  stepper.row.label = "Font";
+  stepper.row.labelText.maxLines = 1;
+  stepper.row.valueText.maxLines = 1;
+  stepper.value = "12";
+  stepper.decrement = 302;
+  stepper.increment = 303;
+  stepperRow(frame, Rect{0, 96, 240, 44}, stepper);
+
+  const RadioOption options[3] = {{"Small", 1, true}, {"Medium", 2, true}, {"Large", 3, true}};
+  RadioGroupProps radio;
+  radio.options = options;
+  radio.count = 3;
+  radio.selectedValue = 2;
+  radio.action = 304;
+  radioGroup(frame, Rect{0, 144, 240, 40}, radio);
+
+  CHECK_EQ(interactions.count(), 7u);
+  CHECK_EQ(interactions.data()[0].action, 300);
+  CHECK_EQ(interactions.data()[1].action, 301);
+  CHECK_EQ(interactions.data()[2].action, 302);
+  CHECK_EQ(interactions.data()[3].action, 303);
+  CHECK_EQ(interactions.data()[5].value, 2);
+  CHECK(draw.countKind(FakeDrawTarget::Op::Line) >= 3u);
+  CHECK(draw.countKind(FakeDrawTarget::Op::Text) >= 7);
+  CHECK(draw.countKind(FakeDrawTarget::Op::Stroke) >= 1);
+  bool sawToggleRadius = false;
+  for (size_t i = 0; i < draw.opCount; ++i) {
+    if (draw.ops[i].kind == FakeDrawTarget::Op::Stroke && draw.ops[i].radius == 3) sawToggleRadius = true;
+  }
+  CHECK(sawToggleRadius);
+}
+
+void testQwertyKeyboardComponent() {
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice();
+  InputSnapshot input;
+  InteractionBuffer<40> interactions;
+  Frame<40> frame(draw, device, input, interactions);
+
+  QwertyKeyboardProps keyboard;
+  keyboard.keyAction = 400;
+  keyboard.shiftAction = 401;
+  keyboard.modeAction = 402;
+  keyboard.deleteAction = 403;
+  keyboard.okAction = 404;
+  keyboard.selectedIndex = 5;
+  qwertyKeyboard(frame, Rect{0, 0, 480, 160}, keyboard);
+
+  CHECK_EQ(interactions.count(), 31u);
+  CHECK_EQ(interactions.data()[0].value, static_cast<int16_t>('q'));
+  CHECK_EQ(interactions.data()[19].action, 401);
+  CHECK_EQ(interactions.data()[27].action, 403);
+  CHECK_EQ(interactions.data()[29].value, QWERTY_KEY_SPACE);
+  CHECK_EQ(interactions.data()[30].action, 404);
+
+  InputSnapshot tap;
+  tap.touchReleased = true;
+  tap.touchX = 250;
+  tap.touchY = 145;
+  CHECK_EQ(interactions.route(tap).value, QWERTY_KEY_SPACE);
+}
+
+void testEReaderChromeMenusAndPanels() {
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice(300, 400);
+  InputSnapshot input;
+  InteractionBuffer<24> interactions;
+  Frame<24> frame(draw, device, input, interactions);
+
+  const TapZone zones[3] = {
+      {Rect{0, 0, 100, 400}, 400, -1, InputTouch, StateNormal, true},
+      {Rect{100, 0, 100, 400}, 401, 0, InputTouch, StateNormal, true},
+      {Rect{200, 0, 100, 400}, 402, 1, InputTouch, StateNormal, true},
+  };
+  TapZonesProps tapProps;
+  tapProps.zones = zones;
+  tapProps.count = 3;
+  tapProps.swipeLeft = 403;
+  tapProps.swipeRight = 404;
+  tapZones(frame, Rect{0, 0, 300, 400}, tapProps);
+
+  ReaderChromeProps chrome;
+  chrome.top.title = "Chapter";
+  chrome.top.text.maxLines = 1;
+  chrome.bottom.trailing = "42%";
+  chrome.bottom.text.maxLines = 1;
+  readerChrome(frame, Rect{0, 0, 300, 400}, chrome);
+
+  const DialogOption options[2] = {{"Open", 405, 0, StateNormal, true}, {"Delete", 406, 0, StateNormal, true}};
+  ContextMenuProps menu;
+  menu.title = "Book";
+  menu.options = options;
+  menu.optionCount = 2;
+  contextMenu(frame, Rect{40, 80, 220, 140}, menu);
+
+  ToastProps toastProps;
+  toastProps.message = "Saved";
+  toast(frame, Rect{0, 0, 300, 400}, toastProps);
+
+  MessagePanelProps panel;
+  panel.title = "No books";
+  panel.message = "Add files to the SD card.";
+  panel.actionLabel = "Retry";
+  panel.action = 407;
+  messagePanel(frame, Rect{30, 120, 240, 160}, panel);
+
+  CHECK_EQ(interactions.count(), 8u);
+  CHECK_EQ(interactions.data()[0].action, 400);
+  CHECK_EQ(interactions.data()[3].action, 403);
+  CHECK_EQ(interactions.data()[4].action, 404);
+  CHECK_EQ(interactions.data()[7].action, 407);
+  CHECK(draw.countKind(FakeDrawTarget::Op::Fill) > 0);
+  CHECK(draw.countKind(FakeDrawTarget::Op::Text) >= 6);
+}
+
+void testEReaderBookSurfaces() {
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice(320, 240);
+  InputSnapshot input;
+  InteractionBuffer<24> interactions;
+  Frame<24> frame(draw, device, input, interactions);
+
+  BookCardProps card;
+  card.title = "A Long Book Title";
+  card.author = "Author";
+  card.meta = "42% read";
+  card.action = 500;
+  card.value = 9;
+  card.titleText.maxLines = 2;
+  card.authorText.maxLines = 1;
+  card.metaText.maxLines = 1;
+  card.progress = 42;
+  bookCard(frame, Rect{0, 0, 320, 96}, card);
+
+  const CoverGridItem items[4] = {
+      {"One", {}, {}, StateNormal, 1, true},
+      {"Two", {}, {}, StateNormal, 2, true},
+      {"Three", {}, {}, StateNormal, 3, true},
+      {"Four", {}, {}, StateNormal, 4, true},
+  };
+  CoverGridProps grid;
+  grid.items = items;
+  grid.count = 4;
+  grid.action = 501;
+  grid.columns = 2;
+  grid.rowHeight = 120;
+  grid.coverSize = Size{48, 72};
+  grid.labelHeight = 18;
+  coverGrid(frame, Rect{0, 104, 220, 132}, grid);
+
+  CHECK_EQ(interactions.count(), 3u);  // one card + two visible grid cells
+  CHECK_EQ(interactions.data()[0].action, 500);
+  CHECK_EQ(interactions.data()[1].action, 501);
+  CHECK_EQ(interactions.data()[2].value, 2);
+  bool sawLargeCover = false;
+  bool sawCoverAlignedProgress = false;
+  for (size_t i = 0; i < draw.opCount; ++i) {
+    const auto& op = draw.ops[i];
+    if (op.kind != FakeDrawTarget::Op::Fill) continue;
+    if (op.rect.x == 8 && op.rect.y == 6 && op.rect.width == 62 && op.rect.height == 84) {
+      sawLargeCover = true;
+    }
+    if (op.rect.x == 84 && op.rect.y == 86 && op.rect.height == 4) {
+      sawCoverAlignedProgress = true;
+    }
+  }
+  CHECK(sawLargeCover);
+  CHECK(sawCoverAlignedProgress);
+  CHECK(draw.countKind(FakeDrawTarget::Op::Text) >= 5);
+  CHECK(draw.countKind(FakeDrawTarget::Op::Fill) >= 5);
+}
+
+static constexpr ActionId ActionOpen = 101;
+static constexpr ActionId ActionBack = 102;
+
+struct AppTestState {
+  ListItem items[2] = {{"First", nullptr, nullptr, {}, {}, StateNormal, 7, true, false},
+                       {"Second", nullptr, nullptr, {}, {}, StateNormal, 8, true, false}};
+  int handled = 0;
+  ActionEvent last{};
+};
+
+void appTestScreen(Screen<8>& screen, void* user) {
+  AppTestState* state = static_cast<AppTestState*>(user);
+  screen.header("Home");
+  const FooterAction actions[2] = {{"Open", ActionOpen, 1}, {"Back", ActionBack, 2}};
+  screen.footer(actions, 2);
+  screen.list(state->items, 2, 0, ActionOpen);
+}
+
+void appTestHandler(const ActionEvent& event, void* user) {
+  AppTestState* state = static_cast<AppTestState*>(user);
+  ++state->handled;
+  state->last = event;
+}
+
+void testFreeInkAppDispatchesScreenActions() {
+  FakeDrawTarget draw;
+  DeviceContext device{200, 120};
+  AppTestState state;
+  FreeInkApp<8, 4> app(draw, device);
+  app.setScreen(appTestScreen, &state);
+  app.on(ActionBack, appTestHandler, &state);
+
+  CHECK(app.invalidated());
+  CHECK(app.refreshHint() == RefreshHint::Full);
+  ActionEvent event = app.render();
+  CHECK(!event);
+  CHECK(app.lastRenderRefreshHint() == RefreshHint::Full);
+  CHECK(!app.invalidated());
+  CHECK(app.refreshHint() == RefreshHint::None);
+  CHECK(draw.opCount > 0);
+
+  InputSnapshot input;
+  input.touchReleased = true;
+  input.touchX = 150;
+  input.touchY = 100;
+  event = app.render(input);
+  CHECK(event);
+  CHECK_EQ(event.action, ActionBack);
+  CHECK_EQ(event.value, 2);
+  CHECK_EQ(state.handled, 1);
+  CHECK_EQ(state.last.action, ActionBack);
+  CHECK(app.invalidated());
+  CHECK(app.refreshHint() == RefreshHint::Fast);
+}
+
+void noopHandler(const ActionEvent&, void*) {}
+
+void testFreeInkAppHandlerOverflowFlag() {
+  FakeDrawTarget draw;
+  DeviceContext device{100, 100};
+  FreeInkApp<4, 1> app(draw, device);
+  app.on(1, noopHandler);
+  app.on(2, noopHandler);
+  CHECK(app.handlerOverflowed());
+}
+
 }  // namespace
 
 int main() {
@@ -1562,6 +1827,12 @@ int main() {
   testButtonHitPadding();
   testInvertedDrawTarget();
   testStyleSetUnset();
+  testEReaderSettingsComponents();
+  testQwertyKeyboardComponent();
+  testEReaderChromeMenusAndPanels();
+  testEReaderBookSurfaces();
+  testFreeInkAppDispatchesScreenActions();
+  testFreeInkAppHandlerOverflowFlag();
 
   std::printf("%d checks, %d failed\n", checksRun, checksFailed);
   return checksFailed == 0 ? 0 : 1;

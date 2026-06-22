@@ -13,6 +13,57 @@ It is **drop-in compatible** with firmware written against the original
 `EInkDisplay` / `InputManager` / `BatteryMonitor` / `SDCardManager` / `BoardConfig`
 API: switching to FreeInk is a matter of repointing the library path.
 
+## FreeInkUI component gallery
+
+FreeInkUI includes e-paper-specific UI primitives and an app-builder layer for
+reader firmware: settings rows, reader tap zones, page chrome, book/library
+surfaces, dialogs, context menus, keyboard grids, and static notifications.
+These previews are generated from the actual C++ components through the native
+1-bit framebuffer renderer, not drawn by hand.
+
+| Settings and controls | Reader screen controls |
+|---|---|
+| ![FreeInkUI settings controls](docs/images/freeinkui-settings.svg) | ![FreeInkUI reader controls](docs/images/freeinkui-reader.svg) |
+
+| Library and book surfaces | Overlays and actions |
+|---|---|
+| ![FreeInkUI library controls](docs/images/freeinkui-library.svg) | ![FreeInkUI overlay controls](docs/images/freeinkui-overlays.svg) |
+
+### Component palette
+
+Each preview below is also generated from the real component code and indexed in
+`docs/images/freeinkui-gallery.json` for design tools.
+
+| Controls & settings | Input & navigation | Reader & status |
+|---|---|---|
+| `button`<br>![button](docs/images/freeinkui-components/button.svg) | `textField`<br>![textField](docs/images/freeinkui-components/text-field.svg) | `statusBar`<br>![statusBar](docs/images/freeinkui-components/status-bar.svg) |
+| `settingRow`<br>![settingRow](docs/images/freeinkui-components/setting-row.svg) | `keyGrid`<br>![keyGrid](docs/images/freeinkui-components/key-grid.svg) | `progressBar`<br>![progressBar](docs/images/freeinkui-components/progress-bar.svg) |
+| `toggleRow`<br>![toggleRow](docs/images/freeinkui-components/toggle-row.svg) | `qwertyKeyboard`<br>![qwertyKeyboard](docs/images/freeinkui-components/qwerty-keyboard.svg) | `readerChrome`<br>![readerChrome](docs/images/freeinkui-components/reader-chrome.svg) |
+|  | `gestureBar`<br>![gestureBar](docs/images/freeinkui-components/gesture-bar.svg) |  |
+| `stepperRow`<br>![stepperRow](docs/images/freeinkui-components/stepper-row.svg) | `tabBar`<br>![tabBar](docs/images/freeinkui-components/tab-bar.svg) | `tapZones`<br>![tapZones](docs/images/freeinkui-components/tap-zones.svg) |
+| `radioGroup`<br>![radioGroup](docs/images/freeinkui-components/radio-group.svg) |  | `batteryIndicator`<br>![batteryIndicator](docs/images/freeinkui-components/battery-indicator.svg) |
+| `list`<br>![list](docs/images/freeinkui-components/list.svg) |  |  |
+
+| Library surfaces | Overlays & dialogs |
+|---|---|
+| `bookCard`<br>![bookCard](docs/images/freeinkui-components/book-card.svg) | `contextMenu`<br>![contextMenu](docs/images/freeinkui-components/context-menu.svg) |
+| `coverGrid`<br>![coverGrid](docs/images/freeinkui-components/cover-grid.svg) | `optionDialog`<br>![optionDialog](docs/images/freeinkui-components/option-dialog.svg) |
+| `coverCarousel`<br>![coverCarousel](docs/images/freeinkui-components/cover-carousel.svg) | `messagePanel`<br>![messagePanel](docs/images/freeinkui-components/message-panel.svg) |
+| `metricCard`<br>![metricCard](docs/images/freeinkui-components/metric-card.svg) | `toast`<br>![toast](docs/images/freeinkui-components/toast.svg) |
+|  | `popup`<br>![popup](docs/images/freeinkui-components/popup.svg) |
+
+Regenerate the gallery with:
+
+```sh
+sh libs/ui/FreeInkUI/tools/render_gallery.sh
+```
+
+The same command writes `docs/images/freeinkui-gallery.json` and a
+`docs/images/freeinkui-components/` palette with one SVG per component. The
+manifest lists both the README composite images and the individual component
+assets, so the future drag-and-drop GUI builder can reuse the same generated
+reference images instead of maintaining a separate palette.
+
 ## Credit & lineage
 
 FreeInk is an MIT-licensed **re-architecture derived from** the

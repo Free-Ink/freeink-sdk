@@ -1155,6 +1155,29 @@ struct KeyGridProps {
   bool inactiveSelection = false;
 };
 
+constexpr int16_t QWERTY_KEY_SHIFT = -1;
+constexpr int16_t QWERTY_KEY_MODE = -2;
+constexpr int16_t QWERTY_KEY_BACKSPACE = 8;
+constexpr int16_t QWERTY_KEY_ENTER = 13;
+constexpr int16_t QWERTY_KEY_SPACE = 32;
+
+struct QwertyKeyboardProps {
+  ActionId keyAction = NO_ACTION;
+  ActionId shiftAction = NO_ACTION;
+  ActionId modeAction = NO_ACTION;
+  ActionId deleteAction = NO_ACTION;
+  ActionId okAction = NO_ACTION;
+  uint16_t inputMask = InputDefault;
+  int16_t selectedIndex = -1;
+  TextStyle labelText{};
+  StyleSet keyStyles{};
+  int16_t gap = 2;
+  int16_t minTouchSize = 28;
+  bool shifted = false;
+  bool symbols = false;
+  bool inactiveSelection = false;
+};
+
 struct GestureBarButton {
   const char* label = nullptr;
   BitmapRef icon{};
@@ -1297,6 +1320,206 @@ struct OptionDialogProps {
   // Dim everything behind the dialog with a dither so stale chrome reads as
   // inactive on e-paper.
   bool dimBackground = false;
+};
+
+struct TapZone {
+  Rect rect{};
+  ActionId action = NO_ACTION;
+  int16_t value = 0;
+  uint16_t inputMask = InputTouch;
+  State state = StateNormal;
+  bool enabled = true;
+};
+
+struct TapZonesProps {
+  const TapZone* zones = nullptr;
+  uint8_t count = 0;
+  ActionId swipeLeft = NO_ACTION;
+  ActionId swipeRight = NO_ACTION;
+  ActionId back = NO_ACTION;
+};
+
+struct ReaderChromeProps {
+  StatusBarProps top{};
+  StatusBarProps bottom{};
+  int16_t topHeight = 28;
+  int16_t bottomHeight = 32;
+  bool showTop = true;
+  bool showBottom = true;
+  bool dimContent = false;
+};
+
+struct SettingRowProps {
+  const char* label = nullptr;
+  const char* subtitle = nullptr;
+  const char* value = nullptr;
+  BitmapRef icon{};
+  AssetRef iconAsset{};
+  ActionId action = NO_ACTION;
+  int16_t valueId = 0;
+  uint16_t inputMask = InputDefault;
+  TextStyle labelText{};
+  TextStyle subtitleText{};
+  TextStyle valueText{};
+  StyleSet styles{};
+  State state = StateNormal;
+  bool enabled = true;
+  int16_t sidePadding = 8;
+  int16_t textGap = 6;
+  int16_t iconSize = 0;
+  int16_t minTouchSize = 44;
+  bool drawChevron = false;
+};
+
+struct ToggleRowProps {
+  SettingRowProps row{};
+  bool checked = false;
+  ActionId toggleAction = NO_ACTION;
+  int16_t toggleValue = 0;
+  int16_t toggleWidth = 34;
+  int16_t toggleHeight = 18;
+  uint8_t radius = 4;
+  uint8_t knobRadius = 2;
+  int16_t knobInset = 3;
+  uint8_t borderWidth = 1;
+  Paint track = Paint::solid(Color::White);
+  Paint checkedTrack = Paint::solid(Color::Black);
+  Paint border = Paint::solid(Color::Black);
+  Paint knob = Paint::solid(Color::Black);
+  Paint checkedKnob = Paint::solid(Color::White);
+};
+
+struct StepperRowProps {
+  SettingRowProps row{};
+  const char* value = nullptr;
+  ActionId decrement = NO_ACTION;
+  ActionId increment = NO_ACTION;
+  int16_t decrementValue = -1;
+  int16_t incrementValue = 1;
+  int16_t buttonWidth = 44;
+  int16_t valueWidth = 56;
+  int16_t gap = 4;
+  StyleSet buttonStyles{};
+  Paint controlPaint = Paint::solid(Color::Black);
+  int16_t controlSize = 14;
+  uint8_t controlStroke = 2;
+};
+
+struct RadioOption {
+  const char* label = nullptr;
+  int16_t value = 0;
+  bool enabled = true;
+};
+
+struct RadioGroupProps {
+  const RadioOption* options = nullptr;
+  uint8_t count = 0;
+  int16_t selectedValue = 0;
+  ActionId action = NO_ACTION;
+  uint16_t inputMask = InputDefault | InputPrev | InputNext;
+  TextStyle text{};
+  StyleSet styles{};
+  int16_t gap = 4;
+  int16_t minTouchSize = 44;
+};
+
+struct ContextMenuProps {
+  const char* title = nullptr;
+  const DialogOption* options = nullptr;
+  uint8_t optionCount = 0;
+  TextStyle titleText{};
+  TextStyle itemText{};
+  StyleSet panelStyles{};
+  StyleSet itemStyles{};
+  Insets padding{10, 10, 10, 10};
+  int16_t rowHeight = 40;
+  int16_t gap = 2;
+  uint16_t inputMask = InputDefault | InputPrev | InputNext;
+  bool dimBackground = true;
+};
+
+enum class ToastAnchor : uint8_t {
+  Top,
+  Center,
+  Bottom,
+};
+
+struct ToastProps {
+  const char* message = nullptr;
+  TextStyle text{};
+  StyleSet styles{};
+  Insets padding{8, 12, 8, 12};
+  ToastAnchor anchor = ToastAnchor::Bottom;
+  int16_t maxWidth = 0;  // 0 = 3/4 screen width
+  int16_t margin = 16;
+};
+
+struct MessagePanelProps {
+  const char* title = nullptr;
+  const char* message = nullptr;
+  const char* actionLabel = nullptr;
+  ActionId action = NO_ACTION;
+  int16_t actionValue = 0;
+  TextStyle titleText{};
+  TextStyle messageText{};
+  TextStyle buttonText{};
+  StyleSet panelStyles{};
+  StyleSet buttonStyles{};
+  Insets padding{16, 20, 16, 20};
+  int16_t gap = 8;
+  int16_t buttonHeight = 40;
+  bool showProgress = false;
+  ProgressBarProps progress{};
+};
+
+struct BookCardProps {
+  const char* title = nullptr;
+  const char* author = nullptr;
+  const char* meta = nullptr;
+  BitmapRef cover{};
+  AssetRef coverAsset{};
+  int32_t progress = 0;
+  int32_t progressMax = 100;
+  ActionId action = NO_ACTION;
+  int16_t value = 0;
+  TextStyle titleText{};
+  TextStyle authorText{};
+  TextStyle metaText{};
+  StyleSet styles{};
+  State state = StateNormal;
+  bool enabled = true;
+  Size coverSize{62, 84};
+  Insets padding{6, 8, 6, 8};
+  int16_t gap = 14;
+  int16_t textGap = 4;
+  int16_t textProgressGap = 8;
+  int16_t progressHeight = 4;
+};
+
+struct CoverGridItem {
+  const char* title = nullptr;
+  BitmapRef cover{};
+  AssetRef coverAsset{};
+  State state = StateNormal;
+  int16_t actionValue = 0;
+  bool enabled = true;
+};
+
+struct CoverGridProps {
+  const CoverGridItem* items = nullptr;
+  uint16_t count = 0;
+  uint16_t topIndex = 0;
+  int16_t selectedIndex = -1;
+  ActionId action = NO_ACTION;
+  uint16_t inputMask = InputDefault | InputPrev | InputNext;
+  TextStyle titleText{};
+  StyleSet cellStyles{};
+  uint8_t columns = 3;
+  Size coverSize{72, 104};
+  int16_t rowHeight = 132;
+  int16_t gap = 8;
+  int16_t labelHeight = 20;
+  int16_t minTouchSize = 44;
 };
 
 // Panel height optionDialog needs at the given width — thin sugar over
@@ -1779,6 +2002,106 @@ void keyGrid(Frame<MaxInteractions>& frame, Rect rect, const KeyGridProps& props
   }
 }
 
+template <size_t MaxInteractions>
+void qwertyKeyboard(Frame<MaxInteractions>& frame, Rect rect, const QwertyKeyboardProps& props) {
+  static constexpr const char* letters[26] = {"q", "w", "e", "r", "t", "y", "u", "i", "o", "p",
+                                              "a", "s", "d", "f", "g", "h", "j", "k", "l",
+                                              "z", "x", "c", "v", "b", "n", "m"};
+  static constexpr const char* shifted[26] = {"Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P",
+                                              "A", "S", "D", "F", "G", "H", "J", "K", "L",
+                                              "Z", "X", "C", "V", "B", "N", "M"};
+  static constexpr const char* symbols[26] = {"1", "2", "3", "4", "5", "6", "7", "8", "9", "0",
+                                             "-", "/", ":", ";", "(", ")", "$", "&", "@",
+                                             ".", ",", "?", "!", "'", "\"", "#"};
+
+  StyleSet styles = props.keyStyles.unset() ? defaultKeyStyles() : props.keyStyles;
+  const int16_t gap = props.gap < 0 ? 0 : props.gap;
+  const int16_t rowH = static_cast<int16_t>((rect.height - gap * 3) / 4);
+  const int16_t keyW = static_cast<int16_t>((rect.width - gap * 9) / 10);
+  const char* const* labels = props.symbols ? symbols : (props.shifted ? shifted : letters);
+  int16_t logicalIndex = 0;
+
+  auto drawKey = [&](Rect keyRect, const char* label, ActionId action, int16_t value, KeyKind kind,
+                     int16_t selectedIndex) {
+    State state = StateNormal;
+    if (props.selectedIndex == selectedIndex) state |= props.inactiveSelection ? StateFocused : StateSelected;
+    ButtonProps bp;
+    bp.label = (kind == KeyKind::Space || kind == KeyKind::Delete) ? nullptr : label;
+    bp.action = action;
+    bp.value = value;
+    bp.inputMask = props.inputMask;
+    bp.state = state;
+    bp.text = props.labelText;
+    bp.styles = styles;
+    bp.minTouchSize = props.minTouchSize;
+    button(frame, keyRect, bp);
+
+    if (kind != KeyKind::Space && kind != KeyKind::Delete) return;
+    const Paint ink = styles.resolve(frame.stateFor(action, value, state)).foreground;
+    const int16_t cx = static_cast<int16_t>(keyRect.x + keyRect.width / 2);
+    const int16_t cy = static_cast<int16_t>(keyRect.y + keyRect.height / 2);
+    if (kind == KeyKind::Space) {
+      const int16_t half = static_cast<int16_t>(keyRect.width * 3 / 10);
+      frame.target().line(Point{static_cast<int16_t>(cx - half), static_cast<int16_t>(cy + 3)},
+                          Point{static_cast<int16_t>(cx + half), static_cast<int16_t>(cy + 3)}, 3, ink);
+      return;
+    }
+    const int16_t len = static_cast<int16_t>(keyRect.width / 4);
+    const int16_t head = static_cast<int16_t>(len / 2 > 2 ? len / 2 : 2);
+    const int16_t tail = static_cast<int16_t>(cx - len / 2);
+    frame.target().line(Point{tail, cy}, Point{static_cast<int16_t>(cx + len / 2), cy}, 3, ink);
+    frame.target().line(Point{tail, cy}, Point{static_cast<int16_t>(tail + head), static_cast<int16_t>(cy - head)}, 3,
+                        ink);
+    frame.target().line(Point{tail, cy}, Point{static_cast<int16_t>(tail + head), static_cast<int16_t>(cy + head)}, 3,
+                        ink);
+  };
+
+  for (uint8_t row = 0; row < 3; ++row) {
+    const uint8_t count = row == 0 ? 10 : (row == 1 ? 9 : 7);
+    const int16_t y = static_cast<int16_t>(rect.y + row * (rowH + gap));
+    int16_t x = static_cast<int16_t>(rect.x + (10 - count) * (keyW + gap) / 2);
+    if (row == 2) {
+      const int16_t specialW = static_cast<int16_t>(keyW * 3 / 2);
+      drawKey(Rect{rect.x, y, specialW, rowH}, "Shift",
+              props.shiftAction != NO_ACTION ? props.shiftAction : props.keyAction, QWERTY_KEY_SHIFT, KeyKind::Shift,
+              logicalIndex++);
+      x = static_cast<int16_t>(rect.x + specialW + gap);
+      for (uint8_t col = 0; col < count; ++col) {
+        const uint8_t idx = static_cast<uint8_t>(19 + col);
+        drawKey(Rect{x, y, keyW, rowH}, labels[idx], props.keyAction, static_cast<int16_t>(labels[idx][0]),
+                KeyKind::Normal, logicalIndex++);
+        x = static_cast<int16_t>(x + keyW + gap);
+      }
+      drawKey(Rect{x, y, static_cast<int16_t>(rect.right() - x), rowH}, "Del",
+              props.deleteAction != NO_ACTION ? props.deleteAction : props.keyAction, QWERTY_KEY_BACKSPACE,
+              KeyKind::Delete, logicalIndex++);
+      continue;
+    }
+
+    const uint8_t base = row == 0 ? 0 : 10;
+    for (uint8_t col = 0; col < count; ++col) {
+      const uint8_t idx = static_cast<uint8_t>(base + col);
+      drawKey(Rect{x, y, keyW, rowH}, labels[idx], props.keyAction, static_cast<int16_t>(labels[idx][0]),
+              KeyKind::Normal, logicalIndex++);
+      x = static_cast<int16_t>(x + keyW + gap);
+    }
+  }
+
+  const int16_t y = static_cast<int16_t>(rect.y + 3 * (rowH + gap));
+  const int16_t modeW = static_cast<int16_t>(keyW * 2);
+  const int16_t okW = static_cast<int16_t>(keyW * 2);
+  const int16_t spaceW = static_cast<int16_t>(rect.width - modeW - okW - gap * 2);
+  int16_t x = rect.x;
+  drawKey(Rect{x, y, modeW, rowH}, props.symbols ? "ABC" : "?123",
+          props.modeAction != NO_ACTION ? props.modeAction : props.keyAction, QWERTY_KEY_MODE, KeyKind::Mode,
+          logicalIndex++);
+  x = static_cast<int16_t>(x + modeW + gap);
+  drawKey(Rect{x, y, spaceW, rowH}, "Space", props.keyAction, QWERTY_KEY_SPACE, KeyKind::Space, logicalIndex++);
+  x = static_cast<int16_t>(x + spaceW + gap);
+  drawKey(Rect{x, y, okW, rowH}, "OK", props.okAction != NO_ACTION ? props.okAction : props.keyAction,
+          QWERTY_KEY_ENTER, KeyKind::Ok, logicalIndex++);
+}
+
 template <size_t MaxInteractions, size_t MaxSlots = 3>
 void gestureBar(Frame<MaxInteractions>& frame, Rect rect, const GestureBarProps& props) {
   Stack<MaxSlots> row(rect, Axis::Row, props.gap);
@@ -2020,6 +2343,419 @@ void metricCard(Frame<MaxInteractions>& frame, Rect rect, const MetricCardProps&
                props.unit, unitStyle);
     } else {
       drawText(frame.target(), valueRect, props.value, valueStyle);
+    }
+  }
+}
+
+template <size_t MaxInteractions>
+void tapZones(Frame<MaxInteractions>& frame, Rect rect, const TapZonesProps& props) {
+  if (props.zones) {
+    for (uint8_t i = 0; i < props.count; ++i) {
+      const TapZone& zone = props.zones[i];
+      if (!zone.enabled || zone.action == NO_ACTION) continue;
+      Rect zoneRect = zone.rect.empty() ? rect : zone.rect;
+      frame.hit(zoneRect, zone.action, zone.value, zone.inputMask, zone.state);
+    }
+  }
+  if (props.swipeLeft != NO_ACTION) frame.hit(rect, props.swipeLeft, 0, InputSwipeLeft, StateNormal);
+  if (props.swipeRight != NO_ACTION) frame.hit(rect, props.swipeRight, 0, InputSwipeRight, StateNormal);
+  if (props.back != NO_ACTION) frame.hit(rect, props.back, 0, InputBack, StateNormal);
+}
+
+template <size_t MaxInteractions>
+void readerChrome(Frame<MaxInteractions>& frame, Rect rect, const ReaderChromeProps& props) {
+  if (props.dimContent) frame.target().fill(rect, Paint::dither(Color::LightGray));
+  if (props.showTop && props.topHeight > 0) {
+    statusBar(frame, Rect{rect.x, rect.y, rect.width, props.topHeight}, props.top);
+  }
+  if (props.showBottom && props.bottomHeight > 0) {
+    statusBar(frame,
+              Rect{rect.x, static_cast<int16_t>(rect.bottom() - props.bottomHeight), rect.width, props.bottomHeight},
+              props.bottom);
+  }
+}
+
+template <size_t MaxInteractions>
+void settingRow(Frame<MaxInteractions>& frame, Rect rect, const SettingRowProps& props) {
+  State state = props.enabled ? props.state : static_cast<State>(props.state | StateDisabled);
+  if (props.action != NO_ACTION && props.enabled) {
+    frame.hit(ensureMinTouchRect(rect, props.minTouchSize, frame.screen()), props.action, props.valueId,
+              props.inputMask, state);
+  }
+  state = frame.stateFor(props.action, props.valueId, state);
+
+  StyleSet styles = props.styles.unset() ? defaultListRowStyles() : props.styles;
+  const BoxStyle& style = styles.resolve(state);
+  frame.target().fill(rect, style.background, style.radius, style.corners);
+  if (style.border.kind != PaintKind::None && style.borderWidth > 0) {
+    frame.target().stroke(rect, style.border, style.borderWidth, style.radius, style.corners);
+  }
+
+  Rect content = rect.inset(Insets{0, props.sidePadding, 0, props.sidePadding});
+  const BitmapRef icon = props.icon ? props.icon : resolveBitmap(frame.assets(), props.iconAsset);
+  if (icon) {
+    const int16_t iconSize = props.iconSize > 0 ? props.iconSize : static_cast<int16_t>(icon.width);
+    Rect iconRect{content.x, static_cast<int16_t>(content.y + (content.height - iconSize) / 2), iconSize, iconSize};
+    frame.target().bitmap(iconRect, icon, BitmapMode::Contain, style.foreground);
+    content.x = static_cast<int16_t>(content.x + iconSize + props.textGap);
+    content.width = static_cast<int16_t>(content.width - iconSize - props.textGap);
+  }
+
+  if (props.drawChevron) {
+    const int16_t cy = static_cast<int16_t>(content.y + content.height / 2);
+    const int16_t x = static_cast<int16_t>(content.right() - 10);
+    frame.target().line(Point{x, static_cast<int16_t>(cy - 5)}, Point{static_cast<int16_t>(x + 5), cy}, 2,
+                        style.foreground);
+    frame.target().line(Point{static_cast<int16_t>(x + 5), cy}, Point{x, static_cast<int16_t>(cy + 5)}, 2,
+                        style.foreground);
+    content.width = static_cast<int16_t>(content.width - 16);
+  }
+
+  if (props.value) {
+    TextStyle valueStyle = textStyleWithForeground(props.valueText, style.foreground);
+    valueStyle.align = TextAlign::Right;
+    const int16_t valueW = frame.target().measureText(valueStyle.font, props.value, valueStyle).width;
+    Rect valueRect{static_cast<int16_t>(content.right() - valueW), content.y, valueW, content.height};
+    frame.target().text(valueRect, props.value, valueStyle);
+    content.width = static_cast<int16_t>(content.width - valueW - props.textGap);
+  }
+
+  TextStyle labelStyle = textStyleWithForeground(props.labelText, style.foreground);
+  if (props.subtitle) {
+    const int16_t labelH = frame.target().lineHeight(labelStyle.font);
+    frame.target().text(Rect{content.x, content.y, content.width, labelH}, props.label, labelStyle);
+    frame.target().text(Rect{content.x, static_cast<int16_t>(content.y + labelH), content.width,
+                             static_cast<int16_t>(content.height - labelH)},
+                        props.subtitle, textStyleWithForeground(props.subtitleText, style.foreground));
+  } else {
+    frame.target().text(content, props.label, labelStyle);
+  }
+}
+
+template <size_t MaxInteractions>
+void toggleRow(Frame<MaxInteractions>& frame, Rect rect, const ToggleRowProps& props) {
+  SettingRowProps row = props.row;
+  row.value = nullptr;
+  if (row.action == NO_ACTION) {
+    row.action = props.toggleAction;
+    row.valueId = props.toggleValue;
+  }
+  settingRow(frame, rect, row);
+
+  const int16_t toggleW = props.toggleWidth < 18 ? 18 : props.toggleWidth;
+  const int16_t toggleH = props.toggleHeight < 12 ? 12 : props.toggleHeight;
+  Rect toggleRect{static_cast<int16_t>(rect.right() - row.sidePadding - toggleW),
+                  static_cast<int16_t>(rect.y + (rect.height - toggleH) / 2), toggleW, toggleH};
+  const uint8_t trackRadius = static_cast<uint8_t>(
+      props.radius > toggleH / 2 ? toggleH / 2 : props.radius);
+  frame.target().fill(toggleRect, props.checked ? props.checkedTrack : props.track, trackRadius);
+  if (props.border.kind != PaintKind::None && props.borderWidth > 0) {
+    frame.target().stroke(toggleRect, props.border, props.borderWidth, trackRadius);
+  }
+
+  const int16_t inset = props.knobInset < 0 ? 0 : props.knobInset;
+  const int16_t knobH = static_cast<int16_t>(toggleH - inset * 2);
+  const int16_t knobW = knobH;
+  if (knobH <= 0) return;
+  Rect knob{static_cast<int16_t>(props.checked ? toggleRect.right() - inset - knobW : toggleRect.x + inset),
+            static_cast<int16_t>(toggleRect.y + inset), knobW, knobH};
+  const uint8_t knobRadius = static_cast<uint8_t>(
+      props.knobRadius > knobH / 2 ? knobH / 2 : props.knobRadius);
+  frame.target().fill(knob, props.checked ? props.checkedKnob : props.knob, knobRadius);
+}
+
+template <size_t MaxInteractions>
+void stepperRow(Frame<MaxInteractions>& frame, Rect rect, const StepperRowProps& props) {
+  const int16_t controlsW =
+      static_cast<int16_t>(props.buttonWidth * 2 + props.valueWidth + props.gap * 2);
+  SettingRowProps row = props.row;
+  row.value = nullptr;
+  row.drawChevron = false;
+  Rect labelRect = rect;
+  labelRect.width = static_cast<int16_t>(labelRect.width - controlsW - props.gap);
+  settingRow(frame, labelRect, row);
+
+  int16_t x = static_cast<int16_t>(rect.right() - controlsW);
+  StyleSet buttonStyles = props.buttonStyles.unset()
+                              ? (row.styles.unset() ? defaultButtonStyles() : row.styles)
+                              : props.buttonStyles;
+  auto drawControl = [&](Rect buttonRect, bool plus, ActionId action, int16_t value, Insets hitPadding) {
+    ButtonProps buttonProps;
+    buttonProps.label = nullptr;
+    buttonProps.action = action;
+    buttonProps.value = value;
+    buttonProps.text = row.valueText;
+    buttonProps.styles = buttonStyles;
+    buttonProps.minTouchSize = row.minTouchSize;
+    buttonProps.hitPadding = hitPadding;
+    button(frame, buttonRect, buttonProps);
+
+    const int16_t half = static_cast<int16_t>((props.controlSize < 4 ? 4 : props.controlSize) / 2);
+    const int16_t cx = static_cast<int16_t>(buttonRect.x + buttonRect.width / 2);
+    const int16_t cy = static_cast<int16_t>(buttonRect.y + buttonRect.height / 2);
+    const uint8_t stroke = props.controlStroke == 0 ? 1 : props.controlStroke;
+    frame.target().line(Point{static_cast<int16_t>(cx - half), cy}, Point{static_cast<int16_t>(cx + half), cy},
+                        stroke, props.controlPaint);
+    if (plus) {
+      frame.target().line(Point{cx, static_cast<int16_t>(cy - half)}, Point{cx, static_cast<int16_t>(cy + half)},
+                          stroke, props.controlPaint);
+    }
+  };
+
+  ButtonProps minus;
+  minus.action = props.decrement;
+  minus.value = props.decrementValue;
+  minus.text = row.valueText;
+  minus.styles = buttonStyles;
+  minus.minTouchSize = row.minTouchSize;
+  minus.hitPadding = Insets{0, static_cast<int16_t>(props.gap / 2), 0, 0};
+  drawControl(Rect{x, rect.y, props.buttonWidth, rect.height}, false, props.decrement, props.decrementValue,
+              minus.hitPadding);
+  x = static_cast<int16_t>(x + props.buttonWidth + props.gap);
+
+  TextStyle valueText = row.valueText;
+  valueText.align = TextAlign::Center;
+  frame.target().text(Rect{x, rect.y, props.valueWidth, rect.height}, props.value, valueText);
+  x = static_cast<int16_t>(x + props.valueWidth + props.gap);
+
+  ButtonProps plus = minus;
+  plus.action = props.increment;
+  plus.value = props.incrementValue;
+  plus.hitPadding = Insets{0, 0, 0, static_cast<int16_t>(props.gap / 2)};
+  drawControl(Rect{x, rect.y, props.buttonWidth, rect.height}, true, props.increment, props.incrementValue,
+              plus.hitPadding);
+}
+
+template <size_t MaxInteractions>
+void radioGroup(Frame<MaxInteractions>& frame, Rect rect, const RadioGroupProps& props) {
+  if (!props.options || props.count == 0) return;
+  const int16_t totalGap = static_cast<int16_t>((props.count - 1) * props.gap);
+  const int16_t cellW = static_cast<int16_t>((rect.width - totalGap) / props.count);
+  int16_t x = rect.x;
+  for (uint8_t i = 0; i < props.count; ++i) {
+    const RadioOption& option = props.options[i];
+    Rect cell{x, rect.y, i == props.count - 1 ? static_cast<int16_t>(rect.right() - x) : cellW, rect.height};
+    ButtonProps buttonProps;
+    buttonProps.label = option.label;
+    buttonProps.action = props.action;
+    buttonProps.value = option.value;
+    buttonProps.inputMask = props.inputMask;
+    buttonProps.state = option.value == props.selectedValue ? StateSelected : StateNormal;
+    buttonProps.text = props.text;
+    buttonProps.styles = props.styles;
+    buttonProps.minTouchSize = props.minTouchSize;
+    buttonProps.enabled = option.enabled;
+    button(frame, cell, buttonProps);
+    x = static_cast<int16_t>(x + cell.width + props.gap);
+  }
+}
+
+template <size_t MaxInteractions>
+void contextMenu(Frame<MaxInteractions>& frame, Rect rect, const ContextMenuProps& props) {
+  if (props.dimBackground) frame.target().fill(frame.screen(), Paint::dither(Color::LightGray));
+  StyleSet panelStyles = props.panelStyles.unset() ? defaultPopupStyles() : props.panelStyles;
+  const BoxStyle& panel = panelStyles.resolve(StateNormal);
+  frame.target().fill(rect, panel.background, panel.radius, panel.corners);
+  if (panel.border.kind != PaintKind::None && panel.borderWidth > 0) {
+    frame.target().stroke(rect, panel.border, panel.borderWidth, panel.radius, panel.corners);
+  }
+
+  Rect content = rect.inset(props.padding);
+  if (props.title) {
+    const int16_t titleH = frame.target().lineHeight(props.titleText.font);
+    frame.target().text(Rect{content.x, content.y, content.width, titleH}, props.title, props.titleText);
+    content.y = static_cast<int16_t>(content.y + titleH + props.gap);
+    content.height = static_cast<int16_t>(content.height - titleH - props.gap);
+  }
+
+  for (uint8_t i = 0; props.options && i < props.optionCount; ++i) {
+    Rect row{content.x, static_cast<int16_t>(content.y + i * (props.rowHeight + props.gap)), content.width,
+             props.rowHeight};
+    if (row.bottom() > content.bottom()) break;
+    ButtonProps bp;
+    bp.label = props.options[i].label;
+    bp.action = props.options[i].action;
+    bp.value = props.options[i].value;
+    bp.inputMask = props.inputMask;
+    bp.state = props.options[i].state;
+    bp.enabled = props.options[i].enabled;
+    bp.text = props.itemText;
+    bp.styles = props.itemStyles;
+    bp.minTouchSize = frame.device().minTouchSize;
+    button(frame, row, bp);
+  }
+}
+
+template <size_t MaxInteractions>
+void toast(Frame<MaxInteractions>& frame, Rect bounds, const ToastProps& props) {
+  if (!props.message) return;
+  const int16_t maxW = props.maxWidth > 0 ? props.maxWidth : static_cast<int16_t>(bounds.width * 3 / 4);
+  TextStyle text = props.text;
+  text.align = TextAlign::Center;
+  const Size textSize = measureWrappedText(frame.target(), props.message, text,
+                                           static_cast<int16_t>(maxW - props.padding.left - props.padding.right));
+  const Size panelSize{static_cast<int16_t>(textSize.width + props.padding.left + props.padding.right),
+                       static_cast<int16_t>(textSize.height + props.padding.top + props.padding.bottom)};
+  int16_t y = bounds.y;
+  if (props.anchor == ToastAnchor::Center) {
+    y = static_cast<int16_t>(bounds.y + (bounds.height - panelSize.height) / 2);
+  } else if (props.anchor == ToastAnchor::Bottom) {
+    y = static_cast<int16_t>(bounds.bottom() - panelSize.height - props.margin);
+  } else {
+    y = static_cast<int16_t>(bounds.y + props.margin);
+  }
+  Rect panel{static_cast<int16_t>(bounds.x + (bounds.width - panelSize.width) / 2), y, panelSize.width,
+             panelSize.height};
+  PopupProps popupProps;
+  popupProps.message = props.message;
+  popupProps.text = text;
+  popupProps.styles = props.styles;
+  popupProps.padding = props.padding;
+  popup(frame, panel, popupProps);
+}
+
+template <size_t MaxInteractions>
+void messagePanel(Frame<MaxInteractions>& frame, Rect rect, const MessagePanelProps& props) {
+  StyleSet styles = props.panelStyles.unset() ? defaultPopupStyles() : props.panelStyles;
+  const BoxStyle& style = styles.resolve(StateNormal);
+  frame.target().fill(rect, style.background, style.radius, style.corners);
+  if (style.border.kind != PaintKind::None && style.borderWidth > 0) {
+    frame.target().stroke(rect, style.border, style.borderWidth, style.radius, style.corners);
+  }
+
+  Rect content = rect.inset(props.padding);
+  int16_t buttonH = props.actionLabel ? props.buttonHeight : 0;
+  int16_t progressH = props.showProgress ? 4 : 0;
+  int16_t y = content.y;
+  if (props.title) {
+    const int16_t titleH = frame.target().lineHeight(props.titleText.font);
+    TextStyle title = props.titleText;
+    title.align = TextAlign::Center;
+    frame.target().text(Rect{content.x, y, content.width, titleH}, props.title, title);
+    y = static_cast<int16_t>(y + titleH + props.gap);
+  }
+  if (props.message) {
+    TextStyle msg = props.messageText;
+    msg.align = TextAlign::Center;
+    Rect msgRect{content.x, y, content.width,
+                 static_cast<int16_t>(content.bottom() - y - buttonH - progressH - props.gap * 2)};
+    frame.target().text(msgRect, props.message, msg);
+  }
+  if (props.showProgress) {
+    progressBar(frame, Rect{content.x, static_cast<int16_t>(content.bottom() - buttonH - props.gap - 4),
+                            content.width, 4},
+                props.progress);
+  }
+  if (props.actionLabel) {
+    ButtonProps bp;
+    bp.label = props.actionLabel;
+    bp.action = props.action;
+    bp.value = props.actionValue;
+    bp.text = props.buttonText;
+    bp.styles = props.buttonStyles;
+    bp.minTouchSize = frame.device().minTouchSize;
+    button(frame, Rect{content.x, static_cast<int16_t>(content.bottom() - buttonH), content.width, buttonH}, bp);
+  }
+}
+
+template <size_t MaxInteractions>
+void bookCard(Frame<MaxInteractions>& frame, Rect rect, const BookCardProps& props) {
+  State state = props.enabled ? props.state : static_cast<State>(props.state | StateDisabled);
+  if (props.action != NO_ACTION && props.enabled) {
+    frame.hit(ensureMinTouchRect(rect, frame.device().minTouchSize, frame.screen()), props.action, props.value,
+              InputDefault, state);
+  }
+  state = frame.stateFor(props.action, props.value, state);
+  StyleSet styles = props.styles.unset() ? defaultListRowStyles() : props.styles;
+  const BoxStyle& style = styles.resolve(state);
+  frame.target().fill(rect, style.background, style.radius, style.corners);
+  if (style.border.kind != PaintKind::None && style.borderWidth > 0) {
+    frame.target().stroke(rect, style.border, style.borderWidth, style.radius, style.corners);
+  }
+
+  Rect content = rect.inset(props.padding);
+  const BitmapRef cover = props.cover ? props.cover : resolveBitmap(frame.assets(), props.coverAsset);
+  const int16_t coverW = props.coverSize.width > content.width ? content.width : props.coverSize.width;
+  const int16_t coverH = props.coverSize.height > content.height ? content.height : props.coverSize.height;
+  Rect coverRect{content.x, static_cast<int16_t>(content.y + (content.height - coverH) / 2), coverW, coverH};
+  frame.target().fill(coverRect, Paint::dither(Color::LightGray));
+  if (cover) frame.target().bitmap(coverRect, cover, BitmapMode::Cover, style.foreground);
+  content.x = static_cast<int16_t>(coverRect.right() + props.gap);
+  content.width = static_cast<int16_t>(rect.right() - props.padding.right - content.x);
+  const int16_t progressH = props.progressHeight < 1 ? 1 : props.progressHeight;
+  const int16_t progressY = static_cast<int16_t>(coverRect.bottom() - progressH);
+  const int16_t textBottom = static_cast<int16_t>(progressY - props.textProgressGap);
+
+  int16_t y = content.y;
+  if (props.title) {
+    TextStyle title = textStyleWithForeground(props.titleText, style.foreground);
+    title.maxLines = title.maxLines ? title.maxLines : 2;
+    const int16_t h = measureWrappedText(frame.target(), props.title, title, content.width).height;
+    frame.target().text(Rect{content.x, y, content.width, h}, props.title, title);
+    y = static_cast<int16_t>(y + h + props.textGap);
+  }
+  if (props.author && y < textBottom) {
+    const int16_t h = frame.target().lineHeight(props.authorText.font);
+    frame.target().text(Rect{content.x, y, content.width, h}, props.author,
+                        textStyleWithForeground(props.authorText, style.foreground));
+    y = static_cast<int16_t>(y + h + props.textGap);
+  }
+  if (props.meta && y < textBottom) {
+    const int16_t h = frame.target().lineHeight(props.metaText.font);
+    frame.target().text(Rect{content.x, y, content.width, h}, props.meta,
+                        textStyleWithForeground(props.metaText, style.foreground));
+  }
+  if (props.progressMax > 0) {
+    ProgressBarProps progress;
+    progress.value = props.progress;
+    progress.max = props.progressMax;
+    progress.track = Paint::dither(Color::LightGray);
+    progress.fill = Paint::solid(Color::Black);
+    progressBar(frame, Rect{content.x, progressY, content.width, progressH}, progress);
+  }
+}
+
+template <size_t MaxInteractions>
+void coverGrid(Frame<MaxInteractions>& frame, Rect rect, const CoverGridProps& props) {
+  if (!props.items || props.count == 0 || props.columns == 0) return;
+  const int16_t cellW = static_cast<int16_t>((rect.width - (props.columns - 1) * props.gap) / props.columns);
+  const int16_t strideY = static_cast<int16_t>(props.rowHeight + props.gap);
+  const uint16_t rowsVisible = props.rowHeight > 0 ? static_cast<uint16_t>((rect.height + props.gap) / strideY) : 0;
+  const uint16_t cellsVisible = static_cast<uint16_t>(rowsVisible * props.columns);
+  uint16_t top = props.topIndex;
+  if (top >= props.count) top = 0;
+  for (uint16_t visible = 0; visible < cellsVisible && top + visible < props.count; ++visible) {
+    const uint16_t index = static_cast<uint16_t>(top + visible);
+    const uint8_t col = static_cast<uint8_t>(visible % props.columns);
+    const uint16_t row = static_cast<uint16_t>(visible / props.columns);
+    Rect cell{static_cast<int16_t>(rect.x + col * (cellW + props.gap)),
+              static_cast<int16_t>(rect.y + row * strideY), cellW, props.rowHeight};
+    const CoverGridItem& item = props.items[index];
+    State state = item.state;
+    if (props.selectedIndex == static_cast<int16_t>(index)) state |= StateSelected;
+    if (!item.enabled) state |= StateDisabled;
+    if (props.action != NO_ACTION && item.enabled) {
+      frame.hit(ensureMinTouchRect(cell, props.minTouchSize, frame.screen()), props.action, item.actionValue,
+                props.inputMask, state);
+    }
+    state = frame.stateFor(props.action, item.actionValue, state);
+    StyleSet styles = props.cellStyles.unset() ? defaultListRowStyles() : props.cellStyles;
+    const BoxStyle& style = styles.resolve(state);
+    frame.target().fill(cell, style.background, style.radius, style.corners);
+    if (style.border.kind != PaintKind::None && style.borderWidth > 0) {
+      frame.target().stroke(cell, style.border, style.borderWidth, style.radius, style.corners);
+    }
+    Rect coverRect{static_cast<int16_t>(cell.x + (cell.width - props.coverSize.width) / 2), cell.y,
+                   props.coverSize.width, props.coverSize.height};
+    frame.target().fill(coverRect, Paint::dither(Color::LightGray));
+    const BitmapRef cover = item.cover ? item.cover : resolveBitmap(frame.assets(), item.coverAsset);
+    if (cover) frame.target().bitmap(coverRect, cover, BitmapMode::Cover, style.foreground);
+    if (item.title && props.labelHeight > 0) {
+      TextStyle title = textStyleWithForeground(props.titleText, style.foreground);
+      title.align = TextAlign::Center;
+      title.maxLines = 1;
+      frame.target().text(Rect{cell.x, static_cast<int16_t>(coverRect.bottom() + 2), cell.width, props.labelHeight},
+                          item.title, title);
     }
   }
 }

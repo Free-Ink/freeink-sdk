@@ -252,11 +252,11 @@ class DisplayTarget final : public DrawTarget {
   void drawGlyph(const BitmapFont& f, const FontGlyph& g, const int16_t penX, const int16_t baseline,
                  const bool ink) {
     const Color color = ink ? Color::Black : Color::White;
-    const int bytesPerRow = (g.width + 7) / 8;
     for (int gy = 0; gy < g.height; ++gy) {
       for (int gx = 0; gx < g.width; ++gx) {
-        const uint8_t byte = f.bitmap[g.bitmapOffset + gy * bytesPerRow + (gx >> 3)];
-        if ((byte >> (7 - (gx & 7))) & 0x01) {
+        const int bit = gy * g.width + gx;
+        const uint8_t byte = f.bitmap[g.bitmapOffset + (bit >> 3)];
+        if ((byte >> (7 - (bit & 7))) & 0x01) {
           plot(static_cast<int16_t>(penX + g.xOffset + gx), static_cast<int16_t>(baseline + g.yOffset + gy), color);
         }
       }

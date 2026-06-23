@@ -221,6 +221,11 @@ void Uc8253X3Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev
   // Sync DTM1 ("old" RAM) with the current frame for the next fast diff.
   bus.sendPlaneFlipped(CMD_DTM1, fb, _h, _wb);
   bus.cmd(CMD_DATA_STOP);
+  // Both DTM planes now hold a BW frame, not grayscale planes, so the next
+  // displayGrayscaleBase() can take the differential happy path. Without this
+  // clear, lsbValid stays true after any grayscale page and pins
+  // cleanBaseNeeded on forever.
+  _grayState.lsbValid = false;
   _redRamSynced = true;
 
   // First differential after a full garbles on X3; spend a no-op fast settle of
@@ -396,6 +401,10 @@ void Uc8253X3Driver::cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) {
   bus.cmd(CMD_DATA_STOP);
   bus.sendPlaneFlipped(CMD_DTM1, bw, _h, _wb);
   bus.cmd(CMD_DATA_STOP);
+  // Both planes now hold the rebased BW frame; this is the per-page cleanup the
+  // tiled AA reader path runs, so leaving lsbValid true here is what pins
+  // cleanBaseNeeded on in steady state.
+  _grayState.lsbValid = false;
   _redRamSynced = true;
   _forceFullSyncNext = false;
   _forcedConditionPassesNext = 0;
@@ -413,6 +422,10 @@ void Uc8253X3Driver::grayscaleRevert(EpdBus& bus, const uint8_t* fb) {
   bus.cmd(CMD_DATA_STOP);
   loadBankCdi(bus, 0xA9, 0x07, _cfg.half);
   triggerRefresh(bus, false);
+  // Both planes are now all-white (BW-coded), not grayscale planes — clear
+  // lsbValid to match, or it stays true forever and forces the cleanBaseNeeded
+  // path every page.
+  _grayState.lsbValid = false;
   _redRamSynced = true;
 }
 

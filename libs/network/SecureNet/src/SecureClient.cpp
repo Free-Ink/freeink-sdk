@@ -68,7 +68,25 @@ int SecureClient::connect(const char* host, uint16_t port) {
   wolfSSL_SetIOWriteCtx(ssl, &_transport);
   wolfSSL_UseSNI(ssl, WOLFSSL_SNI_HOST_NAME, host, strlen(host));
 
-  if (wolfSSL_connect(ssl) != WOLFSSL_SUCCESS) { stop(); return 0; }
+  // The recv callback is non-blocking (returns WANT_READ when no bytes are
+  // buffered), so wolfSSL_connect must be retried across handshake round-trips
+  // rather than called once.
+  const uint32_t deadline = millis() + 15000;
+  int ret;
+  while ((ret = wolfSSL_connect(ssl)) != WOLFSSL_SUCCESS) {
+    const int err = wolfSSL_get_error(ssl, ret);
+    if (err != WOLFSSL_ERROR_WANT_READ && err != WOLFSSL_ERROR_WANT_WRITE) {
+      if (Serial) Serial.printf("[SecureClient] wolfSSL_connect failed: %d\n", err);
+      stop();
+      return 0;
+    }
+    if (static_cast<int32_t>(millis() - deadline) >= 0) {
+      if (Serial) Serial.printf("[SecureClient] handshake timeout\n");
+      stop();
+      return 0;
+    }
+    delay(5);
+  }
   _connected = true;
   return 1;
 }

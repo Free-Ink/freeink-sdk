@@ -1,0 +1,10 @@
+{
+  "name": "BleKeyboardHost",
+  "version": "1.0.0",
+  "description": "FreeInk BLE HID host: pairs/connects to Bluetooth Low Energy HID peripherals such as keyboards and page turners (central role) and emits translated key events (chars + special keys). Capability-gated by FREEINK_CAP_BLE_HID_HOST — compiles the NimBLE central code only when enabled, otherwise links stub bodies and references no BLE code. Fixed-capacity buffers (no heap in the hot path). BLE-only: ESP32-C3/S3 targets (no Bluetooth Classic). NOTE: when enabling the cap, add 'h2zero/NimBLE-Arduino@^2.3.8' to your firmware's lib_deps (NimBLE-Arduino, NOT esp-nimble-cpp: it carries the arduino-esp32 3.3.7 controller-init fix and the Arduino BLE init path; same NimBLE* C++ API). It is intentionally not declared here so disabled builds pull in zero BLE code.",
+  "keywords": "ble, bluetooth, hid, keyboard, page-turner, nimble, input",
+  "authors": [{"name": "FreeInk SDK Contributors"}],
+  "dependencies": {},
+  "platforms": "espressif32",
+  "frameworks": ["arduino"]
+}

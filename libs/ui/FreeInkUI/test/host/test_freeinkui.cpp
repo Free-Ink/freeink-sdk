@@ -2018,6 +2018,63 @@ void testFreeInkAppHandlerOverflowFlag() {
   CHECK(app.handlerOverflowed());
 }
 
+// Editor canvas: wrapping, caret-line tracking, scroll helpers, and the render
+// window. FakeDrawTarget is monospace (charWidth 6, lineH 12), so widths are
+// exactly 6*strlen — easy to reason about.
+void testTextArea() {
+  FakeDrawTarget draw;
+  const TextStyle style{};
+
+  // Empty buffer is a single line with the caret on it.
+  TextAreaMetrics m = textAreaMeasure(draw, 100, "", style, 0);
+  CHECK_EQ(m.lineCount, 1u);
+  CHECK_EQ(m.caretLine, 0u);
+
+  // Hard newlines split paragraphs; the caret tracks its byte offset.
+  const char* doc = "a\nb\nc";  // a=0 \n=1 b=2 \n=3 c=4
+  CHECK_EQ(textAreaMeasure(draw, 100, doc, style, 0).lineCount, 3u);
+  CHECK_EQ(textAreaMeasure(draw, 100, doc, style, 2).caretLine, 1u);
+  CHECK_EQ(textAreaMeasure(draw, 100, doc, style, 5).caretLine, 2u);  // end of buffer
+
+  // A trailing newline yields a final empty line for the caret.
+  m = textAreaMeasure(draw, 100, "a\n", style, 2);
+  CHECK_EQ(m.lineCount, 2u);
+  CHECK_EQ(m.caretLine, 1u);
+
+  // Word wrap at the rect width: 60px / 6px = 10 chars, so it breaks after the
+  // second space (offset 10) and "cccc" flows to line 1.
+  const char* wrap = "aaaa bbbb cccc";
+  CHECK_EQ(textAreaMeasure(draw, 60, wrap, style, 0).lineCount, 2u);
+  CHECK_EQ(textAreaMeasure(draw, 60, wrap, style, 12).caretLine, 1u);
+
+  // Scroll helpers mirror the list helpers.
+  CHECK_EQ(textAreaVisibleLines(Rect{0, 0, 100, 120}, 12), 10);
+  CHECK_EQ(textAreaTopLineFor(12, 0, 5, 20), 8u);
+  CHECK_EQ(textAreaTopLineFor(2, 8, 5, 20), 2u);
+  CHECK_EQ(textAreaTopLineFor(3, 0, 5, 4), 0u);
+
+  // Render only draws the visible window of lines.
+  DeviceContext device = makeDevice();
+  InputSnapshot in;
+  InteractionBuffer<8> interactions;
+  Frame<8> frame(draw, device, in, interactions);
+  TextAreaProps props;
+  props.text = "line0\nline1\nline2\nline3";
+  props.cursor = 8;     // inside line1
+  props.topLine = 1;    // scrolled so line1 is at the top
+  props.style = style;
+  draw.opCount = 0;
+  textArea(frame, Rect{0, 0, 120, 24}, props);  // 2 lines tall at lineH 12
+  int textOps = 0;
+  bool sawCaret = false;
+  for (size_t i = 0; i < draw.opCount; ++i) {
+    if (draw.ops[i].kind == FakeDrawTarget::Op::Text) ++textOps;
+    if (draw.ops[i].kind == FakeDrawTarget::Op::Fill && draw.ops[i].rect.width == 2) sawCaret = true;
+  }
+  CHECK_EQ(textOps, 2);  // lines 1 and 2 only
+  CHECK(sawCaret);       // caret on the now-visible line 1
+}
+
 }  // namespace
 
 int main() {
@@ -2070,6 +2127,7 @@ int main() {
   testScreenAnchoredLayout();
   testFreeInkAppDispatchesScreenActions();
   testFreeInkAppHandlerOverflowFlag();
+  testTextArea();
 
   std::printf("%d checks, %d failed\n", checksRun, checksFailed);
   return checksFailed == 0 ? 0 : 1;

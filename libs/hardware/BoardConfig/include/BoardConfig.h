@@ -126,6 +126,29 @@
 #ifndef FREEINK_CAP_FRONTLIGHT
 #define FREEINK_CAP_FRONTLIGHT (FREEINK_DEVICE_DELINK || FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_LILYGO)
 #endif
+// BLE HID host. The BleKeyboardHost lib pairs/connects to Bluetooth Low Energy
+// HID peripherals such as keyboards and page turners and emits translated key
+// events; it compiles its NimBLE central code only when this is set, otherwise
+// it links stub bodies and pulls in no BLE code at all. Default off: it's an
+// opt-in feature, not board-derived. ESP32-C3/S3 targets only (BLE required).
+#ifndef FREEINK_CAP_BLE_HID_HOST
+#ifdef FREEINK_CAP_BLE_KEYBOARD
+#define FREEINK_CAP_BLE_HID_HOST FREEINK_CAP_BLE_KEYBOARD
+#else
+#define FREEINK_CAP_BLE_HID_HOST 0
+#endif
+#endif
+#ifndef FREEINK_CAP_BLE_KEYBOARD
+#define FREEINK_CAP_BLE_KEYBOARD FREEINK_CAP_BLE_HID_HOST
+#endif
+// Scan-list policy for the BLE HID host. Default hides anonymous non-HID
+// advertisers so firmware pairing UIs are not filled with random beacon
+// addresses. Set -DFREEINK_BLE_HID_SHOW_UNNAMED_DEVICES=1 during bring-up to
+// include connectable unnamed devices as probe candidates. Devices advertising
+// HID are always kept, even without a name.
+#ifndef FREEINK_BLE_HID_SHOW_UNNAMED_DEVICES
+#define FREEINK_BLE_HID_SHOW_UNNAMED_DEVICES 0
+#endif
 
 // I2C fuel-gauge battery backend. Compiled in when a build contains a gauge
 // device (X3's BQ27220, or LilyGo's BQ27220+BQ25896). Selection is then *runtime*

@@ -204,6 +204,14 @@ class Screen {
     ui::bookCard(frame_, take(anchor, height > 0 ? height : static_cast<int16_t>(theme_.rowHeight * 2)), props);
   }
 
+  // Multi-line writing canvas. Fills the remaining body by default; pass a height
+  // to reserve a band. Text defaults to the theme body style.
+  void textArea(const TextAreaProps& props, int16_t height = 0, LayoutAnchor anchor = LayoutAnchor::Top) {
+    TextAreaProps themed = props;
+    if (themed.style.font == 0) themed.style = theme_.bodyText;
+    ui::textArea(frame_, height > 0 ? take(anchor, height) : content_, themed);
+  }
+
   void footer(const FooterAction* actions, uint8_t count, LayoutAnchor anchor = LayoutAnchor::Bottom) {
     FooterProps props;
     props.actions = actions;
@@ -317,11 +325,16 @@ class FreeInkApp {
   void setAssets(AssetResolver* assets) { assets_ = assets; }
   AssetResolver* assets() const { return assets_; }
 
-  void setScreen(ScreenFn screen, void* user = nullptr) {
+  // Switch the active screen. `hint` is the refresh requested for the redraw:
+  // Full (default) gives a clean full refresh — good for the first paint or to
+  // clear ghosting — but on e-paper a full refresh on every screen change is
+  // slow and, on some panels, prone to a one-frame lag. Pass RefreshHint::Fast
+  // for snappy partial-refresh transitions between screens.
+  void setScreen(ScreenFn screen, void* user = nullptr, RefreshHint hint = RefreshHint::Full) {
     screen_ = screen;
     screenUser_ = user;
     interactions_.setFocusedIndex(-1);
-    invalidate(RefreshHint::Full);
+    invalidate(hint);
   }
 
   void on(ActionId action, ActionHandler handler, void* user = nullptr) {

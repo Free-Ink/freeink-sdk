@@ -8,13 +8,15 @@
 // owns a 416x240 framebuffer (BoardProfile.displayWidth/Height) and this driver
 // rotates each plane when writing to the UC8253. OEM LUTs are loaded per refresh.
 //
-// Refresh: differential. The previous frame goes to DTM1 (old) and the new frame
-// to DTM2 (new), so the UC8253 picks a per-pixel waveform — unchanged pixels take
-// WW/BB, changed pixels take the manufacturer's BW/WB transition waveforms. The
-// DEFAULT (GC) LUTs do a ghost-clearing multi-level drive; the FAST (DU) LUTs do a
-// quick single-direction drive, and the driver promotes a fast refresh to a full
-// one every ghostClearInterval refreshes. When no previous frame is available
-// (single-buffer builds) the new frame is written to both planes (WW/BB only).
+// Refresh: the controller is hardware-reset and re-initialised before every
+// refresh (manufacturer guidance) so stale LUT/RAM state can't leave pixels
+// half-latched. A full (GC) refresh then writes the new frame to BOTH planes so
+// only WW/BB fire and every pixel is fully driven to target — clean. A FAST (DU)
+// refresh is differential: previous frame -> DTM1 (old), new frame -> DTM2 (new),
+// so unchanged pixels take WW/BB and changed pixels take the quick BW/WB transition
+// kicks; the driver promotes a fast refresh to a full one every ghostClearInterval
+// refreshes since DU ghosts over time. Without a previous frame (single-buffer
+// builds) the fast path falls back to both-planes-new (WW/BB only).
 //
 // Selection: linked only when -DFREEINK_DRIVER_UC8253_MURPHY (Murphy board env).
 

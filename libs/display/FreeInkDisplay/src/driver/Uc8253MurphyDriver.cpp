@@ -133,10 +133,6 @@ void Uc8253MurphyDriver::initController(EpdBus& bus) {
   bus.cmd(CMD_VCOM_DATA_INTERVAL);
   bus.data(0x97);
 
-  // UC8253 powers up with stale RAM; seed both planes white so the first refresh
-  // diffs against white, not garbage.
-  fillPlane(bus, CMD_DTM1, 0xFF);
-  fillPlane(bus, CMD_DTM2, 0xFF);
 }
 
 void Uc8253MurphyDriver::begin(EpdBus& bus) {
@@ -147,6 +143,14 @@ void Uc8253MurphyDriver::begin(EpdBus& bus) {
 }
 
 void Uc8253MurphyDriver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
+  // Manufacturer guidance: hardware-reset and re-initialise the controller before
+  // every refresh. The UC8253 retains LUT/RAM state between refreshes, and reusing
+  // it leaves pixels half-latched (the previous frame bleeds through / flashes
+  // without settling). A fresh reset+init each time clears that residue.
+  bus.reset(200);
+  _isScreenOn = false;
+  initController(bus);
+
   // FAST (DU) ghosts over time, so promote to a full (GC) refresh every
   // ghostClearInterval refreshes.
   bool useFast = (mode == RefreshMode::Fast);
@@ -163,12 +167,18 @@ void Uc8253MurphyDriver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* 
 
   loadLut(bus, useFast ? _cfg.fast : _cfg.def);
 
-  // Differential refresh: old frame -> DTM1, new frame -> DTM2, so the UC8253
-  // selects WW/BB for unchanged pixels and BW/WB transition waveforms for changed
-  // ones. With no previous frame (single-buffer builds) write new to both planes,
-  // leaving only WW/BB to drive every pixel to its target.
-  writePlane(bus, CMD_DTM1, prev != nullptr ? prev : fb);
-  writePlane(bus, CMD_DTM2, fb);
+  // Full (GC) refresh writes the new frame to BOTH planes, so only WW/BB fire and
+  // every pixel is fully driven to its target — clean, no half-flipped pixels.
+  // FAST (DU) refresh is differential: old frame -> DTM1, new -> DTM2, so unchanged
+  // pixels take WW/BB and changed pixels take the quick BW/WB transition kicks.
+  // Without a previous frame (single-buffer builds) fall back to both-planes-new.
+  if (useFast && prev != nullptr) {
+    writePlane(bus, CMD_DTM1, prev);
+    writePlane(bus, CMD_DTM2, fb);
+  } else {
+    writePlane(bus, CMD_DTM1, fb);
+    writePlane(bus, CMD_DTM2, fb);
+  }
 
   triggerRefresh(bus, turnOff);
 }

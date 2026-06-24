@@ -581,10 +581,11 @@ void BleKeyboardHost::onScanResultIngest(const char* addr, const char* name, int
 
 void BleKeyboardHost::onLinkUp(const char* addr, const char* name, uint8_t type) {
   // Resolve a friendly name from the scan or bond lists if the caller has none.
-  const char* resolved = (name && name[0]) ? name : nullptr;
+  const char* resolved = (name && name[0] && (!addr || strcmp(name, addr) != 0)) ? name : nullptr;
   if (!resolved && addr) {
     for (uint8_t i = 0; i < deviceCount_; ++i) {
-      if (strncmp(devices_[i].addr, addr, sizeof(devices_[i].addr)) == 0 && devices_[i].name[0]) {
+      if (strncmp(devices_[i].addr, addr, sizeof(devices_[i].addr)) == 0 && devices_[i].hasName &&
+          devices_[i].name[0] && strcmp(devices_[i].name, addr) != 0) {
         resolved = devices_[i].name;
         break;
       }
@@ -612,6 +613,12 @@ void BleKeyboardHost::onLinkUp(const char* addr, const char* name, uint8_t type)
     bool known = false;
     for (uint8_t i = 0; i < bondCount_; ++i) {
       if (strncmp(bonds_[i].addr, addr, sizeof(bonds_[i].addr)) == 0) {
+        if (resolved && strcmp(bonds_[i].name, resolved) != 0) {
+          strncpy(bonds_[i].name, resolved, sizeof(bonds_[i].name) - 1);
+          bonds_[i].name[sizeof(bonds_[i].name) - 1] = '\0';
+          bonds_[i].addrType = type;
+          persistBonds();
+        }
         known = true;
         break;
       }
@@ -621,8 +628,8 @@ void BleKeyboardHost::onLinkUp(const char* addr, const char* name, uint8_t type)
       strncpy(b.addr, addr, sizeof(b.addr) - 1);
       b.addr[sizeof(b.addr) - 1] = '\0';
       b.name[0] = '\0';
-      if (connName_[0]) {
-        strncpy(b.name, connName_, sizeof(b.name) - 1);
+      if (resolved) {
+        strncpy(b.name, resolved, sizeof(b.name) - 1);
         b.name[sizeof(b.name) - 1] = '\0';
       }
       b.addrType = type;
@@ -695,6 +702,14 @@ void BleKeyboardHost::loadBonds() {
   if (bondCount_ > kMaxBonds) bondCount_ = kMaxBonds;
   if (bondCount_ > 0) p.getBytes("b", bonds_, bondCount_ * sizeof(PairedHidDevice));
   p.end();
+  bool cleaned = false;
+  for (uint8_t i = 0; i < bondCount_; ++i) {
+    if (bonds_[i].name[0] && strcmp(bonds_[i].name, bonds_[i].addr) == 0) {
+      bonds_[i].name[0] = '\0';
+      cleaned = true;
+    }
+  }
+  if (cleaned) persistBonds();
 }
 
 void BleKeyboardHost::persistBonds() {

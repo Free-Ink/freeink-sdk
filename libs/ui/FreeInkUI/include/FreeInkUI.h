@@ -3280,7 +3280,7 @@ void coverGrid(Frame<MaxInteractions>& frame, Rect rect, const CoverGridProps& p
     if (item.title && props.labelHeight > 0) {
       TextStyle title = textStyleWithForeground(props.titleText, style.foreground);
       title.align = TextAlign::Center;
-      title.maxLines = 1;
+      title.maxLines = title.maxLines > 0 ? title.maxLines : 1;
       frame.target().text(Rect{cell.x, static_cast<int16_t>(coverRect.bottom() + 2), cell.width, props.labelHeight},
                           item.title, title);
     }

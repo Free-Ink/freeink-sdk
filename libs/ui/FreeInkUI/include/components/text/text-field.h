@@ -37,9 +37,9 @@ void textField(Frame<MaxInteractions>& frame, Rect rect, const TextFieldProps& p
       // passphrases) place the cursor correctly without a large stack buffer.
       char buf[64];
       uint16_t consumed = 0;
-      while (props.text[consumed] != '\0' && consumed < props.cursor) {
+      while (consumed < props.cursor && props.text[consumed] != '\0') {
         uint16_t len = 0;
-        while (props.text[consumed + len] != '\0' && consumed + len < props.cursor && len < sizeof(buf) - 1) {
+        while (consumed + len < props.cursor && len < sizeof(buf) - 1 && props.text[consumed + len] != '\0') {
           buf[len] = props.text[consumed + len];
           ++len;
         }

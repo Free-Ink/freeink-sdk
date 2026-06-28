@@ -49,7 +49,7 @@ inline uint32_t textAreaWalk(const DrawTarget& target, int16_t width, const char
   char buf[224];
   const auto fits = [&](uint32_t start, uint32_t len) -> bool {
     uint32_t n = len < 220 ? len : 220;
-    for (uint32_t i = 0; i < n; ++i) buf[i] = text[start + i];
+    memcpy(buf, text + start, n);
     buf[n] = '\0';
     return target.measureText(style.font, buf, style).width <= width;
   };
@@ -167,7 +167,7 @@ void textArea(Frame<MaxInteractions>& frame, Rect rect, const TextAreaProps& pro
       uint32_t ovS = props.selStart > ln.start ? props.selStart : ln.start;
       uint16_t ps = static_cast<uint16_t>(ovS - ln.start);
       if (ps > n) ps = n;
-      for (uint16_t i = 0; i < ps; ++i) buf[i] = text[ln.start + i];
+      memcpy(buf, text + ln.start, ps);
       buf[ps] = '\0';
       const int16_t xs = static_cast<int16_t>(rect.x + t.measureText(props.style.font, buf, props.style).width);
       int16_t xe;
@@ -176,22 +176,22 @@ void textArea(Frame<MaxInteractions>& frame, Rect rect, const TextAreaProps& pro
       } else {
         uint16_t pe = static_cast<uint16_t>(props.selEnd - ln.start);
         if (pe > n) pe = n;
-        for (uint16_t i = 0; i < pe; ++i) buf[i] = text[ln.start + i];
+        memcpy(buf, text + ln.start, pe);
         buf[pe] = '\0';
         xe = static_cast<int16_t>(rect.x + t.measureText(props.style.font, buf, props.style).width);
       }
       if (xe > xs) t.fill(Rect{xs, y, static_cast<int16_t>(xe - xs), lh}, Paint::dither(Color::LightGray));
     }
 
-    for (uint16_t i = 0; i < n; ++i) buf[i] = text[ln.start + i];
+    memcpy(buf, text + ln.start, n);
     buf[n] = '\0';
-    if (n > 0) t.text(Rect{rect.x, y, rect.width, lh}, buf, lineStyle);
+    t.text(Rect{rect.x, y, rect.width, lh}, buf, lineStyle);
     if (props.showCaret && !caretDrawn && props.cursor >= ln.start &&
         props.cursor <= static_cast<uint32_t>(ln.start + ln.len)) {
       caretDrawn = true;
       uint16_t pre = static_cast<uint16_t>(props.cursor - ln.start);
       if (pre > n) pre = n;
-      for (uint16_t i = 0; i < pre; ++i) buf[i] = text[ln.start + i];
+      memcpy(buf, text + ln.start, pre);
       buf[pre] = '\0';
       const int16_t cx = static_cast<int16_t>(rect.x + t.measureText(props.style.font, buf, props.style).width);
       t.fill(Rect{cx, y, 2, lh}, Paint::solid(Color::Black));

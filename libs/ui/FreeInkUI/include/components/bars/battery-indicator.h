@@ -135,7 +135,7 @@ void batteryIndicator(Frame<MaxInteractions>& frame, Rect rect,
     if (props.barFill == BatteryBarFill::Segments && props.barSegments > 1) {
       const int16_t count = static_cast<int16_t>(props.barSegments);
       const int16_t gap = props.barSegmentGap < 0 ? 0 : props.barSegmentGap;
-      const int16_t filled = percent == 0 ? 0 : static_cast<int16_t>((static_cast<int32_t>(percent) * count + 99) / 100);
+      const int16_t filled = static_cast<int16_t>((static_cast<int32_t>(percent) * count + 99) / 100);
       if (vertical) {
         const int16_t totalGap = static_cast<int16_t>(gap * (count - 1));
         const int16_t segH = static_cast<int16_t>((cavity.height - totalGap) / count);

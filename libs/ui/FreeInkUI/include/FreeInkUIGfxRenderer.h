@@ -138,38 +138,38 @@ class GfxRendererTarget final : public DrawTarget {
       if (style.rotation == Rotation::CW90) {
         // drawTextRotated90CW renders upward from the given y (the y is the
         // bottom end of the run), so alignment offsets place that end.
-        const std::string line = renderer.truncatedText(fontId, text, rect.height, epdStyle);
-        const int textLen = renderer.getTextWidth(fontId, line.c_str(), epdStyle);
+        const std::string textLine = renderer.truncatedText(fontId, text, rect.height, epdStyle);
+        const int textLen = renderer.getTextWidth(fontId, textLine.c_str(), epdStyle);
         int y = rect.y + textLen;  // Left = run starts at the rect top
         if (style.align == TextAlign::Center) y = rect.y + (rect.height + textLen) / 2;
         if (style.align == TextAlign::Right) y = rect.bottom();
         const int x = rect.x + std::max(0, (rect.width - lh) / 2);
-        renderer.drawTextRotated90CW(fontId, x, y, line.c_str(), black, epdStyle);
+        renderer.drawTextRotated90CW(fontId, x, y, textLine.c_str(), black, epdStyle);
         return;
       }
     }
 
-    const auto drawAligned = [&](const std::string& line, const int y) {
+    const auto drawAligned = [&](const std::string& textLine, const int y) {
       int x = rect.x;
       if (style.align != TextAlign::Left) {
-        const int textW = renderer.getTextWidth(fontId, line.c_str(), epdStyle);
+        const int textW = renderer.getTextWidth(fontId, textLine.c_str(), epdStyle);
         x = style.align == TextAlign::Center ? rect.x + (rect.width - textW) / 2 : rect.x + rect.width - textW;
         if (x < rect.x) x = rect.x;
       }
-      renderer.drawText(fontId, x, y, line.c_str(), black, epdStyle);
+      renderer.drawText(fontId, x, y, textLine.c_str(), black, epdStyle);
     };
 
     if (maxLines == 1) {
-      const std::string line = renderer.truncatedText(fontId, text, rect.width, epdStyle);
-      drawAligned(line, rect.y + std::max(0, (rect.height - lh) / 2));
+      const std::string textLine = renderer.truncatedText(fontId, text, rect.width, epdStyle);
+      drawAligned(textLine, rect.y + std::max(0, (rect.height - lh) / 2));
       return;
     }
 
     const std::vector<std::string> lines = renderer.wrappedText(fontId, text, rect.width, maxLines, epdStyle);
     const int blockH = static_cast<int>(lines.size()) * lh;
     int y = rect.y + std::max(0, (rect.height - blockH) / 2);
-    for (const auto& line : lines) {
-      drawAligned(line, y);
+    for (const auto& textLine : lines) {
+      drawAligned(textLine, y);
       y += lh;
     }
   }
@@ -243,8 +243,8 @@ class GfxRendererTarget final : public DrawTarget {
 template <size_t MaxInteractions = 1>
 class GfxRendererFrame {
  public:
-  GfxRendererFrame(const GfxRenderer& renderer, const int smallFontId = 0, const int bodyFontId = 0,
-                   const int titleFontId = 0)
+  explicit GfxRendererFrame(const GfxRenderer& renderer, const int smallFontId = 0, const int bodyFontId = 0,
+                            const int titleFontId = 0)
       : target(renderer), frame(target, target.deviceContext(), input, interactions) {
     target.setFont(GfxRendererTarget::FONT_SMALL, smallFontId);
     target.setFont(GfxRendererTarget::FONT_BODY, bodyFontId);

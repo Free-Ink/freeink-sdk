@@ -12,6 +12,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 namespace freeink {
 namespace ui {
@@ -503,7 +504,7 @@ inline void layoutText(const DrawTarget& target, const Rect rect, const char* te
   char buf[MAX_LINE_BYTES + 8];
   const auto widthOf = [&](const char* start, const uint16_t len, const bool ellipsis) {
     uint16_t n = len < MAX_LINE_BYTES ? len : MAX_LINE_BYTES;
-    for (uint16_t i = 0; i < n; ++i) buf[i] = start[i];
+    memcpy(buf, start, n);
     if (ellipsis) {
       buf[n++] = '\xE2';
       buf[n++] = '\x80';

@@ -32,7 +32,7 @@ void toast(Frame<MaxInteractions>& frame, Rect bounds, const ToastProps& props) 
                                            static_cast<int16_t>(maxW - props.padding.left - props.padding.right));
   const Size panelSize{static_cast<int16_t>(textSize.width + props.padding.left + props.padding.right),
                        static_cast<int16_t>(textSize.height + props.padding.top + props.padding.bottom)};
-  int16_t y = bounds.y;
+  int16_t y;
   if (props.anchor == ToastAnchor::Center) {
     y = static_cast<int16_t>(bounds.y + (bounds.height - panelSize.height) / 2);
   } else if (props.anchor == ToastAnchor::Bottom) {

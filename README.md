@@ -278,8 +278,10 @@ off it compiles to an inert no-op, so the rest of the SDK builds without wolfSSL
 
 `libs/ui/FreeInkUI` is a memory-bounded, immediate-mode UI layer for e-paper:
 
-- fixed row/column layout slots and semantic action routing — touch, GPIO,
-  focus navigation, and gestures all resolve to app-defined action IDs
+- fixed row/column layout slots plus a dynamic flex row/column/tree layout
+  primitive (`FreeInkUILayout.h`) for data-driven scaffolds, and semantic
+  action routing — touch, GPIO, focus navigation, and gestures all resolve to
+  app-defined action IDs
 - state-aware styling (`StyleSet` per interaction state) with rounded and
   per-corner-rounded fills, pill selections, dithers, and one-call whole-UI
   inversion for dark mode (`InvertedDrawTarget`)

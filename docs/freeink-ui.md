@@ -376,6 +376,32 @@ during the render pass. The app owns persistent state such as selected row,
 focused index, scroll offset, clock buffers, reading statistics, and visibility
 flags.
 
+`Stack<N>` fixes the slot count at compile time. When the slots come from
+parsed data instead, `FreeInkUILayout.h` is the runtime counterpart: it splits a
+rect into row/column slots with no heap allocation or retained widget state.
+Each slot is a `LayoutLength` — `fixed(px)`, `flexible(grow, minPx)`, or
+`tokenized(id)` (resolved through an optional callback for theme spacing) — and
+the split emits a `Rect` per slot:
+
+```cpp
+freeink::ui::LayoutLength cols[] = {
+    freeink::ui::LayoutLength::fixed(coverW),     // cover
+    freeink::ui::LayoutLength::flexible(1),       // text column takes the rest
+};
+freeink::ui::layoutLinear(rect, freeink::ui::Axis::Row, gap, 2,
+                          [&](uint8_t i) { return cols[i]; },
+                          [&](uint8_t i, freeink::ui::Rect slot) { /* draw slot i */ });
+```
+
+`layoutTree(LayoutNode, rect, emit)` nests the same split into a row/column
+tree and emits one rect per leaf `id`, for whole-screen scaffolds driven by
+data rather than fixed code.
+
+`FreeInkUICore.h` also provides small clamping/builder helpers used across
+components and apps: `clampI16`/`clampU8`/`clampRadius`, `makeRect`/`makeSize`/
+`makeInsets`, and ready-made `StyleSet` builders (`outlinedButtonStyles`,
+`selectedOutlineListRowStyles`, `selectedPlainListRowStyles`).
+
 ## Rendering
 
 FreeInkUI draws through a `DrawTarget` — an interface of primitives (`fill`,
@@ -523,7 +549,9 @@ tied to any application's screen structure:
 - book surfaces: `bookCard`, `coverGrid`, `coverCarousel`
 - `progressBar`
 - `statusBar`
-- `tabBar` (pill or underline-style tabs with optional divider)
+- `tabBar` (pill or underline-style tabs with optional divider; per-tab
+  icons via `BitmapRef`/`AssetRef` or an `iconPainter` callback, optional
+  labels, and disabled tabs)
 - `popup`
 - `toast`
 - `contextMenu`
@@ -659,6 +687,25 @@ card.action = ActionOpenBook;
 card.value = bookIndex;
 bookCard(ui, rowRect, card);
 ```
+
+Both `bookCard` and `coverGrid` default to highlighting the whole
+card/cell when selected. Set `selectionIndicator` to the `CoverFrame` mode
+(`BookCardSelectionIndicator::CoverFrame` / `CoverGridSelectionIndicator::CoverFrame`)
+to draw a frame around the cover art instead, tuned with
+`selectedCoverFrameGap`/`Width`/`Radius`. Both also accept a `coverPainter`
+callback, so the app can render decoded cover art into the slot rect while the
+component still owns layout, the dithered placeholder, and selection chrome.
+`coverGrid` draws a scroll indicator when its contents overflow the visible
+rows (`scrollIndicator`, `scrollIndicatorWidth`/`Gap`); pair it with the
+`coverGridVisibleCells()` and `coverGridTopIndexFor()` helpers to keep the
+selected cell on a stable page without app-side paging math.
+
+`batteryIndicator` defaults to a battery-glyph (`BatteryIndicatorStyle::Icon`).
+Switch `style` to `Bar` for a plain fill that the status/cluster layout can
+size freely: `barFill` selects a solid, dithered, or segmented fill,
+`barDirection`/`barOrientation` set the fill axis and growth direction,
+`barTrack` adds a hairline, outline, or dithered track, and `barCaps`/`barRadius`
+soften the ends.
 
 Transient and edge-case surfaces are included too:
 
@@ -950,6 +997,10 @@ to common stacks, and only compile in firmwares that include them:
   `GfxRenderer` drawing library: dither-mapped colors, per-corner rounded
   rects, and text measurement/truncation/wrapping through the renderer's own
   pipeline. `deviceContext()` derives screen size and orientation.
+  `GfxRendererFrame<MaxInteractions>` bundles the target, input snapshot,
+  interaction buffer, and `Frame` into one stack object (binding the small/
+  body/title font ids), so a render pass over the `GfxRenderer` stack is a
+  single declaration instead of four.
 - **`FreeInkUIInputManager.h`** — builds the per-frame `InputSnapshot` from
   the SDK's `InputManager`:
 

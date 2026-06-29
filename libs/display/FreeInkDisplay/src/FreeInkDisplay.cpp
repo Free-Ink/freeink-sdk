@@ -219,11 +219,64 @@ void FreeInkDisplay::setFramebuffer(const uint8_t* bwBuffer) const { memcpy(fram
 
 #ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
 void FreeInkDisplay::swapBuffers() {
+  // When the secondary buffer has been released, frameBufferActive is null.
+  // Swapping would set frameBuffer to null and corrupt every subsequent pixel
+  // write. The driver already handles prev==nullptr correctly (X3 ignores it;
+  // X4 re-seeds both BW and RED controller RAM after the refresh), so keeping
+  // frameBuffer on the same allocation is correct here.
+  if (!frameBufferActive) return;
   uint8_t* temp = frameBuffer;
   frameBuffer = frameBufferActive;
   frameBufferActive = temp;
 }
 #endif
+
+void FreeInkDisplay::syncWriteBufferFromActive() const {
+#ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
+  if (frameBuffer && frameBufferActive) memcpy(frameBuffer, frameBufferActive, bufferSize);
+#endif
+}
+
+#if FREEINK_FB_PSRAM
+void FreeInkDisplay::releaseBuffers() {
+  free(frameBuffer0);
+  frameBuffer0 = nullptr;
+  frameBuffer = nullptr;
+#ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
+  free(frameBuffer1);
+  frameBuffer1 = nullptr;
+  frameBufferActive = nullptr;
+#endif
+}
+
+#ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
+bool FreeInkDisplay::releaseSecondaryBuffer() {
+  if (!frameBufferActive) return false;
+  if (frameBufferActive == frameBuffer0) {
+    free(frameBuffer0);
+    frameBuffer0 = nullptr;
+  } else {
+    free(frameBuffer1);
+    frameBuffer1 = nullptr;
+  }
+  frameBufferActive = nullptr;
+  return true;
+}
+
+bool FreeInkDisplay::reallocSecondaryBuffer() {
+  if (frameBufferActive) return true;
+  uint8_t** slot = (frameBuffer0 == nullptr) ? &frameBuffer0 : &frameBuffer1;
+  *slot = static_cast<uint8_t*>(heap_caps_malloc(MAX_BUFFER_SIZE, MALLOC_CAP_SPIRAM));
+  if (!*slot) *slot = static_cast<uint8_t*>(malloc(MAX_BUFFER_SIZE));
+  if (!*slot) return false;
+  frameBufferActive = *slot;
+  memset(frameBufferActive, 0xFF, bufferSize);
+  return true;
+}
+
+bool FreeInkDisplay::hasSecondaryBuffer() const { return frameBufferActive != nullptr; }
+#endif  // !EINK_DISPLAY_SINGLE_BUFFER_MODE
+#endif  // FREEINK_FB_PSRAM
 
 // ============================================================================
 // Panel operations (delegated to the active driver)
@@ -293,6 +346,17 @@ bool FreeInkDisplay::supportsStripGrayscale() const { return _driver && _driver-
 #ifdef EINK_DISPLAY_SINGLE_BUFFER_MODE
 void FreeInkDisplay::cleanupGrayscaleBuffers(const uint8_t* bwBuffer) {
   _driver->cleanupGrayscaleBuffers(_bus, bwBuffer);
+  // Restore frameBuffer so subsequent BW draws paint onto a valid BW baseline
+  // rather than the stale LSB/MSB grayscale plane data that was there before.
+  if (frameBuffer && bwBuffer && frameBuffer != bwBuffer)
+    memcpy(frameBuffer, bwBuffer, bufferSize);
+}
+#else
+void FreeInkDisplay::cleanupGrayscaleWithPreviousBuffer() {
+  const uint8_t* baseline = frameBufferActive ? frameBufferActive : frameBuffer;
+  _driver->cleanupGrayscaleBuffers(_bus, baseline);
+  if (frameBuffer && baseline && frameBuffer != baseline)
+    memcpy(frameBuffer, baseline, bufferSize);
 }
 #endif
 

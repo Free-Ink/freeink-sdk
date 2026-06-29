@@ -4,7 +4,6 @@
 // build free of the wolfSSL dependency while leaving a single, well-defined
 // integration point for the TLS 1.3 transport.
 #if defined(FREEINK_NET_WOLFSSL)
-#include <wolfssl/options.h>
 #include <wolfssl/ssl.h>
 #endif
 
@@ -105,7 +104,18 @@ size_t SecureClient::write(const uint8_t* buf, size_t size) {
 
 int SecureClient::read(uint8_t* buf, size_t size) {
   if (!_connected) return -1;
-  return wolfSSL_read(static_cast<WOLFSSL*>(_ssl), buf, size);
+  auto* ssl = static_cast<WOLFSSL*>(_ssl);
+  const int n = wolfSSL_read(ssl, buf, size);
+  if (n > 0) return n;
+
+  const int err = wolfSSL_get_error(ssl, n);
+  if (err == WOLFSSL_ERROR_WANT_READ || err == WOLFSSL_ERROR_WANT_WRITE) return 0;
+  if (err == WOLFSSL_ERROR_ZERO_RETURN) {
+    _connected = false;
+    return 0;
+  }
+  _connected = false;
+  return -1;
 }
 
 int SecureClient::available() {

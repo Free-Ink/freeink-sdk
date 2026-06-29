@@ -252,6 +252,7 @@ enum class InputStyle : uint8_t {
   XteinkAdcLadder,         // resistor ladder on two ADC pins (X3/X4)
   DigitalButtons,          // plain active-low GPIO buttons
   DigitalConfirmBackHold,  // confirm held > N ms synthesizes BACK (M5 PaperColor)
+  DigitalConfirmPowerHold, // confirm click, power hold on a shared GPIO
   DigitalFiveKey,          // 3 physical GPIO keys + synthesized events (Murphy M3)
 };
 
@@ -804,7 +805,7 @@ constexpr BoardProfile M5PAPER_V11 = {
 constexpr BoardProfile STICKY = {
     Board::Sticky,
     "sticky",
-    InputStyle::DigitalButtons,  // PWR/UP/DOWN active-low GPIO buttons; confirm/back come from touch
+    InputStyle::DigitalConfirmPowerHold,  // shared OK/PWR: click confirms, hold sleeps
     DisplayController::SSD1677,
     800,
     480,

@@ -48,9 +48,6 @@ const Ssd1677Config& ssd1677DefaultConfig() {
   // FULL:  3C=C0, 22=F7, 20, ~1800 ms
   // HALF:  3C=C0, 1A=5A, 22=D7, 20
   // PART:  3C=C0, 22=FC, 20, ~500 ms
-  // If we want boot/sleep HALF_REFRESH to do the visible full-screen alternating
-  // flash, set halfSeqOverride to 0. HALF then falls back to fullSeqOverride
-  // (0xF7), and the first boot paint also promotes to FULL instead of HALF.
   // Keep those as the default X4 path; weaker partial selection shows heavy
   // ghosting on some panels.
   static const Ssd1677Config cfg = {
@@ -296,7 +293,7 @@ void Ssd1677Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev,
   // fast pages that follow.
   if (!turnOff) {
     if (_needsInitialFull) {
-      mode = (_cfg.halfSeqOverride != 0) ? RefreshMode::Half : RefreshMode::Full;
+      mode = RefreshMode::Full;
       _needsInitialFull = false;
     } else if (!_isScreenOn && _cfg.fullSeqOverride == 0) {
       // X4-class cold start: panel asleep -> a (warmed) HALF full-clear. Override

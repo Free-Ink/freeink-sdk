@@ -19,15 +19,21 @@ bool SDCardManager::begin() {
   if (!_dev->begin(BoardConfig::ACTIVE.sdmmc)) {
     if (Serial) Serial.printf("[%lu] [SD] SDMMC init failed\n", millis());
     initialized = false;
+    cachedTotalBytes = 0;
+    cachedUsedBytesValid = false;
     return false;
   }
   if (!_vol.begin(_dev)) {
     if (Serial) Serial.printf("[%lu] [SD] SDMMC volume mount failed\n", millis());
     initialized = false;
+    cachedTotalBytes = 0;
+    cachedUsedBytesValid = false;
     return false;
   }
   if (Serial) Serial.printf("[%lu] [SD] SDMMC card mounted\n", millis());
   initialized = true;
+  cachedTotalBytes = static_cast<uint64_t>(vol().clusterCount()) * vol().bytesPerCluster();
+  cachedUsedBytesValid = false;
   return initialized;
 }
 #else
@@ -70,9 +76,13 @@ bool SDCardManager::begin() {
                     millis(), sd.sdErrorCode(), sd.sdErrorData(), SD_CS, BoardConfig::ACTIVE.sd.sclk,
                     BoardConfig::ACTIVE.sd.miso, BoardConfig::ACTIVE.sd.mosi, (unsigned long)SPI_FQ);
     initialized = false;
+    cachedTotalBytes = 0;
+    cachedUsedBytesValid = false;
   } else {
     if (Serial) Serial.printf("[%lu] [SD] SD card detected\n", millis());
     initialized = true;
+    cachedTotalBytes = static_cast<uint64_t>(vol().clusterCount()) * vol().bytesPerCluster();
+    cachedUsedBytesValid = false;
   }
 
   return initialized;
@@ -283,6 +293,28 @@ bool SDCardManager::openFileForWrite(const char* moduleName, const std::string& 
 
 bool SDCardManager::openFileForWrite(const char* moduleName, const String& path, FsFile& file) {
   return openFileForWrite(moduleName, path.c_str(), file);
+}
+
+uint64_t SDCardManager::sdTotalBytes() const { return cachedTotalBytes; }
+
+uint64_t SDCardManager::sdUsedBytes() {
+  if (!initialized) return 0;
+  const uint32_t now = millis();
+  if (!cachedUsedBytesValid || (now - cachedUsedBytesAt) >= USED_BYTES_CACHE_TTL_MS) {
+    const int32_t freeClusters = vol().freeClusterCount();
+    const uint64_t clusterCount = vol().clusterCount();
+    if (freeClusters < 0) {
+      cachedUsedBytes = 0;
+    } else {
+      const uint64_t cappedFree = (static_cast<uint64_t>(freeClusters) > clusterCount)
+                                      ? clusterCount
+                                      : static_cast<uint64_t>(freeClusters);
+      cachedUsedBytes = (clusterCount - cappedFree) * vol().bytesPerCluster();
+    }
+    cachedUsedBytesValid = true;
+    cachedUsedBytesAt = now;
+  }
+  return cachedUsedBytes;
 }
 
 bool SDCardManager::removeDir(const char* path) {

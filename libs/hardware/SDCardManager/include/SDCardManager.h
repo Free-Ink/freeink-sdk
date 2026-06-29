@@ -28,6 +28,12 @@ class SDCardManager {
   SDCardManager();
   bool begin();
   bool ready() const;
+  // Returns the total card capacity in bytes. Cached at begin(); 0 if not mounted.
+  uint64_t sdTotalBytes() const;
+  // Returns used space in bytes, cached with a 20-second TTL (freeClusterCount
+  // scans the FAT and is too slow to call on every frame). 0 if not mounted or
+  // the cluster count cannot be determined.
+  uint64_t sdUsedBytes();
   std::vector<String> listFiles(const char* path = "/", int maxFiles = 200);
   // Read the entire file at `path` into a String. Returns empty string on failure.
   String readFile(const char* path);
@@ -72,6 +78,12 @@ class SDCardManager {
 
   bool initialized = false;
   PowerHook _powerHook = nullptr;
+
+  static constexpr uint32_t USED_BYTES_CACHE_TTL_MS = 20000;
+  uint64_t cachedTotalBytes = 0;
+  uint64_t cachedUsedBytes = 0;
+  uint32_t cachedUsedBytesAt = 0;
+  bool cachedUsedBytesValid = false;
 
   // All filesystem ops route through one FsVolume& so the backend is swappable.
   // SPI boards: `sd` (SdFs is-a FsVolume). SDMMC boards: a bare FsVolume mounted

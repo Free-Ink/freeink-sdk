@@ -2,7 +2,7 @@
 //
 // The real NimBLE central path compiles only under FREEINK_CAP_BLE_HID_HOST; the
 // #else branch links stub bodies (and references no BLE code). Flow: scan ->
-// connect on a dedicated FreeRTOS task -> Just-Works bonding -> set Report
+// connect on a dedicated FreeRTOS task -> bond -> set Report
 // Protocol -> subscribe to the HID input report -> diff reports into key events.
 // Connection runs on its own task so neither the main loop nor the NimBLE host
 // task ever blocks on pairing.
@@ -47,6 +47,7 @@ constexpr uint16_t kDescReportReference = 0x2908;
 constexpr uint32_t kReleaseTimeoutMs = 150;
 constexpr uint32_t kReconnectBackoffMs = 4000;
 constexpr uint32_t kConnectTimeoutMs = 8000;
+constexpr uint32_t kTeardownConnectWaitMs = kConnectTimeoutMs + 500;
 constexpr size_t kScanDebugPayloadMax = 31;
 
 portMUX_TYPE g_mux = portMUX_INITIALIZER_UNLOCKED;
@@ -327,15 +328,25 @@ ClientCB g_clientCb;
 bool BleKeyboardHost::begin(const char* hostName) {
   if (begun_) return true;
 
+#if FREEINK_BLE_HID_SCAN_DEBUG
+  Serial.printf("[BleHid] begin: host='%s' bonds=%u\n", hostName ? hostName : "FreeInk", bondCount_);
+#endif
+
   // Self-heal a partial teardown: if NimBLE still reports initialized (a previous
   // deinit raced and didn't complete), NimBLEDevice::init() would no-op and hand back
   // a dead stack. Force a clean deinit first so the init below actually runs.
   if (NimBLEDevice::isInitialized()) {
+#if FREEINK_BLE_HID_SCAN_DEBUG
+    Serial.println("[BleHid] begin: NimBLE was already initialized; forcing deinit");
+#endif
     NimBLEDevice::deinit(true);
     vTaskDelay(pdMS_TO_TICKS(20));
   }
 
   loadBonds();
+#if FREEINK_BLE_HID_SCAN_DEBUG
+  Serial.printf("[BleHid] begin: loaded bonds=%u\n", bondCount_);
+#endif
   if (!NimBLEDevice::init(hostName ? hostName : "FreeInk")) {
     Serial.println("[BleHid] begin: NimBLEDevice::init() failed");
     return false;
@@ -347,9 +358,11 @@ bool BleKeyboardHost::begin(const char* hostName) {
   // back to the heap matters for the app (e.g. EPUB inflate windows).
   NimBLEDevice::setMTU(23);
 
-  // Bonding with passkey display support. Keyboards often pair like macOS: the
-  // host displays a six-digit passkey and the user types it on the peripheral.
-  NimBLEDevice::setSecurityAuth(/*bonding=*/true, /*mitm=*/true, /*sc=*/false);
+  // Bonding for HID remotes. Default to Just Works because page-turners commonly
+  // have no input/display capability; mandatory MITM makes those devices reject
+  // pairing. Firmware that specifically needs host-display keyboard pairing can
+  // opt in with FREEINK_BLE_HID_REQUIRE_MITM=1.
+  NimBLEDevice::setSecurityAuth(/*bonding=*/true, /*mitm=*/FREEINK_BLE_HID_REQUIRE_MITM, /*sc=*/false);
   NimBLEDevice::setSecurityIOCap(BLE_HS_IO_DISPLAY_ONLY);
   NimBLEDevice::setSecurityPasskey(123456);
   NimBLEDevice::setSecurityInitKey(BLE_SM_PAIR_KEY_DIST_ENC);
@@ -392,6 +405,9 @@ bool BleKeyboardHost::begin(const char* hostName) {
 
   xTaskCreate(connTaskFn, "ble-conn", 4096, nullptr, 3, &g_connTask);
   begun_ = true;
+#if FREEINK_BLE_HID_SCAN_DEBUG
+  Serial.println("[BleHid] begin: ok");
+#endif
   return true;
 }
 
@@ -399,16 +415,26 @@ void BleKeyboardHost::end() {
   if (!begun_) return;
   begun_ = false;
 
-  // Kill the connection worker first so it can't run doConnect() against the stack
-  // while we tear it down.
+  NimBLEScan* scan = NimBLEDevice::getScan();
+  if (scan && scan->isScanning()) scan->stop();
+
+  // If auto-reconnect is in the middle of g_client->connect(), do not delete the
+  // worker or deinit NimBLE under it. Let the blocking connect path unwind first;
+  // killing it inside NimBLE leaves host/controller state inconsistent and can
+  // crash on Bluetooth-off, sleep, or the next begin().
+  if (g_connecting && g_client) g_client->cancelConnect();
+  const uint32_t waitStart = millis();
+  while (g_connecting && millis() - waitStart < kTeardownConnectWaitMs) {
+    vTaskDelay(pdMS_TO_TICKS(20));
+  }
+
+  // Kill the connection worker once it is idle so it can't run doConnect() against
+  // the stack while we tear it down.
   if (g_connTask) {
     vTaskDelete(g_connTask);
     g_connTask = nullptr;
   }
   g_connecting = false;
-
-  NimBLEScan* scan = NimBLEDevice::getScan();
-  if (scan && scan->isScanning()) scan->stop();
 
   // Close the link and explicitly delete the client BEFORE deinit. This is critical:
   // NimBLE keeps a fixed-size client array (m_pClients) that survives deinit/init, and
@@ -473,7 +499,7 @@ void BleKeyboardHost::poll() {
   }
 
   // Auto-reconnect to a bonded HID peripheral.
-  if (!connected_ && !g_connecting && bondCount_ > 0) {
+  if (!connected_ && !g_connecting && !scanning_ && bondCount_ > 0) {
     const uint32_t now = millis();
     if (now - g_lastReconnectMs > kReconnectBackoffMs) {
       g_lastReconnectMs = now;
@@ -486,21 +512,44 @@ void BleKeyboardHost::poll() {
 
 // --- Discovery ---------------------------------------------------------------
 void BleKeyboardHost::startScan(uint32_t ms) {
-  if (!begun_) return;
+  if (!begun_) {
+#if FREEINK_BLE_HID_SCAN_DEBUG
+    Serial.println("[BleHid] scan start ignored: host not begun");
+#endif
+    return;
+  }
+  if (g_connecting && g_client) {
+#if FREEINK_BLE_HID_SCAN_DEBUG
+    Serial.println("[BleHid] scan start: cancelling pending reconnect");
+#endif
+    g_client->cancelConnect();
+    const uint32_t waitStart = millis();
+    while (g_connecting && millis() - waitStart < kTeardownConnectWaitMs) {
+      vTaskDelay(pdMS_TO_TICKS(20));
+    }
+  }
   portENTER_CRITICAL(&g_mux);
   deviceCount_ = 0;
   portEXIT_CRITICAL(&g_mux);
   NimBLEScan* scan = NimBLEDevice::getScan();
   scan->clearResults();
 #if FREEINK_BLE_HID_SCAN_DEBUG
-  Serial.printf("[BleHid] scan start: active, continuous, %lu ms\n", static_cast<unsigned long>(ms));
+  Serial.printf("[BleHid] scan start: active, continuous, %lu ms wasScanning=%d\n", static_cast<unsigned long>(ms),
+                scan->isScanning() ? 1 : 0);
 #endif
-  scan->start(ms, false, true);
-  scanning_ = true;
+  const bool started = scan->start(ms, false, true);
+  scanning_ = scan->isScanning();
+#if FREEINK_BLE_HID_SCAN_DEBUG
+  Serial.printf("[BleHid] scan start result: started=%d scanning=%d\n", started ? 1 : 0, scanning_ ? 1 : 0);
+#endif
 }
 
 void BleKeyboardHost::stopScan() {
   if (!begun_) return;
+#if FREEINK_BLE_HID_SCAN_DEBUG
+  Serial.printf("[BleHid] scan stop: wasScanning=%d devices=%u\n", NimBLEDevice::getScan()->isScanning() ? 1 : 0,
+                deviceCount_);
+#endif
   NimBLEDevice::getScan()->stop();
   scanning_ = false;
 }
@@ -713,7 +762,13 @@ void BleKeyboardHost::onScanResultIngest(const char* addr, const char* name, int
   // the address on a later primary-only advertisement.
   const bool realName = name && name[0] && strcmp(name, addr) != 0;
 #if !FREEINK_BLE_HID_SHOW_UNNAMED_DEVICES
-  if (!realName && !hid) return;
+  if (!realName && !hid) {
+#if FREEINK_BLE_HID_SCAN_DEBUG
+    Serial.printf("[BleHid] scan filtered: %s name='%s' rssi=%d hid=%d conn=%d type=%u\n", addr, name ? name : "",
+                  rssi, hid ? 1 : 0, connectable ? 1 : 0, type);
+#endif
+    return;
+  }
 #endif
   portENTER_CRITICAL(&g_mux);
 
@@ -769,6 +824,10 @@ void BleKeyboardHost::onScanResultIngest(const char* addr, const char* name, int
   d.hasName = realName;
   d.hid = hid;
   d.connectable = connectable;
+#if FREEINK_BLE_HID_SCAN_DEBUG
+  Serial.printf("[BleHid] scan accepted: idx=%u count=%u addr=%s name='%s' rssi=%d hid=%d conn=%d type=%u\n", idx,
+                deviceCount_, d.addr, d.name, d.rssi, d.hid ? 1 : 0, d.connectable ? 1 : 0, d.addrType);
+#endif
   portEXIT_CRITICAL(&g_mux);
 }
 

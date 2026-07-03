@@ -66,7 +66,10 @@ InputManager::InputManager()
       powerButtonPressFinish(0),
       confirmBackPressStart(0),
       confirmBackPhysicalPressed(false),
-      confirmBackLongPressActive(false) {}
+      confirmBackLongPressActive(false),
+      confirmPowerPressStart(0),
+      confirmPowerPhysicalPressed(false),
+      confirmPowerLongPressActive(false) {}
 
 void InputManager::begin() {
   if (BoardConfig::ACTIVE.inputStyle == BoardConfig::InputStyle::XteinkAdcLadder) {
@@ -99,6 +102,21 @@ int InputManager::getButtonFromADC(const int adcValue, const int ranges[], const
   }
 
   return -1;
+}
+
+void InputManager::readButtonAdc(ButtonAdcSample& group1, ButtonAdcSample& group2) {
+  group1 = {BUTTON_ADC_PIN_1, -1, -1};
+  group2 = {BUTTON_ADC_PIN_2, -1, -1};
+  if (BoardConfig::ACTIVE.inputStyle != BoardConfig::InputStyle::XteinkAdcLadder) {
+    return;
+  }
+
+  group1.raw = analogRead(BUTTON_ADC_PIN_1);
+  group1.button = getButtonFromADC(group1.raw, ADC_RANGES_1, NUM_BUTTONS_1);
+
+  group2.raw = analogRead(BUTTON_ADC_PIN_2);
+  const int b2 = getButtonFromADC(group2.raw, ADC_RANGES_2, NUM_BUTTONS_2);
+  group2.button = b2 >= 0 ? b2 + 4 : -1;  // map group-2 local 0/1 to BTN_UP / BTN_DOWN
 }
 
 uint8_t InputManager::getState() {
@@ -171,7 +189,8 @@ bool InputManager::isDigitalPressed(const int8_t pin) const {
 uint8_t InputManager::getDigitalState() const {
   uint8_t state = 0;
 
-  if (BoardConfig::ACTIVE.inputStyle != BoardConfig::InputStyle::DigitalConfirmBackHold) {
+  if (BoardConfig::ACTIVE.inputStyle != BoardConfig::InputStyle::DigitalConfirmBackHold &&
+      BoardConfig::ACTIVE.inputStyle != BoardConfig::InputStyle::DigitalConfirmPowerHold) {
     if (isDigitalPressed(BoardConfig::ACTIVE.input.back)) state |= (1 << BTN_BACK);
     if (isDigitalPressed(BoardConfig::ACTIVE.input.confirm)) state |= (1 << BTN_CONFIRM);
   }
@@ -181,7 +200,8 @@ uint8_t InputManager::getDigitalState() const {
   if (isDigitalPressed(BoardConfig::ACTIVE.input.up)) state |= (1 << BTN_UP);
   if (isDigitalPressed(BoardConfig::ACTIVE.input.down)) state |= (1 << BTN_DOWN);
   if (isDigitalPressed(BoardConfig::ACTIVE.input.power) &&
-      BoardConfig::ACTIVE.inputStyle != BoardConfig::InputStyle::DigitalConfirmBackHold) {
+      BoardConfig::ACTIVE.inputStyle != BoardConfig::InputStyle::DigitalConfirmBackHold &&
+      BoardConfig::ACTIVE.inputStyle != BoardConfig::InputStyle::DigitalConfirmPowerHold) {
     state |= (1 << BTN_POWER);
   }
 
@@ -246,6 +266,53 @@ void InputManager::updateConfirmBackHold(const unsigned long currentTime) {
   }
 }
 
+void InputManager::updateConfirmPowerHold(const unsigned long currentTime) {
+  const int8_t sharedPin =
+      BoardConfig::ACTIVE.input.confirm >= 0 ? BoardConfig::ACTIVE.input.confirm : BoardConfig::ACTIVE.input.power;
+  const bool pressed = isDigitalPressed(sharedPin);
+  uint8_t nonSharedState = getDigitalState();
+  nonSharedState |= serviceTouch();
+  if (s_buttonHook) nonSharedState |= s_buttonHook();
+  bool emitConfirmClick = false;
+
+  if (pressed && !confirmPowerPhysicalPressed) {
+    confirmPowerPhysicalPressed = true;
+    confirmPowerLongPressActive = false;
+    confirmPowerPressStart = currentTime;
+  }
+
+  uint8_t nextState = nonSharedState;
+  if (pressed && s_sharedConfirmPowerShortPressEmitsPower) {
+    nextState |= (1 << BTN_POWER);
+  } else if (pressed && currentTime - confirmPowerPressStart >= CONFIRM_POWER_HOLD_MS) {
+    confirmPowerLongPressActive = true;
+    nextState |= (1 << BTN_POWER);
+  }
+
+  if (!pressed && confirmPowerPhysicalPressed) {
+    confirmPowerPhysicalPressed = false;
+    if (!confirmPowerLongPressActive) {
+      if (!s_sharedConfirmPowerShortPressEmitsPower) {
+        emitConfirmClick = true;
+      }
+      buttonPressStart = confirmPowerPressStart;
+      buttonPressFinish = currentTime;
+    }
+    confirmPowerLongPressActive = false;
+  }
+
+  applyStateChange(nextState, currentTime);
+
+  if (pressedEvents & (1 << BTN_POWER)) {
+    powerButtonPressStart = confirmPowerPressStart;
+  }
+
+  if (emitConfirmClick) {
+    pressedEvents |= (1 << BTN_CONFIRM);
+    releasedEvents |= (1 << BTN_CONFIRM);
+  }
+}
+
 void InputManager::update() {
   const unsigned long currentTime = millis();
 
@@ -257,6 +324,10 @@ void InputManager::update() {
 
   if (BoardConfig::ACTIVE.inputStyle == BoardConfig::InputStyle::DigitalConfirmBackHold) {
     updateConfirmBackHold(currentTime);
+    return;
+  }
+  if (BoardConfig::ACTIVE.inputStyle == BoardConfig::InputStyle::DigitalConfirmPowerHold) {
+    updateConfirmPowerHold(currentTime);
     return;
   }
 
@@ -318,6 +389,8 @@ const char* InputManager::getButtonName(const uint8_t buttonIndex) {
   }
   return "Unknown";
 }
+
+bool InputManager::s_sharedConfirmPowerShortPressEmitsPower = false;
 
 bool InputManager::isPowerButtonPressed() const {
   return isPressed(BTN_POWER);

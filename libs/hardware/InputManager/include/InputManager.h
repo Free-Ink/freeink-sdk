@@ -109,6 +109,13 @@ class InputManager {
   using ButtonHook = uint8_t (*)();
   static void setButtonHook(ButtonHook hook) { s_buttonHook = hook; }
 
+  // Boards such as Sticky wire OK/confirm and power/wake to the same GPIO. By
+  // default a short click emits CONFIRM and a hold emits POWER. Apps that expose
+  // a "short power click sleeps" option can flip short clicks to POWER.
+  static void setSharedConfirmPowerShortPressEmitsPower(bool enabled) {
+    s_sharedConfirmPowerShortPressEmitsPower = enabled;
+  }
+
   // --- Optional background polling -------------------------------------------
   // Spawns a FreeRTOS task that samples the buttons every pollMs and latches
   // each press edge (a BTN_* index) into an internal queue. This decouples input
@@ -125,6 +132,25 @@ class InputManager {
   // no press is pending (or async polling was never started).
   bool popPress(uint8_t& button);
 
+  // --- Diagnostics -----------------------------------------------------------
+  // A live sample of one button-group ADC pin: the raw reading plus the BTN_*
+  // it currently classifies as (-1 = no band matched). On the Xteink ADC ladder
+  // the six buttons are resistor dividers multiplexed onto two ADC pins
+  // (Back/Confirm/Left/Right on group 1, Up/Down on group 2); X3 and X4 share
+  // this pinout. A button-test or calibration screen uses this to spot a drifted
+  // divider whose reading no longer lands in the band the firmware expects —
+  // visible from the raw value regardless of how it classifies.
+  struct ButtonAdcSample {
+    int pin;     // GPIO sampled (BUTTON_ADC_PIN_1 / BUTTON_ADC_PIN_2)
+    int raw;     // raw analogRead() value, or -1 if this board has no ADC ladder
+    int button;  // classified BTN_* index, or -1 for no match
+  };
+
+  // Sample both button-group ADC pins now (synchronous analogRead). Safe to call
+  // alongside async polling. On boards without the Xteink ADC ladder both
+  // samples report raw = -1, button = -1.
+  void readButtonAdc(ButtonAdcSample& group1, ButtonAdcSample& group2);
+
  private:
   static ButtonHook s_buttonHook;
 
@@ -138,6 +164,7 @@ class InputManager {
   bool isDigitalPressed(int8_t pin) const;
   uint8_t getDigitalState() const;
   void updateConfirmBackHold(unsigned long currentTime);
+  void updateConfirmPowerHold(unsigned long currentTime);
   void applyStateChange(uint8_t state, unsigned long currentTime);
 
   // Touch backend. Compiled only when FREEINK_CAP_TOUCH is set; dispatches on
@@ -165,6 +192,9 @@ class InputManager {
   unsigned long confirmBackPressStart;
   bool confirmBackPhysicalPressed;
   bool confirmBackLongPressActive;
+  unsigned long confirmPowerPressStart;
+  bool confirmPowerPhysicalPressed;
+  bool confirmPowerLongPressActive;
 
   bool touchDataEnabled = false;      // I2C up, controller present
   uint8_t gt911Addr = 0;              // resolved GT911 address (0 until probed)
@@ -191,6 +221,7 @@ class InputManager {
   static constexpr int ADC_NO_BUTTON = 3900;
   static constexpr unsigned long DEBOUNCE_DELAY = 5;
   static constexpr unsigned long CONFIRM_BACK_HOLD_MS = 650;
+  static constexpr unsigned long CONFIRM_POWER_HOLD_MS = 400;
 
   // Touch timing / protocol constants (ported from the Murphy M3 CHSC6x driver).
   static constexpr unsigned long TOUCH_IRQ_PULSE_MS = 120;   // release hold-over after last valid read
@@ -202,4 +233,5 @@ class InputManager {
   static constexpr uint8_t TOUCH_FRAME_SIZE = 16;
 
   static const char* BUTTON_NAMES[];
+  static bool s_sharedConfirmPowerShortPressEmitsPower;
 };

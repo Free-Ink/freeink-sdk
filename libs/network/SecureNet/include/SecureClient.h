@@ -52,6 +52,8 @@ class SecureClient : public Client {
   static bool tls13Available();
 
  private:
+  int connectWithMethod(const char* host, uint16_t port, void* method, const char* label);
+
   WiFiClient _transport;
   const char* _rootCA = nullptr;
   bool _insecure = false;

@@ -4,7 +4,6 @@
 // build free of the wolfSSL dependency while leaving a single, well-defined
 // integration point for the TLS 1.3 transport.
 #if defined(FREEINK_NET_WOLFSSL)
-#include <wolfssl/options.h>
 #include <wolfssl/ssl.h>
 #endif
 
@@ -43,12 +42,11 @@ int wcRecv(WOLFSSL* /*ssl*/, char* buf, int sz, void* ctx) {
 }
 }  // namespace
 
-int SecureClient::connect(const char* host, uint16_t port) {
+int SecureClient::connectWithMethod(const char* host, uint16_t port, void* method, const char* label) {
   stop();
   if (!_transport.connect(host, port)) return 0;
 
-  WOLFSSL_METHOD* method = wolfTLSv1_3_client_method();
-  auto* ctx = wolfSSL_CTX_new(method);
+  auto* ctx = wolfSSL_CTX_new(static_cast<WOLFSSL_METHOD*>(method));
   if (!ctx) { _transport.stop(); return 0; }
   _ctx = ctx;
 
@@ -76,7 +74,7 @@ int SecureClient::connect(const char* host, uint16_t port) {
   while ((ret = wolfSSL_connect(ssl)) != WOLFSSL_SUCCESS) {
     const int err = wolfSSL_get_error(ssl, ret);
     if (err != WOLFSSL_ERROR_WANT_READ && err != WOLFSSL_ERROR_WANT_WRITE) {
-      if (Serial) Serial.printf("[SecureClient] wolfSSL_connect failed: %d\n", err);
+      if (Serial) Serial.printf("[SecureClient] wolfSSL_connect failed (%s): %d\n", label, err);
       stop();
       return 0;
     }
@@ -89,6 +87,20 @@ int SecureClient::connect(const char* host, uint16_t port) {
   }
   _connected = true;
   return 1;
+}
+
+int SecureClient::connect(const char* host, uint16_t port) {
+  // Negotiate the highest mutually supported version rather than pinning TLS 1.3:
+  // self-hosted / Let's Encrypt nginx often tops out at TLS 1.2, and a 1.3-only
+  // client fails those handshakes outright. v23 still selects 1.3 when the peer
+  // offers it (WOLFSSL_TLS13 is enabled) and falls back to 1.2 otherwise.
+  if (connectWithMethod(host, port, wolfSSLv23_client_method(), "auto")) return 1;
+
+  // Some TLS 1.2-only servers are intolerant of a TLS 1.3-capable ClientHello
+  // and abort with a fatal handshake_failure alert. Retry with an explicit
+  // TLS 1.2 ClientHello before giving up.
+  if (Serial) Serial.println("[SecureClient] retrying with TLS 1.2-only handshake");
+  return connectWithMethod(host, port, wolfTLSv1_2_client_method(), "tls1.2");
 }
 
 int SecureClient::connect(IPAddress ip, uint16_t port) {
@@ -105,7 +117,18 @@ size_t SecureClient::write(const uint8_t* buf, size_t size) {
 
 int SecureClient::read(uint8_t* buf, size_t size) {
   if (!_connected) return -1;
-  return wolfSSL_read(static_cast<WOLFSSL*>(_ssl), buf, size);
+  auto* ssl = static_cast<WOLFSSL*>(_ssl);
+  const int n = wolfSSL_read(ssl, buf, size);
+  if (n > 0) return n;
+
+  const int err = wolfSSL_get_error(ssl, n);
+  if (err == WOLFSSL_ERROR_WANT_READ || err == WOLFSSL_ERROR_WANT_WRITE) return 0;
+  if (err == WOLFSSL_ERROR_ZERO_RETURN) {
+    _connected = false;
+    return 0;
+  }
+  _connected = false;
+  return -1;
 }
 
 int SecureClient::available() {

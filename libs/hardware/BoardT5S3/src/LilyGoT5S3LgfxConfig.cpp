@@ -70,6 +70,9 @@ bool waitForTpsReady(uint32_t timeoutMs) {
 }
 
 bool prepareEpdPower() {
+  pinMode(EP_STV, OUTPUT);
+  digitalWrite(EP_STV, LOW);
+
   bool ok = true;
   ok &= BoardT5S3::setPca9535PinMode(PCA9535_IO10_EP_OE, OUTPUT);
   ok &= BoardT5S3::setPca9535PinMode(PCA9535_IO11_EP_MODE, OUTPUT);

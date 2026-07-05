@@ -182,6 +182,82 @@ void testDisplayTarget() {
   CHECK_EQ(target.lineHeight(2), kNotoSansFont.yAdvance);
 }
 
+// Anti-aliased fonts (bpp == 4) store 4-bit coverage per pixel; DisplayTarget
+// reproduces partial coverage through its ordered Bayer dither.
+void testDisplayTargetAlphaFont() {
+  constexpr int16_t W = 32, H = 16, WB = W / 8;
+  uint8_t fb[WB * H];
+  DisplayTarget target(fb, W, H, WB, Orientation::LandscapeCounterClockwise);
+
+  const auto pixelInk = [&](int16_t x, int16_t y) {
+    return ((fb[y * WB + (x >> 3)] >> (7 - (x & 7))) & 0x01) == 0;  // clear bit = ink
+  };
+  const auto inkCount = [&] {
+    size_t count = 0;
+    for (int16_t y = 0; y < H; ++y)
+      for (int16_t x = 0; x < W; ++x)
+        if (pixelInk(x, y)) ++count;
+    return count;
+  };
+
+  // One 8x8 glyph mapped to 'A'; 64 pixels = 32 bytes of packed nibbles.
+  static constexpr FontGlyph glyphs8x8[] = {{0, 8, 8, 9, 0, -8}};
+  const TextStyle style{};
+
+  // Full coverage (15) plots every glyph pixel, exactly like a 1-bit glyph.
+  static constexpr uint8_t solid[32] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+                                        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+                                        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+  static constexpr BitmapFont solidFont = {solid, glyphs8x8, 'A', 'A', 10, 8, 8, 8, 4};
+  target.setFont(0, solidFont);
+  std::memset(fb, 0xFF, sizeof(fb));
+  target.text(Rect{0, 0, W, H}, "A", style);
+  CHECK_EQ(inkCount(), 64u);
+
+  // Half coverage (8) dithers to exactly 8 of every 16 pixels: an 8x8 glyph
+  // spans each Bayer cell four times regardless of where it lands.
+  static constexpr uint8_t half[32] = {0x88, 0x88, 0x88, 0x88, 0x88, 0x88, 0x88, 0x88, 0x88, 0x88, 0x88,
+                                       0x88, 0x88, 0x88, 0x88, 0x88, 0x88, 0x88, 0x88, 0x88, 0x88, 0x88,
+                                       0x88, 0x88, 0x88, 0x88, 0x88, 0x88, 0x88, 0x88, 0x88, 0x88};
+  static constexpr BitmapFont halfFont = {half, glyphs8x8, 'A', 'A', 10, 8, 8, 8, 4};
+  target.setFont(0, halfFont);
+  std::memset(fb, 0xFF, sizeof(fb));
+  target.text(Rect{0, 0, W, H}, "A", style);
+  CHECK_EQ(inkCount(), 32u);
+
+  // Zero coverage leaves the background untouched.
+  static constexpr uint8_t clear[32] = {};
+  static constexpr BitmapFont clearFont = {clear, glyphs8x8, 'A', 'A', 10, 8, 8, 8, 4};
+  target.setFont(0, clearFont);
+  std::memset(fb, 0xFF, sizeof(fb));
+  target.text(Rect{0, 0, W, H}, "A", style);
+  CHECK_EQ(inkCount(), 0u);
+
+  // Nibble order is high-first: a 2x1 glyph with coverage [15, 0] inks only
+  // its left pixel.
+  static constexpr uint8_t pair[] = {0xF0};
+  static constexpr FontGlyph glyphs2x1[] = {{0, 2, 1, 3, 0, -1}};
+  static constexpr BitmapFont pairFont = {pair, glyphs2x1, 'A', 'A', 3, 2, 2, 1, 4};
+  target.setFont(0, pairFont);
+  std::memset(fb, 0xFF, sizeof(fb));
+  target.text(Rect{0, 0, W, H}, "A", style);
+  CHECK_EQ(inkCount(), 1u);
+
+  // Inverted (white) alpha text plots white onto a black page.
+  target.setFont(0, solidFont);
+  std::memset(fb, 0x00, sizeof(fb));
+  TextStyle white = style;
+  white.color = Color::White;
+  target.text(Rect{0, 0, W, H}, "A", white);
+  size_t whiteCount = 0;
+  for (int16_t y = 0; y < H; ++y)
+    for (int16_t x = 0; x < W; ++x)
+      if (!pixelInk(x, y)) ++whiteCount;
+  CHECK_EQ(whiteCount, 64u);
+
+  target.setFont(kNotoSansFont);  // restore for any later use
+}
+
 void testStackFillsExactly() {
   // header + flex content + footer: classic screen split.
   Stack<3> stack(Rect{0, 0, 480, 800}, Axis::Column, 0);
@@ -2116,6 +2192,7 @@ void testTextArea() {
 int main() {
   testRect();
   testDisplayTarget();
+  testDisplayTargetAlphaFont();
   testStackFillsExactly();
   testStackFlexRemainderWithTrailingFixed();
   testStackGaps();

@@ -33,6 +33,12 @@ struct BitmapFont {
   uint8_t ascent;       // baseline distance from the line top
   uint8_t maxWidth;
   uint8_t maxHeight;
+  // Glyph bitmap depth. 1 = on/off mask (MSB-first bits). 4 = anti-aliased
+  // coverage, two pixels per byte, high nibble first, 0 = transparent and
+  // 15 = full ink; renderers reproduce partial coverage per their depth
+  // (DisplayTarget dithers it on 1-bit panels). gen_font.py --alpha emits
+  // 4bpp fonts; metrics are depth-independent.
+  uint8_t bpp = 1;
 };
 
 inline constexpr uint8_t kNotoSansBitmap[] = {

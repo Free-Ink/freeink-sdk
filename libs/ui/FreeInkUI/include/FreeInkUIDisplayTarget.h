@@ -14,7 +14,9 @@
 // Text uses the bundled Noto Sans bitmap font (FreeInkUIFont.h). Every font
 // slot defaults to it; call setFont() to swap in your own BitmapFont (see
 // docs/freeink-ui.md and tools/gen_font.py for generating one from any TTF).
-// Gray paints are reproduced on the 1-bit panel with an ordered Bayer dither.
+// Gray paints are reproduced on the 1-bit panel with an ordered Bayer dither;
+// anti-aliased fonts (gen_font.py --alpha, BitmapFont::bpp == 4) reuse the
+// same dither to reproduce glyph edge coverage.
 //
 // Orientation: the target draws in LOGICAL coordinates and rotates each pixel
 // into the panel's native framebuffer at draw time, so apps lay out a screen in
@@ -198,16 +200,21 @@ class DisplayTarget final : public DrawTarget {
   const BitmapFont& fontFor(const FontId slot) const { return *fonts_[slot < FONT_SLOTS ? slot : 0]; }
 
   // 4x4 ordered Bayer matrix (0..15) — reproduces gray levels on a 1-bit panel.
-  static bool inkForColor(const Color color, const int16_t x, const int16_t y) {
+  // Sampled in logical coordinates so the pattern stays stable per UI.
+  static uint8_t bayerAt(const int16_t x, const int16_t y) {
     static constexpr uint8_t kBayer[4][4] = {
         {0, 8, 2, 10}, {12, 4, 14, 6}, {3, 11, 1, 9}, {15, 7, 13, 5}};
+    return kBayer[y & 3][x & 3];
+  }
+
+  static bool inkForColor(const Color color, const int16_t x, const int16_t y) {
     switch (color) {
       case Color::Black:
         return true;
       case Color::DarkGray:
-        return kBayer[y & 3][x & 3] < 12;  // ~75% ink
+        return bayerAt(x, y) < 12;  // ~75% ink
       case Color::LightGray:
-        return kBayer[y & 3][x & 3] < 4;  // ~25% ink
+        return bayerAt(x, y) < 4;  // ~25% ink
       case Color::White:
       case Color::Transparent:
       default:
@@ -314,6 +321,24 @@ class DisplayTarget final : public DrawTarget {
   void drawGlyph(const BitmapFont& f, const FontGlyph& g, const int16_t penX, const int16_t baseline,
                  const bool ink) {
     const Color color = ink ? Color::Black : Color::White;
+    if (f.bpp == 4) {
+      // Anti-aliased glyph: 4-bit coverage per pixel, thresholded against the
+      // Bayer matrix so edge coverage becomes an ordered dither on the 1-bit
+      // panel. Coverage 15 always plots (a plain a > bayer would drop 1 in 16
+      // interior pixels); coverage 0 never does, leaving the background as-is.
+      for (int gy = 0; gy < g.height; ++gy) {
+        for (int gx = 0; gx < g.width; ++gx) {
+          const int idx = gy * g.width + gx;
+          const uint8_t byte = f.bitmap[g.bitmapOffset + (idx >> 1)];
+          const uint8_t a = (idx & 1) ? (byte & 0x0F) : (byte >> 4);
+          if (a == 0) continue;
+          const int16_t px = static_cast<int16_t>(penX + g.xOffset + gx);
+          const int16_t py = static_cast<int16_t>(baseline + g.yOffset + gy);
+          if (a == 15 || a > bayerAt(px, py)) plot(px, py, color);
+        }
+      }
+      return;
+    }
     for (int gy = 0; gy < g.height; ++gy) {
       for (int gx = 0; gx < g.width; ++gx) {
         const int bit = gy * g.width + gx;

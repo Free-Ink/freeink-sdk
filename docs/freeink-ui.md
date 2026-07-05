@@ -437,8 +437,9 @@ default, so text works with zero setup.
 
 ### Swapping the font
 
-Fonts are plain data (`freeink::ui::BitmapFont`): a concatenated 1-bit glyph
-bitmap plus a per-glyph metrics table. To use your own typeface:
+Fonts are plain data (`freeink::ui::BitmapFont`): a concatenated glyph bitmap
+plus a per-glyph metrics table. Glyphs come in two depths (`BitmapFont::bpp`):
+a 1-bit on/off mask, or anti-aliased 4-bit coverage. To use your own typeface:
 
 1. **Generate a font header from any TTF/OTF** with the bundled tool:
 
@@ -453,6 +454,14 @@ bitmap plus a per-glyph metrics table. To use your own typeface:
    pixel height you want; the tool prints the resulting line height and flash
    cost. Covers printable ASCII (`U+0020..U+007E`) by default — widen with
    `--first`/`--last`. Confirm the source font's license permits embedding.
+
+   Add `--alpha` to rasterize anti-aliased: glyphs are stored as 4-bit
+   coverage (~4x the flash of the 1-bit form) and `DisplayTarget` reproduces
+   the edge coverage on 1-bit panels through its ordered Bayer dither, so
+   diagonals and curves render noticeably smoother. Grayscale-capable targets
+   can blend the same coverage directly. The dither also lands on
+   partially-covered stem pixels, so anti-aliased fonts look best at title and
+   display sizes (roughly 16px and up); keep small body text on 1-bit fonts.
 
 2. **Point the target at it** — globally, or per slot so titles differ from body
    text:

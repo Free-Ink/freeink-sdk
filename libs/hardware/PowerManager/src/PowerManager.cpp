@@ -56,6 +56,29 @@ void PowerManager::waitForPowerButtonRelease() {
   }
 }
 
+namespace {
+// Drive a rail-enable pin to `offLevel` and latch it so the level survives deep
+// sleep (requires gpio_deep_sleep_hold_en(), done in deepSleep()). gpio_hold_dis
+// first: a hold left over from a previous cycle would make the writes no-ops.
+void holdRailOff(int8_t pin, uint8_t offLevel) {
+  if (pin < 0) return;
+  const auto g = static_cast<gpio_num_t>(pin);
+  gpio_hold_dis(g);
+  pinMode(pin, OUTPUT);
+  digitalWrite(pin, offLevel);
+  gpio_hold_en(g);
+}
+}  // namespace
+
+void PowerManager::powerDownRailsForSleep() {
+  const auto& b = BoardConfig::ACTIVE;
+  holdRailOff(b.display.powerEnable, LOW);
+  holdRailOff(b.sd.powerEnable, LOW);
+  holdRailOff(b.touch.powerEnable, LOW);
+  // The mic enable is the only rail with a polarity flag; OFF is the inactive level.
+  holdRailOff(b.mic.enable, b.mic.enableActiveHigh ? LOW : HIGH);
+}
+
 void PowerManager::deepSleep() {
   esp_sleep_config_gpio_isolate();
   gpio_deep_sleep_hold_en();

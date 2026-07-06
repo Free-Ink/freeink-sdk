@@ -61,6 +61,25 @@ class EpdBus {
   void waitBusy(const char* tag = nullptr);
   void waitBusy(BusyPolarity p, const char* tag = nullptr);
 
+  // Optional hooks fired around long BUSY waits. A refresh takes ~0.3-2 s during
+  // which the CPU only polls the BUSY pin; these let host firmware save power in
+  // that window (e.g. reduce the CPU clock) without the SDK knowing the policy.
+  // The begin hook fires once a wait exceeds BUSY_WAIT_HOOK_THRESHOLD_MS (so
+  // short command waits never pay for it); the matching end hook fires when the
+  // wait completes. Plain function pointers; both default to disabled.
+  void setBusyWaitHooks(void (*beginHook)(), void (*endHook)()) {
+    _busyWaitBeginHook = beginHook;
+    _busyWaitEndHook = endHook;
+  }
+
+  // Optional slice hook replacing the poll delay once a wait has proven long
+  // (i.e. after the begin hook fired). Receives the BUSY pin and the level that
+  // means "still busy"; returns true if it already waited (e.g. host light-slept
+  // until the pin left that level or a timer slice elapsed), false to fall back
+  // to the plain delay. Lets host firmware sleep through the 0.3-2 s refresh
+  // instead of polling, without the SDK knowing the wake mechanics.
+  void setBusyWaitSliceHook(bool (*sliceHook)(int8_t busyPin, uint8_t busyLevel)) { _busyWaitSliceHook = sliceHook; }
+
   // Stream `plane` bottom-to-top (gates are physically reversed), widthBytes per
   // row, optionally bit-inverting. Replaces the per-driver mirror lambdas.
   void writeMirroredPlane(const uint8_t* plane, uint16_t height, uint16_t widthBytes, bool invert);
@@ -79,6 +98,21 @@ class EpdBus {
   BusyPolarity busyPolarity() const { return _busy; }
 
  private:
+  // Busy-wait hooks (see setBusyWaitHooks / setBusyWaitSliceHook)
+  static constexpr unsigned long BUSY_WAIT_HOOK_THRESHOLD_MS = 20;
+  void (*_busyWaitBeginHook)() = nullptr;
+  void (*_busyWaitEndHook)() = nullptr;
+  bool (*_busyWaitSliceHook)(int8_t busyPin, uint8_t busyLevel) = nullptr;
+
+  // One idle step of a long BUSY wait: defer to the slice hook once the wait
+  // has proven long, otherwise (or if the hook declines) plain-delay.
+  void busyIdle(bool longWait, uint8_t busyLevel, uint8_t fallbackDelayMs) {
+    if (longWait && _busyWaitSliceHook != nullptr && _busyWaitSliceHook(_pins.busy, busyLevel)) {
+      return;
+    }
+    delay(fallbackDelayMs);
+  }
+
   EpdPins _pins{-1, -1, -1, -1, -1, -1};
   SPISettings _spi;
   BusyPolarity _busy = BusyPolarity::ActiveHigh;

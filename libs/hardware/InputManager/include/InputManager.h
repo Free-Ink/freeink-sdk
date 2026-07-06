@@ -38,6 +38,13 @@ class InputManager {
   // Any button release edge since the previous update().
   bool wasAnyReleased() const;
 
+  // True while a raw state change is still inside the debounce window (the last
+  // raw sample differs from the committed state). A change only commits after
+  // two consecutive matching samples, so hosts that poll slowly (e.g. a
+  // sleep-sliced idle loop) should re-poll quickly while this is set — otherwise
+  // a press shorter than the poll period lands in a single sample and is dropped.
+  bool isDebouncePending() const { return lastState != currentState; }
+
   // Duration between the first button press and final release.
   unsigned long getHeldTime() const;
 

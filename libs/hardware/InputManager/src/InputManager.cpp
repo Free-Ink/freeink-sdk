@@ -229,6 +229,11 @@ void InputManager::applyStateChange(const uint8_t state, const unsigned long cur
   }
 
   currentState = state;
+  // Keep lastState in sync with the committed state so isDebouncePending() is
+  // meaningful on every input style. A no-op for the debounced ADC path (state
+  // already equals lastState at commit time), but the hold-style updates call
+  // applyStateChange() directly without ever sampling through the debounce.
+  lastState = state;
 }
 
 void InputManager::updateConfirmBackHold(const unsigned long currentTime) {

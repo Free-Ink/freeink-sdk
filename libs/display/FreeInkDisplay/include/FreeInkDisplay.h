@@ -92,6 +92,12 @@ class FreeInkDisplay {
   bool supportsStripGrayscale() const;
 #ifdef EINK_DISPLAY_SINGLE_BUFFER_MODE
   void cleanupGrayscaleBuffers(const uint8_t* bwBuffer);
+#else
+  // Restore controller RAM and frameBuffer to the BW baseline after grayscale.
+  // Uses frameBufferActive as the source (falls back to frameBuffer when the
+  // secondary buffer has been released). Call once per page-turn after
+  // displayGrayBuffer() to ensure the next BW draw targets a valid BW frame.
+  void cleanupGrayscaleWithPreviousBuffer();
 #endif
 
   void displayBuffer(RefreshMode mode = FAST_REFRESH, bool turnOffScreen = false);
@@ -129,6 +135,39 @@ class FreeInkDisplay {
 
   // Access to frame buffer
   uint8_t* getFrameBuffer() const { return frameBuffer; }
+
+  // Copy the just-displayed frame (frameBufferActive) back into the write buffer.
+  // displayBuffer() ends with swapBuffers(), so the write buffer would otherwise
+  // hold the frame from two refreshes ago. Call this before patching a few regions
+  // and re-displaying instead of fully re-rendering. No-op in single-buffer mode.
+  void syncWriteBufferFromActive() const;
+
+#if FREEINK_FB_PSRAM
+  // Release both framebuffers back to the heap. After this call no display
+  // operations may be performed until begin() is called again. Intended for
+  // transient sessions (e.g. a web UI) where the device reboots on exit and the
+  // ~100 KB of PSRAM is more valuable than rendering ability. Safe no-op if
+  // already released.
+  void releaseBuffers();
+
+#ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
+  // Release only the secondary (previous-frame) buffer to free ~48-52 KB of
+  // PSRAM temporarily — e.g. during chapter compilation when no rendering
+  // is happening. BW display and fast differential refresh continue to work:
+  // the SSD1677 driver already re-seeds both BW and RED RAM when prev is null,
+  // so the differential baseline stays consistent without the host copy.
+  // Grayscale AA is unavailable until the buffer is restored with
+  // reallocSecondaryBuffer(). No-op if already released. Returns true if freed.
+  bool releaseSecondaryBuffer();
+
+  // Reallocate the secondary buffer after releaseSecondaryBuffer(). Initialises
+  // it to white (0xFF). Returns true on success; false if malloc fails.
+  bool reallocSecondaryBuffer();
+
+  // Returns true if the secondary buffer is currently allocated.
+  bool hasSecondaryBuffer() const;
+#endif  // !EINK_DISPLAY_SINGLE_BUFFER_MODE
+#endif  // FREEINK_FB_PSRAM
 
   // Save the current framebuffer to a PBM file (desktop/test builds only)
   void saveFrameBufferAsPBM(const char* filename);

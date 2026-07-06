@@ -96,6 +96,11 @@ class InputManager {
   // True while the current touch is still a tap candidate: finger down, movement
   // remains within tap slop. Writes the original touch-down position and held time.
   bool isTouchTapCandidate(float& nx, float& ny, unsigned long& heldMs) const;
+  // True while a touch is down; writes the CURRENT contact position normalized to
+  // 0..1 in the panel's native frame. Unlike #isTouchTapCandidate there is no
+  // tap-slop gate — the position follows the moving finger, for drag interactions
+  // (sliders). Callers own any threshold/hysteresis they need.
+  bool isTouchHeldAt(float& nx, float& ny) const;
   // Duration (ms) of the last touch contact, latched on release.
   unsigned long lastTouchHeldMs() const;
   // Swipe gesture on release. Returns start/end positions normalized in the

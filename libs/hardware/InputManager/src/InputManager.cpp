@@ -488,6 +488,26 @@ bool InputManager::isTouchTapCandidate(float& nx, float& ny, unsigned long& held
 #endif
 }
 
+bool InputManager::isTouchHeldAt(float& nx, float& ny) const {
+#if FREEINK_CAP_TOUCH
+  // Live drag tracking: the latest contact sample (touchUpPoint is refreshed on
+  // every sample while pressed), with no tap-slop gate.
+  if (!touchPressed) return false;
+  const auto& t = BoardConfig::ACTIVE.touch;
+  const uint16_t w = (t.rawMaxX > t.rawMinX) ? static_cast<uint16_t>(t.rawMaxX - t.rawMinX) : 1;
+  const uint16_t h = (t.rawMaxY > t.rawMinY) ? static_cast<uint16_t>(t.rawMaxY - t.rawMinY) : 1;
+  float x = static_cast<float>(touchUpPoint.x) / w;
+  float y = static_cast<float>(touchUpPoint.y) / h;
+  nx = x < 0.0f ? 0.0f : (x > 1.0f ? 1.0f : x);
+  ny = y < 0.0f ? 0.0f : (y > 1.0f ? 1.0f : y);
+  return true;
+#else
+  (void)nx;
+  (void)ny;
+  return false;
+#endif
+}
+
 unsigned long InputManager::lastTouchHeldMs() const {
 #if FREEINK_CAP_TOUCH
   return lastTouchHeldDurationMs;

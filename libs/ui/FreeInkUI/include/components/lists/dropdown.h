@@ -8,6 +8,10 @@ namespace ui {
 struct DropdownProps {
   const char* label = nullptr;
   const char* value = nullptr;
+  // With a subtitle the row renders settingRow-style: label on top,
+  // subtitle (typically the current selection) beneath in subtitleText.
+  // `value` is ignored in that layout.
+  const char* subtitle = nullptr;
   BitmapRef icon{};        // optional leading icon (like settingRow)
   AssetRef iconAsset{};
   int16_t iconSize = 0;    // 0 = icon's natural size
@@ -16,6 +20,7 @@ struct DropdownProps {
   uint16_t inputMask = InputDefault;
   TextStyle labelText{};
   TextStyle valueText{};
+  TextStyle subtitleText{};
   StyleSet styles{};
   State state = StateNormal;
   Insets padding{6, 8, 6, 8};
@@ -71,7 +76,17 @@ void dropdown(Frame<MaxInteractions>& frame, Rect rect, const DropdownProps& pro
                       stroke, ink);
 
   Rect textRect{content.x, content.y, static_cast<int16_t>(indicator.x - content.x - props.gap), content.height};
-  if (props.label && props.value) {
+  if (props.label && props.subtitle) {
+    // Two-line layout: label above, subtitle (current selection) below.
+    const int16_t labelH = frame.target().lineHeight(props.labelText.font);
+    const int16_t subH = frame.target().lineHeight(props.subtitleText.font);
+    const int16_t total = static_cast<int16_t>(labelH + subH);
+    const int16_t top = static_cast<int16_t>(textRect.y + (textRect.height - total) / 2);
+    Rect labelRect{textRect.x, top, textRect.width, labelH};
+    frame.target().text(labelRect, props.label, textStyleWithForeground(props.labelText, ink));
+    Rect subRect{textRect.x, static_cast<int16_t>(top + labelH), textRect.width, subH};
+    frame.target().text(subRect, props.subtitle, textStyleWithForeground(props.subtitleText, ink));
+  } else if (props.label && props.value) {
     const Size labelSize = frame.target().measureText(props.labelText.font, props.label, props.labelText);
     Rect labelRect{textRect.x, textRect.y, labelSize.width, textRect.height};
     frame.target().text(labelRect, props.label, textStyleWithForeground(props.labelText, ink));

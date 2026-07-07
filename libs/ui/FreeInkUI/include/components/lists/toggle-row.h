@@ -11,6 +11,10 @@ struct ToggleRowProps {
   bool checked = false;
   ActionId toggleAction = NO_ACTION;
   int16_t toggleValue = 0;
+  // By default the whole row is the tap target. Set this when the row hosts
+  // other interactions (or toggling must be deliberate): only the switch
+  // itself — expanded to row.minTouchSize — responds to taps.
+  bool hitToggleOnly = false;
   int16_t toggleWidth = 38;
   int16_t toggleHeight = 18;
   uint8_t radius = 0;
@@ -28,7 +32,7 @@ template <size_t MaxInteractions>
 void toggleRow(Frame<MaxInteractions>& frame, Rect rect, const ToggleRowProps& props) {
   SettingRowProps row = props.row;
   row.value = nullptr;
-  if (row.action == NO_ACTION) {
+  if (!props.hitToggleOnly && row.action == NO_ACTION) {
     row.action = props.toggleAction;
     row.valueId = props.toggleValue;
   }
@@ -36,8 +40,24 @@ void toggleRow(Frame<MaxInteractions>& frame, Rect rect, const ToggleRowProps& p
 
   const int16_t toggleW = props.toggleWidth < 18 ? 18 : props.toggleWidth;
   const int16_t toggleH = props.toggleHeight < 12 ? 12 : props.toggleHeight;
+  // The switch aligns to the label's title band (mirroring settingRow's slot
+  // layout), leaving the full width under it for the subtitle.
+  int16_t bandY = rect.y;
+  int16_t bandH = rect.height;
+  if (props.row.subtitle) {
+    const int16_t labelH = frame.target().lineHeight(props.row.labelText.font);
+    const int16_t subH = frame.target().lineHeight(props.row.subtitleText.font);
+    int16_t top = static_cast<int16_t>(rect.y + (rect.height - labelH - subH) / 2);
+    if (top < rect.y) top = rect.y;
+    bandY = top;
+    bandH = labelH;
+  }
   Rect toggleRect{static_cast<int16_t>(rect.right() - row.sidePadding - toggleW),
-                  static_cast<int16_t>(rect.y + (rect.height - toggleH) / 2), toggleW, toggleH};
+                  static_cast<int16_t>(bandY + (bandH - toggleH) / 2), toggleW, toggleH};
+  if (props.hitToggleOnly && props.toggleAction != NO_ACTION) {
+    frame.hit(ensureMinTouchRect(toggleRect, row.minTouchSize, frame.screen()), props.toggleAction,
+              props.toggleValue);
+  }
   const uint8_t trackRadius = static_cast<uint8_t>(
       props.radius > toggleH / 2 ? toggleH / 2 : props.radius);
   frame.target().fill(toggleRect, props.checked ? props.checkedTrack : props.track, trackRadius);

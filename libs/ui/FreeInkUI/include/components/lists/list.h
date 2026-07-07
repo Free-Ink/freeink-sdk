@@ -44,7 +44,7 @@ struct ListProps {
   int16_t rowGap = 0;
   uint8_t rowRadius = 0;
   int16_t sidePadding = 8;
-  int16_t textGap = 6;
+  int16_t textGap = 10;
   int16_t iconSize = 0;
   int16_t scrollIndicatorWidth = 3;
   bool centerSingleLine = false;
@@ -143,33 +143,48 @@ void list(Frame<MaxInteractions>& frame, Rect rect, const ListProps& props) {
     }
 
     Rect content = row.inset(Insets{0, props.sidePadding, 0, props.sidePadding});
+
+    // Slot layout (mirrors settingRow): the label owns a "title band" and the
+    // icon and value align to it; the subtitle spans the full content width
+    // under the band so it never collides with the value.
+    TextStyle labelStyle = textStyleWithForeground(props.labelText, style.foreground);
+    const int16_t labelH = frame.target().lineHeight(labelStyle.font);
+    const int16_t subH = item.subtitle ? frame.target().lineHeight(props.subtitleText.font) : 0;
+    Rect band = content;
+    if (item.subtitle) {
+      int16_t top = static_cast<int16_t>(content.y + (content.height - labelH - subH) / 2);
+      if (top < content.y) top = content.y;
+      band = Rect{content.x, top, content.width, labelH};
+    }
+
     const BitmapRef icon = item.icon ? item.icon : resolveBitmap(frame.assets(), item.iconAsset);
     if (icon) {
       const int16_t iconSize = props.iconSize > 0 ? props.iconSize : static_cast<int16_t>(icon.width);
-      Rect iconRect{content.x, static_cast<int16_t>(content.y + (content.height - iconSize) / 2), iconSize, iconSize};
+      Rect iconRect{content.x, static_cast<int16_t>(band.y + (band.height - iconSize) / 2), iconSize, iconSize};
       frame.target().bitmap(iconRect, icon, BitmapMode::Contain, style.foreground);
       content.x = static_cast<int16_t>(content.x + iconSize + props.textGap);
       content.width = static_cast<int16_t>(content.width - iconSize - props.textGap);
+      band.x = content.x;
+      band.width = content.width;
     }
+
+    int16_t availW = band.width;
     if (item.value) {
       TextStyle valueStyle = textStyleWithForeground(props.valueText, style.foreground);
       valueStyle.align = TextAlign::Right;
       const int16_t valueW = frame.target().measureText(valueStyle.font, item.value, valueStyle).width;
-      Rect valueRect{static_cast<int16_t>(content.right() - valueW), content.y, valueW, content.height};
+      Rect valueRect{static_cast<int16_t>(band.x + availW - valueW), band.y, valueW, band.height};
       frame.target().text(valueRect, item.value, valueStyle);
-      content.width = static_cast<int16_t>(content.width - valueW - props.textGap);
+      availW = static_cast<int16_t>(availW - valueW - props.textGap);
     }
+
     if (item.subtitle) {
-      const int16_t lh = frame.target().lineHeight(props.labelText.font);
-      Rect labelRect{content.x, content.y, content.width, lh};
-      Rect subRect{content.x, static_cast<int16_t>(content.y + lh), content.width,
-                   static_cast<int16_t>(content.height - lh)};
-      frame.target().text(labelRect, item.label, textStyleWithForeground(props.labelText, style.foreground));
-      frame.target().text(subRect, item.subtitle, textStyleWithForeground(props.subtitleText, style.foreground));
+      frame.target().text(Rect{band.x, band.y, availW, band.height}, item.label, labelStyle);
+      frame.target().text(Rect{content.x, static_cast<int16_t>(band.y + labelH), content.width, subH},
+                          item.subtitle, textStyleWithForeground(props.subtitleText, style.foreground));
     } else {
-      TextStyle labelStyle = textStyleWithForeground(props.labelText, style.foreground);
       if (props.centerSingleLine) labelStyle.align = TextAlign::Center;
-      frame.target().text(content, item.label, labelStyle);
+      frame.target().text(Rect{band.x, band.y, availW, band.height}, item.label, labelStyle);
     }
 
     if (props.selectedIndex == static_cast<int16_t>(i) && props.selectionMarker != SelectionMarker::None) {

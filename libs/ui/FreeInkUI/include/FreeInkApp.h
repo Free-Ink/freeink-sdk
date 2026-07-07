@@ -84,6 +84,18 @@ class Screen {
 
   Rect body() const { return content_; }
 
+ private:
+  // Row band + gap for the row builders: theme cadence by default; a custom
+  // height scales the inter-row gap proportionally so taller rows also get
+  // more air between them.
+  Rect takeRow(LayoutAnchor anchor, int16_t height) {
+    if (height <= 0) return take(anchor, theme_.rowHeight, theme_.spaceSm);
+    const int16_t gap = static_cast<int16_t>(theme_.spaceMd * height / theme_.rowHeight);
+    return take(anchor, height, gap);
+  }
+
+ public:
+
   void header(const char* title, const char* subtitle = nullptr, const char* rightLabel = nullptr,
               LayoutAnchor anchor = LayoutAnchor::Top) {
     HeaderProps props;
@@ -100,6 +112,8 @@ class Screen {
     if (themed.subtitleText.font == 0) themed.subtitleText = theme_.smallText;
     if (themed.styles.unset()) themed.styles = theme_.popup;
     if (themed.leadingStyles.unset()) themed.leadingStyles = theme_.button;
+    if (themed.trailingStyles.unset()) themed.trailingStyles = theme_.button;
+    if (themed.trailingText.font == 0) themed.trailingText = theme_.bodyText;
     // Headers document a divider by default; give the themed style a border
     // when the theme's popup style ships without one (the built-in default).
     if (themed.styles.normal.border.kind == PaintKind::None) {
@@ -110,16 +124,27 @@ class Screen {
     ui::header(frame_, take(anchor, theme_.headerHeight), themed);
   }
 
-  // Sub-screen chrome: leading back button + centered title + bottom rule.
+  // Sub-screen chrome: leading back button + centered title, with an optional
+  // right-aligned label (a live clock, a count). borderEdges is HeaderProps'
+  // divider setting: EdgeBottom (default) draws the rule, EdgesNone drops it.
+  // trailingLabel/trailingAction put an action button (a "Save"/"Done") on the
+  // right edge instead of the passive rightLabel — set one or the other.
   void navHeader(const char* title, ActionId backAction, BitmapRef backIcon,
-                 LayoutAnchor anchor = LayoutAnchor::Top) {
+                 const char* rightLabel = nullptr, uint8_t borderEdges = EdgeBottom,
+                 const char* trailingLabel = nullptr, ActionId trailingAction = NO_ACTION,
+                 bool trailingEnabled = true, LayoutAnchor anchor = LayoutAnchor::Top) {
     HeaderProps props;
     props.title = title;
     props.centered = true;
-    props.borderEdges = EdgeBottom;
+    props.borderEdges = borderEdges;
     props.leadingIcon = backIcon;
     props.leadingAction = backAction;
     props.leadingRadius = 8;
+    props.rightLabel = rightLabel;
+    props.trailingLabel = trailingLabel;
+    props.trailingAction = trailingAction;
+    props.trailingEnabled = trailingEnabled;
+    props.trailingRadius = 8;
     header(props, anchor);
   }
 
@@ -146,6 +171,17 @@ class Screen {
     if (themed.styles.unset()) themed.styles = theme_.button;
     themed.minTouchSize = theme_.minTouchSize;
     ui::button(frame_, take(anchor, theme_.rowHeight, theme_.spaceSm), themed);
+  }
+
+  // Themed button at an explicit rect, for layouts the row cadence can't
+  // express (bottom action bars, centered blocks). Does not consume body
+  // space — pair with takeTop/takeBottom when the band should be reserved.
+  void button(const ButtonProps& props, Rect rect) {
+    ButtonProps themed = props;
+    if (themed.text.font == 0) themed.text = theme_.bodyText;
+    if (themed.styles.unset()) themed.styles = theme_.button;
+    themed.minTouchSize = theme_.minTouchSize;
+    ui::button(frame_, rect, themed);
   }
 
   void list(const ListItem* items, uint16_t count, int16_t selectedIndex, ActionId action, uint16_t topIndex = 0,
@@ -194,12 +230,14 @@ class Screen {
               props);
   }
 
-  void settingRow(const SettingRowProps& props, LayoutAnchor anchor = LayoutAnchor::Top) {
-    ui::settingRow(frame_, take(anchor, theme_.rowHeight, theme_.spaceSm), props);
+  // Rows default to the theme's row cadence; pass a height for larger rows
+  // (a roomy settings list) — the gap grows with the row.
+  void settingRow(const SettingRowProps& props, int16_t height = 0, LayoutAnchor anchor = LayoutAnchor::Top) {
+    ui::settingRow(frame_, takeRow(anchor, height), props);
   }
 
-  void toggleRow(const ToggleRowProps& props, LayoutAnchor anchor = LayoutAnchor::Top) {
-    ui::toggleRow(frame_, take(anchor, theme_.rowHeight, theme_.spaceSm), props);
+  void toggleRow(const ToggleRowProps& props, int16_t height = 0, LayoutAnchor anchor = LayoutAnchor::Top) {
+    ui::toggleRow(frame_, takeRow(anchor, height), props);
   }
 
   void stepperRow(const StepperRowProps& props, LayoutAnchor anchor = LayoutAnchor::Top) {

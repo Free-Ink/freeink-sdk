@@ -1,5 +1,7 @@
 #include "EpdBus.h"
 
+#include <driver/gpio.h>
+
 namespace freeink {
 
 void EpdBus::begin(const EpdPins& pins, uint32_t spiHz, BusyPolarity busy, int8_t spiMiso, int8_t coCs) {
@@ -11,7 +13,11 @@ void EpdBus::begin(const EpdPins& pins, uint32_t spiHz, BusyPolarity busy, int8_
 
   // Power the EPD rail first (boards that gate it, e.g. Sticky's EP_PWR_EN), so the
   // panel is alive before SPI bring-up and the reset pulse. No-op when unassigned.
+  // gpio_hold_dis first: PowerManager::powerDownRailsForSleep() holds this pin LOW
+  // for deep sleep, and the hold survives the wake reset — without releasing it,
+  // the HIGH write silently bounces off the latch and the rail stays off.
   if (pins.powerEnable >= 0) {
+    gpio_hold_dis(static_cast<gpio_num_t>(pins.powerEnable));
     pinMode(pins.powerEnable, OUTPUT);
     digitalWrite(pins.powerEnable, HIGH);
     delay(100);

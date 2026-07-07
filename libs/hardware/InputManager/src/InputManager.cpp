@@ -2,6 +2,7 @@
 
 #if FREEINK_CAP_TOUCH
 #include <Wire.h>
+#include <driver/gpio.h>
 #endif
 #if defined(TOUCH_PROBE_DEBUG)
 #include <esp_rom_sys.h>
@@ -704,7 +705,10 @@ void InputManager::beginGt911() {
   // Power the touch rail first (boards that gate it, e.g. Sticky's TOUCH_EN on
   // GPIO42). Active-high + settle, before the reset dance and I2C probe; without
   // this the GT911 never ACKs and touch is reported absent. No-op when unassigned.
+  // gpio_hold_dis first: the sleep path holds this pin LOW and the hold survives
+  // the deep-sleep wake reset; the HIGH write is a no-op until it is released.
   if (t.powerEnable >= 0) {
+    gpio_hold_dis(static_cast<gpio_num_t>(t.powerEnable));
     pinMode(t.powerEnable, OUTPUT);
     digitalWrite(t.powerEnable, HIGH);
     delay(50);

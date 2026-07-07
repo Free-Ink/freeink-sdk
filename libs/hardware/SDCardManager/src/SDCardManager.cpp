@@ -1,6 +1,7 @@
 #include "SDCardManager.h"
 
 #include <BoardConfig.h>
+#include <driver/gpio.h>
 #include <SPI.h>
 
 #include "SdmmcBlockDevice.h"  // no-op unless FREEINK_SD_SDMMC
@@ -50,7 +51,10 @@ bool SDCardManager::begin() {
   // Boards that gate the SD rail with a plain GPIO (e.g. Sticky's SD_PWR_EN on
   // GPIO10) must power it before probing. Active-high enable + a brief settle.
   // No-op when unassigned, and complements _powerHook for PMIC-gated boards.
+  // gpio_hold_dis first: the sleep path holds this pin LOW and the hold survives
+  // the deep-sleep wake reset; the HIGH write is a no-op until it is released.
   if (BoardConfig::ACTIVE.sd.powerEnable >= 0) {
+    gpio_hold_dis(static_cast<gpio_num_t>(BoardConfig::ACTIVE.sd.powerEnable));
     pinMode(BoardConfig::ACTIVE.sd.powerEnable, OUTPUT);
     digitalWrite(BoardConfig::ACTIVE.sd.powerEnable, HIGH);
     delay(10);

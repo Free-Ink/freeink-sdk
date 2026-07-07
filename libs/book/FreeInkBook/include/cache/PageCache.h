@@ -71,8 +71,8 @@ class PageCacheWriter : public PageSink {
 // a mismatch returns BookStatus::Stale so the caller can rebuild.
 class PageCacheReader {
  public:
-  // Index data (8 bytes per page) is read into `arena` and stays valid until
-  // that arena resets.
+  // Index data (8 bytes per page) and a copy of `name` are read into `arena`
+  // and stay valid until that arena resets.
   BookStatus open(CacheStorage& storage, const char* name, uint32_t expectedHash, Arena& arena);
 
   uint32_t pageCount() const { return pageCount_; }
@@ -90,7 +90,7 @@ class PageCacheReader {
 
  private:
   CacheStorage* storage_ = nullptr;
-  const char* name_ = nullptr;  // borrowed; must outlive the reader
+  const char* name_ = nullptr;  // arena-owned copy (made in open())
   uint32_t* offsets_ = nullptr;
   uint32_t* charStarts_ = nullptr;
   uint32_t pageCount_ = 0;

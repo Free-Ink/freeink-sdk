@@ -195,8 +195,12 @@ bool PageCacheWriter::finish() {
 BookStatus PageCacheReader::open(CacheStorage& storage, const char* name, uint32_t expectedHash,
                                  Arena& arena) {
   storage_ = &storage;
-  name_ = name;
+  // Own a copy: readPage() runs long after open(), and a borrowed stack
+  // buffer dangling here reads the wrong file (structurally-valid index,
+  // garbage blobs → Stale on every page).
+  name_ = arena.strdup(name);
   pageCount_ = 0;
+  if (name_ == nullptr) return BookStatus::OutOfMemory;
 
   const int64_t size = storage.fileSize(name);
   if (size < static_cast<int64_t>(kHeaderSize + kFooterSize)) return BookStatus::NotFound;

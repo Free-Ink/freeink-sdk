@@ -94,6 +94,18 @@ ThemeTokens defaultThemeTokens(FontId smallFont, FontId bodyFont, FontId titleFo
   return tokens;
 }
 
+ThemeTokens themeTokensForLineHeight(const int16_t lineHeight, const FontId smallFont, const FontId bodyFont,
+                                     const FontId titleFont) {
+  ThemeTokens tokens = defaultThemeTokens(smallFont, bodyFont, titleFont);
+  if (lineHeight <= 0) return tokens;
+  tokens.rowHeight = static_cast<int16_t>(lineHeight * 2 + 8);  // label + subtitle + breathing room
+  tokens.headerHeight = static_cast<int16_t>(lineHeight + 26);
+  tokens.footerHeight = static_cast<int16_t>(lineHeight + 22);
+  if (lineHeight + 14 > tokens.minTouchSize) tokens.minTouchSize = static_cast<int16_t>(lineHeight + 14);
+  if (lineHeight / 6 > tokens.spaceSm) tokens.spaceSm = static_cast<int16_t>(lineHeight / 6);
+  return tokens;
+}
+
 namespace {
 
 #define K(label, output, value) KeyboardKey{label, output, KeyKind::Normal, StateNormal, value, 1, true}
@@ -131,10 +143,25 @@ static const KeyboardKey SYMBOL_ROW1[] = {K("1", "1", '1'), K("2", "2", '2'), K(
 static const KeyboardKey SYMBOL_ROW2[] = {K("-", "-", '-'), K("/", "/", '/'), K(":", ":", ':'), K(";", ";", ';'),
                                           K("(", "(", '('), K(")", ")", ')'), K("$", "$", '$'), K("&", "&", '&'),
                                           K("@", "@", '@')};
-static const KeyboardKey SYMBOL_ROW3[] = {KS("ABC", KeyKind::Shift, QWERTY_KEY_SHIFT, 2), K(".", ".", '.'),
+static const KeyboardKey SYMBOL_ROW3[] = {KS("#+=", KeyKind::Shift, QWERTY_KEY_SHIFT, 2), K(".", ".", '.'),
                                           K(",", ",", ','), K("?", "?", '?'), K("!", "!", '!'), K("'", "'", '\''),
                                           K("\"", "\"", '"'), K("#", "#", '#'),
                                           KS("Del", KeyKind::Delete, QWERTY_KEY_BACKSPACE, 2)};
+static const KeyboardKey SYMBOL_ROW4[] = {KS("ABC", KeyKind::Mode, QWERTY_KEY_MODE, 2),
+                                          KS("Space", KeyKind::Space, QWERTY_KEY_SPACE, 6),
+                                          KS("OK", KeyKind::Ok, QWERTY_KEY_ENTER, 2)};
+
+// Second symbols page (the "#+=" layer): together with the first page it
+// covers every printable ASCII character the letter layers don't.
+static const KeyboardKey SYMBOL2_ROW1[] = {K("[", "[", '['), K("]", "]", ']'), K("{", "{", '{'), K("}", "}", '}'),
+                                           K("<", "<", '<'), K(">", ">", '>'), K("^", "^", '^'), K("*", "*", '*'),
+                                           K("+", "+", '+'), K("=", "=", '=')};
+static const KeyboardKey SYMBOL2_ROW2[] = {K("_", "_", '_'), K("\\", "\\", '\\'), K("|", "|", '|'),
+                                           K("~", "~", '~'), K("`", "`", '`'), K("%", "%", '%')};
+static const KeyboardKey SYMBOL2_ROW3[] = {KS("123", KeyKind::Shift, QWERTY_KEY_SHIFT, 2), K(".", ".", '.'),
+                                           K(",", ",", ','), K("?", "?", '?'), K("!", "!", '!'), K("'", "'", '\''),
+                                           K("\"", "\"", '"'), K("#", "#", '#'),
+                                           KS("Del", KeyKind::Delete, QWERTY_KEY_BACKSPACE, 2)};
 
 static const KeyboardKey FR_ROW1[] = {K("a", "a", 'a'), K("z", "z", 'z'), K("e", "e", 'e'), K("r", "r", 'r'),
                                       K("t", "t", 't'), K("y", "y", 'y'), K("u", "u", 'u'), K("i", "i", 'i'),
@@ -173,7 +200,9 @@ static const KeyboardRow EN_ROWS[] = {{EN_ROW1, 10, 0}, {EN_ROW2, 9, 1}, {EN_ROW
 static const KeyboardRow EN_SHIFT_ROWS[] = {{EN_SHIFT_ROW1, 10, 0}, {EN_SHIFT_ROW2, 9, 1}, {EN_SHIFT_ROW3, 9, 0},
                                            {EN_ROW4, 3, 0}};
 static const KeyboardRow SYMBOL_ROWS[] = {{SYMBOL_ROW1, 10, 0}, {SYMBOL_ROW2, 9, 1}, {SYMBOL_ROW3, 9, 0},
-                                         {EN_ROW4, 3, 0}};
+                                         {SYMBOL_ROW4, 3, 0}};
+static const KeyboardRow SYMBOL2_ROWS[] = {{SYMBOL2_ROW1, 10, 0}, {SYMBOL2_ROW2, 6, 2}, {SYMBOL2_ROW3, 9, 0},
+                                          {SYMBOL_ROW4, 3, 0}};
 static const KeyboardRow FR_ROWS[] = {{FR_ROW1, 10, 0}, {FR_ROW2, 10, 0}, {FR_ROW3, 9, 0}, {EN_ROW4, 3, 0}};
 static const KeyboardRow DE_ROWS[] = {{DE_ROW1, 10, 0}, {DE_ROW2, 10, 0}, {DE_ROW3, 10, 0}, {EN_ROW4, 3, 0}};
 static const KeyboardRow ES_ROWS[] = {{ES_ROW1, 10, 0}, {ES_ROW2, 10, 0}, {ES_ROW3, 9, 0}, {EN_ROW4, 3, 0}};
@@ -181,6 +210,7 @@ static const KeyboardRow ES_ROWS[] = {{ES_ROW1, 10, 0}, {ES_ROW2, 10, 0}, {ES_RO
 static const KeyboardLayout EN_LAYOUT{EN_ROWS, 4};
 static const KeyboardLayout EN_SHIFT_LAYOUT{EN_SHIFT_ROWS, 4};
 static const KeyboardLayout SYMBOL_LAYOUT{SYMBOL_ROWS, 4};
+static const KeyboardLayout SYMBOL2_LAYOUT{SYMBOL2_ROWS, 4};
 static const KeyboardLayout FR_LAYOUT{FR_ROWS, 4};
 static const KeyboardLayout DE_LAYOUT{DE_ROWS, 4};
 static const KeyboardLayout ES_LAYOUT{ES_ROWS, 4};
@@ -192,7 +222,9 @@ static const KeyboardLayout ES_LAYOUT{ES_ROWS, 4};
 }  // namespace
 
 const KeyboardLayout& builtinKeyboardLayout(KeyboardLayoutId id, bool shifted, bool symbols) {
-  if (symbols) return SYMBOL_LAYOUT;
+  // In the symbols layers `shifted` selects the second page: the shift slot
+  // reads "#+=" on page one and "123" on page two, mirroring phone keyboards.
+  if (symbols) return shifted ? SYMBOL2_LAYOUT : SYMBOL_LAYOUT;
   if (shifted && id == KeyboardLayoutId::QwertyEn) return EN_SHIFT_LAYOUT;
   switch (id) {
     case KeyboardLayoutId::AzertyFr:
@@ -205,6 +237,16 @@ const KeyboardLayout& builtinKeyboardLayout(KeyboardLayoutId id, bool shifted, b
     default:
       return EN_LAYOUT;
   }
+}
+
+const char* keyboardOutputFor(const KeyboardLayout& layout, int16_t value) {
+  for (uint8_t row = 0; row < layout.rowCount; ++row) {
+    for (uint8_t col = 0; col < layout.rows[row].count; ++col) {
+      const KeyboardKey& key = layout.rows[row].keys[col];
+      if (key.value == value && key.kind == KeyKind::Normal) return key.output;
+    }
+  }
+  return nullptr;
 }
 
 Rect centeredRect(Rect outer, Size inner) {

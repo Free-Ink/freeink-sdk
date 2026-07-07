@@ -48,6 +48,10 @@ class GfxRendererTarget final : public DrawTarget {
     device.width = static_cast<int16_t>(renderer.getScreenWidth());
     device.height = static_cast<int16_t>(renderer.getScreenHeight());
     device.orientation = static_cast<Orientation>(renderer.getOrientation());
+    // Same inverse-of-render-rotation selector as DisplayTarget: this makes
+    // touchToLogical() agree case-for-case with GfxRenderer::tapToLogical, so
+    // FreeInkUI components and the firmware's own tap path map taps identically.
+    device.touchOrientation = touchOrientationFor(device.orientation);
     device.hasButtons = true;
     return device;
   }

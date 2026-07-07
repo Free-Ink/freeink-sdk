@@ -1432,20 +1432,21 @@ void testLayoutTextWrapping() {
 
 
 void testTouchToLogical() {
-  // Panel-native normalized portrait coords -> logical frame, per orientation.
+  // Panel-native normalized coords -> logical frame, per the device's
+  // touchOrientation transform selector (default Portrait = identity).
   DeviceContext portrait = makeDevice(480, 800);
   Point p = touchToLogical(portrait, 0.5f, 0.25f);
   CHECK_EQ(p.x, 240);
   CHECK_EQ(p.y, 200);
 
-  portrait.orientation = Orientation::PortraitInverted;
+  portrait.touchOrientation = Orientation::PortraitInverted;
   p = touchToLogical(portrait, 0.0f, 0.0f);
   CHECK_EQ(p.x, 479);
   CHECK_EQ(p.y, 799);
 
-  // The WakeInk case: 416x240 landscape CCW — fbX = ny*W, fbY = (1-nx)*H.
+  // The WakeInk case: 416x240, CCW transform — fbX = ny*W, fbY = (1-nx)*H.
   DeviceContext landscape = makeDevice(416, 240);
-  landscape.orientation = Orientation::LandscapeCounterClockwise;
+  landscape.touchOrientation = Orientation::LandscapeCounterClockwise;
   p = touchToLogical(landscape, 0.0f, 0.0f);
   CHECK_EQ(p.x, 0);
   CHECK_EQ(p.y, 239);
@@ -1456,13 +1457,13 @@ void testTouchToLogical() {
   CHECK_EQ(p.x, 208);
   CHECK_EQ(p.y, 180);
 
-  landscape.orientation = Orientation::LandscapeClockwise;
+  landscape.touchOrientation = Orientation::LandscapeClockwise;
   p = touchToLogical(landscape, 0.0f, 0.0f);
   CHECK_EQ(p.x, 415);
   CHECK_EQ(p.y, 0);
 
   // Mounting mirrors apply in panel space, before the rotation.
-  landscape.orientation = Orientation::LandscapeCounterClockwise;
+  landscape.touchOrientation = Orientation::LandscapeCounterClockwise;
   p = touchToLogical(landscape, 0.0f, 0.0f, /*flipX=*/true, /*flipY=*/false);
   CHECK_EQ(p.x, 0);
   CHECK_EQ(p.y, 0);
@@ -1471,6 +1472,14 @@ void testTouchToLogical() {
   p = touchToLogical(landscape, 1.0f, 1.0f);
   CHECK(p.x <= 415);
   CHECK(p.y <= 239);
+
+  // touchOrientationFor() picks the transform that inverts a target's render
+  // rotation (DisplayTarget's Portrait render rotates 90 CW, so touch maps
+  // back through LandscapeClockwise, and so on).
+  CHECK(touchOrientationFor(Orientation::Portrait) == Orientation::LandscapeClockwise);
+  CHECK(touchOrientationFor(Orientation::PortraitInverted) == Orientation::LandscapeCounterClockwise);
+  CHECK(touchOrientationFor(Orientation::LandscapeClockwise) == Orientation::PortraitInverted);
+  CHECK(touchOrientationFor(Orientation::LandscapeCounterClockwise) == Orientation::Portrait);
 }
 
 
@@ -1704,7 +1713,10 @@ void testEReaderSettingsComponents() {
   bool sawInsetStepperPlus = false;
   for (size_t i = 0; i < draw.opCount; ++i) {
     if (draw.ops[i].kind == FakeDrawTarget::Op::Stroke && draw.ops[i].radius == 3) sawToggleRadius = true;
-    if (draw.ops[i].kind == FakeDrawTarget::Op::Fill && draw.ops[i].rect.x == 200 && draw.ops[i].rect.width == 32) {
+    // Stepper sizes derive from the value font (lineH 12): buttons 22h/30w,
+    // value slot measure("12") + 12 = 24. Plus button: 240 - 8 - 30 - 6 - 24
+    // - 6 - 30... i.e. controlsX 136 + 30 + 6 + 24 + 6 = 202.
+    if (draw.ops[i].kind == FakeDrawTarget::Op::Fill && draw.ops[i].rect.x == 202 && draw.ops[i].rect.width == 30) {
       sawInsetStepperPlus = true;
     }
   }
@@ -1807,6 +1819,109 @@ void testLocalizedKeyboardLayout() {
   CHECK_EQ(interactions.data()[28].action, 412);
   CHECK_EQ(interactions.data()[31].action, 413);
   CHECK_EQ(draw.countKind(FakeDrawTarget::Op::Stroke), 0u);
+}
+
+void testSymbolKeyboardPages() {
+  // `shifted` pages the symbols layers: page one ("?123") and page two ("#+=").
+  const KeyboardLayout& page1 = builtinKeyboardLayout(KeyboardLayoutId::QwertyEn, false, true);
+  const KeyboardLayout& page2 = builtinKeyboardLayout(KeyboardLayoutId::QwertyEn, true, true);
+  CHECK(&page1 != &page2);
+  CHECK(std::strcmp(page1.rows[2].keys[0].label, "#+=") == 0);   // shift slot pages forward
+  CHECK(std::strcmp(page2.rows[2].keys[0].label, "123") == 0);   // ...and back
+  CHECK(std::strcmp(page1.rows[3].keys[0].label, "ABC") == 0);   // mode slot exits to letters
+  CHECK(std::strcmp(page2.rows[3].keys[0].label, "ABC") == 0);
+
+  // The four English layers together cover every printable ASCII character.
+  bool covered[128] = {};
+  covered[' '] = true;  // the space key emits value 32 (QWERTY_KEY_SPACE)
+  const KeyboardLayout* layers[] = {
+      &builtinKeyboardLayout(KeyboardLayoutId::QwertyEn, false, false),
+      &builtinKeyboardLayout(KeyboardLayoutId::QwertyEn, true, false),
+      &page1,
+      &page2,
+  };
+  for (const KeyboardLayout* layout : layers) {
+    for (uint8_t row = 0; row < layout->rowCount; ++row) {
+      for (uint8_t col = 0; col < layout->rows[row].count; ++col) {
+        const char* out = layout->rows[row].keys[col].output;
+        if (out && out[0] > 0 && out[1] == 0) covered[static_cast<int>(out[0])] = true;
+      }
+    }
+  }
+  for (int c = 0x20; c <= 0x7E; ++c) CHECK(covered[c]);
+}
+
+void testKeyboardEntry() {
+  char buf[12] = "";
+  KeyboardEntry kb;
+  kb.attach(buf, sizeof buf, /*startShifted=*/true);
+
+  // Shift auto-releases after one letter.
+  CHECK(kb.key('H'));
+  CHECK(!kb.shifted);
+  CHECK(kb.key('i'));
+  CHECK(std::strcmp(buf, "Hi") == 0);
+  CHECK_EQ(kb.length(), 2u);
+
+  // Symbols: mode() enters, shift() pages, layers stay sticky across keys.
+  kb.mode();
+  CHECK(kb.symbols);
+  CHECK(kb.key('1'));
+  CHECK(kb.symbols);
+  kb.shift();  // page two ("#+=")
+  CHECK(kb.key('['));
+  CHECK(std::strcmp(buf, "Hi1[") == 0);
+  kb.mode();  // back to letters
+  CHECK(!kb.symbols);
+  CHECK(!kb.shifted);
+
+  // Localized keys insert the layout's UTF-8 output, and backspace removes
+  // the whole code point — the (char)value cast this replaces corrupted both.
+  kb.layout = KeyboardLayoutId::SpanishEs;
+  CHECK(kb.key(1201));  // ñ
+  CHECK(std::strcmp(buf, "Hi1[\xc3\xb1") == 0);
+  CHECK(kb.backspace());
+  CHECK(std::strcmp(buf, "Hi1[") == 0);
+
+  // Full buffer: append fails, contents stay intact and terminated.
+  kb.attach(buf, 3);  // resumes from "Hi1[" truncated view: len clamps to cap-1
+  CHECK_EQ(kb.length(), 2u);
+  CHECK(!kb.key('x'));
+  CHECK_EQ(kb.length(), 2u);
+
+  // Unknown ids (shift/mode/delete key values) insert nothing.
+  kb.attach(buf, sizeof buf);
+  CHECK(!kb.key(QWERTY_KEY_MODE));
+}
+
+void testHeaderLeadingButton() {
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice();
+  InputSnapshot input;
+  InteractionBuffer<8> interactions;
+  Frame<8> frame(draw, device, input, interactions);
+
+  HeaderProps props;
+  props.title = "Settings";
+  props.centered = true;
+  props.borderEdges = EdgeBottom;
+  props.leadingIcon = lucideDeleteIcon16();  // any bitmap works as the icon
+  props.leadingAction = 500;
+  header(frame, Rect{0, 0, 240, 44}, props);
+
+  // The leading button registers its action and draws the icon.
+  CHECK_EQ(interactions.count(), 1u);
+  CHECK_EQ(interactions.data()[0].action, 500);
+  CHECK(interactions.data()[0].rect.width >= 36);
+  CHECK(draw.countKind(FakeDrawTarget::Op::Bitmap) >= 1u);
+
+  // Without a leading action the header registers nothing.
+  InteractionBuffer<8> plain;
+  Frame<8> plainFrame(draw, device, input, plain);
+  HeaderProps bare;
+  bare.title = "Settings";
+  header(plainFrame, Rect{0, 0, 240, 44}, bare);
+  CHECK_EQ(plain.count(), 0u);
 }
 
 void testScreenKeyboardUsesResponsiveHeight() {
@@ -1976,8 +2091,10 @@ void testHeaderBorderEdges() {
   theme.headerHeight = 20;
   Screen<8> screen(frame, theme);
 
+  // The themed header supplies a 1px divider when the theme's popup style has
+  // no border of its own, so default headers match the documented divider.
   screen.header("Top");
-  CHECK_EQ(draw.countKind(FakeDrawTarget::Op::Line), 0u);
+  CHECK_EQ(draw.countKind(FakeDrawTarget::Op::Line), 1u);
   CHECK_EQ(draw.countKind(FakeDrawTarget::Op::Stroke), 0u);
 
   FakeDrawTarget boxedDraw;
@@ -2233,6 +2350,9 @@ int main() {
   testLvglParityControls();
   testQwertyKeyboardComponent();
   testLocalizedKeyboardLayout();
+  testSymbolKeyboardPages();
+  testKeyboardEntry();
+  testHeaderLeadingButton();
   testScreenKeyboardUsesResponsiveHeight();
   testEReaderChromeMenusAndPanels();
   testEReaderBookSurfaces();

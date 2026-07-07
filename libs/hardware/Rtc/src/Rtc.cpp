@@ -1,5 +1,7 @@
 #include "Rtc.h"
 
+#include <time.h>
+
 #include <BoardConfig.h>
 
 #if FREEINK_CAP_RTC
@@ -173,6 +175,29 @@ bool Rtc::set(const DateTime& dt) {
   return true;
 }
 
+bool Rtc::adjust(const int32_t seconds, DateTime* out) {
+  DateTime now{};
+  if (!this->now(now)) return false;
+  // Round-trip through mktime so day/month/year carries are calendar-correct
+  // (mktime normalizes out-of-range fields; the fixed offset cancels).
+  struct tm t{};
+  t.tm_year = now.year - 1900;
+  t.tm_mon = now.month - 1;
+  t.tm_mday = now.day;
+  t.tm_hour = now.hour;
+  t.tm_min = now.minute;
+  t.tm_sec = now.second;
+  time_t epoch = mktime(&t) + seconds;
+  localtime_r(&epoch, &t);
+  const DateTime dt{static_cast<uint16_t>(t.tm_year + 1900), static_cast<uint8_t>(t.tm_mon + 1),
+                    static_cast<uint8_t>(t.tm_mday),         static_cast<uint8_t>(t.tm_hour),
+                    static_cast<uint8_t>(t.tm_min),          static_cast<uint8_t>(t.tm_sec),
+                    static_cast<uint8_t>(t.tm_wday)};
+  if (!set(dt)) return false;
+  if (out) *out = dt;
+  return true;
+}
+
 }  // namespace freeink
 
 #else  // FREEINK_CAP_RTC — no RTC on this board.
@@ -181,6 +206,7 @@ namespace freeink {
 bool Rtc::begin() { return false; }
 bool Rtc::now(DateTime&) { return false; }
 bool Rtc::set(const DateTime&) { return false; }
+bool Rtc::adjust(int32_t, DateTime*) { return false; }
 }  // namespace freeink
 
 #endif  // FREEINK_CAP_RTC

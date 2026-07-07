@@ -84,7 +84,14 @@ firmware  ─calls─▶  EInkDisplay  (alias of freeink::FreeInkDisplay, the fa
   polarity (per-controller default, board-overridable via
   `BoardConfig::ACTIVE.displaySpiHz`).
 - **`BoardConfig`** — the one compile-time-selected description of a device:
-  pins, geometry, controller, input style, touch, frontlight, audio.
+  pins, geometry, controller, input style, touch, frontlight, audio, power
+  latches. Boot helpers keep board bring-up out of app code:
+  `BoardConfig::holdPowerRails()` asserts the profile's power-latch pins
+  (battery-latched boards power off without it), and
+  `BoardConfig::releaseSdRail()` rescues an SD rail a previous firmware's
+  sleep left gpio-held off — required before first display use on boards
+  where SD shares the display SPI bus (`SDCardManager::begin()` does it
+  itself).
 
 ### Nothing device-specific is hardcoded in generic code
 

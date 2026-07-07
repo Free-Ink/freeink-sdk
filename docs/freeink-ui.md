@@ -103,6 +103,7 @@ AppState state;
 App app(target, target.deviceContext());
 
 void setup() {
+  app.setClearColor(freeink::ui::Color::White);  // start each paint from a blank canvas
   app.setScreen(homeScreen, &state);
   app.on(ActionOpen, handleOpen, &state);
 }
@@ -110,17 +111,9 @@ void setup() {
 void loop() {
   freeink::ui::InputSnapshot input = readInputSnapshot();
   freeink::ui::ActionEvent event = app.render(input);
-  switch (app.lastRenderRefreshHint()) {
-    case freeink::ui::RefreshHint::Full:
-    case freeink::ui::RefreshHint::Clean:
-      display.displayBuffer(FreeInkDisplay::FULL_REFRESH);
-      break;
-    case freeink::ui::RefreshHint::Fast:
-      display.displayBuffer(FreeInkDisplay::FAST_REFRESH);
-      break;
-    case freeink::ui::RefreshHint::None:
-      break;
-  }
+  // present() maps the frame's RefreshHint to the panel's refresh modes
+  // (Full/Clean -> FULL_REFRESH, Fast -> FAST_REFRESH, None -> no push).
+  freeink::ui::present(display, app.lastRenderRefreshHint());
 
   if (app.invalidated()) {
     // An action handler changed state after this render pass. Render again on
@@ -133,6 +126,15 @@ void loop() {
 `FreeInkApp` does not own your display refresh policy. `lastRenderRefreshHint()`
 describes the frame just drawn, while `invalidated()` / `refreshHint()` describe
 whether an action handler changed state and a follow-up render is needed.
+`present()` (from `FreeInkUIDisplayTarget.h`, compiled only when
+`EInkDisplay.h` is on the include path) is the standard hint-to-panel mapping;
+firmware with its own refresh policy can keep switching on the hint instead.
+
+Frames do not clear the target on their own — without `setClearColor()` (or an
+app-side clear) the previous screen shows through wherever the new one doesn't
+draw. For screen changes, `invalidateTransition()` requests a fast partial
+refresh with a periodic full refresh (every 6th by default, see
+`setTransitionFullEvery()`) to clear accumulated ghosting.
 
 #### Input Snapshot
 
@@ -633,7 +635,38 @@ keyboard.modeAction = ActionKeyboardMode;
 keyboard.deleteAction = ActionKeyboardDelete;
 keyboard.okAction = ActionKeyboardOk;
 keyboard.selectedIndex = focusedKey;
+keyboard.shifted = state.shifted;
+keyboard.symbols = state.symbols;
 qwertyKeyboard(ui, keyboardRect, keyboard);
+```
+
+The keyboard is stateless like every component: Shift and mode ("?123"/"ABC")
+keys only report their actions. With `symbols` set, `shifted` selects the
+second symbols page — the shift slot reads "#+=" on page one and "123" on page
+two. The two pages plus the letter layers cover every printable ASCII
+character.
+
+`KeyboardEntry` owns the editing state so apps don't hand-roll it: the
+shift/symbol layer flags, layout-correct UTF-8 append, and multi-byte-aware
+backspace over a caller-owned buffer. Note that keys report stable ids in
+`ActionEvent::value` — ASCII keys their code point, localized keys (é, ñ, ß)
+ids above 1000 — so casting the value to `char` corrupts non-ASCII layouts;
+`KeyboardEntry::key()` (or the `keyboardOutputFor()` lookup) inserts the
+layout's real output.
+
+```cpp
+freeink::ui::KeyboardEntry kb;               // in app state
+kb.attach(state.name, sizeof state.name,     // bind the field being edited
+          /*startShifted=*/true);
+
+// Route the four keyboard actions:
+kb.key(event.value);  // insert; Shift auto-releases, symbol pages stay sticky
+kb.backspace();       // removes one code point, not one byte
+kb.shift();           // letter case, or symbol page one/two
+kb.mode();            // enter/leave the symbol layers
+
+// Each frame, mirror the layer flags into the props:
+freeink::ui::applyEntry(keys, kb);
 ```
 
 For custom or app-provided layouts, pass `KeyboardProps` directly:

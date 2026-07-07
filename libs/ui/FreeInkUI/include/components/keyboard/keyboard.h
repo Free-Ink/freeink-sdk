@@ -61,6 +61,89 @@ struct KeyboardProps {
 
 const KeyboardLayout& builtinKeyboardLayout(KeyboardLayoutId id, bool shifted = false, bool symbols = false);
 
+// The UTF-8 text a key id inserts under the given layout (nullptr for
+// shift/mode/delete/OK and unknown ids). Keys report stable ids in
+// ActionEvent::value — ASCII keys their code point, localized keys (é, ñ, ß)
+// ids above 1000 — so casting the value to char corrupts non-ASCII layouts;
+// always insert through this lookup.
+const char* keyboardOutputFor(const KeyboardLayout& layout, int16_t value);
+
+// The editing state every on-screen-keyboard consumer otherwise hand-rolls:
+// the shift/symbols layers, layout-correct UTF-8 append, and multi-byte-aware
+// backspace over a caller-owned buffer. Bind a buffer with attach(), route the
+// keyboard's key/shift/mode/delete actions to the matching methods, and mirror
+// the flags into the keyboard props each frame (QwertyKeyboardProps takes
+// layout/shifted/symbols verbatim; see applyEntry() in qwerty-keyboard.h).
+class KeyboardEntry {
+ public:
+  KeyboardLayoutId layout = KeyboardLayoutId::QwertyEn;
+  bool shifted = false;
+  bool symbols = false;
+
+  // Point the entry at a NUL-terminated buffer (capacity includes the NUL).
+  // Editing resumes from the buffer's current contents.
+  void attach(char* buffer, size_t capacity, bool startShifted = false) {
+    buf_ = buffer;
+    cap_ = buffer ? capacity : 0;
+    len_ = 0;
+    if (buf_) {
+      while (len_ + 1 < cap_ && buf_[len_]) ++len_;
+      buf_[len_] = 0;
+    }
+    shifted = startShifted;
+    symbols = false;
+  }
+
+  // Insert the key's layout output (ActionEvent::value from the key action).
+  // Shift auto-releases after one letter; symbol pages are sticky.
+  bool key(int16_t value) {
+    const char* out = keyboardOutputFor(builtinKeyboardLayout(layout, shifted, symbols), value);
+    if (!symbols) shifted = false;
+    if (!out || !buf_) return false;
+    size_t n = 0;
+    while (out[n]) ++n;
+    if (len_ + n + 1 > cap_) return false;
+    for (size_t i = 0; i < n; ++i) buf_[len_ + i] = out[i];
+    len_ += n;
+    buf_[len_] = 0;
+    return true;
+  }
+
+  // Remove the last character (one code point, not one byte).
+  bool backspace() {
+    if (!buf_ || len_ == 0) return false;
+    --len_;
+    while (len_ > 0 && (static_cast<uint8_t>(buf_[len_]) & 0xC0) == 0x80) --len_;
+    buf_[len_] = 0;
+    return true;
+  }
+
+  // The shift slot: letter case in the letter layers, page one/two in symbols.
+  void shift() { shifted = !shifted; }
+
+  // The mode slot ("?123"/"ABC"): enter or leave the symbol layers.
+  void mode() {
+    symbols = !symbols;
+    shifted = false;
+  }
+
+  void clear(bool startShifted = false) {
+    if (buf_ && cap_) buf_[0] = 0;
+    len_ = 0;
+    shifted = startShifted;
+    symbols = false;
+  }
+
+  const char* text() const { return buf_ ? buf_ : ""; }
+  size_t length() const { return len_; }
+  bool empty() const { return len_ == 0; }
+
+ private:
+  char* buf_ = nullptr;
+  size_t cap_ = 0;
+  size_t len_ = 0;
+};
+
 template <size_t MaxInteractions>
 void keyboard(Frame<MaxInteractions>& frame, Rect rect, const KeyboardProps& props) {
   if (!props.layout || !props.layout->rows || props.layout->rowCount == 0) return;

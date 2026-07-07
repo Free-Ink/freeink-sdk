@@ -90,11 +90,8 @@ class Screen {
     props.title = title;
     props.subtitle = subtitle;
     props.rightLabel = rightLabel;
-    props.titleText = theme_.titleText;
-    props.subtitleText = theme_.smallText;
-    props.styles = theme_.popup;
     props.borderEdges = EdgeBottom;
-    ui::header(frame_, take(anchor, theme_.headerHeight), props);
+    header(props, anchor);
   }
 
   void header(const HeaderProps& props, LayoutAnchor anchor = LayoutAnchor::Top) {
@@ -102,7 +99,28 @@ class Screen {
     if (themed.titleText.font == 0) themed.titleText = theme_.titleText;
     if (themed.subtitleText.font == 0) themed.subtitleText = theme_.smallText;
     if (themed.styles.unset()) themed.styles = theme_.popup;
+    if (themed.leadingStyles.unset()) themed.leadingStyles = theme_.button;
+    // Headers document a divider by default; give the themed style a border
+    // when the theme's popup style ships without one (the built-in default).
+    if (themed.styles.normal.border.kind == PaintKind::None) {
+      themed.styles.normal.border = Paint::solid(Color::Black);
+      themed.styles.normal.borderWidth = 1;
+    }
+    themed.minTouchSize = theme_.minTouchSize;
     ui::header(frame_, take(anchor, theme_.headerHeight), themed);
+  }
+
+  // Sub-screen chrome: leading back button + centered title + bottom rule.
+  void navHeader(const char* title, ActionId backAction, BitmapRef backIcon,
+                 LayoutAnchor anchor = LayoutAnchor::Top) {
+    HeaderProps props;
+    props.title = title;
+    props.centered = true;
+    props.borderEdges = EdgeBottom;
+    props.leadingIcon = backIcon;
+    props.leadingAction = backAction;
+    props.leadingRadius = 8;
+    header(props, anchor);
   }
 
   void status(const StatusBarProps& props, LayoutAnchor anchor = LayoutAnchor::Top) {
@@ -211,6 +229,16 @@ class Screen {
     if (themed.style.font == 0) themed.style = theme_.bodyText;
     ui::textArea(frame_, height > 0 ? take(anchor, height) : content_, themed);
   }
+
+  // A one-line message centered in the remaining body — empty states,
+  // "Scanning…" notes — instead of hand-rolling lineHeight + centeredRect.
+  void centeredText(const char* message, TextStyle style) {
+    if (!message) return;
+    style.align = TextAlign::Center;
+    const int16_t lh = frame_.target().lineHeight(style.font);
+    frame_.target().text(centeredRect(content_, Size{content_.width, lh}), message, style);
+  }
+  void centeredText(const char* message) { centeredText(message, theme_.smallText); }
 
   void footer(const FooterAction* actions, uint8_t count, LayoutAnchor anchor = LayoutAnchor::Bottom) {
     FooterProps props;
@@ -326,7 +354,13 @@ class FreeInkApp {
   using ActionHandler = void (*)(const ActionEvent& event, void* user);
 
   FreeInkApp(DrawTarget& target, DeviceContext device, AssetResolver* assets = nullptr)
-      : target_(target), device_(device), assets_(assets) {}
+      : target_(target), device_(device), assets_(assets) {
+    // Size the default metric tokens to the target's actual body font: the
+    // static 44px defaults fit ~18px UI fonts but clip label+subtitle rows
+    // with larger fonts (the bundled Noto Sans is 34px/line). setTheme()
+    // still replaces everything.
+    theme_ = themeTokensForLineHeight(target.lineHeight(theme_.bodyText.font));
+  }
 
   void setDevice(DeviceContext device) { device_ = device; }
   const DeviceContext& device() const { return device_; }
@@ -369,6 +403,25 @@ class FreeInkApp {
     if (static_cast<uint8_t>(hint) > static_cast<uint8_t>(refreshHint_)) refreshHint_ = hint;
   }
 
+  // Screen-transition redraw with a ghosting policy: fast partial refreshes
+  // keep transitions snappy, with a full refresh every Nth transition to clear
+  // accumulated ghosting (see setTransitionFullEvery).
+  void invalidateTransition() {
+    const bool full = transitionFullEvery_ > 0 && ++transitions_ % transitionFullEvery_ == 0;
+    invalidate(full ? RefreshHint::Full : RefreshHint::Fast);
+  }
+
+  // How often invalidateTransition() promotes to a full refresh (0 = never).
+  void setTransitionFullEvery(uint8_t n) { transitionFullEvery_ = n; }
+
+  // Fill the whole target with this color before each paint. Frames do not
+  // clear the target on their own — without this (or an app-side clear) the
+  // previous screen shows through wherever the new one doesn't draw.
+  void setClearColor(Color color) {
+    clearPaint_ = Paint::solid(color);
+    clearBeforePaint_ = true;
+  }
+
   bool invalidated() const { return invalidated_; }
   RefreshHint refreshHint() const { return refreshHint_; }
   RefreshHint lastRenderRefreshHint() const { return lastRenderHint_; }
@@ -381,6 +434,14 @@ class FreeInkApp {
     invalidated_ = false;
     refreshHint_ = RefreshHint::None;
 
+    // Tap flash bookkeeping: a flash armed by the previous frame's dispatch
+    // stays visible for exactly the repaint that shows the tap's result, then
+    // clears (the panel keeps showing it until the next real refresh).
+    if (flashTicks_ > 0 && --flashTicks_ == 0) interactions_.clearFlash();
+    flashSuppressed_ = false;
+
+    if (clearBeforePaint_) target_.fill(device_.screen(), clearPaint_);
+
     Frame<MaxInteractions> frame(target_, device_, input, interactions_, assets_);
     ScreenType screen(frame, theme_);
     if (screen_) screen_(screen, screenUser_);
@@ -388,8 +449,30 @@ class FreeInkApp {
     if (lastEvent_) {
       dispatch(lastEvent_);
       invalidate(RefreshHint::Fast);
+      // Tap feedback: paint the tapped element with its focused style in the
+      // same refresh that shows the tap's result — visual confirmation with
+      // no extra panel refresh. Skipped when the handler called
+      // clearTapFlash() (screen transitions).
+      if (!flashSuppressed_) {
+        interactions_.setFlash(lastEvent_.action, lastEvent_.value);
+        flashTicks_ = 2;  // this frame + the invalidated repaint that gets pushed
+      }
     }
     return lastEvent_;
+  }
+
+  // True while a held touch sits on an interactive element (the routing marks
+  // it active and it renders with its StateActive style).
+  bool touchActive() const { return interactions_.activeIndex() >= 0; }
+
+  // Drop a pending tap flash. Call from handlers that navigate to a different
+  // screen: the tapped element no longer exists there, and an element on the
+  // NEW screen with the same action/value would inherit the gray instead
+  // (e.g. a back button graying the next screen's back button).
+  void clearTapFlash() {
+    interactions_.clearFlash();
+    flashTicks_ = 0;
+    flashSuppressed_ = true;  // also skip the arm that follows this dispatch
   }
 
  private:
@@ -421,6 +504,12 @@ class FreeInkApp {
   RefreshHint refreshHint_ = RefreshHint::Full;
   RefreshHint lastRenderHint_ = RefreshHint::None;
   ActionEvent lastEvent_{};
+  uint8_t flashTicks_ = 0;      // frames the current tap flash stays armed
+  bool flashSuppressed_ = false;  // set by clearTapFlash() during dispatch
+  uint8_t transitions_ = 0;
+  uint8_t transitionFullEvery_ = 6;
+  Paint clearPaint_{};
+  bool clearBeforePaint_ = false;
 };
 
 }  // namespace ui

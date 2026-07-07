@@ -38,6 +38,13 @@ class Rtc {
   // Sets the time. Returns false on I2C error.
   bool set(const DateTime& dt);
 
+  // Shifts the running clock by a signed number of seconds, calendar-correct
+  // across midnight/month/year boundaries (e.g. a time-zone change from
+  // settings: adjust(deltaMinutes * 60)). Reads, shifts, writes back; `out`,
+  // when given, receives the new time so callers can refresh UI state in one
+  // call. Returns false when the RTC is absent or the read/write fails.
+  bool adjust(int32_t seconds, DateTime* out = nullptr);
+
  private:
   bool begun_ = false;
 };

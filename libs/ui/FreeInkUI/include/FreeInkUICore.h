@@ -65,6 +65,14 @@ struct DeviceContext {
   int16_t width = 0;
   int16_t height = 0;
   Orientation orientation = Orientation::Portrait;
+  // Transform selector for touchToLogical(): maps PANEL-NATIVE normalized touch
+  // coordinates (the BoardConfig touch contract) into this logical frame.
+  // Distinct from `orientation` (what the app renders as): a DisplayTarget
+  // rendering Portrait on a landscape-native panel rotates 90° CW, so its touch
+  // transform is LandscapeClockwise — the render rotation's inverse. Render
+  // targets set this (see DisplayTarget::touchOrientation()); the default,
+  // Portrait, is the identity mapping.
+  Orientation touchOrientation = Orientation::Portrait;
   bool hasTouch = false;
   bool hasButtons = true;
   Insets safeArea{};
@@ -74,19 +82,39 @@ struct DeviceContext {
   Rect safeRect() const { return screen().inset(safeArea); }
 };
 
-// Maps a touch point reported in normalized panel-native portrait
-// coordinates (0..1, as the input layer reports taps) to logical screen
-// coordinates under the device's orientation — the transform every app
-// otherwise re-derives by hand. flipX/flipY compensate for mirrored panel
-// mounting; they are a property of the board, not the app, so feed them from
-// the board profile or a config constant.
+// The touchOrientation selector that inverts a target's render rotation: a
+// target rendering `render` rotates logical->panel by that rotation, so
+// panel-native touch must map back through its inverse. This is the same
+// per-orientation transform GfxRenderer::tapToLogical bakes into its cases,
+// so render targets built on either path agree.
+inline Orientation touchOrientationFor(const Orientation render) {
+  switch (render) {
+    case Orientation::Portrait:
+      return Orientation::LandscapeClockwise;
+    case Orientation::PortraitInverted:
+      return Orientation::LandscapeCounterClockwise;
+    case Orientation::LandscapeClockwise:
+      return Orientation::PortraitInverted;
+    case Orientation::LandscapeCounterClockwise:
+    default:
+      return Orientation::Portrait;
+  }
+}
+
+// Maps a touch point reported in normalized panel-native coordinates (0..1,
+// as InputManager reports taps — aligned to the display's native frame per
+// the BoardConfig touch contract) to logical screen coordinates under the
+// device's touchOrientation — the transform every app otherwise re-derives by
+// hand. flipX/flipY compensate for mirrored panel mounting; they are a
+// property of the board, not the app, so feed them from the board profile or
+// a config constant.
 inline Point touchToLogical(const DeviceContext& device, float nx, float ny, const bool flipX = false,
                             const bool flipY = false) {
   if (flipX) nx = 1.0f - nx;
   if (flipY) ny = 1.0f - ny;
   float lx;
   float ly;
-  switch (device.orientation) {
+  switch (device.touchOrientation) {
     case Orientation::PortraitInverted:
       lx = 1.0f - nx;
       ly = 1.0f - ny;
@@ -741,6 +769,9 @@ class InteractionBuffer final : public InteractionSink {
       const Interaction& active = interactions_[active_];
       if (active.action == action && active.value == value) state |= StateActive;
     }
+    // Tap flash renders with the focused style (light-gray dither) — a gray
+    // acknowledgment overlay, softer than the inverted active style.
+    if (flashAction_ != NO_ACTION && flashAction_ == action && flashValue_ == value) state |= StateFocused;
     return state;
   }
 
@@ -811,11 +842,29 @@ class InteractionBuffer final : public InteractionSink {
     return event;
   }
 
+  // Index of the interaction currently under a held touch (-1 when none).
+  // Lets the render loop repaint for touch-down feedback: the active element
+  // draws with its StateActive style while the finger is down.
+  int16_t activeIndex() const { return active_; }
+
+  // Tap flash: mark one action/value for the frame(s) that follow a
+  // dispatched tap, so the tapped element paints a gray acknowledgment (the
+  // focused style's light-gray dither) in the same refresh that shows the
+  // tap's result — visual confirmation with no extra panel refresh.
+  // FreeInkApp arms this on dispatch and clears it after the repaint.
+  void setFlash(ActionId action, int16_t value) {
+    flashAction_ = action;
+    flashValue_ = value;
+  }
+  void clearFlash() { flashAction_ = NO_ACTION; }
+
  private:
   Interaction interactions_[MaxInteractions]{};
   size_t count_ = 0;
   int16_t focused_ = -1;
   int16_t active_ = -1;
+  ActionId flashAction_ = NO_ACTION;  // tap-flash target (see setFlash)
+  int16_t flashValue_ = 0;
   bool overflowed_ = false;
 
   bool focusable(const Interaction& interaction) const {
@@ -989,6 +1038,13 @@ StyleSet defaultKeyStyles();
 StyleSet defaultPopupStyles();
 StyleSet plainStyles(Paint foreground = Paint::solid(Color::Black));
 ThemeTokens defaultThemeTokens(FontId smallFont = 0, FontId bodyFont = 0, FontId titleFont = 0);
+// defaultThemeTokens with the metric tokens (rowHeight, header/footer heights,
+// touch size, small gap) derived from a font line height, so rows fit a
+// label+subtitle pair with whatever font the target binds. The static 44px
+// defaults assume ~18px UI fonts; the bundled Noto Sans is 34px/line.
+// FreeInkApp calls this with its target's body-font line height.
+ThemeTokens themeTokensForLineHeight(int16_t lineHeight, FontId smallFont = 0, FontId bodyFont = 0,
+                                     FontId titleFont = 0);
 inline int16_t clampI16(const int value, const int minValue = 0, const int maxValue = 32767) {
   if (value < minValue) return static_cast<int16_t>(minValue);
   if (value > maxValue) return static_cast<int16_t>(maxValue);

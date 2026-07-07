@@ -76,9 +76,16 @@ class DisplayTarget final : public DrawTarget {
     device.width = w_;
     device.height = h_;
     device.orientation = orientation_;
+    device.touchOrientation = touchOrientation();
     device.hasButtons = true;
     return device;
   }
+
+  // The touchToLogical() transform that inverts this target's render rotation.
+  // pixel() maps logical->panel as Portrait = 90° CW, PortraitInverted = 90°
+  // CCW, LandscapeClockwise = 180°, LandscapeCounterClockwise = native; touch
+  // arrives panel-native and must go the other way.
+  Orientation touchOrientation() const { return touchOrientationFor(orientation_); }
 
   Orientation orientation() const { return orientation_; }
   int16_t logicalWidth() const { return w_; }
@@ -389,3 +396,32 @@ class DisplayTarget final : public DrawTarget {
 
 }  // namespace ui
 }  // namespace freeink
+
+// Optional glue for the SDK's own display driver: push the frame FreeInkApp
+// just rendered with the panel refresh its RefreshHint asks for. Compiled only
+// when FreeInkDisplay's EInkDisplay.h is on the include path, mirroring the
+// GfxRenderer adapter's opt-in pattern; host builds skip it.
+#if __has_include(<EInkDisplay.h>)
+#include <EInkDisplay.h>
+#include <FreeInkApp.h>
+
+namespace freeink {
+namespace ui {
+
+inline void present(EInkDisplay& display, const RefreshHint hint) {
+  switch (hint) {
+    case RefreshHint::Full:
+    case RefreshHint::Clean:
+      display.displayBuffer(EInkDisplay::FULL_REFRESH);
+      break;
+    case RefreshHint::Fast:
+      display.displayBuffer(EInkDisplay::FAST_REFRESH);
+      break;
+    case RefreshHint::None:
+      break;
+  }
+}
+
+}  // namespace ui
+}  // namespace freeink
+#endif  // __has_include(<EInkDisplay.h>)

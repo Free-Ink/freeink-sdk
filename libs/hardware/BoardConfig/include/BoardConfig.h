@@ -16,6 +16,7 @@
 // selectDevice); ACTIVE defaults to a compile-time default until then.
 
 #include <Arduino.h>
+#include <driver/gpio.h>  // gpio_hold_dis in releaseSdRail()
 
 // ============================================================================
 // Build composition — devices x capabilities
@@ -447,6 +448,15 @@ struct DisplayOrientation {
   bool mirrorY;  // reverse gate/row (Y) order
 };
 
+// Power-rail latch pins a battery-powered board must drive HIGH early in boot
+// to keep itself on (PWR_HOLD / PWR_LOCK style latches, e.g. the Sticky's
+// GPIO45/46). Board truth lives here; asserting them is firmware policy — see
+// holdPowerRails(). Releasing the pins later is a software power-off.
+struct PowerConfig {
+  int8_t latch0 = PIN_UNASSIGNED;
+  int8_t latch1 = PIN_UNASSIGNED;
+};
+
 struct BoardProfile {
   Board board;
   const char* name;
@@ -481,6 +491,9 @@ struct BoardProfile {
   // 30px row is only ~3mm. Per-board and hand-tuned (PPI alone can't tell the 4.26"
   // X4 from the 3.97" Sticky); the firmware owns how it maps to metrics/fonts.
   float uiScale = 1.0f;
+  // Power-rail latch pins (see PowerConfig). Defaulted so existing profiles
+  // need no change; a board with a latch sets it.
+  PowerConfig power = {};
 };
 
 constexpr TouchConfig NO_TOUCH = {TouchController::None,
@@ -865,7 +878,10 @@ constexpr BoardProfile STICKY = {
     // Sensors on the shared sensor I2C bus (SDA1/SCL0, same as the fuel gauge):
     // PCF8563 RTC (0x51), SHT40 temp/humidity (0x44), LSM6DS3TR-C IMU (0x6A).
     {1, 0, 400000, 0x51, 0x44, 0x6A, 1, RtcType::Pcf8563, ImuType::Lsm6ds3},
-    1.2f};  // uiScale: touch device, 3.97" 800x480 — bump chrome to finger size
+    1.2f,  // uiScale: touch device, 3.97" 800x480 — bump chrome to finger size
+    // Power latch: PWR_HOLD GPIO45 + PWR_LOCK GPIO46, driven HIGH first thing in
+    // boot (the vendor demo's first init step) — see holdPowerRails().
+    {45, 46}};
 
 // Largest framebuffer (bytes) over the devices compiled into this build, derived
 // from the profiles above. The display facade sizes its static framebuffer to
@@ -971,6 +987,38 @@ inline bool isSticky() { return ACTIVE.board == Board::Sticky; }
 inline bool hasTouch() { return ACTIVE.touch.controller != TouchController::None; }
 inline bool hasPwmFrontlight() { return ACTIVE.frontlight.gpio != PIN_UNASSIGNED; }
 inline bool hasAudio() { return ACTIVE.audio.output != AudioOutput::None; }
+
+// Assert the board's power-rail latch pins. Battery-latched boards (e.g. the
+// Sticky) must call this first thing in setup() or the board powers off when
+// the user releases the power button. Releasing the pins (driving them LOW)
+// is a software power-off. No-op on boards without a latch.
+inline void holdPowerRails() {
+  for (const int8_t pin : {ACTIVE.power.latch0, ACTIVE.power.latch1}) {
+    if (pin >= 0) {
+      pinMode(pin, OUTPUT);
+      digitalWrite(pin, HIGH);
+    }
+  }
+}
+
+// Rescue the SD power rail before first display use. A previous firmware's
+// sleep path may have latched the rail off with gpio_hold_en — a state that
+// survives reset and reflashing — and on boards where SD shares the display's
+// SPI bus an unpowered card clamps SCLK/MOSI so the panel never hears a
+// command. Releases the hold, powers the card, and deselects its CS.
+// SDCardManager::begin() does this itself; apps that skip SD should call this
+// once before display.begin(). No-op on boards without a switched SD rail.
+inline void releaseSdRail() {
+  if (ACTIVE.sd.powerEnable >= 0) {
+    gpio_hold_dis(static_cast<gpio_num_t>(ACTIVE.sd.powerEnable));
+    pinMode(ACTIVE.sd.powerEnable, OUTPUT);
+    digitalWrite(ACTIVE.sd.powerEnable, HIGH);
+  }
+  if (ACTIVE.sd.cs >= 0) {
+    pinMode(ACTIVE.sd.cs, OUTPUT);
+    digitalWrite(ACTIVE.sd.cs, HIGH);
+  }
+}
 inline bool hasMic() { return ACTIVE.mic.input != MicInput::None; }
 inline bool hasBuzzer() { return ACTIVE.audio.buzzer != PIN_UNASSIGNED; }
 inline bool hasRtc() { return ACTIVE.sensors.rtcAddr != 0; }

@@ -26,6 +26,13 @@ struct QwertyKeyboardProps {
   bool inactiveSelection = false;
 };
 
+// Mirror a KeyboardEntry's layer state into the props for this frame.
+inline void applyEntry(QwertyKeyboardProps& props, const KeyboardEntry& entry) {
+  props.layout = entry.layout;
+  props.shifted = entry.shifted;
+  props.symbols = entry.symbols;
+}
+
 template <size_t MaxInteractions>
 void qwertyKeyboard(Frame<MaxInteractions>& frame, Rect rect, const QwertyKeyboardProps& props) {
   KeyboardProps keyboardProps;

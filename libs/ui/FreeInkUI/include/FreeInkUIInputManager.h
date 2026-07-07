@@ -64,6 +64,15 @@ inline InputSnapshot snapshotFrom(const InputManager& input, const DeviceContext
   snapshot.touchReleased = false;
   float nx = 0.0f;
   float ny = 0.0f;
+  // Press edge, mapped like the tap: lets interaction routing mark the element
+  // under the finger active on touch-down (pressed-style feedback) before the
+  // release delivers the action.
+  if (input.hasTouch() && input.wasTouchPressedAt(nx, ny)) {
+    const Point p = touchToLogical(device, nx, ny, touchFlipX, touchFlipY);
+    snapshot.touchPressed = true;
+    snapshot.touchX = p.x;
+    snapshot.touchY = p.y;
+  }
   if (input.hasTouch() && input.wasTouchTap(nx, ny)) {
     const Point p = touchToLogical(device, nx, ny, touchFlipX, touchFlipY);
     snapshot.touchReleased = true;

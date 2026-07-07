@@ -20,6 +20,15 @@ enum StyleFlags : uint8_t {
   StyleItalic = 1u << 1,
 };
 
+struct GlyphBitmap {
+  const uint8_t* pixels;  // w*h, 8-bit coverage (0 = transparent)
+  uint16_t width;
+  uint16_t height;
+  int16_t xoff;           // left bearing from pen position
+  int16_t yoff;           // top offset from baseline (negative = above)
+  int16_t advance;
+};
+
 class BookFont {
  public:
   virtual ~BookFont() = default;
@@ -43,6 +52,18 @@ class BookFont {
     (void)styleFlags;
     return 0;
   }
+};
+
+// A BookFont that can also rasterize — what PageRenderer and FontChain
+// consume. TtfFont implements it over stb_truetype; FreeInkUI's opt-in
+// FreeInkUIBookFont.h implements it over the bundled bitmap font so books
+// render with no font files at all.
+class RenderFont : public BookFont {
+ public:
+  virtual bool hasGlyph(uint32_t codepoint) const = 0;
+  // Returns nullptr for missing glyphs. The bitmap must stay valid until the
+  // next rasterize() call on the same font.
+  virtual const GlyphBitmap* rasterize(uint32_t codepoint, uint16_t sizePx) = 0;
 };
 
 }  // namespace book

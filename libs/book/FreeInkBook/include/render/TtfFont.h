@@ -33,23 +33,14 @@
 namespace freeink {
 namespace book {
 
-struct GlyphBitmap {
-  const uint8_t* pixels;  // w*h, 8-bit coverage (0 = transparent)
-  uint16_t width;
-  uint16_t height;
-  int16_t xoff;           // left bearing from pen position
-  int16_t yoff;           // top offset from baseline (negative = above)
-  int16_t advance;
-};
-
-class TtfFont : public BookFont {
+class TtfFont : public RenderFont {
  public:
   // `data` is borrowed and must outlive the font. The glyph arena backs all
   // caches; 32–64 KB is comfortable for one active reading size.
   bool init(const uint8_t* data, uint32_t len, Arena& glyphArena);
   bool ready() const { return ready_; }
 
-  bool hasGlyph(uint32_t codepoint) const;
+  bool hasGlyph(uint32_t codepoint) const override;
 
   // BookFont metrics.
   int16_t advance(uint32_t codepoint, uint16_t sizePx, uint8_t styleFlags) override;
@@ -61,7 +52,7 @@ class TtfFont : public BookFont {
   // Rasterizes (and caches) one glyph. Returns nullptr for missing glyphs or
   // when a single glyph exceeds the whole arena. The bitmap stays valid
   // until the cache flushes — consume or blit before rasterizing many more.
-  const GlyphBitmap* rasterize(uint32_t codepoint, uint16_t sizePx);
+  const GlyphBitmap* rasterize(uint32_t codepoint, uint16_t sizePx) override;
 
  private:
   struct AdvanceSlot {
@@ -100,7 +91,7 @@ class TtfFont : public BookFont {
 // applies only when both codepoints resolve to the same font.
 class FontChain : public BookFont {
  public:
-  bool add(TtfFont* font);
+  bool add(RenderFont* font);
 
   int16_t advance(uint32_t codepoint, uint16_t sizePx, uint8_t styleFlags) override;
   int16_t lineHeight(uint16_t sizePx) override;
@@ -110,10 +101,10 @@ class FontChain : public BookFont {
 
   // The font that will draw `codepoint` (primary when nobody has it — its
   // .notdef box is the honest signal of a missing glyph).
-  TtfFont* fontFor(uint32_t codepoint);
+  RenderFont* fontFor(uint32_t codepoint);
 
  private:
-  TtfFont* fonts_[4] = {nullptr, nullptr, nullptr, nullptr};
+  RenderFont* fonts_[4] = {nullptr, nullptr, nullptr, nullptr};
   uint8_t count_ = 0;
 };
 

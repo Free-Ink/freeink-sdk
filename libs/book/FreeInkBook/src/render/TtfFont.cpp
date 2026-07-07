@@ -164,13 +164,13 @@ const GlyphBitmap* TtfFont::rasterize(uint32_t codepoint, uint16_t sizePx) {
 
 // --- FontChain -----------------------------------------------------------------
 
-bool FontChain::add(TtfFont* font) {
-  if (font == nullptr || !font->ready() || count_ >= 4) return false;
+bool FontChain::add(RenderFont* font) {
+  if (font == nullptr || count_ >= 4) return false;
   fonts_[count_++] = font;
   return true;
 }
 
-TtfFont* FontChain::fontFor(uint32_t codepoint) {
+RenderFont* FontChain::fontFor(uint32_t codepoint) {
   for (uint8_t i = 0; i < count_; ++i) {
     if (fonts_[i]->hasGlyph(codepoint)) return fonts_[i];
   }
@@ -178,7 +178,7 @@ TtfFont* FontChain::fontFor(uint32_t codepoint) {
 }
 
 int16_t FontChain::advance(uint32_t codepoint, uint16_t sizePx, uint8_t styleFlags) {
-  TtfFont* font = fontFor(codepoint);
+  RenderFont* font = fontFor(codepoint);
   return font != nullptr ? font->advance(codepoint, sizePx, styleFlags) : 0;
 }
 
@@ -192,8 +192,8 @@ int16_t FontChain::ascent(uint16_t sizePx) {
 
 int16_t FontChain::kerning(uint32_t left, uint32_t right, uint16_t sizePx,
                            uint8_t styleFlags) {
-  TtfFont* a = fontFor(left);
-  TtfFont* b = fontFor(right);
+  RenderFont* a = fontFor(left);
+  RenderFont* b = fontFor(right);
   if (a == nullptr || a != b) return 0;
   return a->kerning(left, right, sizePx, styleFlags);
 }

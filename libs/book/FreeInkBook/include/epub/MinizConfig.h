@@ -12,4 +12,8 @@
 #define MINIZ_NO_DEFLATE_APIS
 #define MINIZ_NO_ZLIB_COMPATIBLE_NAMES
 
-#include <miniz.h>
+// Include the vendored miniz by relative path: ESP-IDF ships a ROM miniz.h
+// with the SAME include guard but a different (TINFL_LESS_MEMORY) struct
+// layout — resolving <miniz.h> through the platform include path would
+// silently compile against the wrong structures.
+#include "../../third_party/miniz/miniz.h"

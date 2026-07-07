@@ -5,6 +5,7 @@
 
 #include <FreeInkBook.h>
 #include <layout/ChapterLayout.h>
+#include <render/PageRenderer.h>
 #include <render/TtfFont.h>
 
 #include <cstdio>
@@ -210,6 +211,73 @@ void testLayoutWithRealFont(const char* fixturesDir, TtfFont& font) {
   CHECK_EQ(sink.violations, 0);
 }
 
+void testPageRenderer(const char* fixturesDir, TtfFont& font) {
+  char path[1024];
+  std::snprintf(path, sizeof(path), "%s/minimal.epub", fixturesDir);
+  HostFileSource source;
+  CHECK(source.open(path));
+  Arena bookArena(bookBuf, sizeof(bookBuf));
+  Arena scratch(scratchBuf, sizeof(scratchBuf));
+  Book book;
+  CHECK_EQ(static_cast<int>(book.open(source, bookArena, scratch)),
+           static_cast<int>(BookStatus::Ok));
+
+  FontChain chain;
+  CHECK(chain.add(&font));
+  LayoutParams params;
+  params.font = &chain;
+  params.defaultAlign = TextAlign::Justify;
+
+  static uint8_t monoFb[100 * 480];
+  static uint8_t grayFb[800 * 480];
+  struct FirstPageSink : PageSink {
+    bool onPage(const Page& page) override {
+      // Runs point into layout scratch — render inside the callback.
+      FrameTarget mono{monoFb, 800, 480, 100, FrameFormat::Mono1Dithered};
+      FrameTarget gray{grayFb, 800, 480, 800, FrameFormat::Gray8};
+      std::memset(monoFb, 0xFF, sizeof(monoFb));
+      std::memset(grayFb, 0xFF, sizeof(grayFb));
+      PageRenderer::renderText(page, *fonts, mono);
+      PageRenderer::renderText(page, *fonts, gray);
+      rendered = true;
+      return false;  // first page only
+    }
+    FontChain* fonts = nullptr;
+    bool rendered = false;
+  } sink;
+  sink.fonts = &chain;
+
+  const ZipEntry* entry = book.zip().find(book.spineItem(0)->href);
+  CHECK(entry != nullptr);
+  CHECK_EQ(static_cast<int>(ChapterLayout::layout(source, book.zip(), *entry, entry->name,
+                                                  params, scratch, sink, nullptr)),
+           static_cast<int>(BookStatus::Ok));
+  CHECK(sink.rendered);
+
+  // Mono: ink landed inside the content box, margins stayed white.
+  uint32_t blackBits = 0;
+  for (uint32_t i = 0; i < sizeof(monoFb); ++i) {
+    blackBits += static_cast<uint32_t>(__builtin_popcount(0xFF ^ monoFb[i]));
+  }
+  CHECK(blackBits > 2000);  // a page of text is a lot of ink
+  int marginViolations = 0;
+  for (int16_t y = 0; y < 480; ++y) {
+    if (monoFb[y * 100] != 0xFF) ++marginViolations;  // left margin stays white
+  }
+  CHECK_EQ(marginViolations, 0);
+
+  // Gray8: anti-aliasing is real — the page contains black, white, AND a
+  // meaningful band of intermediate coverage values at glyph edges.
+  uint32_t black = 0;
+  uint32_t mid = 0;
+  for (uint32_t i = 0; i < sizeof(grayFb); ++i) {
+    if (grayFb[i] < 32) ++black;
+    else if (grayFb[i] >= 64 && grayFb[i] < 224) ++mid;
+  }
+  CHECK(black > 1000);
+  CHECK(mid > 500);  // edge pixels with partial coverage = anti-aliasing
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -241,6 +309,7 @@ int main(int argc, char** argv) {
   testRasterization(font);
   testFontChain(font, second);
   testLayoutWithRealFont(argv[1], font);
+  testPageRenderer(argv[1], font);
 
   std::printf("%d checks, %d failed\n", checksRun, checksFailed);
   return checksFailed == 0 ? 0 : 1;

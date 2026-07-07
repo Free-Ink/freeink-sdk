@@ -48,7 +48,7 @@ done
 CORE_SRCS="../../src/FreeInkBook.cpp ../../src/epub/ZipCatalog.cpp ../../src/epub/XmlSax.cpp \
   ../../src/epub/PackageParsers.cpp ../../src/epub/ImageProbe.cpp ../../src/text/EntityFilter.cpp \
   ../../src/text/Hyphenator.cpp ../../src/css/Css.cpp ../../src/layout/ChapterLayout.cpp \
-  ../../src/cache/PageCache.cpp ../../src/render/ImageRenderer.cpp ../../src/render/TtfFont.cpp"
+  ../../src/cache/PageCache.cpp ../../src/render/ImageRenderer.cpp ../../src/render/TtfFont.cpp ../../src/render/PageRenderer.cpp"
 
 c++ -std=c++17 -Wall -Wextra -Werror $INCLUDES \
   $CORE_SRCS test_freeinkbook.cpp "$BUILD_DIR"/obj/*.o \

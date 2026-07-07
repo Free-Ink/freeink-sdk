@@ -52,6 +52,12 @@ struct Page {
   const PageTextRun* runs;
   uint16_t runCount;
   uint32_t pageIndex;  // 0-based within the chapter
+  // Chapter character offset (codepoints of extracted text) of this page's
+  // first text run. Whitespace collapse and entity resolution are layout-
+  // parameter independent, so this offset addresses the same place in the
+  // chapter at any font size or page geometry — it is the reading-position
+  // anchor that survives relayouts.
+  uint32_t charStart;
 };
 
 class PageSink {

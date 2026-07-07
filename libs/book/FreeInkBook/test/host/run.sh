@@ -32,7 +32,8 @@ for src in miniz_impl expat_xmlparse expat_xmlrole expat_xmltok unibreak_impl; d
 done
 
 CORE_SRCS="../../src/FreeInkBook.cpp ../../src/epub/ZipCatalog.cpp ../../src/epub/XmlSax.cpp \
-  ../../src/epub/PackageParsers.cpp ../../src/text/EntityFilter.cpp ../../src/layout/ChapterLayout.cpp"
+  ../../src/epub/PackageParsers.cpp ../../src/text/EntityFilter.cpp ../../src/layout/ChapterLayout.cpp \
+  ../../src/cache/PageCache.cpp"
 
 c++ -std=c++17 -Wall -Wextra -Werror $INCLUDES \
   $CORE_SRCS test_freeinkbook.cpp "$BUILD_DIR"/obj/*.o \
@@ -42,5 +43,11 @@ c++ -std=c++17 -Wall -Wextra -Werror $INCLUDES \
   $CORE_SRCS test_layout.cpp "$BUILD_DIR"/obj/*.o \
   -o "$BUILD_DIR/test_layout"
 
+c++ -std=c++17 -Wall -Wextra -Werror $INCLUDES \
+  $CORE_SRCS test_cache.cpp "$BUILD_DIR"/obj/*.o \
+  -o "$BUILD_DIR/test_cache"
+
+mkdir -p "$BUILD_DIR/cache"
 "$BUILD_DIR/test_freeinkbook" "$BUILD_DIR/fixtures"
 "$BUILD_DIR/test_layout" "$BUILD_DIR/fixtures"
+"$BUILD_DIR/test_cache" "$BUILD_DIR/fixtures" "$BUILD_DIR/cache"

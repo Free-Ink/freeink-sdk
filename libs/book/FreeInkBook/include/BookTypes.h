@@ -22,6 +22,7 @@ enum class BookStatus : uint8_t {
   OutOfMemory,   // an arena was exhausted
   ParseError,    // malformed XML in container/package/TOC
   NotFound,      // named item missing from the container
+  Stale,         // cache generation does not match — rebuild needed
 };
 
 // Human-readable name for logs and tests.

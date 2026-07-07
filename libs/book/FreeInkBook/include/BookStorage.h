@@ -27,5 +27,30 @@ class BookSource {
   virtual uint64_t size() const = 0;
 };
 
+// Writable store for one book's layout cache — flat file names inside a
+// per-book directory the application owns. Writes are streaming (the engine
+// never holds a whole cache file in RAM) with a single write open at a time;
+// reads are random-access. A failed or interrupted write must leave either
+// the old file or no file, never a torn one — implementations should write a
+// temp name and rename on endWrite() where the filesystem allows.
+class CacheStorage {
+ public:
+  virtual ~CacheStorage() = default;
+
+  virtual bool exists(const char* name) = 0;
+  virtual bool remove(const char* name) = 0;
+
+  // Size of a cache file, or a negative value if it does not exist.
+  virtual int64_t fileSize(const char* name) = 0;
+
+  // Reads [offset, offset+len); returns bytes read or a negative value.
+  virtual int32_t readAt(const char* name, uint32_t offset, void* dst, uint32_t len) = 0;
+
+  // Streaming write of one file at a time.
+  virtual bool beginWrite(const char* name) = 0;
+  virtual bool write(const void* data, uint32_t len) = 0;
+  virtual bool endWrite() = 0;
+};
+
 }  // namespace book
 }  // namespace freeink

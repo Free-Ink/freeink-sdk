@@ -26,6 +26,15 @@ const char* localName(const char* qname) {
   return colon != nullptr ? colon + 1 : qname;
 }
 
+// Counts UTF-8 codepoints in text[0..len).
+uint32_t countChars(const char* text, uint32_t len) {
+  uint32_t chars = 0;
+  for (uint32_t i = 0; i < len; ++i) {
+    if ((static_cast<uint8_t>(text[i]) & 0xC0) != 0x80) ++chars;
+  }
+  return chars;
+}
+
 // Decodes the UTF-8 codepoint starting at text[i]; advances i past it.
 uint32_t decodeUtf8(const char* text, uint32_t len, uint32_t& i) {
   const uint8_t b0 = static_cast<uint8_t>(text[i]);
@@ -314,6 +323,7 @@ class LayoutEngine : public XmlHandler {
     }
 
     advanceY(static_cast<int16_t>(lineHeight * paragraphStyle_.spaceAfterPct / 100));
+    parCharBase_ += countChars(parText_, parLen_);
     parLen_ = 0;
     spanCount_ = 0;
     pendingSpace_ = false;
@@ -329,6 +339,10 @@ class LayoutEngine : public XmlHandler {
     if (end == start) {  // blank line (e.g. double <br/>)
       pageY_ += lineHeight;
       return;
+    }
+
+    if (runCount_ == 0) {
+      pageCharStart_ = parCharBase_ + countChars(parText_, start);
     }
 
     int16_t baselineY = static_cast<int16_t>(pageY_ + params_.font->ascent(sizePx));
@@ -382,7 +396,7 @@ class LayoutEngine : public XmlHandler {
   }
 
   void emitPage() {
-    Page page{runs_, runCount_, pageCount_};
+    Page page{runs_, runCount_, pageCount_, pageCharStart_};
     ++pageCount_;
     if (!sink_.onPage(page)) stopParse = true;
     runCount_ = 0;
@@ -413,6 +427,8 @@ class LayoutEngine : public XmlHandler {
   uint16_t runCount_ = 0;
   int16_t pageY_ = 0;
   uint32_t pageCount_ = 0;
+  uint32_t parCharBase_ = 0;    // chapter chars before the current paragraph
+  uint32_t pageCharStart_ = 0;  // anchor of the page being assembled
   bool failed_ = false;
 };
 

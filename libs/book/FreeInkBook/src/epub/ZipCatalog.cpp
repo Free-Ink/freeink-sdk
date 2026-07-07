@@ -297,6 +297,7 @@ const char* bookStatusName(BookStatus status) {
     case BookStatus::OutOfMemory: return "OutOfMemory";
     case BookStatus::ParseError: return "ParseError";
     case BookStatus::NotFound: return "NotFound";
+    case BookStatus::Stale: return "Stale";
   }
   return "Unknown";
 }

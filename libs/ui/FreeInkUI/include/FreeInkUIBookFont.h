@@ -15,7 +15,9 @@
 // edge coverage, so anti-aliasing survives the adaptation.
 
 #include <BookFont.h>
+#include <render/TtfFont.h>
 
+#include "FreeInkUIDisplayTarget.h"
 #include "FreeInkUIFont.h"
 
 namespace freeink {
@@ -82,6 +84,42 @@ class BitmapBookFont : public book::RenderFont {
   const BitmapFont& font_;
   book::GlyphBitmap glyph_{};
   uint8_t coverage_[64 * 64];  // one glyph, reused per rasterize() call
+};
+
+}  // namespace ui
+}  // namespace freeink
+
+namespace freeink {
+namespace ui {
+
+// DisplayTarget glyph fallback backed by a FreeInkBook TtfFont: UI chrome
+// renders scripts the bitmap font can't pre-bake (Hangul, CJK, Cyrillic…)
+// from a TTF on the card, sized per slot. Register with
+// target.setGlyphFallback(&source).
+class TtfGlyphSource : public RuntimeGlyphSource {
+ public:
+  void setFont(book::TtfFont* font) { font_ = font; }
+
+  bool glyph(uint32_t codepoint, uint16_t pixelSize, Glyph* out) override {
+    if (font_ == nullptr || !font_->hasGlyph(codepoint)) return false;
+    const book::GlyphBitmap* g = font_->rasterize(codepoint, pixelSize);
+    if (g == nullptr) return false;
+    out->coverage = g->pixels;
+    out->width = g->width;
+    out->height = g->height;
+    out->xoff = g->xoff;
+    out->yoff = g->yoff;
+    out->advance = g->advance;
+    return true;
+  }
+
+  int16_t advance(uint32_t codepoint, uint16_t pixelSize) override {
+    if (font_ == nullptr || !font_->hasGlyph(codepoint)) return 0;
+    return font_->advance(codepoint, pixelSize, 0);
+  }
+
+ private:
+  book::TtfFont* font_ = nullptr;
 };
 
 }  // namespace ui

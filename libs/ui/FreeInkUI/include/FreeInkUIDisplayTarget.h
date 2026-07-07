@@ -34,6 +34,27 @@
 namespace freeink {
 namespace ui {
 
+// Runtime glyph provider consulted when the active BitmapFont has no glyph
+// for a codepoint — the path that lets UI chrome render scripts too large to
+// pre-bake (Hangul, CJK) from a TTF on the card. `pixelSize` is the slot's
+// line height so fallback glyphs match each slot's size. Coverage is 8-bit;
+// the target dithers it exactly like its 4-bpp alpha fonts. See
+// FreeInkUIBookFont.h for the TtfFont-backed implementation.
+class RuntimeGlyphSource {
+ public:
+  struct Glyph {
+    const uint8_t* coverage;
+    uint16_t width;
+    uint16_t height;
+    int16_t xoff;
+    int16_t yoff;     // from baseline, negative = above
+    int16_t advance;
+  };
+  virtual ~RuntimeGlyphSource() = default;
+  virtual bool glyph(uint32_t codepoint, uint16_t pixelSize, Glyph* out) = 0;
+  virtual int16_t advance(uint32_t codepoint, uint16_t pixelSize) = 0;
+};
+
 class DisplayTarget final : public DrawTarget {
  public:
   // Logical font slots. ThemeTokens.fontSmall/Body/Title are just FontId values
@@ -59,6 +80,9 @@ class DisplayTarget final : public DrawTarget {
   DisplayTarget(uint8_t* framebuffer, int16_t panelWidth, int16_t panelHeight, int16_t panelWidthBytes)
       : DisplayTarget(framebuffer, panelWidth, panelHeight, panelWidthBytes,
                       panelWidth > panelHeight ? Orientation::Portrait : Orientation::LandscapeCounterClockwise) {}
+
+  // Fallback for codepoints missing from the bitmap fonts (nullptr = off).
+  void setGlyphFallback(RuntimeGlyphSource* source) { fallback_ = source; }
 
   // Point one slot, or every slot, at a different BitmapFont.
   void setFont(const FontId slot, const BitmapFont& font) {
@@ -200,6 +224,7 @@ class DisplayTarget final : public DrawTarget {
   int16_t w_;  // logical width (pw_/ph_ swapped under portrait)
   int16_t h_;  // logical height
   const BitmapFont* fonts_[FONT_SLOTS];
+  RuntimeGlyphSource* fallback_ = nullptr;
 
   static bool isPortrait(const Orientation o) {
     return o == Orientation::Portrait || o == Orientation::PortraitInverted;
@@ -316,13 +341,17 @@ class DisplayTarget final : public DrawTarget {
 
   // Pen advance for a codepoint, mapping the ellipsis to three dots and unknown
   // codepoints to a space — consistent with how drawRun() renders them.
-  static int16_t runAdvance(const BitmapFont& f, const uint32_t cp) {
+  int16_t runAdvance(const BitmapFont& f, const uint32_t cp) const {
     if (cp == 0x2026) {  // U+2026 HORIZONTAL ELLIPSIS -> "..."
       const FontGlyph* dot = glyphFor(f, '.');
       return static_cast<int16_t>(dot ? dot->xAdvance * 3 : 0);
     }
     const FontGlyph* g = glyphFor(f, cp);
     if (g) return g->xAdvance;
+    if (fallback_ != nullptr) {
+      const int16_t adv = fallback_->advance(cp, f.yAdvance);
+      if (adv > 0) return adv;
+    }
     const FontGlyph* sp = glyphFor(f, ' ');
     return static_cast<int16_t>(sp ? sp->xAdvance : 0);
   }
@@ -370,6 +399,25 @@ class DisplayTarget final : public DrawTarget {
       }
       const FontGlyph* g = glyphFor(f, cp);
       if (g) { drawGlyph(f, *g, penX, baseline, ink); penX = static_cast<int16_t>(penX + g->xAdvance); }
+      else if (fallback_ != nullptr) {
+        RuntimeGlyphSource::Glyph rg;
+        if (fallback_->glyph(cp, f.yAdvance, &rg)) {
+          const Color color = ink ? Color::Black : Color::White;
+          for (uint16_t gy = 0; gy < rg.height; ++gy) {
+            const uint8_t* row = rg.coverage + static_cast<uint32_t>(gy) * rg.width;
+            for (uint16_t gx = 0; gx < rg.width; ++gx) {
+              const uint8_t a = row[gx];
+              if (a == 0) continue;
+              const int16_t px = static_cast<int16_t>(penX + rg.xoff + gx);
+              const int16_t py = static_cast<int16_t>(baseline + rg.yoff + gy);
+              if (a >= 240 || (a >> 4) > bayerAt(px, py)) plot(px, py, color);
+            }
+          }
+          penX = static_cast<int16_t>(penX + rg.advance);
+        } else {
+          penX = static_cast<int16_t>(penX + runAdvance(f, cp));
+        }
+      }
       else { penX = static_cast<int16_t>(penX + runAdvance(f, cp)); }
     }
   }

@@ -125,11 +125,16 @@ void testRect() {
 // GfxRenderer. Convention: set bit = white, clear bit = black ink.
 void testDisplayTarget() {
   constexpr int16_t W = 64, H = 32, WB = W / 8;
+  DisplayTarget unbound(nullptr, W, H, WB, Orientation::LandscapeCounterClockwise);
+  CHECK(!unbound.ready());
+  unbound.fill(Rect{0, 0, 4, 4}, Paint::solid(Color::Black));
+
   uint8_t fb[WB * H];
   std::memset(fb, 0xFF, sizeof(fb));  // white page
   // Native orientation so the raw-framebuffer reads below use logical == panel
   // coordinates (the default would rotate this landscape buffer to portrait).
   DisplayTarget target(fb, W, H, WB, Orientation::LandscapeCounterClockwise);
+  CHECK(target.ready());
 
   const auto pixelInk = [&](int16_t x, int16_t y) {
     return ((fb[y * WB + (x >> 3)] >> (7 - (x & 7))) & 0x01) == 0;  // clear bit = ink
@@ -1862,6 +1867,13 @@ void testKeyboardEntry() {
   CHECK(kb.key('i'));
   CHECK(std::strcmp(buf, "Hi") == 0);
   CHECK_EQ(kb.length(), 2u);
+
+  // Space keys carry KeyKind::Space with a null layout output (they draw a
+  // glyph, not a label) but must still insert a space.
+  CHECK(kb.key(QWERTY_KEY_SPACE));
+  CHECK(std::strcmp(buf, "Hi ") == 0);
+  CHECK(kb.backspace());
+  CHECK(std::strcmp(buf, "Hi") == 0);
 
   // Symbols: mode() enters, shift() pages, layers stay sticky across keys.
   kb.mode();

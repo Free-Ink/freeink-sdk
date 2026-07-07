@@ -97,31 +97,42 @@ function returns.
 Wire the app to your display target and input layer:
 
 ```cpp
-freeink::ui::DisplayTarget target(display.getFrameBuffer(), display.getDisplayWidth(),
-                                  display.getDisplayHeight(), display.getDisplayWidthBytes());
 AppState state;
-App app(target, target.deviceContext());
+freeink::ui::DisplayTarget* target = nullptr;
+App* app = nullptr;
 
 void setup() {
-  app.setClearColor(freeink::ui::Color::White);  // start each paint from a blank canvas
-  app.setScreen(homeScreen, &state);
-  app.on(ActionOpen, handleOpen, &state);
+  display.begin();
+
+  static freeink::ui::DisplayTarget targetInstance(display.getFrameBuffer(), display.getDisplayWidth(),
+                                                   display.getDisplayHeight(), display.getDisplayWidthBytes());
+  static App appInstance(targetInstance, targetInstance.deviceContext());
+  target = &targetInstance;
+  app = &appInstance;
+  app->setClearColor(freeink::ui::Color::White);  // start each paint from a blank canvas
+  app->setScreen(homeScreen, &state);
+  app->on(ActionOpen, handleOpen, &state);
 }
 
 void loop() {
   freeink::ui::InputSnapshot input = readInputSnapshot();
-  freeink::ui::ActionEvent event = app.render(input);
+  freeink::ui::ActionEvent event = app->render(input);
   // present() maps the frame's RefreshHint to the panel's refresh modes
   // (Full/Clean -> FULL_REFRESH, Fast -> FAST_REFRESH, None -> no push).
-  freeink::ui::present(display, app.lastRenderRefreshHint());
+  freeink::ui::present(display, app->lastRenderRefreshHint());
 
-  if (app.invalidated()) {
+  if (app->invalidated()) {
     // An action handler changed state after this render pass. Render again on
     // the next loop iteration, or immediately if your firmware wants synchronous
     // UI updates.
   }
 }
 ```
+
+`FreeInkDisplay` owns the framebuffer, and on PSRAM-backed boards it allocates
+that memory in `display.begin()`. Construct `DisplayTarget` and `FreeInkApp`
+after `display.begin()`; `display.getFrameBuffer()` is not valid at static-init
+time.
 
 `FreeInkApp` does not own your display refresh policy. `lastRenderRefreshHint()`
 describes the frame just drawn, while `invalidated()` / `refreshHint()` describe
@@ -352,7 +363,8 @@ freeink::ui::InteractionBuffer<32> interactions;
 freeink::ui::InputSnapshot input = readInput();
 
 // Native render path — no external graphics library. Draws into the
-// framebuffer FreeInkDisplay already owns (FreeInkUIDisplayTarget.h).
+// framebuffer FreeInkDisplay already owns (FreeInkUIDisplayTarget.h). Construct
+// this after display.begin(), when getFrameBuffer() is valid.
 freeink::ui::DisplayTarget draw(display.getFrameBuffer(), display.getDisplayWidth(),
                                 display.getDisplayHeight(), display.getDisplayWidthBytes());
 freeink::ui::DeviceContext device = draw.deviceContext();
@@ -417,6 +429,7 @@ FreeInkUI draws through a `DrawTarget` — an interface of primitives (`fill`,
   panel with an ordered dither. Construct it over `FreeInkDisplay`'s buffer:
 
   ```cpp
+  // Construct after display.begin(), when getFrameBuffer() is valid.
   freeink::ui::DisplayTarget draw(display.getFrameBuffer(), display.getDisplayWidth(),
                                   display.getDisplayHeight(), display.getDisplayWidthBytes());
   ```

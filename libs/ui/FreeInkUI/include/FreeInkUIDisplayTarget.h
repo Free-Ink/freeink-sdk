@@ -90,6 +90,7 @@ class DisplayTarget final : public DrawTarget {
   Orientation orientation() const { return orientation_; }
   int16_t logicalWidth() const { return w_; }
   int16_t logicalHeight() const { return h_; }
+  bool ready() const { return fb_ != nullptr; }
 
   Size measureText(const FontId font, const char* text, const TextStyle) const override {
     const BitmapFont& f = fontFor(font);
@@ -230,6 +231,7 @@ class DisplayTarget final : public DrawTarget {
   }
 
   void plot(const int16_t x, const int16_t y, const Color color) {
+    if (!fb_) return;
     if (x < 0 || y < 0 || x >= w_ || y >= h_ || color == Color::Transparent) return;
     // Rotate the logical pixel into panel-native space. Transforms match
     // CrossPoint's GfxRenderer::rotateCoordinates so "up" agrees across stacks.

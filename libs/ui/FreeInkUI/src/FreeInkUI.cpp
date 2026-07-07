@@ -243,7 +243,11 @@ const char* keyboardOutputFor(const KeyboardLayout& layout, int16_t value) {
   for (uint8_t row = 0; row < layout.rowCount; ++row) {
     for (uint8_t col = 0; col < layout.rows[row].count; ++col) {
       const KeyboardKey& key = layout.rows[row].keys[col];
-      if (key.value == value && key.kind == KeyKind::Normal) return key.output;
+      if (key.value != value) continue;
+      if (key.kind == KeyKind::Normal) return key.output;
+      // Space keys draw a glyph instead of a label, so the layout tables leave
+      // their output null — but they still insert text.
+      if (key.kind == KeyKind::Space) return key.output ? key.output : " ";
     }
   }
   return nullptr;

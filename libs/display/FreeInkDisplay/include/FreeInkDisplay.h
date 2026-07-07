@@ -135,6 +135,7 @@ class FreeInkDisplay {
 
   // Access to frame buffer
   uint8_t* getFrameBuffer() const { return frameBuffer; }
+  bool framebufferReady() const { return frameBuffer != nullptr; }
 
   // Copy the just-displayed frame (frameBufferActive) back into the write buffer.
   // displayBuffer() ends with swapBuffers(), so the write buffer would otherwise

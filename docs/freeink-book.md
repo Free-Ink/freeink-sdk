@@ -199,8 +199,12 @@ decode), placed aspect-fit and centered, and recorded in the page. At render
 time `ImageRenderer` streams the decode — PNG scanline-by-scanline, JPEG in
 MCU bands — through box-filter resampling into Floyd–Steinberg dithering
 (1-bit) or raw grayscale (Gray8). The full image never exists in memory.
-Unsupported formats (GIF, SVG, interlaced PNG) leave their reserved space
-blank rather than failing the page.
+Progressive JPEGs (common for covers) decode via a DC-only first-scan path:
+a block's DC coefficient is its 8x8 average, so the scan streams like a
+baseline image and yields a correct 1/8-scale picture that bilinear
+resampling maps onto the placement box — coarse under magnification, ideal
+for thumbnails, never blank. Unsupported formats (GIF, SVG, interlaced PNG)
+leave their reserved space blank rather than failing the page.
 
 ## Memory profiles
 
@@ -215,9 +219,9 @@ target's RAM class — CI builds and runs the layout suite under all three:
 
 Small shrinks the fixed buffers gracefully: very long paragraphs flush in
 segments, dense pages split a line early, fewer links/images per page —
-measured on real books, text chapters peak ~62 KB and image chapters
-~153 KB (two inflate states live during an image probe — the known
-remaining squeeze). Large buys headroom for pathological books and much
+measured on real books, chapters peak ~62–108 KB regardless of images
+(`<img>` dimensions are pre-scanned and probed sequentially before layout,
+so only one inflate stream is ever live). Large buys headroom for pathological books and much
 bigger font caches (fewer glyph re-rasterizations → faster page renders).
 Runtime capabilities — TTF vs bitmap fonts, Gray8 vs 1-bit rendering,
 arena budgets — are orthogonal and chosen by the caller per device; the

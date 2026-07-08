@@ -4,7 +4,7 @@
  * Break processing in a Unicode sequence.  Designed to be used in a
  * generic text renderer.
  *
- * Copyright (C) 2015-2024 Wu Yongwei <wuyongwei at gmail dot com>
+ * Copyright (C) 2015-2026 Wu Yongwei <wuyongwei at gmail dot com>
  *
  * This software is provided 'as-is', without any express or implied
  * warranty.  In no event will the author be held liable for any damages
@@ -39,7 +39,7 @@
 extern "C" {
 #endif
 
-#define UNIBREAK_VERSION   0x0601   /**< Version of the libunibreak */
+#define UNIBREAK_VERSION   0x0700   /**< Version of the libunibreak */
 extern const int unibreak_version;
 
 #ifndef UNIBREAK_UTF_TYPES_DEFINED

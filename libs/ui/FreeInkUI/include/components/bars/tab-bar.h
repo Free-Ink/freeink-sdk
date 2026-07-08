@@ -36,11 +36,16 @@ struct TabBarProps {
   StyleSet tabStyles{};
   // Inset of each tab pill within its equal-width slot.
   Insets tabInset{4, 4, 8, 4};
+  // Padding inside the tab pill before laying out icon/label.
+  Insets contentInset{4, 4, 4, 4};
   int16_t gap = 0;
   int16_t iconSize = 0;
   int16_t minTouchSize = 44;
   TabIconPainter iconPainter = nullptr;
   void* iconPainterUserData = nullptr;
+  int16_t selectedDotSize = 0;
+  int16_t selectedDotInsetBottom = 4;
+  Paint selectedDotPaint = Paint::solid(Color::Black);
   // 1px divider along the bottom edge (RoundedRaff-style settings tabs).
   bool divider = false;
   Paint dividerPaint = Paint::solid(Color::Black);
@@ -65,6 +70,24 @@ void tabBar(Frame<MaxInteractions>& frame, Rect rect, const TabBarProps& props) 
               static_cast<int16_t>(i == props.count - 1 ? rect.right() - slotX : slotW),
               static_cast<int16_t>(rect.height - dividerH)};
     Rect pill = slot.inset(props.tabInset);
+    if (props.contentInset.left > 0 || props.contentInset.right > 0) {
+      const int16_t labelW = tab.label && tab.label[0] != '\0'
+                                 ? frame.target().measureText(props.text.font, tab.label, props.text).width
+                                 : 0;
+      BitmapRef measuredIcon = tab.icon ? tab.icon : resolveBitmap(frame.assets(), tab.iconAsset);
+      const bool hasMeasuredIcon = measuredIcon || props.iconPainter != nullptr;
+      const int16_t iconW = hasMeasuredIcon ? (props.iconSize > 0 ? props.iconSize
+                                                                  : static_cast<int16_t>(measuredIcon ? measuredIcon.width : 16))
+                                            : 0;
+      const int16_t contentW = labelW > iconW ? labelW : iconW;
+      const int16_t minW = pill.height;
+      int16_t wantedW = static_cast<int16_t>(contentW + props.contentInset.left + props.contentInset.right);
+      if (wantedW < minW) wantedW = minW;
+      if (wantedW < pill.width) {
+        pill.x = static_cast<int16_t>(pill.x + (pill.width - wantedW) / 2);
+        pill.width = wantedW;
+      }
+    }
     if (pill.empty()) pill = slot;
     State state = tab.selected ? StateSelected : StateNormal;
     if (!tab.enabled) state |= StateDisabled;
@@ -78,14 +101,29 @@ void tabBar(Frame<MaxInteractions>& frame, Rect rect, const TabBarProps& props) 
     if (style.border.kind != PaintKind::None && style.borderWidth > 0) {
       frame.target().stroke(pill, style.border, style.borderWidth, style.radius, style.corners);
     }
+    if (tab.selected && props.selectedDotSize > 0) {
+      const int16_t dot = props.selectedDotSize;
+      frame.target().fill(Rect{static_cast<int16_t>(slot.x + (slot.width - dot) / 2),
+                               static_cast<int16_t>(slot.bottom() - props.selectedDotInsetBottom - dot),
+                               dot, dot},
+                          props.selectedDotPaint, static_cast<uint8_t>(dot / 2));
+    }
+    Rect content = pill.inset(props.contentInset);
+    if (content.empty()) content = pill;
     BitmapRef icon = tab.icon ? tab.icon : resolveBitmap(frame.assets(), tab.iconAsset);
     const bool hasIcon = icon || props.iconPainter != nullptr;
     const bool hasLabel = tab.label != nullptr && tab.label[0] != '\0';
     if (hasIcon) {
       const int16_t iconSize =
           props.iconSize > 0 ? props.iconSize : static_cast<int16_t>(icon ? (icon.height > 0 ? icon.height : icon.width) : 16);
-      Rect iconRect{static_cast<int16_t>(pill.x + (pill.width - iconSize) / 2),
-                    static_cast<int16_t>(pill.y + (pill.height - iconSize) / 2), iconSize, iconSize};
+      int16_t iconY = static_cast<int16_t>(content.y + (content.height - iconSize) / 2);
+      if (hasLabel) {
+        const int16_t labelH = frame.target().lineHeight(props.text.font);
+        const int16_t stackH = static_cast<int16_t>(iconSize + 2 + labelH);
+        iconY = static_cast<int16_t>(content.y + (content.height - stackH) / 2);
+        if (iconY < content.y) iconY = content.y;
+      }
+      Rect iconRect{static_cast<int16_t>(content.x + (content.width - iconSize) / 2), iconY, iconSize, iconSize};
       bool drawn = false;
       if (props.iconPainter) drawn = props.iconPainter(frame.target(), iconRect, tab, i, props.iconPainterUserData);
       if (!drawn && icon) frame.target().bitmap(iconRect, icon, BitmapMode::Center, style.foreground);
@@ -93,7 +131,17 @@ void tabBar(Frame<MaxInteractions>& frame, Rect rect, const TabBarProps& props) 
     if (hasLabel) {
       TextStyle label = textStyleWithForeground(props.text, style.foreground);
       label.align = TextAlign::Center;
-      frame.target().text(pill, tab.label, label);
+      Rect labelRect = content;
+      if (hasIcon) {
+        const int16_t iconSize =
+            props.iconSize > 0 ? props.iconSize : static_cast<int16_t>(icon ? (icon.height > 0 ? icon.height : icon.width) : 16);
+        const int16_t labelH = frame.target().lineHeight(label.font);
+        const int16_t stackH = static_cast<int16_t>(iconSize + 2 + labelH);
+        const int16_t stackY = static_cast<int16_t>(content.y + (content.height - stackH) / 2);
+        labelRect = Rect{content.x, static_cast<int16_t>((stackY < content.y ? content.y : stackY) + iconSize + 2),
+                         content.width, labelH};
+      }
+      frame.target().text(labelRect, tab.label, label);
     }
   }
   if (props.divider) {

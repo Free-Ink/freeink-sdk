@@ -41,7 +41,7 @@ struct ManifestItem {
   const char* mediaType = nullptr;
   uint32_t idHash = 0;
   bool isNav = false;               // EPUB 3 navigation document
-  bool isCoverImage = false;        // EPUB 3 cover image
+  bool isCoverImage = false;        // EPUB 3 properties="cover-image" OR EPUB 2 <meta name="cover">
 };
 
 struct TocEntry {

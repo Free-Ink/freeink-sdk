@@ -27,6 +27,19 @@ else
      "$BUILD_DIR/fixtures/minimal/OEBPS/images/pattern.jpg"
 fi
 
+# Progressive JPEG variant of the pattern (PIL; skipped when absent — the
+# matching test skips itself if the entry is missing from the fixture).
+python3 - "$BUILD_DIR/fixtures/minimal/OEBPS/images" <<'PYEOF2' || true
+import sys
+try:
+    from PIL import Image
+except ImportError:
+    sys.exit(0)
+d = sys.argv[1]
+Image.open(d + "/pattern.png").convert("RGB").save(d + "/pattern_prog.jpg",
+                                                   progressive=True, quality=92)
+PYEOF2
+
 # make_epub <stage-dir> <out.epub> <compression-flag>
 make_epub() {
   (cd "$1" \

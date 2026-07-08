@@ -53,4 +53,15 @@ struct EastAsianWidthProperties
 
 enum EastAsianWidthClass ub_get_char_eaw_class(utf32_t ch);
 
+/**
+ * Returns whether an OP (Open Punctuation) is East Asian.
+ *
+ * For the purpose of supporting LB30, being "east asian" here means the char
+ * has East_Asian_Width Property F/W/H.
+ *
+ * @param ch  Unicode codepoint (must be an OP)
+ * @return    it is east asian or not
+*/
+bool ub_is_op_east_asian(utf32_t ch);
+
 #endif /* EASTASIANWIDTHDEF_H */

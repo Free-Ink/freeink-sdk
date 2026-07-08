@@ -46,7 +46,7 @@ constexpr uint16_t kMaxImagesPerPage = 8;
 constexpr uint16_t kMaxLinksPerPage = 16;
 constexpr uint8_t kMaxLinksPerPar = 6;
 constexpr uint32_t kStyleTextCap = 6 * 1024;
-constexpr uint16_t kMaxProbedImages = 16;
+constexpr uint16_t kMaxProbedImages = 128;
 #elif FREEINK_BOOK_PROFILE == FREEINK_BOOK_PROFILE_LARGE
 constexpr uint32_t kParTextCap = 16384;
 constexpr uint16_t kMaxSpans = 192;
@@ -58,7 +58,7 @@ constexpr uint16_t kMaxImagesPerPage = 24;
 constexpr uint16_t kMaxLinksPerPage = 48;
 constexpr uint8_t kMaxLinksPerPar = 12;
 constexpr uint32_t kStyleTextCap = 24 * 1024;
-constexpr uint16_t kMaxProbedImages = 64;
+constexpr uint16_t kMaxProbedImages = 512;
 #else
 constexpr uint32_t kParTextCap = 8192;
 constexpr uint16_t kMaxSpans = 128;
@@ -70,7 +70,7 @@ constexpr uint16_t kMaxImagesPerPage = 16;
 constexpr uint16_t kMaxLinksPerPage = 24;
 constexpr uint8_t kMaxLinksPerPar = 8;
 constexpr uint32_t kStyleTextCap = 12 * 1024;  // chapter-embedded <style> blocks
-constexpr uint16_t kMaxProbedImages = 32;
+constexpr uint16_t kMaxProbedImages = 256;
 #endif
 
 // --- image dimension pre-scan ---------------------------------------------------
@@ -80,12 +80,12 @@ constexpr uint16_t kMaxProbedImages = 32;
 // parse stream is live — the image-chapter memory peak. Instead the chapter is
 // pre-scanned once (a collector parse gathering resolved image hrefs), the
 // probes run sequentially with only one stream alive at a time, and the main
-// layout parse reads dimensions from this table. The inline probe survives
-// only as a fallback for table overflow or over-long hrefs.
-constexpr uint16_t kProbedHrefCap = 160;  // matches parLinkPath_ path budget
-
+// layout parse reads dimensions from this table. Entries carry the FNV-1a
+// hash of the resolved container path (the same hash the ZIP catalog keys
+// on), not the path itself, so image-dense chapters fit in a few KB. The
+// inline probe survives only as a fallback for table overflow.
 struct ProbedImage {
-  char href[kProbedHrefCap];
+  uint32_t hrefHash;  // ZipCatalog::hashPath of the resolved container path
   ImageInfo info;
 };
 
@@ -654,13 +654,14 @@ class ImageCollector : public XmlHandler {
     if (src == nullptr) return;
     const size_t marked = scratch_.mark();
     const char* resolved = resolveHref(scratch_, chapterDir_, src, nullptr);
-    if (resolved != nullptr && strlen(resolved) < kProbedHrefCap) {
+    if (resolved != nullptr) {
+      const uint32_t hash = ZipCatalog::hashPath(resolved);
       bool known = false;
       for (uint16_t i = 0; i < count_ && !known; ++i) {
-        known = strcmp(table_[i].href, resolved) == 0;
+        known = table_[i].hrefHash == hash;
       }
       if (!known) {
-        snprintf(table_[count_].href, kProbedHrefCap, "%s", resolved);
+        table_[count_].hrefHash = hash;
         table_[count_].info = ImageInfo{};
         if (++count_ >= cap_) stopParse = true;  // rest fall back to inline probes
       }
@@ -1063,8 +1064,9 @@ class LayoutEngine : public XmlHandler {
         zip_ != nullptr ? resolveHref(scratch_, chapterDir_, src, nullptr) : nullptr;
     ImageInfo info;
     bool prescanned = false;
+    const uint32_t hrefHash = resolved != nullptr ? ZipCatalog::hashPath(resolved) : 0;
     for (uint16_t p = 0; resolved != nullptr && p < probedCount_ && !prescanned; ++p) {
-      if (strcmp(probed_[p].href, resolved) == 0) {
+      if (probed_[p].hrefHash == hrefHash) {
         info = probed_[p].info;
         prescanned = true;
       }
@@ -1782,9 +1784,17 @@ BookStatus ChapterLayout::layout(BookSource& source, const ZipCatalog& zip,
                              /*filterHtmlEntities=*/true) == BookStatus::Ok ||
           collector.count() > 0) {
         probedCount = collector.count();
-        for (uint16_t i = 0; i < probedCount; ++i) {
-          const ZipEntry* target = zip.find(probed[i].href);
-          if (target != nullptr) probeImage(source, *target, scratch, &probed[i].info);
+        // One pass over the catalog, matched by the same name hash find()
+        // keys on. A missing target keeps kind=Unknown and layout skips the
+        // image, exactly as the inline probe path did.
+        for (size_t e = 0; e < zip.entryCount() && probedCount > 0; ++e) {
+          const ZipEntry* target = zip.entry(e);
+          for (uint16_t i = 0; i < probedCount; ++i) {
+            if (probed[i].hrefHash == target->nameHash) {
+              probeImage(source, *target, scratch, &probed[i].info);
+              break;
+            }
+          }
         }
       }
     }

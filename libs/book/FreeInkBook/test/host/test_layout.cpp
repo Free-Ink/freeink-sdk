@@ -7,6 +7,7 @@
 #include <FreeInkBook.h>
 #include <cache/PageCache.h>
 #include <layout/ChapterLayout.h>
+#include <epub/ImageProbe.h>
 #include <render/ImageRenderer.h>
 
 #include <cstdio>
@@ -652,10 +653,10 @@ void testImagePrescanMemory() {
 
   std::printf("  image-chapter high water: text %zu B, image %zu B\n", highWater[0],
               highWater[1]);
-  // Allowance covers the probed-image table (<= 11 KB at the LARGE tier) and
+  // Allowance covers the probed-image table (<= 6 KB at the LARGE tier) and
   // arena alignment noise; a regression to concurrent probe streams costs
   // ~47 KB and trips this.
-  CHECK(highWater[1] <= highWater[0] + 24 * 1024);
+  CHECK(highWater[1] <= highWater[0] + 16 * 1024);
 }
 
 void testCjk() {
@@ -925,6 +926,44 @@ void testPlainText() {
   CHECK(std::strstr(sink.text, "Third one ends") != nullptr);
   CHECK(std::strstr(sink.text, "\xEF\xBB\xBF") == nullptr);  // BOM skipped
   CHECK_EQ(scratch.used(), 0u);
+}
+
+// Progressive JPEG (SOF2): TJpgDec cannot decode it, so the renderer's
+// DC-only path decodes the first scan (block averages = a correct 1/8-scale
+// image) and bilinear-resamples to the placement box. Coarse, never blank.
+void testProgressiveJpeg() {
+  OpenedBook opened;
+  CHECK(opened.open("minimal.epub"));
+  const ZipEntry* entry = opened.book.zip().find("OEBPS/images/pattern_prog.jpg");
+  if (entry == nullptr) {
+    std::printf("  (progressive JPEG fixture absent — PIL not installed; skipped)\n");
+    return;
+  }
+  ImageInfo info;
+  CHECK_EQ(static_cast<int>(probeImage(opened.source, *entry, opened.scratch, &info)),
+           static_cast<int>(BookStatus::Ok));
+  CHECK(info.progressive);
+  CHECK_EQ(info.width, 64);
+  CHECK_EQ(info.height, 48);
+
+  PageImage img{};
+  img.href = "OEBPS/images/pattern_prog.jpg";
+  img.width = 64;
+  img.height = 48;
+  static GrayCapture cap;
+  cap = GrayCapture{};
+  const size_t marked = opened.scratch.mark();
+  CHECK_EQ(static_cast<int>(ImageRenderer::render(opened.source, opened.book.zip(), img,
+                                                  opened.scratch, GrayCapture::onRow, &cap)),
+           static_cast<int>(BookStatus::Ok));
+  opened.scratch.release(marked);
+  CHECK_EQ(cap.width, 64);
+  CHECK_EQ(cap.rows, 48);
+  // Tonal checks with DC-sized tolerance: right half is black-top/white-
+  // bottom, left half a rising gradient.
+  CHECK(cap.pixels[10 * 64 + 52] < 100);
+  CHECK(cap.pixels[40 * 64 + 52] > 160);
+  CHECK(cap.pixels[24 * 64 + 4] < cap.pixels[24 * 64 + 27]);
 }
 
 // Hebrew fixture chapter (ch7): RTL paragraphs with an embedded Latin word,
@@ -1438,6 +1477,7 @@ int main(int argc, char** argv) {
   testKerningAffectsMeasurement();
   testWidowOrphan();
   testImages();
+  testProgressiveJpeg();
   testImagePrescanMemory();
   testCjk();
   testPlainText();

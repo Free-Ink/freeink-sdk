@@ -170,7 +170,7 @@ void InputManager::beginAsync(const uint8_t taskPriority, const uint32_t pollMs,
 void InputManager::asyncTaskTrampoline(void* self) { static_cast<InputManager*>(self)->asyncPoll(); }
 
 void InputManager::asyncPoll() {
-  static const uint8_t kButtons[] = {BTN_BACK, BTN_CONFIRM, BTN_LEFT, BTN_RIGHT, BTN_UP, BTN_DOWN};
+  static const uint8_t kButtons[] = {BTN_BACK, BTN_CONFIRM, BTN_LEFT, BTN_RIGHT, BTN_UP, BTN_DOWN, BTN_POWER};
   for (;;) {
     update();
     for (const uint8_t b : kButtons) {

@@ -126,6 +126,7 @@ BookStatus probeImage(BookSource& source, const ZipEntry& entry, Arena& scratch,
           out->kind = ImageInfo::Kind::Jpeg;
           out->height = be16(sof + 1);
           out->width = be16(sof + 3);
+          out->progressive = marker == 0xC2;
         }
         break;
       }

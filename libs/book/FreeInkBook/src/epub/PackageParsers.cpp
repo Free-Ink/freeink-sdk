@@ -236,6 +236,13 @@ class PackageHandler : public XmlHandler {
         const char* toc = attrLocal(atts, "toc");
         if (toc != nullptr) tocId = arena_.strdup(toc);
       }
+    } else if (inMetadata_ > 0 && localIs(name, "meta")) {
+      // EPUB 2 cover declaration: <meta name="cover" content="manifest-id"/>.
+      const char* metaName = attrLocal(atts, "name");
+      const char* content = attrLocal(atts, "content");
+      if (metaName != nullptr && content != nullptr && strcmp(metaName, "cover") == 0) {
+        coverIdHash = ZipCatalog::hashPath(content);
+      }
     } else if (inMetadata_ > 0 && mode_ == Mode::Count) {
       captureKind_ = MetaField::None;
       if (localIs(name, "title")) captureKind_ = MetaField::Title;
@@ -323,6 +330,7 @@ class PackageHandler : public XmlHandler {
   size_t spineUsed = 0;
 
   bool outOfMemory = false;
+  uint32_t coverIdHash = 0;  // from <meta name="cover">, 0 = none
 
  private:
   enum class MetaField { None, Title, Author, Language, Identifier };
@@ -364,6 +372,17 @@ BookStatus parsePackage(BookSource& source, const ZipEntry& entry, const char* o
   if (status != BookStatus::Ok || filler.outOfMemory) {
     scratch.release(scratchMark);
     return status != BookStatus::Ok ? status : BookStatus::OutOfMemory;
+  }
+
+  // EPUB 2 books declare the cover via metadata rather than a manifest
+  // property; promote the referenced item so consumers see one flag.
+  if (filler.coverIdHash != 0) {
+    for (size_t i = 0; i < counter.manifestCount; ++i) {
+      if (manifest[i].idHash == filler.coverIdHash) {
+        manifest[i].isCoverImage = true;
+        break;
+      }
+    }
   }
 
   // Resolve spine idrefs to manifest indices; unresolvable refs are dropped.

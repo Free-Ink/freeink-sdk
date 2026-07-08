@@ -23,6 +23,8 @@
 
 #include <stdint.h>
 
+#include "BookProfile.h"
+
 #include "BookArena.h"
 #include "BookStorage.h"
 #include "BookTypes.h"
@@ -59,8 +61,21 @@ class PageCacheWriter : public PageSink {
  private:
   bool writeRaw(const void* data, uint32_t len);
 
+  // Index arrays (8 bytes per page + 8 per anchor) accumulate in the caller's
+  // scratch arena for the whole pagination — the dominant fixed cost of a
+  // build after the layout buffers. Profile-tiered like the layout capacities
+  // (BookProfile.h): the small tier trades pathological single-spine books
+  // (>2048 pages at its buffer sizes) for ~20 KB less build scratch.
+#if FREEINK_BOOK_PROFILE == FREEINK_BOOK_PROFILE_SMALL
+  static constexpr uint32_t kMaxPages = 2048;
+  static constexpr uint32_t kMaxAnchors = 256;
+#elif FREEINK_BOOK_PROFILE == FREEINK_BOOK_PROFILE_LARGE
+  static constexpr uint32_t kMaxPages = 8192;
+  static constexpr uint32_t kMaxAnchors = 1024;
+#else
   static constexpr uint32_t kMaxPages = 4096;
   static constexpr uint32_t kMaxAnchors = 512;
+#endif
 
   CacheStorage* storage_ = nullptr;
   const char* name_ = nullptr;

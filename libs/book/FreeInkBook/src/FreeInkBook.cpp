@@ -5,9 +5,38 @@
 #include <string.h>
 
 #include "epub/PackageParsers.h"
+#include "epub/XmlSax.h"
 
 namespace freeink {
 namespace book {
+
+namespace {
+
+// META-INF/encryption.xml does NOT always mean DRM: retail EPUBs routinely
+// declare only obfuscated embedded fonts (IDPF or Adobe mangling), which the
+// engine never reads anyway. Only actual content encryption (ADEPT, LCP —
+// anything beyond the two font-obfuscation algorithms) makes a book
+// unreadable.
+class EncryptionScan : public XmlHandler {
+ public:
+  void onStartElement(const char* name, const char** atts) override {
+    const char* colon = strrchr(name, ':');
+    const char* local = colon != nullptr ? colon + 1 : name;
+    if (strcmp(local, "EncryptionMethod") != 0) return;
+    for (int i = 0; atts != nullptr && atts[i] != nullptr; i += 2) {
+      const char* acolon = strrchr(atts[i], ':');
+      const char* alocal = acolon != nullptr ? acolon + 1 : atts[i];
+      if (strcmp(alocal, "Algorithm") != 0) continue;
+      const char* alg = atts[i + 1];
+      const bool fontObfuscation = strcmp(alg, "http://www.idpf.org/2008/embedding") == 0 ||
+                                   strcmp(alg, "http://ns.adobe.com/pdf/enc#RC") == 0;
+      if (!fontObfuscation) contentEncrypted = true;
+    }
+  }
+  bool contentEncrypted = false;
+};
+
+}  // namespace
 
 BookStatus Book::open(BookSource& source, Arena& bookArena, Arena& scratch) {
   source_ = &source;
@@ -22,7 +51,16 @@ BookStatus Book::open(BookSource& source, Arena& bookArena, Arena& scratch) {
   BookStatus status = zip_.open(source, bookArena);
   if (status != BookStatus::Ok) return status;
 
-  if (zip_.find("META-INF/encryption.xml") != nullptr) return BookStatus::Encrypted;
+  const ZipEntry* encryption = zip_.find("META-INF/encryption.xml");
+  if (encryption != nullptr) {
+    EncryptionScan scan;
+    const size_t encMark = scratch.mark();
+    const BookStatus encStatus = XmlSax::parseEntry(source, *encryption, scratch, scan);
+    scratch.release(encMark);
+    // Unparseable encryption manifest: assume the worst rather than render
+    // garbage.
+    if (encStatus != BookStatus::Ok || scan.contentEncrypted) return BookStatus::Encrypted;
+  }
 
   const ZipEntry* container = zip_.find("META-INF/container.xml");
   if (container == nullptr) return BookStatus::NotEpub;

@@ -4,7 +4,7 @@
  * Line breaking in a Unicode sequence.  Designed to be used in a
  * generic text renderer.
  *
- * Copyright (C) 2008-2024 Wu Yongwei <wuyongwei at gmail dot com>
+ * Copyright (C) 2008-2026 Wu Yongwei <wuyongwei at gmail dot com>
  * Copyright (C) 2013 Petr Filipsky <philodej at gmail dot com>
  *
  * This software is provided 'as-is', without any express or implied
@@ -51,10 +51,22 @@
 
 #include <assert.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <string.h>
 #include "eastasianwidthdef.h"
 #include "linebreak.h"
 #include "linebreakdef.h"
+
+#ifndef UB_LB25_OPT_HACK
+/* See the later `#if UB_LB25_OPT_HACK` for how this optimization
+ * works.  It proves to work well on GCC and MSVC, but not Clang,
+ * which optimizes quite well by itself. */
+#ifndef __clang__
+#define UB_LB25_OPT_HACK 1
+#else
+#define UB_LB25_OPT_HACK 0
+#endif
+#endif
 
 /**
  * Special value used internally to indicate an undefined break result.
@@ -62,9 +74,9 @@
 #define LINEBREAK_UNDEFINED -1
 
 /**
- * Size of the second-level index to the line breaking properties.
+ * Special value used internally to mark an invalid position.
  */
-#define LINEBREAK_INDEX_SIZE 40
+#define INVALID_POS ((size_t)-1)
 
 /**
  * Enumeration of break actions.  They are used in the break action
@@ -83,11 +95,11 @@ enum BreakAction
  * Break action pair table.  This is a direct mapping of Table 2 of
  * Unicode Standard Annex 14, Revision 37, except for the following:
  *
- * - CB (manually added as per LB20)
- * - ZWJ (manually adjusted after special processing as per LB8a of
- *   Revision 41)
- * - CL, CP, NS, SY, IS, PR, PO, HY, BA,B2, and RI (manually adjusted as
- *   per LB22 of Revision 45)
+ * - CB is manually added as per LB20
+ * - ZWJ is manually adjusted after special processing as per LB8a of
+ *   Revision 41
+ * - CL, CP, NS, SY, IS, PR, PO, HY, BA,B2, and RI are manually adjusted
+ *   as per LB22 of Revision 45
  */
 static enum BreakAction baTable[LBP_CB][LBP_CB] = {
     {   /* OP */
@@ -299,25 +311,39 @@ static enum BreakAction baTable[LBP_CB][LBP_CB] = {
  * @param suffixLen  length of \a suffix
  * @return           non-zero if true; zero otherwise
  */
-static __inline int ends_with(const char *str, const char *suffix,
-                              unsigned suffixLen)
+static __inline bool ends_with(const char *str, const char *suffix,
+                               unsigned suffixLen)
 {
     size_t len;
     if (str == NULL)
     {
-        return 0;
+        return false;
     }
     len = strlen(str);
     if (len >= suffixLen &&
         memcmp(str + len - suffixLen, suffix, suffixLen) == 0)
     {
-        return 1;
+        return true;
     }
     else
     {
-        return 0;
+        return false;
     }
 }
+
+#if UB_LANG_FLAGS
+static __inline bool is_lang_cjk(const char *lang)
+{
+    if (lang == NULL)
+    {
+        return false;
+    }
+
+    return (strncmp(lang, "zh", 2) == 0 ||
+            strncmp(lang, "ja", 2) == 0 ||
+            strncmp(lang, "ko", 2) == 0);
+}
+#endif
 
 #define ENDS_WITH(str, suffix) ends_with((str), (suffix), sizeof(suffix) - 1)
 
@@ -381,10 +407,10 @@ static enum LineBreakClass get_char_lb_class(
  * @param ch  character to check
  * @return    the line breaking class if found; \c LBP_XX otherwise
  */
-static enum LineBreakClass get_char_lb_class_default(
-        utf32_t ch)
+static enum LineBreakClass get_char_lb_class_default(utf32_t ch)
 {
-    if (ch < 65536) {
+    if (ch < 65536)
+    {
         return lb_prop_bmp[ch];
     }
 
@@ -444,15 +470,13 @@ static enum LineBreakClass get_char_lb_class_lang(
  */
 static enum LineBreakClass resolve_lb_class(
         enum LineBreakClass lbc,
-        const char *lang)
+        const struct LineBreakContext *lbpCtx)
 {
+#if UB_LANG_FLAGS
     switch (lbc)
     {
     case LBP_AI:
-        if (lang != NULL &&
-                (strncmp(lang, "zh", 2) == 0 || /* Chinese */
-                 strncmp(lang, "ja", 2) == 0 || /* Japanese */
-                 strncmp(lang, "ko", 2) == 0))  /* Korean */
+        if (lbpCtx->fLangCjk)
         {
             return LBP_ID;
         }
@@ -462,7 +486,42 @@ static enum LineBreakClass resolve_lb_class(
         }
     case LBP_CJ:
         /* `Strict' and `normal' line breaking.  See
-         * <url:http://www.unicode.org/reports/tr14/#CJ>
+         * <URL:http://www.unicode.org/reports/tr14/#CJ>
+         * for details. */
+        if (lbpCtx->fLangStrict)
+        {
+            return LBP_NS;
+        }
+        else
+        {
+            return LBP_ID;
+        }
+    case LBP_SA:
+    case LBP_SG:
+    case LBP_XX:
+        return LBP_AL;
+    default:
+        return lbc;
+    }
+#else
+    const char *lang = lbpCtx->lang;
+
+    switch (lbc)
+    {
+    case LBP_AI:
+        if (lang != NULL && (strncmp(lang, "zh", 2) == 0 || /* Chinese */
+                             strncmp(lang, "ja", 2) == 0 || /* Japanese */
+                             strncmp(lang, "ko", 2) == 0))  /* Korean */
+        {
+            return LBP_ID;
+        }
+        else
+        {
+            return LBP_AL;
+        }
+    case LBP_CJ:
+        /* `Strict' and `normal' line breaking.  See
+         * <URL:http://www.unicode.org/reports/tr14/#CJ>
          * for details. */
         if (ENDS_WITH(lang, "-strict"))
         {
@@ -479,6 +538,7 @@ static enum LineBreakClass resolve_lb_class(
     default:
         return lbc;
     }
+#endif
 }
 
 /**
@@ -524,8 +584,8 @@ static void treat_first_char(
 static int get_lb_result_simple(
         struct LineBreakContext *lbpCtx)
 {
-    if (lbpCtx->lbcCur == LBP_BK
-        || (lbpCtx->lbcCur == LBP_CR && lbpCtx->lbcNew != LBP_LF))
+    if (lbpCtx->lbcCur == LBP_BK ||
+        (lbpCtx->lbcCur == LBP_CR && lbpCtx->lbcNew != LBP_LF))
     {
         return LINEBREAK_MUSTBREAK;     /* Rules LB4 and LB5 */
     }
@@ -548,6 +608,91 @@ static int get_lb_result_simple(
 }
 
 /**
+ * Updates LB25 state.  Breaks may be modified.
+ *
+ * @param[in,out] lbpCtx  pointer to the line breaking context
+ * @param[out] pBrk       pointer to the current break value
+ * @pre                   \a lbpCtx->lbcNew has the line break class for
+ *                        the next character; and \a lbpCtx->eLb25 has
+ *                        the current LB25 state
+ * @post                  \a *pBrk is updated for NOBREAK results; and
+ *                        \a lbpCtx->posLb25Fixup keeps the position for
+ *                        fixup in the "(PR | PO) × (OP | HY) NU" case
+ * @return                the new LB25 state
+ */
+static enum Lb25State update_lb25_state(
+        struct LineBreakContext *lbpCtx, int *pBrk)
+{
+    /* Tailored rules:
+     *
+     * (PR | PO) × NU                               -- pair table
+     * (PR | PO) × (OP | HY) NU                     -- processed below
+     * (OP | HY) × NU                               -- pair table
+     * NU × (NU | SY | IS)                          -- pair table
+     * NU (NU | SY | IS)* × (NU | SY | IS)          -- processed below
+     * NU (NU | SY | IS)* × (CL | CP)               -- pair table
+     * NU (NU | SY | IS)* (CL | CP)? × (PO | PR)    -- processed below
+     */
+    switch (lbpCtx->eLb25)
+    {
+    case LB25_PREFIX:
+        if (lbpCtx->lbcNew == LBP_OP ||
+            lbpCtx->lbcNew == LBP_HY)
+        {
+            lbpCtx->posLb25Fixup = lbpCtx->posLast;
+            return LB25_PREFIXOP;
+        }
+        break;
+    case LB25_PREFIXOP:
+        if (lbpCtx->lbcNew == LBP_NU)
+        {
+            lbpCtx->fLb25Mark = true;
+            return LB25_NUM;
+        }
+        lbpCtx->posLb25Fixup = INVALID_POS;
+        goto prefix_check;
+    case LB25_NUM:
+        if (lbpCtx->lbcNew == LBP_NU ||
+            lbpCtx->lbcNew == LBP_SY ||
+            lbpCtx->lbcNew == LBP_IS)
+        {
+            *pBrk = LINEBREAK_NOBREAK;
+            return LB25_NUM;
+        }
+        if (lbpCtx->lbcNew == LBP_CL ||
+            lbpCtx->lbcNew == LBP_CP)
+        {
+            return LB25_NUMCLOSE;
+        }
+        /* fallthrough */
+    case LB25_NUMCLOSE:
+        if (lbpCtx->lbcNew == LBP_PO ||
+            lbpCtx->lbcNew == LBP_PR)
+        {
+            *pBrk = LINEBREAK_NOBREAK;
+            return LB25_PREFIX;
+        }
+        break;
+    default:
+        break;
+    }
+
+    if (lbpCtx->lbcNew == LBP_NU)
+    {
+        return LB25_NUM;
+    }
+
+prefix_check:
+    if (lbpCtx->lbcNew == LBP_PR ||
+        lbpCtx->lbcNew == LBP_PO)
+    {
+        return LB25_PREFIX;
+    }
+
+    return LB25_NONE;
+}
+
+/**
  * Tells the line break opportunity by table lookup.
  *
  * @param[in,out] lbpCtx  pointer to the line breaking context
@@ -562,7 +707,7 @@ static int get_lb_result_simple(
  *                        #LINEBREAK_ALLOWBREAK, and #LINEBREAK_NOBREAK
  */
 static int get_lb_result_lookup(
-        struct LineBreakContext *lbpCtx)
+        struct LineBreakContext *lbpCtx, utf32_t ch)
 {
     int brk = LINEBREAK_UNDEFINED;
 
@@ -582,6 +727,7 @@ static int get_lb_result_lookup(
         brk = LINEBREAK_ALLOWBREAK;
         if (lbpCtx->lbcLast != LBP_SP)
         {
+            lbpCtx->eLb25 = LB25_NONE;
             brk = LINEBREAK_NOBREAK;
             return brk;                 /* Do not update lbcCur */
         }
@@ -590,6 +736,7 @@ static int get_lb_result_lookup(
         brk = LINEBREAK_NOBREAK;
         if (lbpCtx->lbcLast != LBP_SP)
         {
+            lbpCtx->eLb25 = LB25_NONE;
             return brk;                 /* Do not update lbcCur */
         }
         break;
@@ -598,13 +745,21 @@ static int get_lb_result_lookup(
         break;
     }
 
+    /* Simple rules for programmers: no break between "++", or between
+     * '-' and '`'. */
+    if ((lbpCtx->lbcLast == LBP_PR && ch == '+') ||
+        (lbpCtx->lbcLast == LBP_HY && ch == '`'))
+    {
+        brk = LINEBREAK_NOBREAK;
+    }
+
     /* Special processing due to rule LB8a */
     if (lbpCtx->fLb8aZwj)
     {
         brk = LINEBREAK_NOBREAK;
     }
 
-    /* Special processing due to rule LB21a */
+    /* Rule LB21a */
     if (lbpCtx->fLb21aHebrew &&
         (lbpCtx->lbcCur == LBP_HY || lbpCtx->lbcCur == LBP_BA))
     {
@@ -616,17 +771,74 @@ static int get_lb_result_lookup(
         lbpCtx->fLb21aHebrew = (lbpCtx->lbcCur == LBP_HL);
     }
 
+    /* Rule LB25 */
+    if (lbpCtx->posLast != INVALID_POS) /* Tailoring possible */
+    {
+#if UB_LB25_OPT_HACK
+        /* This hack reduces conditional jumps and works well with the
+         * optimizers of GCC and MSVC. */
+        static const uint16_t allow[LBP_PO + 1] = {
+            [LBP_CL] = (1 << LBP_PR) | (1 << LBP_PO),
+            [LBP_CP] = (1 << LBP_PR) | (1 << LBP_PO),
+            [LBP_SY] = (1 << LBP_NU),
+            [LBP_IS] = (1 << LBP_NU),
+            [LBP_PR] = (1 << LBP_OP),
+            [LBP_PO] = (1 << LBP_OP),
+        };
+        if (lbpCtx->lbcCur <= LBP_PO && lbpCtx->lbcNew <= LBP_NU &&
+            (allow[lbpCtx->lbcCur] >> lbpCtx->lbcNew) & 1)
+#else
+        /* The Clang optimizer works well with the following condition.
+         * Extra hacks harm the performance. */
+        if ((lbpCtx->lbcCur == LBP_CL &&
+             (lbpCtx->lbcNew == LBP_PO || lbpCtx->lbcNew == LBP_PR)) ||
+            (lbpCtx->lbcCur == LBP_CP &&
+             (lbpCtx->lbcNew == LBP_PO || lbpCtx->lbcNew == LBP_PR)) ||
+            (lbpCtx->lbcCur == LBP_PO && lbpCtx->lbcNew == LBP_OP) ||
+            (lbpCtx->lbcCur == LBP_PR && lbpCtx->lbcNew == LBP_OP) ||
+            (lbpCtx->lbcCur == LBP_IS && lbpCtx->lbcNew == LBP_NU) ||
+            (lbpCtx->lbcCur == LBP_SY && lbpCtx->lbcNew == LBP_NU))
+#endif
+        {
+            /* Allow break for the above cases, but later fixes may
+             * change it again. */
+            brk = LINEBREAK_ALLOWBREAK;
+        }
+
+#if UB_LB25_OPT_HACK
+        /* The else path is sufficient, but the additional condition may
+         * avoid a function call and boost performance. */
+        if (lbpCtx->eLb25 == LB25_NONE)
+        {
+            switch (lbpCtx->lbcNew)
+            {
+            case LBP_PR:
+            case LBP_PO:
+                lbpCtx->eLb25 = LB25_PREFIX;
+                break;
+            case LBP_NU:
+                lbpCtx->eLb25 = LB25_NUM;
+                break;
+            default:
+                break;
+            }
+        }
+        else
+#endif
+        {
+            lbpCtx->eLb25 = update_lb25_state(lbpCtx, &brk);
+        }
+    }
+
     /* Rule LB30 */
     if (/* (AL | HL | NU) × [OP-[\p{ea=F}\p{ea=W}\p{ea=H}]] */
         ((lbpCtx->lbcLast == LBP_AL || lbpCtx->lbcLast == LBP_HL ||
           lbpCtx->lbcLast == LBP_NU) &&
-         (lbpCtx->lbcNew == LBP_OP &&
-          !(lbpCtx->eaNew == EAW_F || lbpCtx->eaNew == EAW_W ||
-            lbpCtx->eaNew == EAW_H))) ||
-        /* [CP-[\p{ea=F}\p{ea=W}\p{ea=H}]] × (AL | HL | NU) */
-        ((lbpCtx->lbcLast == LBP_CP &&
-          !(lbpCtx->eaLast == EAW_F || lbpCtx->eaLast == EAW_W ||
-            lbpCtx->eaLast == EAW_H)) &&
+         (lbpCtx->lbcNew == LBP_OP && !ub_is_op_east_asian(ch))) ||
+        /* [CP-[\p{ea=F}\p{ea=W}\p{ea=H}]] × (AL | HL | NU)
+           note as of Unicode 15.1, there is no east asian CP
+        */
+        (lbpCtx->lbcLast == LBP_CP &&
          (lbpCtx->lbcNew == LBP_AL || lbpCtx->lbcNew == LBP_HL ||
           lbpCtx->lbcNew == LBP_NU)))
     {
@@ -666,24 +878,34 @@ void lb_init_break_context(
         const char *lang)
 {
     lbpCtx->lang = lang;
+#if UB_LANG_FLAGS
+    lbpCtx->fLangCjk = is_lang_cjk(lang);
+    lbpCtx->fLangStrict = ENDS_WITH(lang, "-strict");
+#endif
     lbpCtx->lbpLang = get_lb_prop_lang(lang);
     lbpCtx->lbcCur = resolve_lb_class(
                         get_char_lb_class_lang(ch, lbpCtx->lbpLang),
-                        lbpCtx->lang);
+                        lbpCtx);
     lbpCtx->lbcNew = LBP_Undefined;
     lbpCtx->lbcLast = LBP_Undefined;
-    lbpCtx->eaNew = EAW_N;
-    lbpCtx->eaLast = EAW_N;
+    lbpCtx->posLast = INVALID_POS;
     lbpCtx->fLb8aZwj =
         (get_char_lb_class_lang(ch, lbpCtx->lbpLang) == LBP_ZWJ);
     lbpCtx->fLb21aHebrew = false;
     lbpCtx->cLb30aRI = 0;
+    lbpCtx->eLb25 = LB25_NONE;
+    lbpCtx->posLb25Fixup = INVALID_POS;
+    lbpCtx->fLb25Mark = false;
     treat_first_char(lbpCtx);
 }
 
 /**
  * Updates LineBreakingContext for the next codepoint and returns
  * the detected break.
+ *
+ * This function is deprecated, as it cannot support fixups, as
+ * required by LB25 tailoring (and some more recent rules).  See the
+ * implementation of #set_linebreaks for the fixup logic.
  *
  * @param[in,out] lbpCtx  pointer to the line breaking context
  * @param[in]     ch      Unicode codepoint
@@ -698,11 +920,11 @@ int lb_process_next_char(
     int brk;
 
     /* Rule LB9 */
-    if (lbpCtx->lbcLast == LBP_BK || lbpCtx->lbcLast == LBP_CR ||
+    if (!(lbpCtx->lbcNew == LBP_CM || lbpCtx->lbcNew == LBP_ZWJ) ||
+        lbpCtx->lbcLast == LBP_BK || lbpCtx->lbcLast == LBP_CR ||
         lbpCtx->lbcLast == LBP_LF || lbpCtx->lbcLast == LBP_NL ||
         lbpCtx->lbcLast == LBP_SP || lbpCtx->lbcLast == LBP_ZW ||
-        lbpCtx->lbcLast == LBP_Undefined ||
-        !(lbpCtx->lbcNew == LBP_CM || lbpCtx->lbcNew == LBP_ZWJ))
+        lbpCtx->lbcLast == LBP_Undefined)
     {
         lbpCtx->lbcLast = lbpCtx->lbcNew;
     }
@@ -713,20 +935,19 @@ int lb_process_next_char(
     }
 
     lbpCtx->lbcNew = get_char_lb_class_lang(ch, lbpCtx->lbpLang);
-    lbpCtx->eaLast = lbpCtx->eaNew;
-    lbpCtx->eaNew = ub_get_char_eaw_class(ch);
     brk = get_lb_result_simple(lbpCtx);
     switch (brk)
     {
     case LINEBREAK_MUSTBREAK:
-        lbpCtx->lbcCur = resolve_lb_class(lbpCtx->lbcNew, lbpCtx->lang);
+        lbpCtx->lbcCur = resolve_lb_class(lbpCtx->lbcNew, lbpCtx);
         treat_first_char(lbpCtx);
         break;
     case LINEBREAK_UNDEFINED:
-        lbpCtx->lbcNew = resolve_lb_class(lbpCtx->lbcNew, lbpCtx->lang);
-        brk = get_lb_result_lookup(lbpCtx);
+        lbpCtx->lbcNew = resolve_lb_class(lbpCtx->lbcNew, lbpCtx);
+        brk = get_lb_result_lookup(lbpCtx, ch);
         break;
     default:
+        lbpCtx->eLb25 = LB25_NONE;
         break;
     }
 
@@ -828,7 +1049,16 @@ size_t set_linebreaks(
         {
             break;
         }
+        lbCtx.posLast = posLast;
         brks[posLast] = (char)lb_process_next_char(&lbCtx, ch);
+
+        /* Fix-up due to LB25 */
+        if (lbCtx.posLb25Fixup != INVALID_POS && lbCtx.fLb25Mark)
+        {
+            brks[lbCtx.posLb25Fixup] = LINEBREAK_NOBREAK;
+            lbCtx.posLb25Fixup = INVALID_POS;
+            lbCtx.fLb25Mark = false;
+        }
     }
 
     /* After the last character */
@@ -900,7 +1130,7 @@ size_t set_linebreaks_utf8_per_code_point(
         char *brks)
 {
     return set_linebreaks(s, len, lang, LBOT_PER_CODE_POINT, brks,
-                   (get_next_char_t)ub_get_next_char_utf8);
+                          (get_next_char_t)ub_get_next_char_utf8);
 }
 
 /**
@@ -944,7 +1174,7 @@ size_t set_linebreaks_utf16_per_code_point(
         char *brks)
 {
     return set_linebreaks(s, len, lang, LBOT_PER_CODE_POINT, brks,
-                   (get_next_char_t)ub_get_next_char_utf16);
+                          (get_next_char_t)ub_get_next_char_utf16);
 }
 
 /**

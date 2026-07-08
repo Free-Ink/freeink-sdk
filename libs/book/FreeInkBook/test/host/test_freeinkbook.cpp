@@ -183,6 +183,19 @@ void testMinimalBook(const char* name) {
   CHECK_STREQ(book.spineItem(7)->href, "OEBPS/text/ch8.xhtml");
   CHECK(book.spineItem(8) == nullptr);
 
+  // EPUB 2 <meta name="cover"> promotes its manifest item to cover-image.
+  {
+    bool found = false;
+    for (size_t i = 0; i < book.manifestCount(); ++i) {
+      const ManifestItem* it = book.manifestItem(i);
+      if (it != nullptr && strcmp(it->id, "img1") == 0) {
+        CHECK(it->isCoverImage);
+        found = true;
+      }
+    }
+    CHECK(found);
+  }
+
   // TOC comes from the EPUB 3 nav document (preferred over the NCX).
   CHECK_EQ(book.tocCount(), 3u);
   CHECK_STREQ(book.tocEntry(0)->title, "Chapter One");  // text spans nested elements

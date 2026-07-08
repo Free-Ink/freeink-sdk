@@ -29,6 +29,10 @@
  *
  * Definition of language-specific data.
  *
+ * @note As of Unicode 15.1, all the LBP_OP overrides here are not considered
+ *       east asian as per LB30, which is consistent with `ub_is_op_east_asian()`
+ *       result. This needs to be checked in future updates.
+ *
  * @author  Wu Yongwei
  */
 

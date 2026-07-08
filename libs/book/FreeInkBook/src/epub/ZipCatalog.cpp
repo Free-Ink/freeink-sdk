@@ -9,6 +9,20 @@
 namespace freeink {
 namespace book {
 
+// readAt may legally return fewer bytes than asked (SD adapters often pass
+// through one FsFile::read); loop to the exact count.
+static bool readFully(BookSource& source, uint64_t off, void* dst, uint32_t len) {
+  uint8_t* p = static_cast<uint8_t*>(dst);
+  uint32_t got = 0;
+  while (got < len) {
+    const int32_t n = source.readAt(off + got, p + got, len - got);
+    if (n <= 0) return false;
+    got += static_cast<uint32_t>(n);
+  }
+  return true;
+}
+
+
 namespace {
 
 constexpr uint32_t kEocdSig = 0x06054b50;   // end of central directory
@@ -104,7 +118,7 @@ BookStatus ZipCatalog::open(BookSource& source, Arena& arena) {
     const uint64_t off = lowest - chunk;
     const uint32_t overlap = (fileSize - lowest) < 3 ? static_cast<uint32_t>(fileSize - lowest) : 3;
     const uint32_t len = chunk + overlap;
-    if (source.readAt(off, window, len) != static_cast<int32_t>(len)) return BookStatus::IoError;
+    if (!readFully(source, off, window, len)) return BookStatus::IoError;
     for (int64_t i = static_cast<int64_t>(len) - 4; i >= 0; --i) {
       if (le32(window + i) == kEocdSig) {
         eocdPos = off + static_cast<uint64_t>(i);
@@ -116,7 +130,7 @@ BookStatus ZipCatalog::open(BookSource& source, Arena& arena) {
   if (eocdPos == UINT64_MAX || eocdPos + kEocdMinSize > fileSize) return BookStatus::NotZip;
 
   uint8_t eocd[kEocdMinSize];
-  if (source.readAt(eocdPos, eocd, kEocdMinSize) != static_cast<int32_t>(kEocdMinSize)) {
+  if (!readFully(source, eocdPos, eocd, kEocdMinSize)) {
     return BookStatus::IoError;
   }
   const uint16_t totalEntries = le16(eocd + 10);
@@ -190,8 +204,7 @@ BookStatus ZipEntryReader::open(BookSource& source, const ZipEntry& entry, Arena
   // lengths (some writers add extra fields locally), so the local header is
   // authoritative for where the data starts.
   uint8_t local[30];
-  if (source.readAt(entry.localHeaderOffset, local, sizeof(local)) !=
-      static_cast<int32_t>(sizeof(local))) {
+  if (!readFully(source, entry.localHeaderOffset, local, sizeof(local))) {
     return BookStatus::IoError;
   }
   if (le32(local) != kLocalSig) return BookStatus::NotZip;

@@ -34,6 +34,19 @@ uint32_t getU32(const uint8_t* p) {
          (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
 }
 
+// CacheStorage::readAt may return short (SD adapters often pass one
+// FsFile::read through); loop to the exact count.
+bool readFully(CacheStorage& storage, const char* name, uint32_t off, void* dst, uint32_t len) {
+  uint8_t* p = static_cast<uint8_t*>(dst);
+  uint32_t got = 0;
+  while (got < len) {
+    const int32_t n = storage.readAt(name, off + got, p + got, len - got);
+    if (n <= 0) return false;
+    got += static_cast<uint32_t>(n);
+  }
+  return true;
+}
+
 uint32_t hashMix(uint32_t hash, uint32_t value) {
   hash ^= value;
   hash *= 16777619u;
@@ -255,7 +268,7 @@ BookStatus PageCacheReader::open(CacheStorage& storage, const char* name, uint32
   if (size < static_cast<int64_t>(kHeaderSize + kFooterSize)) return BookStatus::NotFound;
 
   uint8_t header[kHeaderSize];
-  if (storage.readAt(name, 0, header, sizeof(header)) != static_cast<int32_t>(sizeof(header))) {
+  if (!readFully(storage, name, 0, header, sizeof(header))) {
     return BookStatus::IoError;
   }
   if (memcmp(header, "FIBP", 4) != 0) return BookStatus::Stale;
@@ -263,8 +276,7 @@ BookStatus PageCacheReader::open(CacheStorage& storage, const char* name, uint32
   if (getU32(header + 8) != expectedHash) return BookStatus::Stale;
 
   uint8_t footer[kFooterSize];
-  if (storage.readAt(name, static_cast<uint32_t>(size) - kFooterSize, footer, sizeof(footer)) !=
-      static_cast<int32_t>(sizeof(footer))) {
+  if (!readFully(storage, name, static_cast<uint32_t>(size) - kFooterSize, footer, sizeof(footer))) {
     return BookStatus::IoError;
   }
   if (memcmp(footer + 20, "FIBX", 4) != 0) return BookStatus::Stale;  // torn write
@@ -288,8 +300,7 @@ BookStatus PageCacheReader::open(CacheStorage& storage, const char* name, uint32
   }
   for (uint32_t i = 0; i < pageCount; ++i) {
     uint8_t rec[8];
-    if (storage.readAt(name, indexOffset_ + i * 8, rec, sizeof(rec)) !=
-        static_cast<int32_t>(sizeof(rec))) {
+    if (!readFully(storage, name, indexOffset_ + i * 8, rec, sizeof(rec))) {
       return BookStatus::IoError;
     }
     offsets_[i] = getU32(rec);
@@ -302,8 +313,7 @@ BookStatus PageCacheReader::open(CacheStorage& storage, const char* name, uint32
   }
   for (uint32_t a = 0; a < anchorCount; ++a) {
     uint8_t rec[8];
-    if (storage.readAt(name, anchorOffset + a * 8, rec, sizeof(rec)) !=
-        static_cast<int32_t>(sizeof(rec))) {
+    if (!readFully(storage, name, anchorOffset + a * 8, rec, sizeof(rec))) {
       return BookStatus::IoError;
     }
     anchorHashes_[a] = getU32(rec);
@@ -349,7 +359,7 @@ BookStatus PageCacheReader::readPage(uint32_t pageIndex, Arena& scratch, Page* o
 
   uint8_t* blob = static_cast<uint8_t*>(scratch.alloc(blobLen, 4));
   if (blob == nullptr) return BookStatus::OutOfMemory;
-  if (storage_->readAt(name_, blobOffset, blob, blobLen) != static_cast<int32_t>(blobLen)) {
+  if (!readFully(*storage_, name_, blobOffset, blob, blobLen)) {
     return BookStatus::IoError;
   }
 

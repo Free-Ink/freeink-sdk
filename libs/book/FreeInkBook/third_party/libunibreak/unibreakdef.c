@@ -4,7 +4,7 @@
  * Break processing in a Unicode sequence.  Designed to be used in a
  * generic text renderer.
  *
- * Copyright (C) 2015-2024 Wu Yongwei <wuyongwei at gmail dot com>
+ * Copyright (C) 2015-2026 Wu Yongwei <wuyongwei at gmail dot com>
  *
  * This software is provided 'as-is', without any express or implied
  * warranty.  In no event will the author be held liable for any damages
@@ -41,17 +41,18 @@
  * be advanced to the next complete character, unless the end of string
  * is reached in the middle of a UTF-8 sequence.
  *
- * @param[in]     s    input UTF-8 string
+ * @param[in]     sv   input UTF-8 string
  * @param[in]     len  length of the string in bytes
  * @param[in,out] ip   pointer to the index
  * @return             the Unicode character beginning at the index; or
  *                     #EOS if end of input is encountered
  */
 utf32_t ub_get_next_char_utf8(
-        const utf8_t *s,
+        const void *sv,
         size_t len,
         size_t *ip)
 {
+    const utf8_t *s = (const utf8_t *)sv;
     utf8_t ch;
     utf32_t res;
 
@@ -109,17 +110,18 @@ utf32_t ub_get_next_char_utf8(
  * be advanced to the next complete character, unless the end of string
  * is reached in the middle of a UTF-16 surrogate pair.
  *
- * @param[in]     s    input UTF-16 string
+ * @param[in]     sv   input UTF-16 string
  * @param[in]     len  length of the string in words
  * @param[in,out] ip   pointer to the index
  * @return             the Unicode character beginning at the index; or
  *                     #EOS if end of input is encountered
  */
 utf32_t ub_get_next_char_utf16(
-        const utf16_t *s,
+        const void *sv,
         size_t len,
         size_t *ip)
 {
+    const utf16_t *s = (const utf16_t *)sv;
     utf16_t ch;
 
     assert(*ip <= len);
@@ -150,17 +152,18 @@ utf32_t ub_get_next_char_utf16(
  * Gets the next Unicode character in a UTF-32 sequence.  The index will
  * be advanced to the next character.
  *
- * @param[in]     s    input UTF-32 string
+ * @param[in]     sv   input UTF-32 string
  * @param[in]     len  length of the string in dwords
  * @param[in,out] ip   pointer to the index
  * @return             the Unicode character beginning at the index; or
  *                     #EOS if end of input is encountered
  */
 utf32_t ub_get_next_char_utf32(
-        const utf32_t *s,
+        const void *sv,
         size_t len,
         size_t *ip)
 {
+    const utf32_t *s = (const utf32_t *)sv;
     assert(*ip <= len);
     if (*ip == len)
     {

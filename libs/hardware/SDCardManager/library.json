@@ -1,12 +1,21 @@
 {
   "name": "SDCardManager",
   "version": "2.0.0",
-  "description": "FreeInk SD card manager: device-agnostic singleton with app-friendly read/write helpers and an optional board power hook (for PMIC-gated SD rails). Two backends behind one FsVolume seam — SdFat-over-SPI (default) and native 4-bit SDMMC via an esp-idf block device (FREEINK_SD_SDMMC).",
+  "description": "FreeInk SD card manager: device-agnostic singleton with app-friendly read/write helpers and an optional board power hook (for PMIC-gated SD rails). Two backends behind one FsVolume seam \u2014 SdFat-over-SPI (default) and native 4-bit SDMMC via an esp-idf block device (FREEINK_SD_SDMMC).",
   "keywords": "sd, sdfat, storage, fs",
-  "authors": [{"name": "FreeInk SDK Contributors"}],
+  "authors": [
+    {
+      "name": "FreeInk SDK Contributors"
+    }
+  ],
   "dependencies": {
     "greiman/SdFat": "^2.3.1"
   },
   "platforms": "espressif32",
-  "frameworks": ["arduino"]
+  "frameworks": [
+    "arduino"
+  ],
+  "build": {
+    "extraScript": "inject_build_flags.py"
+  }
 }

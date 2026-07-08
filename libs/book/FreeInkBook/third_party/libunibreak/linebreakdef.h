@@ -4,7 +4,7 @@
  * Line breaking in a Unicode sequence.  Designed to be used in a
  * generic text renderer.
  *
- * Copyright (C) 2008-2020 Wu Yongwei <wuyongwei at gmail dot com>
+ * Copyright (C) 2008-2026 Wu Yongwei <wuyongwei at gmail dot com>
  * Copyright (C) 2013 Petr Filipsky <philodej at gmail dot com>
  *
  * This software is provided 'as-is', without any express or implied
@@ -53,6 +53,10 @@
 #define LINEBREAKDEF_H
 
 #include "unibreakdef.h"
+
+#ifndef UB_LANG_FLAGS
+#define UB_LANG_FLAGS 1
+#endif
 
 /**
  * Line break classes.  This is a mapping of Table 1 of Unicode
@@ -114,6 +118,19 @@ enum LineBreakClass
     LBP_XX          /**< Unknown */
 };
 
+/**
+ * LB25 state for numeric expression context tracking.
+ * Used for Example 7 regex-based tailoring from UAX \#14-49.
+ */
+enum Lb25State
+{
+    LB25_NONE,       /**< Not in numeric expression */
+    LB25_PREFIX,     /**< Seen PR or PO (prefix) */
+    LB25_PREFIXOP,   /**< Saw (PR|PO) then OP or HY */
+    LB25_NUM,        /**< Inside NU (NU|SY|IS)* */
+    LB25_NUMCLOSE,   /**< Saw NU (NU|SY|IS)* (CL|CP) */
+};
+
 enum BreakOutputType
 {
     LBOT_PER_CODE_UNIT,
@@ -154,11 +171,17 @@ struct LineBreakContext
     enum LineBreakClass lbcCur;     /**< Breaking class of current codepoint */
     enum LineBreakClass lbcNew;     /**< Breaking class of next codepoint */
     enum LineBreakClass lbcLast;    /**< Breaking class of last codepoint */
-    unsigned char eaNew;            /**< East Asian Width of next codepoint */
-    unsigned char eaLast;           /**< East Asian Width of last codepoint */
+    size_t posLast;                 /**< Last position in input string */
+#if UB_LANG_FLAGS
+    bool fLangCjk;                  /**< zh/ja/ko language */
+    bool fLangStrict;               /**< -strict suffix */
+#endif
     bool fLb8aZwj;                  /**< Flag for ZWJ (LB8a) */
     bool fLb21aHebrew;              /**< Flag for Hebrew letters (LB21a) */
     int cLb30aRI;                   /**< Count of RI characters (LB30a) */
+    enum Lb25State eLb25;           /**< LB25 state for numeric expression */
+    size_t posLb25Fixup;            /**< Position to fix for LB25 */
+    bool fLb25Mark;                 /**< Flag for pending fixup */
 };
 
 /* Declarations */

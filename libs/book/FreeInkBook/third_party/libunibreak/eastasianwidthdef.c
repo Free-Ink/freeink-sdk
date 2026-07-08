@@ -1,5 +1,5 @@
 /*
- * Definitions of internal data types for Indic Conjunct Break.
+ * Implements East Asian Width lookup.
  *
  * Copyright (C) 2024 Wu Yongwei <wuyongwei at gmail dot com>
  *

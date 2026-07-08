@@ -10,6 +10,10 @@
 // Boards whose SD rail needs more than a GPIO (e.g. an I2C PMIC) register their
 // power-up via setPowerHook(); the manager calls it but stays device-agnostic.
 // The public API is identical for both backends, so consumers are unchanged.
+//
+// Filenames are UTF-8: the library's build hook (inject_build_flags.py)
+// forces SdFat's USE_UTF8_LONG_NAMES on for the whole build — without it,
+// SdFat mangles any non-ASCII long filename into an unopenable path.
 
 #include <WString.h>
 #include <vector>

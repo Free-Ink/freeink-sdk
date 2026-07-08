@@ -50,6 +50,7 @@ make_epub "$BUILD_DIR/fixtures/minimal" minimal.epub -9
 make_epub "$BUILD_DIR/fixtures/minimal" stored.epub -0
 make_epub "$BUILD_DIR/fixtures/ncxonly" ncxonly.epub -9
 head -c 4096 /dev/zero > "$BUILD_DIR/fixtures/garbage.bin"
+python3 ../fixtures/gen_omnibus.py "$BUILD_DIR/fixtures/omnibus.epub" 1700 >/dev/null
 
 # --- build ------------------------------------------------------------------
 INCLUDES="-I../../include -I../../third_party/expat -I../../third_party/miniz -I../../third_party/libunibreak -I../../third_party/pngle -I../../third_party/tjpgd -I../../third_party/stb"
@@ -58,7 +59,7 @@ for src in miniz_impl expat_xmlparse expat_xmlrole expat_xmltok unibreak_impl pn
   cc $CC_FLAGS -c "../../src/vendor/$src.c" -o "$BUILD_DIR/obj/$src.o"
 done
 
-CORE_SRCS="../../src/FreeInkBook.cpp ../../src/epub/ZipCatalog.cpp ../../src/epub/XmlSax.cpp \
+CORE_SRCS="../../src/FreeInkBook.cpp ../../src/BookCatalog.cpp ../../src/epub/ZipCatalog.cpp ../../src/epub/XmlSax.cpp \
   ../../src/epub/PackageParsers.cpp ../../src/epub/ImageProbe.cpp ../../src/text/EntityFilter.cpp \
   ../../src/text/Hyphenator.cpp ../../src/css/Css.cpp ../../src/layout/ChapterLayout.cpp \
   ../../src/cache/PageCache.cpp ../../src/render/ImageRenderer.cpp ../../src/render/TtfFont.cpp ../../src/render/PageRenderer.cpp"
@@ -89,6 +90,10 @@ c++ -std=c++17 -Wall -Wextra -Werror $INCLUDES \
   $CORE_SRCS test_font.cpp "$BUILD_DIR"/obj/*.o \
   -o "$BUILD_DIR/test_font"
 
+c++ -std=c++17 -Wall -Wextra -Werror $INCLUDES \
+  $CORE_SRCS test_catalog.cpp "$BUILD_DIR"/obj/*.o \
+  -o "$BUILD_DIR/test_catalog"
+
 python3 ../../tools/hyphc.py ../../third_party/hyphen-patterns/hyph-en-us.pat.txt \
   "$BUILD_DIR/hyph-en-us.fibh"
 python3 ../../tools/hyphc.py ../fixtures/hyph-test-ru.pat.txt \
@@ -101,3 +106,4 @@ mkdir -p "$BUILD_DIR/cache"
 "$BUILD_DIR/test_layout_large" "$BUILD_DIR/fixtures" "$BUILD_DIR/hyph-en-us.fibh" "$BUILD_DIR/hyph-test-ru.fibh"
 "$BUILD_DIR/test_cache" "$BUILD_DIR/fixtures" "$BUILD_DIR/cache"
 "$BUILD_DIR/test_font" "$BUILD_DIR/fixtures" ../fixtures/fonts/DejaVuSans.ttf
+"$BUILD_DIR/test_catalog" "$BUILD_DIR/fixtures" "$BUILD_DIR/cache"

@@ -1795,17 +1795,14 @@ void prescanImages(BookSource& bookSource, const ZipCatalog* zip, BookSource& ch
                              /*filterHtmlEntities=*/true) == BookStatus::Ok ||
           collector.count() > 0) {
         probedCount = collector.count();
-        // One pass over the catalog, matched by the same name hash find()
-        // keys on. A missing target keeps kind=Unknown and layout skips the
-        // image, exactly as the inline probe path did.
-        for (size_t e = 0; e < zip->entryCount() && probedCount > 0; ++e) {
-          const ZipEntry* target = zip->entry(e);
-          for (uint16_t i = 0; i < probedCount; ++i) {
-            if (probed[i].hrefHash == target->nameHash) {
-              probeImage(bookSource, *target, parseArena, &probed[i].info);
-              break;
-            }
-          }
+        // Resolve each collected href through the catalog's hash lookup (the
+        // same name hash find() keys on) -- virtual, so an SD-backed catalog
+        // serves this without an in-RAM entry table. A missing target keeps
+        // kind=Unknown and layout skips the image, exactly as the inline
+        // probe path did.
+        for (uint16_t i = 0; i < probedCount; ++i) {
+          const ZipEntry* target = zip->findByHash(probed[i].hrefHash);
+          if (target != nullptr) probeImage(bookSource, *target, parseArena, &probed[i].info);
         }
       }
     }

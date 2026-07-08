@@ -30,13 +30,21 @@ struct ZipEntry {
   uint16_t method = 0;         // 0 = stored, 8 = deflate
 };
 
+// find()/findByHash() are virtual so an SD-backed catalog (BookCatalog) can
+// present the same lookup surface to layout and rendering without holding the
+// in-RAM entry table this class builds.
 class ZipCatalog {
  public:
+  virtual ~ZipCatalog() = default;
+
   // Parses the central directory. Entry records and names are allocated from
   // `arena` and remain valid until that arena resets.
   BookStatus open(BookSource& source, Arena& arena);
 
-  const ZipEntry* find(const char* path) const;
+  virtual const ZipEntry* find(const char* path) const;
+  // Lookup by ZipCatalog::hashPath of the container path. Layout resolves
+  // image/link targets through pre-hashed hrefs, so this is the hot form.
+  virtual const ZipEntry* findByHash(uint32_t nameHash) const;
   size_t entryCount() const { return count_; }
   const ZipEntry* entry(size_t index) const {
     return index < count_ ? &entries_[index] : nullptr;
@@ -44,6 +52,11 @@ class ZipCatalog {
   BookSource* source() const { return source_; }
 
   static uint32_t hashPath(const char* path);
+
+  // Locates the end-of-central-directory record -- shared by open() and the
+  // container fingerprint that keys the SD-backed catalog.
+  static BookStatus locateCentralDirectory(BookSource& source, uint32_t* dirOffsetOut,
+                                           uint32_t* dirSizeOut, uint16_t* entryCountOut);
 
  private:
   BookSource* source_ = nullptr;

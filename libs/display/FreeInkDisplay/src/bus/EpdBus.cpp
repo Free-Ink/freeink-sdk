@@ -222,6 +222,19 @@ void EpdBus::waitBusy(BusyPolarity p, const char* tag) {
 }
 
 void EpdBus::waitRefreshComplete(const char* tag) {
+  // A host that installed a busy-wait slice hook (e.g. CrossPoint light-sleeping
+  // through the refresh) must keep the polling path: waitBusy() invokes the slice
+  // hook on each idle step, while this ISR path sleeps the task on a semaphore and
+  // never calls it. Bypassing the hook costs that host its power policy (~9% more
+  // per refresh, measured ~29 mC vs ~26.5 mC on X3), and is a latent hazard: edge
+  // interrupts do not fire during light sleep, so a completion edge taken while the
+  // host is slept would be missed and the wait would stall to its 30 s timeout. The
+  // slice hook already delivers GPIO-precise wake, so the ISR path buys these hosts
+  // nothing — fall back to the hooked poll.
+  if (_busyWaitSliceHook != nullptr) {
+    waitBusy(tag);
+    return;
+  }
   // ISR-driven completion wait: sleep the task on a semaphore and wake on the
   // exact BUSY completion edge, instead of polling every 1 ms. Falls back to
   // polling if the semaphore could not be created.

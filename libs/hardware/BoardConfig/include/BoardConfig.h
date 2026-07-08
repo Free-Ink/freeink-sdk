@@ -581,7 +581,15 @@ constexpr BoardProfile XTEINK_X4 = {Board::XteinkX4,
                                     800,
                                     480,
                                     {8, 10, 21, 4, 5, 6, PIN_UNASSIGNED},
-                                    5000000,  // displaySpiHz: stock X4 display bus speed
+                                    20000000,  // displaySpiHz: 20 MHz = SSD1677 write-mode max per datasheet.
+                                               // SSD1677 datasheet (Solomon Systech), MCU Serial Interface AC
+                                               // Characteristics: "MCU interface: SPI serial peripheral,
+                                               // Maximum 20MHz for write"; fSCL (Write Mode) = 20 MHz.
+                                               // (https://files.waveshare.com/upload/2/2a/SSD1677_1.0.pdf)
+                                               // 5 MHz was ~4x slower per refresh; Witch Reader (a CrossPoint
+                                               // fork) ran 40 MHz, which exceeds the datasheet (worked on margin
+                                               // only). NB: the Ssd1677Driver 0-default of 40 MHz is also over
+                                               // spec — other SSD1677 boards may want an explicit 20 MHz.
                                     {PIN_UNASSIGNED, 7, PIN_UNASSIGNED, 12, PIN_UNASSIGNED, false, 0},
                                     {0, 1, 2, 3, 4, 5, 3, false},
                                     0,
@@ -609,7 +617,11 @@ constexpr BoardProfile XTEINK_X3 = {
     792,
     528,
     {8, 10, 21, 4, 5, 6, PIN_UNASSIGNED},
-    0,  // displaySpiHz: 0 -> UC8253 driver default (16 MHz)
+    20000000,  // displaySpiHz: 20 MHz = UC8253 datasheet max. UC8253 datasheet (UltraChip / Good Display),
+               // features: "Clock rate up to 20MHz" (serial write timing TSCYCW).
+               // (https://www.elecrow.com/download/product/DIE01237S/UC8253_Datasheet.pdf)
+               // Witch Reader (a CrossPoint fork) ran a conservative 16 MHz; 20 MHz is in-spec and ~25% faster
+               // on plane writes. Falls back to the driver's 16 MHz default if set to 0.
     {PIN_UNASSIGNED, 7, PIN_UNASSIGNED, 12, PIN_UNASSIGNED, false, 0},
     {0, 1, 2, 3, 4, 5, 3, false},
     0,

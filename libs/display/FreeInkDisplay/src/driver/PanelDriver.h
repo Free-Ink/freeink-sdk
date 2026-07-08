@@ -90,6 +90,17 @@ class PanelDriver {
   // it between the two calls, so the driver must not cache the pointer.
   virtual void displayFinish(EpdBus& bus, const uint8_t* fb) { (void)bus; (void)fb; }
 
+  // Re-seed the controller's host-managed previous-frame plane (SSD1677 RED RAM)
+  // with `buf`, WITHOUT triggering a refresh. A dual-buffer fast refresh only
+  // writes RED from `prev` at its start, so between refreshes RED holds the frame
+  // BEFORE the one on the panel. That is fine while paging (the next refresh
+  // rewrites RED) but wrong at the moment the host releases its secondary buffer
+  // for single-buffer fast-diff: the first prev==nullptr refresh reuses whatever
+  // RED holds. Callers seed the on-screen frame here just before releasing so that
+  // first differential diff has a correct baseline. Default no-op: controllers with
+  // no host-managed previous-frame plane (X3 DTM1, M5) keep their own baseline.
+  virtual void seedPreviousFrame(EpdBus& bus, const uint8_t* buf) { (void)bus; (void)buf; }
+
   // --- grayscale (dual-plane LSB/MSB) ---
   virtual bool supportsStripGrayscale() const { return false; }
   // Display `fb` as the base frame for a grayscale overlay that follows.

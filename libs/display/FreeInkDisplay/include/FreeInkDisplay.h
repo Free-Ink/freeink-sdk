@@ -149,9 +149,11 @@ class FreeInkDisplay {
   // refresh, so this only refreshes the advisory flag; kept for API parity.
   void syncRedRamFromFrameBuffer();
 
-  // Opt in to X4 fast differential against the retained RED-RAM baseline while the
-  // secondary buffer is released. FreeInk's SSD1677 driver does this safely on
-  // every prev==nullptr refresh, so this is an advisory flag (no downgrade path).
+  // Opt in to X4 fast differential against the controller's retained RED-RAM baseline
+  // while the secondary buffer is released. When set, a FAST refresh with no secondary
+  // buffer keeps diffing against RED — the caller must have seeded it with
+  // syncRedRamFromFrameBuffer() before releasing. When clear, such a FAST refresh
+  // downgrades to HALF (see resolveReleasedMode) so it can't ghost off a stale baseline.
   void setSingleBufferFastDiff(bool enabled) { _singleBufferFastDiff = enabled; }
   bool singleBufferFastDiff() const { return _singleBufferFastDiff; }
 
@@ -224,11 +226,14 @@ class FreeInkDisplay {
   // Release only the secondary (previous-frame) buffer to free ~48-52 KB
   // temporarily — e.g. during chapter compilation when no rendering is
   // happening. Available on every dual-buffer build (not just PSRAM ones):
-  // CrossPoint's C3 lends the buffer out of internal DRAM. BW display and fast
-  // differential refresh continue to work: the SSD1677 driver already re-seeds
-  // both BW and RED RAM when prev is null, so the differential baseline stays
-  // consistent without the host copy. Grayscale AA is unavailable until restored
-  // with reallocSecondaryBuffer(). No-op if already released. Returns true if freed.
+  // CrossPoint's C3 lends the buffer out of internal DRAM. BW display keeps working.
+  // Fast differential refresh continues only if the caller opts in with
+  // setSingleBufferFastDiff(true) after seeding RED (syncRedRamFromFrameBuffer) just
+  // before the release; the SSD1677 driver then diffs against — and re-seeds — the
+  // controller's retained RED plane. Without the opt-in a FAST refresh downgrades to
+  // HALF (resolveReleasedMode) so it can't ghost off a stale baseline. Grayscale AA is
+  // unavailable until restored with reallocSecondaryBuffer(). No-op if already released.
+  // Returns true if freed.
   bool releaseSecondaryBuffer();
 
   // Reallocate the secondary buffer after releaseSecondaryBuffer(). Initialises
@@ -249,6 +254,12 @@ class FreeInkDisplay {
   void syncPendingAsync();
   // One framebuffer-sized heap block: PSRAM-first where available.
   static uint8_t* allocFrameBufferStorage();
+#ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
+  // Downgrade a FAST request to HALF when the secondary (previous-frame) buffer is
+  // released and the caller hasn't opted into single-buffer fast-diff — mirrors the
+  // open-x4 EInkDisplay::triggerDisplay downgrade. X4 only; see the .cpp for rationale.
+  RefreshMode resolveReleasedMode(RefreshMode mode) const;
+#endif
 
   EpdPins _pins;
   EpdBus _bus;

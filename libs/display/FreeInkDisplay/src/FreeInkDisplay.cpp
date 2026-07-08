@@ -217,6 +217,23 @@ void FreeInkDisplay::swapBuffers() {
   frameBuffer = frameBufferActive;
   frameBufferActive = temp;
 }
+
+FreeInkDisplay::RefreshMode FreeInkDisplay::resolveReleasedMode(RefreshMode mode) const {
+  // Mirror open-x4 EInkDisplay::triggerDisplay's FAST->HALF downgrade. Only the X4
+  // (SSD1677) differential keeps its previous-frame baseline in host-managed RED RAM;
+  // once the secondary buffer is released there is no host copy to write into RED, so a
+  // FAST refresh would diff the new frame against whatever RED still holds. Keep FAST
+  // only when the caller opted into diffing against the controller's retained RED plane
+  // (setSingleBufferFastDiff(true) — valid only if RED was seeded before the release, see
+  // syncRedRamFromFrameBuffer). Otherwise downgrade to a self-contained HALF that writes
+  // both planes and cannot ghost off a stale baseline. X3 keeps its baseline in the
+  // controller (DTM1) and M5 uses a different model, so a host-side release never
+  // degrades their fast path — no downgrade there.
+  if (mode == FAST_REFRESH && _panelSel == PanelSel::X4 && !frameBufferActive && !_singleBufferFastDiff) {
+    return HALF_REFRESH;
+  }
+  return mode;
+}
 #endif
 
 void FreeInkDisplay::syncWriteBufferFromActive() const {
@@ -334,7 +351,7 @@ void FreeInkDisplay::displayBuffer(RefreshMode mode, bool turnOffScreen) {
   // framebuffer; the async shadow no longer matches what is displayed.
   _shadowValid = false;
 #else
-  _driver->display(_bus, frameBuffer, frameBufferActive, toInternal(mode), turnOffScreen);
+  _driver->display(_bus, frameBuffer, frameBufferActive, toInternal(resolveReleasedMode(mode)), turnOffScreen);
   swapBuffers();
 #endif
   // X4 re-seeds RED from the displayed frame inside display(); X3 has no RED plane.
@@ -359,7 +376,7 @@ void FreeInkDisplay::displayBufferAsync(RefreshMode mode) {
   memcpy(_asyncShadow, frameBuffer, bufferSize);
   _shadowValid = true;
 #else
-  _driver->displayAsync(_bus, frameBuffer, frameBufferActive, toInternal(mode));
+  _driver->displayAsync(_bus, frameBuffer, frameBufferActive, toInternal(resolveReleasedMode(mode)));
   swapBuffers();
 #endif
   _asyncPending = true;
@@ -378,7 +395,8 @@ void FreeInkDisplay::triggerDisplay(RefreshMode mode, bool turnOffScreen) {
   // Pass frameBufferActive as the previous frame, then swap so the caller draws
   // into the inactive buffer while the just-displayed frame is preserved for the
   // X3 post-waveform DTM1 sync the driver stashed a pointer to.
-  const bool deferred = _driver->displayStart(_bus, frameBuffer, frameBufferActive, toInternal(mode), turnOffScreen);
+  const bool deferred =
+      _driver->displayStart(_bus, frameBuffer, frameBufferActive, toInternal(resolveReleasedMode(mode)), turnOffScreen);
   swapBuffers();
 #endif
   _splitPending = deferred;
@@ -400,9 +418,29 @@ void FreeInkDisplay::completeDisplay() {
 }
 
 void FreeInkDisplay::syncRedRamFromFrameBuffer() {
-  // SSD1677 already re-seeds RED after each single-buffer refresh, so there is
-  // nothing to push; just keep the advisory flag truthful. No RED plane on X3.
-  if (_panelSel != PanelSel::X3) _redRamSynced = true;
+  // X3 has no host-managed previous-frame plane (its baseline lives in DTM1); the
+  // advisory flag is meaningless there.
+  if (_panelSel == PanelSel::X3) return;
+#ifdef EINK_DISPLAY_SINGLE_BUFFER_MODE
+  // Single-buffer builds: the driver reseeds RED from the framebuffer after every
+  // refresh (displayImpl prev==nullptr path), so RED already holds the on-screen
+  // frame — nothing to push.
+  _redRamSynced = true;
+#else
+  // Dual-buffer: a fast refresh writes RED from `prev` only at its START, so between
+  // refreshes RED holds the frame BEFORE the one now on the panel. That is fine while
+  // paging (the next refresh rewrites RED), but the caller is about to release the
+  // secondary buffer and switch to single-buffer fast-diff, where the first
+  // prev==nullptr refresh reuses whatever RED currently holds. Push the on-screen frame
+  // into RED now so that first diff has the correct baseline — this is the anti-ghost
+  // seed the reader does before an indexing/build release. Only the release sites call
+  // this; the normal per-page path relies on the driver's own `prev` write, so this adds
+  // no per-refresh SPI cost.
+  syncPendingAsync();  // never touch RED while a waveform is still reading it
+  const uint8_t* onScreen = frameBufferActive ? frameBufferActive : frameBuffer;
+  if (onScreen) _driver->seedPreviousFrame(_bus, onScreen);
+  _redRamSynced = true;
+#endif
 }
 
 void FreeInkDisplay::displayWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t h, bool turnOffScreen) {

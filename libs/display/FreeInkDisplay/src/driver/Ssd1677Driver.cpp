@@ -337,7 +337,14 @@ void Ssd1677Driver::displayImpl(EpdBus& bus, const uint8_t* fb, const uint8_t* p
   // fast pages that follow.
   if (!turnOff) {
     if (_needsInitialFull) {
-      mode = RefreshMode::Full;
+      // First paint after boot/wake must not be a differential FAST: it only drives
+      // pixels that differ from the RED baseline, so it can't clear whatever is
+      // physically on the panel (the boot screen) and that ghosts through. But a HALF
+      // or FULL the caller already asked for is non-differential (BYPASS_RED) and
+      // clears the panel + seeds the baseline on its own — honor it and just consume
+      // the one-shot. Only upgrade a FAST request. This keeps the boot logo (a HALF)
+      // from paying an extra multi-inversion FULL-waveform flash on top of its own.
+      if (mode == RefreshMode::Fast) mode = RefreshMode::Full;
       _needsInitialFull = false;
     } else if (!_isScreenOn && _cfg.fullSeqOverride == 0) {
       // X4-class cold start: panel asleep -> a (warmed) HALF full-clear. Override
@@ -426,6 +433,15 @@ void Ssd1677Driver::displayWindow(EpdBus& bus, const uint8_t* fb, const uint8_t*
     writeRam(bus, CMD_WRITE_RAM_BW, windowBuffer.data(), windowBufferSize);
     writeRam(bus, CMD_WRITE_RAM_RED, windowBuffer.data(), windowBufferSize);
   }
+}
+
+void Ssd1677Driver::seedPreviousFrame(EpdBus& bus, const uint8_t* buf) {
+  if (!buf) return;
+  // Write the frame into RED (the differential "old frame" plane) with no refresh —
+  // identical to the RED write display() does for `prev`, so the next prev==nullptr
+  // fast refresh diffs the new frame against this baseline instead of a stale one.
+  setRamArea(bus, 0, 0, _w, _h);
+  writeRam(bus, CMD_WRITE_RAM_RED, buf, _bufferSize);
 }
 
 void Ssd1677Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {

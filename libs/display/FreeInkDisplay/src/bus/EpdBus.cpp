@@ -1,8 +1,27 @@
 #include "EpdBus.h"
 
 #include <driver/gpio.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 
 namespace freeink {
+
+// ── ISR-driven waveform-completion notification ──────────────────────────────
+// A single binary semaphore, shared between the BUSY-pin GPIO ISR and
+// waitRefreshComplete(). The ISR is attached only for the duration of one
+// refresh wait (and only after the waveform is confirmed running), so it fires
+// on the real completion edge, not on the idle->busy transition or SPI noise.
+// File-static so the plain-C ISR can reach it; only one panel is ever active at
+// a time, so a single instance is safe. DRAM_ATTR keeps it out of flash for the
+// IRAM_ATTR ISR. Ported from the CrossPoint community-sdk EInkDisplay.
+static DRAM_ATTR SemaphoreHandle_t s_epdRefreshDone = nullptr;
+
+static void IRAM_ATTR epdBusyIsr() {
+  if (!s_epdRefreshDone) return;
+  BaseType_t woken = pdFALSE;
+  xSemaphoreGiveFromISR(s_epdRefreshDone, &woken);
+  if (woken) portYIELD_FROM_ISR();
+}
 
 void EpdBus::begin(const EpdPins& pins, uint32_t spiHz, BusyPolarity busy, int8_t spiMiso, int8_t coCs) {
   _pins = pins;
@@ -10,6 +29,9 @@ void EpdBus::begin(const EpdPins& pins, uint32_t spiHz, BusyPolarity busy, int8_
   _busy = busy;
   _coCs = coCs;
   _spi = SPISettings(spiHz, MSBFIRST, SPI_MODE0);
+
+  // One-shot semaphore backing waitRefreshComplete()'s ISR wait (created once).
+  if (!s_epdRefreshDone) s_epdRefreshDone = xSemaphoreCreateBinary();
 
   // Power the EPD rail first (boards that gate it, e.g. Sticky's EP_PWR_EN), so the
   // panel is alive before SPI bring-up and the reset pulse. No-op when unassigned.
@@ -194,6 +216,48 @@ void EpdBus::waitBusy(BusyPolarity p, const char* tag) {
   if (hookFired && _busyWaitEndHook != nullptr) _busyWaitEndHook();
   if (p == BusyPolarity::X3TwoPhase && !x3SawLow) return;
 
+  if (tag && Serial) {
+    Serial.printf("[%lu]   Wait complete: %s (%lu ms)\n", millis(), tag, millis() - start);
+  }
+}
+
+void EpdBus::waitRefreshComplete(const char* tag) {
+  // ISR-driven completion wait: sleep the task on a semaphore and wake on the
+  // exact BUSY completion edge, instead of polling every 1 ms. The caller MUST
+  // have confirmed the waveform is already running (BUSY in its working state)
+  // before calling — otherwise the "already done" fast-path below would mistake
+  // the idle level for completion. UC8253 X3 satisfies this: displayStart()
+  // polls BUSY down to LOW before returning. Falls back to polling if the
+  // semaphore could not be created.
+  if (!s_epdRefreshDone) {
+    waitBusy(tag);
+    return;
+  }
+  // Done edge/level by polarity: X4 (ActiveHigh) finishes on the HIGH->LOW
+  // (FALLING) edge; X3 (X3TwoPhase) and ActiveLow finish on LOW->HIGH (RISING).
+  const bool activeHigh = (_busy == BusyPolarity::ActiveHigh);
+  const int doneEdge = activeHigh ? FALLING : RISING;
+  const int doneLevel = activeHigh ? LOW : HIGH;
+  const unsigned long start = millis();
+
+  xSemaphoreTake(s_epdRefreshDone, 0);  // drain any stale token
+  attachInterrupt(digitalPinToInterrupt(_pins.busy), epdBusyIsr, doneEdge);
+
+  // Fast path: the waveform already finished (edge passed before we armed, or a
+  // no-op refresh) — BUSY sits at the idle/done level. Nothing to wait for.
+  if (digitalRead(_pins.busy) == doneLevel) {
+    detachInterrupt(digitalPinToInterrupt(_pins.busy));
+    xSemaphoreTake(s_epdRefreshDone, 0);
+    return;
+  }
+
+  // Long sleep — fire the power hooks (if any) around it, matching the poll path.
+  const bool hook = (_busyWaitBeginHook != nullptr);
+  if (hook) _busyWaitBeginHook();
+  xSemaphoreTake(s_epdRefreshDone, pdMS_TO_TICKS(30000));
+  if (hook && _busyWaitEndHook != nullptr) _busyWaitEndHook();
+
+  detachInterrupt(digitalPinToInterrupt(_pins.busy));
   if (tag && Serial) {
     Serial.printf("[%lu]   Wait complete: %s (%lu ms)\n", millis(), tag, millis() - start);
   }

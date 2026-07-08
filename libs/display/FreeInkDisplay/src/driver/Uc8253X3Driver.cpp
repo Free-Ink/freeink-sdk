@@ -216,7 +216,10 @@ void Uc8253X3Driver::displayFinish(EpdBus& bus, const uint8_t* fb) {
   const bool doFullSync = _pendingDoFullSync;
   const bool fastMode = _pendingFastMode;
 
-  bus.waitBusy(" X3_DRF");
+  // ISR-backed wait: displayStart() already confirmed BUSY dropped LOW, so the
+  // waveform is running and waitRefreshComplete() will wake on the exact
+  // completion edge rather than polling at 1 ms granularity.
+  bus.waitRefreshComplete(" X3_DRF");
   if (turnOff) {
     bus.cmd(CMD_POWER_OFF);
     bus.waitBusy(" X3_POF");

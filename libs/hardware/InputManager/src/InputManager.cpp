@@ -180,9 +180,35 @@ void InputManager::asyncPoll() {
     if (_asyncTapQueue && wasTouchTap(tap[0], tap[1])) {
       xQueueSend(_asyncTapQueue, tap, 0);
     }
+    float down[2];
+    if (wasTouchPressedAt(down[0], down[1])) {
+      _asyncSwipeArmed = true;
+      _asyncSwipeQueuedForTouch = false;
+      _asyncSwipeStartX = down[0];
+      _asyncSwipeStartY = down[1];
+    }
+    float held[2];
+    if (_asyncSwipeQueue && _asyncSwipeArmed && !_asyncSwipeQueuedForTouch && isTouchHeldAt(held[0], held[1])) {
+      const auto& t = BoardConfig::ACTIVE.touch;
+      const uint16_t w = (t.rawMaxX > t.rawMinX) ? static_cast<uint16_t>(t.rawMaxX - t.rawMinX) : 1;
+      const uint16_t h = (t.rawMaxY > t.rawMinY) ? static_cast<uint16_t>(t.rawMaxY - t.rawMinY) : 1;
+      const int dx = static_cast<int>((held[0] - _asyncSwipeStartX) * w);
+      const int dy = static_cast<int>((held[1] - _asyncSwipeStartY) * h);
+      if (absInt(dx) >= TOUCH_SWIPE_MIN_PX || absInt(dy) >= TOUCH_SWIPE_MIN_PX) {
+        const float swipe[4] = {_asyncSwipeStartX, _asyncSwipeStartY, held[0], held[1]};
+        xQueueSend(_asyncSwipeQueue, swipe, 0);
+        _asyncSwipeQueuedForTouch = true;
+      }
+    }
     float swipe[4];
     if (_asyncSwipeQueue && wasSwipe(swipe[0], swipe[1], swipe[2], swipe[3])) {
-      xQueueSend(_asyncSwipeQueue, swipe, 0);
+      if (!_asyncSwipeQueuedForTouch) xQueueSend(_asyncSwipeQueue, swipe, 0);
+      _asyncSwipeArmed = false;
+      _asyncSwipeQueuedForTouch = false;
+    }
+    if (wasTouchReleased()) {
+      _asyncSwipeArmed = false;
+      _asyncSwipeQueuedForTouch = false;
     }
     vTaskDelay(pdMS_TO_TICKS(_asyncPollMs));
   }

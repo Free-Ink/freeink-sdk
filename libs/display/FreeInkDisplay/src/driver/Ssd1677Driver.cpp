@@ -95,6 +95,35 @@ static const Ssd1677Config& ssd1677StickyConfig() {
   return cfg;
 }
 
+// ── Reusable per-board waveform shortcuts ────────────────────────────────────
+// Opt-in optimizations a board can layer onto a base Ssd1677Config when its
+// specific panel is known to tolerate them. Each is a pure copy-and-tweak so a
+// board picks only the shortcuts it has validated — apply like:
+//   static const Ssd1677Config cfg = fastDuRefreshShortcut(ssd1677DefaultConfig());
+// and add a `case Board::Xxx:` in ssd1677ActiveConfig() returning it.
+
+// Fast-DU refresh shortcut (~77 ms/refresh). A fast BW refresh uses the
+// incremental CTRL2=0x1C differential-update path (load LUT + display) instead
+// of a 0xFC-style vendor sequence that also reloads temperature and re-cycles
+// clock/analog on every refresh. SAFE ONLY on panels that honor 0x1C as a true
+// partial update; on panels where 0x1C silently promotes to the FULL waveform
+// this is a big regression, so leave fastSeqOverride != 0 there. Validated on
+// the Xteink X4 (the CrossPoint community-sdk drives that exact panel with 0x1C).
+static Ssd1677Config fastDuRefreshShortcut(Ssd1677Config base) {
+  base.fastSeqOverride = 0;  // 0 -> incremental CTRL2=0x1C DU path
+  return base;
+}
+
+// Xteink X4 (as shipped in Witch Reader): the shared default plus the fast-DU
+// shortcut. Kept X4-specific so de-link / LilyGo / M5PaperV11 keep the 0xFC
+// default until each is validated to run 0x1C fast (then they call the shortcut
+// too). A d2-class board that shares this panel can reuse ssd1677X4Config() or
+// build its own base and layer the same shortcut(s).
+static const Ssd1677Config& ssd1677X4Config() {
+  static const Ssd1677Config cfg = fastDuRefreshShortcut(ssd1677DefaultConfig());
+  return cfg;
+}
+
 Ssd1677Driver::Ssd1677Driver(const Ssd1677Config& cfg)
     : _cfg(cfg),
       _w(BoardConfig::ACTIVE.displayWidth),
@@ -537,6 +566,9 @@ static const Ssd1677Config& ssd1677ActiveConfig() { return FREEINK_SSD1677_CONFI
 static const Ssd1677Config& ssd1677ActiveConfig() {
   switch (BoardConfig::ACTIVE.board) {
     case BoardConfig::Board::Sticky: return ssd1677StickyConfig();
+    // X4 layers the fast-DU shortcut on the default; a board that shares the
+    // panel and has validated the shortcut adds its own case here the same way.
+    case BoardConfig::Board::XteinkX4: return ssd1677X4Config();
     default: return ssd1677DefaultConfig();
   }
 }

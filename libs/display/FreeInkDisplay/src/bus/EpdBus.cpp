@@ -223,28 +223,39 @@ void EpdBus::waitBusy(BusyPolarity p, const char* tag) {
 
 void EpdBus::waitRefreshComplete(const char* tag) {
   // ISR-driven completion wait: sleep the task on a semaphore and wake on the
-  // exact BUSY completion edge, instead of polling every 1 ms. The caller MUST
-  // have confirmed the waveform is already running (BUSY in its working state)
-  // before calling — otherwise the "already done" fast-path below would mistake
-  // the idle level for completion. UC8253 X3 satisfies this: displayStart()
-  // polls BUSY down to LOW before returning. Falls back to polling if the
-  // semaphore could not be created.
+  // exact BUSY completion edge, instead of polling every 1 ms. Falls back to
+  // polling if the semaphore could not be created.
   if (!s_epdRefreshDone) {
     waitBusy(tag);
     return;
   }
-  // Done edge/level by polarity: X4 (ActiveHigh) finishes on the HIGH->LOW
-  // (FALLING) edge; X3 (X3TwoPhase) and ActiveLow finish on LOW->HIGH (RISING).
+  // Levels/edge by polarity. X4 (ActiveHigh): working HIGH, done on the HIGH->LOW
+  // (FALLING) edge. X3 (X3TwoPhase) / ActiveLow: working LOW, done on the LOW->HIGH
+  // (RISING) edge.
   const bool activeHigh = (_busy == BusyPolarity::ActiveHigh);
   const int doneEdge = activeHigh ? FALLING : RISING;
   const int doneLevel = activeHigh ? LOW : HIGH;
+  const int workingLevel = activeHigh ? HIGH : LOW;
   const unsigned long start = millis();
+
+  // Confirm the waveform is actually running (BUSY at the working level) before
+  // arming, so the already-done fast path below can't mistake the pre-start idle
+  // level for completion. Bounded poll: if BUSY never shows the working level the
+  // refresh was a no-op or already finished, and the fast path handles it. This
+  // is a no-op for X3 (displayStart already drove BUSY to LOW) and ~instant for
+  // X4 (SSD1677 asserts BUSY within microseconds of MASTER_ACTIVATION).
+  {
+    const unsigned long c0 = millis();
+    while (digitalRead(_pins.busy) != workingLevel && millis() - c0 < 20) delay(1);
+  }
 
   xSemaphoreTake(s_epdRefreshDone, 0);  // drain any stale token
   attachInterrupt(digitalPinToInterrupt(_pins.busy), epdBusyIsr, doneEdge);
 
   // Fast path: the waveform already finished (edge passed before we armed, or a
-  // no-op refresh) — BUSY sits at the idle/done level. Nothing to wait for.
+  // no-op refresh) — BUSY sits at the done level. Nothing to wait for. Safe
+  // against the arm/edge race: the binary semaphore latches a give from the ISR,
+  // so a take below returns immediately if the edge fired just after arming.
   if (digitalRead(_pins.busy) == doneLevel) {
     detachInterrupt(digitalPinToInterrupt(_pins.busy));
     xSemaphoreTake(s_epdRefreshDone, 0);

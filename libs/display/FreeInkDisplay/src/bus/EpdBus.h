@@ -62,9 +62,9 @@ class EpdBus {
   void waitBusy(BusyPolarity p, const char* tag = nullptr);
 
   // Like waitBusy(), but sleeps the calling task on a BUSY-edge interrupt and
-  // wakes exactly on the completion edge instead of polling every 1 ms. Use only
-  // for the refresh-completion wait, and only once the waveform is confirmed
-  // running (BUSY in its working state) — see the .cpp for the precondition.
+  // wakes exactly on the completion edge instead of polling every 1 ms. For the
+  // refresh-completion wait: it confirms the waveform is running (short bounded
+  // poll) before arming, so it is safe to call right after firing the refresh.
   void waitRefreshComplete(const char* tag = nullptr);
 
   // Instantaneous BUSY-pin read for non-blocking refresh polling. X3's

@@ -241,7 +241,7 @@ void Ssd1677Driver::refresh(EpdBus& bus, RefreshMode mode, bool turnOff, bool as
     bus.cmd(CMD_DISPLAY_UPDATE_CTRL2);
     bus.data(seqOverride);
     bus.cmd(CMD_MASTER_ACTIVATION);
-    if (!async) bus.waitBusy("refresh");
+    if (!async) bus.waitRefreshComplete("refresh");
     // The sequence powered the panel down at the end, but keep the flag truthful
     // to intent: leave it "on" between active updates so display() doesn't force a
     // full HALF refresh next time (which would defeat fast refresh). turnOff marks
@@ -280,7 +280,7 @@ void Ssd1677Driver::refresh(EpdBus& bus, RefreshMode mode, bool turnOff, bool as
   bus.cmd(CMD_DISPLAY_UPDATE_CTRL2);
   bus.data(displayMode);
   bus.cmd(CMD_MASTER_ACTIVATION);
-  if (!async) bus.waitBusy("refresh");
+  if (!async) bus.waitRefreshComplete("refresh");
 #if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
   // esp_rom_printf hits the always-on IDF console; Serial (HWCDC) drops on S3.
   esp_rom_printf("[SSD1677] %s refresh %ums (ctrl2=0x%x)\n", dbgMode, (unsigned)(millis() - dbgStart), displayMode);

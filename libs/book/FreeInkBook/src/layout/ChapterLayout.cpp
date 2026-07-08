@@ -151,10 +151,60 @@ bool isLatinWordChar(uint32_t cp) {
   return (cp >= '0' && cp <= '9') || (cp >= 'a' && cp <= 'z') || (cp >= 'A' && cp <= 'Z');
 }
 
+// Hangul: syllables plus jamo. Korean is the spaced CJK script — it breaks
+// between syllables but justifies at word spaces, and attaches particles
+// directly to Latin words ("TV를"), so it opts out of both the quarter-em
+// rule and (when the line has spaces) inter-character justification.
+bool isHangul(uint32_t cp) {
+  return (cp >= 0xAC00 && cp <= 0xD7AF) || (cp >= 0x1100 && cp <= 0x11FF) ||
+         (cp >= 0x3130 && cp <= 0x318F) || (cp >= 0xD7B0 && cp <= 0xD7FF);
+}
+
 // A script boundary that conventionally gets a quarter-em of air (Japanese
-// typesetting practice for Latin words embedded in CJK text).
+// typesetting practice for Latin words embedded in CJK text). Korean does
+// not follow it.
 bool crossesScripts(uint32_t a, uint32_t b) {
-  return (isCjk(a) && isLatinWordChar(b)) || (isLatinWordChar(a) && isCjk(b));
+  return (isCjk(a) && !isHangul(a) && isLatinWordChar(b)) ||
+         (isLatinWordChar(a) && isCjk(b) && !isHangul(b));
+}
+
+// Full-width punctuation carries a built-in half-em of space — trailing for
+// closers/stops, leading for openers. When two land adjacent (。」 or 」（)
+// JLREQ compresses the pair by half an em; fonts render each glyph in a
+// full em, so layout removes the overlap between them.
+bool cjTrailingHalf(uint32_t cp) {
+  switch (cp) {
+    case 0x3001: case 0x3002:                                // 、。
+    case 0xFF0C: case 0xFF0E: case 0xFF1A: case 0xFF1B:      // ，．：；
+    case 0x3009: case 0x300B: case 0x300D: case 0x300F:      // 〉》」』
+    case 0x3011: case 0x3015: case 0x3017: case 0x3019: case 0x301B:
+    case 0xFF09: case 0xFF3D: case 0xFF5D:                   // ）］｝
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool cjLeadingHalf(uint32_t cp) {
+  switch (cp) {
+    case 0x3008: case 0x300A: case 0x300C: case 0x300E:      // 〈《「『
+    case 0x3010: case 0x3014: case 0x3016: case 0x3018: case 0x301A:
+    case 0xFF08: case 0xFF3B: case 0xFF5B:                   // （［｛
+      return true;
+    default:
+      return false;
+  }
+}
+
+// Pixels removed between an adjacent full-width punctuation pair (0 when
+// the pair does not compress). Exactly one half-em comes out: the closer's
+// trailing space, or failing that the opener's leading space.
+int32_t cjkCompression(uint32_t prev, uint32_t cp, uint16_t sizePx) {
+  const bool prevPunct = cjTrailingHalf(prev) || cjLeadingHalf(prev);
+  const bool curPunct = cjTrailingHalf(cp) || cjLeadingHalf(cp);
+  if (!prevPunct || !curPunct) return 0;
+  if (cjTrailingHalf(prev) || cjLeadingHalf(cp)) return -(static_cast<int32_t>(sizePx) / 2);
+  return 0;
 }
 
 // --- Bidi (UAX #9 subset for book text) ---------------------------------------
@@ -685,7 +735,8 @@ class LayoutEngine : public XmlHandler {
     uint32_t end;
     int32_t naturalWidth;  // includes the hyphen when kLineHyphen is set
     uint16_t spaceCount;   // adjustable spaces (Latin justification)
-    uint16_t cjkGaps;      // CJK-CJK boundaries (inter-character justification)
+    uint16_t cjkGaps;      // CJ boundaries (inter-character justification)
+    uint16_t hangulGaps;   // Hangul boundaries — stretch only on space-less lines
     uint8_t flags;
   };
 
@@ -955,6 +1006,7 @@ class LayoutEngine : public XmlHandler {
     if (prevCp != 0) {
       adv += params_.font->kerning(prevCp, cp, sizePx, span.flags);
       if (crossesScripts(prevCp, cp)) adv += sizePx / 4;
+      adv += cjkCompression(prevCp, cp, sizePx);
     }
     return adv;
   }
@@ -1009,6 +1061,28 @@ class LayoutEngine : public XmlHandler {
     bool hasArabic = false;
     paraRtl_ = computeBidiLevels(parText_, parLen_, levels_, &hasArabic);
     if (hasArabic) shapeArabic(parText_, parLen_, levels_, params_.font);
+
+    // "ko-keep-all": word-unit breaking (CSS word-break: keep-all). UAX #14
+    // allows breaks between Hangul syllables; this style demotes them so
+    // Korean lines break only at spaces (libunibreak still sees "ko" for its
+    // own tailoring — same suffix trick as "ja-strict").
+    if (params_.language != nullptr) {
+      const size_t langLen = strlen(params_.language);
+      if (langLen >= 9 && strcmp(params_.language + langLen - 9, "-keep-all") == 0) {
+        uint32_t i = 0;
+        uint32_t prevCp = 0;
+        uint32_t prevEnd = 0;
+        while (i < parLen_) {
+          const uint32_t cp = decodeUtf8(parText_, parLen_, i);
+          if (prevEnd > 0 && isHangul(prevCp) && isHangul(cp) &&
+              breaks_[prevEnd - 1] == LINEBREAK_ALLOWBREAK) {
+            breaks_[prevEnd - 1] = LINEBREAK_NOBREAK;
+          }
+          prevCp = cp;
+          prevEnd = i;
+        }
+      }
+    }
 
     const int32_t baseMaxWidth =
         params_.pageWidth - params_.marginLeft - params_.marginRight - para_.indentPx;
@@ -1089,14 +1163,17 @@ class LayoutEngine : public XmlHandler {
     rec.flags = flags;
     rec.spaceCount = 0;
     rec.cjkGaps = 0;
+    rec.hangulGaps = 0;
     uint32_t prev = 0;
     uint32_t i = start;
     while (i < end) {
       const uint32_t cp = decodeUtf8(parText_, end, i);
       if (cp == ' ') {
         ++rec.spaceCount;
-      } else if (prev != 0 && isCjk(prev) && isCjk(cp)) {
-        ++rec.cjkGaps;
+      } else if (prev != 0 && isCjk(prev) && isCjk(cp) &&
+                 cjkCompression(prev, cp, 2) == 0) {  // compressed pairs don't stretch
+        if (isHangul(prev) && isHangul(cp)) ++rec.hangulGaps;
+        else ++rec.cjkGaps;
       }
       prev = cp;
     }
@@ -1169,9 +1246,10 @@ class LayoutEngine : public XmlHandler {
     uint32_t end;
     const Span* span;
     uint8_t level;
-    bool gapBefore;    // an adjustable gap (space/CJK boundary) precedes it
-    bool spaceBefore;  // that gap includes a real space advance
-    bool scriptGap;    // quarter-em CJK/Latin air precedes it
+    bool gapBefore;       // an adjustable gap (space/CJK boundary) precedes it
+    bool spaceBefore;     // that gap includes a real space advance
+    bool scriptGap;       // quarter-em CJK/Latin air precedes it
+    bool compressBefore;  // punctuation pair: half an em comes OUT before it
   };
 
   void placeLine(const LineRec& rec, uint16_t sizePx, int16_t lineHeight, bool firstLine) {
@@ -1192,7 +1270,11 @@ class LayoutEngine : public XmlHandler {
     const int32_t maxWidth = baseMaxWidth - textIndentPx;
     const int32_t leftover = maxWidth - rec.naturalWidth;
 
-    const uint32_t gaps = static_cast<uint32_t>(rec.spaceCount) + rec.cjkGaps;
+    // Korean justifies at its word spaces; Hangul inter-syllable gaps only
+    // stretch when the line has no spaces at all (space-less runs, or CJ).
+    const bool hangulStretch = rec.spaceCount == 0;
+    const uint32_t gaps = static_cast<uint32_t>(rec.spaceCount) + rec.cjkGaps +
+                          (hangulStretch ? rec.hangulGaps : 0);
     const bool justify = para_.align == TextAlign::Justify && !(rec.flags & kLineLast) &&
                          gaps > 0 && leftover > 0;
     // RTL paragraphs mirror the alignment semantics: default/Left reads as
@@ -1221,17 +1303,19 @@ class LayoutEngine : public XmlHandler {
       uint32_t segStart = rec.start;
       const Span* segSpan = &spanAt(rec.start);
       uint8_t segLevel = levels_[rec.start] & kBidiLevelMask;
-      bool gapBefore = false, spaceBefore = false, scriptGap = false;
+      bool gapBefore = false, spaceBefore = false, scriptGap = false, compressBefore = false;
       uint32_t linePrev = 0;
       uint32_t i = rec.start;
-      auto close = [&](uint32_t endPos, bool nextGap, bool nextSpace, bool nextScript) {
+      auto close = [&](uint32_t endPos, bool nextGap, bool nextSpace, bool nextScript,
+                       bool nextCompress) {
         if (endPos > segStart && segCount < 64) {
           segs[segCount++] = {segStart, endPos, segSpan, segLevel,
-                              gapBefore, spaceBefore, scriptGap};
+                              gapBefore, spaceBefore, scriptGap, compressBefore};
         }
         gapBefore = nextGap;
         spaceBefore = nextSpace;
         scriptGap = nextScript;
+        compressBefore = nextCompress;
       };
       while (i < rec.end) {
         const uint32_t charStart = i;
@@ -1241,7 +1325,7 @@ class LayoutEngine : public XmlHandler {
         const uint32_t cp = decodeShaped(rec.end, next, *span);
 
         if (justify && cp == ' ') {
-          close(charStart, true, true, false);
+          close(charStart, true, true, false, false);
           segStart = next;
           segSpan = &spanAt(next < rec.end ? next : charStart);
           segLevel = next < rec.end ? (levels_[next] & kBidiLevelMask) : level;
@@ -1249,10 +1333,13 @@ class LayoutEngine : public XmlHandler {
           i = next;
           continue;
         }
-        const bool cjkGap = linePrev != 0 && justify && isCjk(linePrev) && isCjk(cp);
+        const bool compGap = linePrev != 0 && cjkCompression(linePrev, cp, 2) != 0;
+        const bool cjkGap = linePrev != 0 && !compGap && justify && isCjk(linePrev) &&
+                            isCjk(cp) &&
+                            (hangulStretch || !(isHangul(linePrev) && isHangul(cp)));
         const bool mixGap = linePrev != 0 && crossesScripts(linePrev, cp);
-        if (span != segSpan || level != segLevel || cjkGap || mixGap) {
-          close(charStart, cjkGap, false, mixGap);
+        if (span != segSpan || level != segLevel || cjkGap || mixGap || compGap) {
+          close(charStart, cjkGap, false, mixGap, compGap);
           segStart = charStart;
           segSpan = span;
           segLevel = level;
@@ -1260,7 +1347,7 @@ class LayoutEngine : public XmlHandler {
         linePrev = cp;
         i = next;
       }
-      close(rec.end, false, false, false);
+      close(rec.end, false, false, false, false);
     }
     if (segCount == 0) {
       pageY_ += lineHeight;
@@ -1315,6 +1402,8 @@ class LayoutEngine : public XmlHandler {
           }
         } else if (logicalOwner.scriptGap) {
           x += spanSizePx(*logicalOwner.span) / 4;
+        } else if (logicalOwner.compressBefore) {
+          x -= spanSizePx(*logicalOwner.span) / 2;  // punctuation pair overlap
         }
       }
       const bool lastLogical = sg.end == rec.end;

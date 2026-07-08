@@ -45,7 +45,8 @@ uint32_t hashMix(uint32_t hash, uint32_t value) {
 // Bump when layout BEHAVIOR changes without a format change (ligatures,
 // breaking rules, spacing math) — stale caches would otherwise render with
 // mismatched widths after a firmware update.
-constexpr uint32_t kLayoutRevision = 4;  // 4: Arabic shaping (3: bidi, 2: ligatures)
+constexpr uint32_t kLayoutRevision = 5;  // 5: Korean gaps + CJ punctuation compression
+                                         // (4: Arabic shaping, 3: bidi, 2: ligatures)
 
 uint32_t layoutGenerationHash(const LayoutParams& params, uint32_t fontFingerprint) {
   uint32_t hash = 2166136261u;

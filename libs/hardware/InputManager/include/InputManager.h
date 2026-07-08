@@ -182,10 +182,6 @@ class InputManager {
   QueueHandle_t _asyncSwipeQueue = nullptr;
   TaskHandle_t _asyncTask = nullptr;
   uint32_t _asyncPollMs = 15;
-  bool _asyncSwipeArmed = false;
-  bool _asyncSwipeQueuedForTouch = false;
-  float _asyncSwipeStartX = 0.0f;
-  float _asyncSwipeStartY = 0.0f;
   static void asyncTaskTrampoline(void* self);
   void asyncPoll();
 

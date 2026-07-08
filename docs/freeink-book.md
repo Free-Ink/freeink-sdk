@@ -108,10 +108,21 @@ gestures) is a few hundred lines; the storage adapters are ~80.
 - **Line breaking** is full Unicode UAX #14 (vendored libunibreak): correct
   break opportunities for every script, including CJK. Kinsoku is the
   spec-defined behavior — pass `language = "ja"` for normal or `"ja-strict"`
-  to also forbid small kana and `ー` at line starts.
+  to also forbid small kana and `ー` at line starts. Korean breaks between
+  syllables by default (the UAX #14 behavior); pass `"ko-keep-all"` for
+  word-unit breaking (CSS `word-break: keep-all` style).
 - **Justification** distributes spare space across word gaps (Latin) or
-  inter-character gaps (spaceless CJK); mixed lines pool both. Justified
-  lines end exactly at the margin; last lines and hard breaks never stretch.
+  inter-character gaps (spaceless CJK); mixed lines pool both. Korean —
+  the spaced CJK script — stretches its word spaces like English and only
+  falls back to inter-syllable expansion on space-less lines, so justified
+  words never visibly tear apart. Justified lines end exactly at the
+  margin; last lines and hard breaks never stretch.
+- **Full-width punctuation compression** (JLREQ pair rule): adjacent
+  full-width punctuation (。」 」（ 『「 …) compresses by half an em, so
+  Japanese/Chinese quote-and-stop clusters set tight instead of gapping a
+  full em. The quarter-em CJK↔Latin gap applies to Japanese/Chinese
+  contexts only — Korean attaches particles directly to Latin words
+  ("TV를") with no added air.
 - **Hyphenation** keeps justified gaps tight. `tools/hyphc.py` compiles any
   TeX hyph-utf8 pattern file into either a loadable blob or an embeddable
   header (`text/hyph_en_us.h` ships pre-generated, ~71 KB of flash). Soft

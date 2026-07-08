@@ -1064,6 +1064,234 @@ void testArabicShaping() {
   CHECK(std::strstr(bareSink.text, "\xD8\xA7\xD9\x84") != nullptr);
 }
 
+// Fixed CJ metrics: full-width (sizePx) at U+1100 and above, half-width
+// below — makes Hangul/CJK line math exact.
+class CjFakeFont : public BookFont {
+ public:
+  int16_t advance(uint32_t cp, uint16_t sizePx, uint8_t) override {
+    return static_cast<int16_t>(cp >= 0x1100 ? sizePx : sizePx / 2);
+  }
+  int16_t lineHeight(uint16_t sizePx) override { return static_cast<int16_t>(sizePx + 4); }
+  int16_t ascent(uint16_t sizePx) override { return static_cast<int16_t>(sizePx); }
+};
+
+// Per-run collector with CjFakeFont width accounting.
+struct CjRunSink : PageSink {
+  struct Rec {
+    int16_t x;
+    int16_t y;
+    int32_t width;
+    char text[192];
+  };
+  bool onPage(const Page& page) override {
+    for (uint16_t r = 0; r < page.runCount && count < kMax; ++r) {
+      const PageTextRun& run = page.runs[r];
+      Rec& rec = runs[count++];
+      rec.x = run.x;
+      rec.y = run.baselineY;
+      rec.width = 0;
+      uint32_t i = 0;
+      while (i < run.len) {
+        const uint8_t b = static_cast<uint8_t>(run.text[i]);
+        uint32_t cp = b;
+        const uint32_t extra = b >= 0xF0 ? 3 : b >= 0xE0 ? 2 : b >= 0xC0 ? 1 : 0;
+        if (extra == 1) cp = b & 0x1F;
+        if (extra == 2) cp = b & 0x0F;
+        if (extra == 3) cp = b & 0x07;
+        for (uint32_t k = 0; k < extra; ++k) {
+          cp = (cp << 6) | (static_cast<uint8_t>(run.text[i + 1 + k]) & 0x3F);
+        }
+        i += 1 + extra;
+        rec.width += cp >= 0x1100 ? run.sizePx : run.sizePx / 2;
+      }
+      const uint32_t n = run.len < sizeof(rec.text) - 1
+                             ? run.len
+                             : static_cast<uint32_t>(sizeof(rec.text) - 1);
+      std::memcpy(rec.text, run.text, n);
+      rec.text[n] = '\0';
+    }
+    return true;
+  }
+  const Rec* find(const char* needle) const {
+    for (uint32_t i = 0; i < count; ++i) {
+      if (std::strstr(runs[i].text, needle) != nullptr) return &runs[i];
+    }
+    return nullptr;
+  }
+  enum : uint32_t { kMax = 512 };
+  Rec runs[kMax];
+  uint32_t count = 0;
+};
+
+bool layoutTxt(const char* name, const char* content, const LayoutParams& params,
+               PageSink& sink) {
+  char path[1024];
+  std::snprintf(path, sizeof(path), "%s/%s", fixturesDir, name);
+  FILE* f = std::fopen(path, "wb");
+  if (f == nullptr) return false;
+  std::fputs(content, f);
+  std::fclose(f);
+  HostFileSource source;
+  if (!source.open(path)) return false;
+  Arena scratch(scratchBuf, sizeof(scratchBuf));
+  return ChapterLayout::layoutPlainText(source, params, scratch, sink, nullptr, nullptr) ==
+         BookStatus::Ok;
+}
+
+// Korean is the spaced CJK script: justification must stretch the word
+// spaces (like English), NOT the gaps inside words — except on space-less
+// lines, where inter-character justification is all there is. And
+// "ko-keep-all" turns off intra-word syllable breaks entirely.
+void testKoreanSpacing() {
+  CjFakeFont font;
+
+  // 1. Justified, spaced text: words stay intact (one run each — Hangul
+  //    inter-syllable gaps neither split nor stretch) and lines end flush.
+  {
+    char text[4096] = "";
+    for (int i = 0; i < 30; ++i)
+      std::strcat(text, "\xEA\xB0\x80\xEB\x82\x98\xEB\x8B\xA4\xEB\x9D\xBC ");  // 가나다라
+    LayoutParams params = stickyParams(font);
+    params.language = "ko";
+    params.marginRight = 27;  // usable 749 px: never a multiple of 16, so
+                              // justified lines always have slack to place
+    params.defaultAlign = TextAlign::Justify;
+    CjRunSink sink;
+    CHECK(layoutTxt("korean1.txt", text, params, sink));
+    CHECK(sink.count > 3);
+    int16_t lastY = -1;
+    int32_t maxEdge = 0;
+    uint32_t lineRuns = 0, maxLineRuns = 0;
+    int flushLines = 0;
+    for (uint32_t i = 0; i < sink.count; ++i) {
+      if (sink.runs[i].y != lastY) {
+        lastY = sink.runs[i].y;
+        if (maxEdge == params.pageWidth - params.marginRight) ++flushLines;
+        maxEdge = 0;
+        lineRuns = 0;
+      }
+      ++lineRuns;
+      if (lineRuns > maxLineRuns) maxLineRuns = lineRuns;
+      const int32_t edge = sink.runs[i].x + sink.runs[i].width;
+      if (edge > maxEdge) maxEdge = edge;
+    }
+    CHECK(flushLines >= 2);       // all non-last lines justified flush
+    CHECK(maxLineRuns <= 15);     // runs = words (+wrap tail), NOT syllables
+  }
+
+  // 2. Space-less Hangul run: inter-character justification kicks in — every
+  //    syllable boundary stretches, so runs split per syllable and the line
+  //    still ends flush.
+  {
+    char text[4096] = "";
+    for (int i = 0; i < 100; ++i) std::strcat(text, "\xEA\xB0\x80");  // 가 x100
+    LayoutParams params = stickyParams(font);
+    params.language = "ko";
+    params.marginRight = 32;  // usable 744: 46 chars + 8 px slack per line
+    params.defaultAlign = TextAlign::Justify;
+    CjRunSink sink;
+    CHECK(layoutTxt("korean2.txt", text, params, sink));
+    int16_t firstY = sink.count > 0 ? sink.runs[0].y : -1;
+    uint32_t firstLineRuns = 0;
+    int32_t firstLineEdge = 0;
+    for (uint32_t i = 0; i < sink.count && sink.runs[i].y == firstY; ++i) {
+      ++firstLineRuns;
+      const int32_t edge = sink.runs[i].x + sink.runs[i].width;
+      if (edge > firstLineEdge) firstLineEdge = edge;
+    }
+    CHECK(firstLineRuns >= 40);  // split at (nearly) every syllable
+    CHECK_EQ(firstLineEdge, params.pageWidth - params.marginRight);
+  }
+
+  // 3. "ko-keep-all": intra-word syllable breaks demoted — lines break at
+  //    spaces only, so they end well short of where normal mode fills to.
+  {
+    char word[256] = "";
+    for (int i = 0; i < 4; ++i)
+      std::strcat(word,
+                  "\xEA\xB0\x80\xEB\x82\x98\xEB\x8B\xA4\xEB\x9D\xBC\xEB\xA7\x88");  // 가나다라마
+    char text[4096] = "";
+    for (int i = 0; i < 6; ++i) {
+      std::strcat(text, word);  // 20 syllables = 320 px
+      std::strcat(text, " ");
+    }
+    int32_t maxEdge[2] = {0, 0};
+    const char* langs[2] = {"ko", "ko-keep-all"};
+    for (int mode = 0; mode < 2; ++mode) {
+      LayoutParams params = stickyParams(font);
+      params.language = langs[mode];
+      CjRunSink sink;
+      CHECK(layoutTxt("korean3.txt", text, params, sink));
+      for (uint32_t i = 0; i < sink.count; ++i) {
+        const int32_t edge = sink.runs[i].x + sink.runs[i].width;
+        if (edge > maxEdge[mode]) maxEdge[mode] = edge;
+      }
+    }
+    CHECK(maxEdge[0] > 700);  // normal: syllable breaks fill the measure
+    CHECK(maxEdge[1] < 700);  // keep-all: whole words wrap to the next line
+  }
+}
+
+// Adjacent full-width punctuation compresses by half an em (JLREQ): the
+// closer's trailing space (or the opener's leading space) comes out, via a
+// run split with a negative gap — so rendering needs no shaping logic.
+void testCjPunctuationCompression() {
+  CjFakeFont font;
+  LayoutParams params = stickyParams(font);
+  params.language = "ja";
+  CjRunSink sink;
+  // Three paragraphs: 。」pair, 』（ pair, and a control with no adjacency.
+  CHECK(layoutTxt("cjpunct.txt",
+                  "\xE3\x80\x8C\xE3\x81\x93\xE3\x81\xAE\xE3\x80\x82\xE3\x80\x8D\xE6\xAC\xA1"
+                  "\n\n"
+                  "\xE3\x80\x8E\xE3\x81\x82\xE3\x80\x8F\xEF\xBC\x88\xE3\x81\x84\xEF\xBC\x89"
+                  "\n\n"
+                  "\xE3\x81\x93\xE3\x81\xAE\xE3\x80\x82\xE6\xAC\xA1",
+                  params, sink));
+
+  // 「この。」次 → 「この。 at the margin (width 64), then 」次 pulled back
+  // half an em: x = 24 + 64 - 8 = 80.
+  const CjRunSink::Rec* head = sink.find("\xE3\x80\x8C\xE3\x81\x93");  // 「こ
+  const CjRunSink::Rec* tail = sink.find("\xE3\x80\x8D\xE6\xAC\xA1");  // 」次
+  CHECK(head != nullptr && tail != nullptr);
+  if (head != nullptr && tail != nullptr) {
+    CHECK_EQ(head->x, 24);
+    CHECK_EQ(head->width, 64);
+    CHECK_EQ(tail->x, 80);
+    CHECK_EQ(tail->y, head->y);
+  }
+  // 『あ』（い） → closer+opener pair also compresses: （い） at 24+48-8.
+  const CjRunSink::Rec* paren = sink.find("\xEF\xBC\x88\xE3\x81\x84");  // （い
+  CHECK(paren != nullptr);
+  if (paren != nullptr) CHECK_EQ(paren->x, 64);
+  // Control: この。次 has no adjacent punctuation pair — one unsplit run.
+  const CjRunSink::Rec* plain = sink.find("\xE3\x81\x93\xE3\x81\xAE\xE3\x80\x82\xE6\xAC\xA1");
+  CHECK(plain != nullptr);
+  if (plain != nullptr) CHECK_EQ(plain->width, 64);
+}
+
+// The quarter-em CJK↔Latin gap is Japanese convention; Korean attaches
+// particles directly to Latin words with no extra air.
+void testCjkLatinGap() {
+  CjFakeFont font;
+  LayoutParams params = stickyParams(font);
+  params.language = "ja";
+  CjRunSink sink;
+  // GPS装置 (gap applies) and TV를 (Hangul: it must not).
+  CHECK(layoutTxt("cjgap.txt",
+                  "GPS\xE8\xA3\x85\xE7\xBD\xAE\n\nTV\xEB\xA5\xBC",
+                  params, sink));
+  const CjRunSink::Rec* latin = sink.find("GPS");
+  const CjRunSink::Rec* cjk = sink.find("\xE8\xA3\x85\xE7\xBD\xAE");  // 装置
+  CHECK(latin != nullptr && cjk != nullptr);
+  if (latin != nullptr && cjk != nullptr) {
+    CHECK_EQ(latin->x, 24);
+    CHECK_EQ(cjk->x, 24 + 24 + 4);  // three half-width Latin + quarter of 16
+  }
+  // TV를 stays one run — no script gap, no split.
+  CHECK(sink.find("TV\xEB\xA5\xBC") != nullptr);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1105,6 +1333,9 @@ int main(int argc, char** argv) {
   testPlainText();
   testBidi();
   testArabicShaping();
+  testKoreanSpacing();
+  testCjPunctuationCompression();
+  testCjkLatinGap();
 
   std::printf("%d checks, %d failed\n", checksRun, checksFailed);
   return checksFailed == 0 ? 0 : 1;

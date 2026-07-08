@@ -65,6 +65,31 @@ class PanelDriver {
     display(bus, fb, prev, mode, false);
   }
 
+  // Two-call refresh split (CrossPoint EInkDisplay::triggerDisplay/completeDisplay).
+  // Unlike displayAsync, `fb` must stay intact until displayFinish() returns:
+  // controllers whose post-waveform pipeline re-reads the host frame (UC8253 X3
+  // syncs DTM1 and runs conditioning passes after BUSY) need it. The contract is
+  // the caller does non-SPI CPU work in the gap and issues no other bus op until
+  // displayFinish().
+  //
+  // displayStart() loads RAM, fires the waveform, and either:
+  //   - returns true  -> a waveform is in flight; displayFinish() must run to
+  //                      wait it out and do post-waveform work, or
+  //   - returns false -> the refresh completed synchronously (nothing deferred);
+  //                      displayFinish() is then a no-op.
+  // The default is the fully-blocking display() (returns false), so a driver
+  // gains the split only by overriding both. SSD1677 (X4) keeps the default:
+  // its refresh is short and its post-waveform RED re-seed already lives inside
+  // display(), matching CrossPoint's "X4 completes inline" behavior.
+  virtual bool displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
+    display(bus, fb, prev, mode, turnOff);
+    return false;
+  }
+  // `fb` is the just-displayed frame, re-supplied fresh by the facade at finish
+  // time (not stashed at start): callers may release/realloc the buffer holding
+  // it between the two calls, so the driver must not cache the pointer.
+  virtual void displayFinish(EpdBus& bus, const uint8_t* fb) { (void)bus; (void)fb; }
+
   // --- grayscale (dual-plane LSB/MSB) ---
   virtual bool supportsStripGrayscale() const { return false; }
   // Display `fb` as the base frame for a grayscale overlay that follows.

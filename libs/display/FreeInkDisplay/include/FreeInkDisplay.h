@@ -90,9 +90,11 @@ class FreeInkDisplay {
   enum GrayPlane { GRAY_PLANE_LSB, GRAY_PLANE_MSB };
   void writeGrayscalePlaneStrip(GrayPlane plane, const uint8_t* rows, uint16_t yStart, uint16_t numRows);
   bool supportsStripGrayscale() const;
-#ifdef EINK_DISPLAY_SINGLE_BUFFER_MODE
+  // Restore controller RAM and frameBuffer to the given BW baseline after
+  // grayscale. Available in both buffer modes (CrossPoint's dual-buffer HAL
+  // wraps it directly).
   void cleanupGrayscaleBuffers(const uint8_t* bwBuffer);
-#else
+#ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
   // Restore controller RAM and frameBuffer to the BW baseline after grayscale.
   // Uses frameBufferActive as the source (falls back to frameBuffer when the
   // secondary buffer has been released). Call once per page-turn after
@@ -113,6 +115,55 @@ class FreeInkDisplay {
   void displayBufferAsync(RefreshMode mode = FAST_REFRESH);
   // True while an async refresh is still running on the panel.
   bool refreshBusy();
+
+  // ------------------------------------------------------------------------
+  // CrossPoint EInkDisplay compatibility surface.
+  //
+  // These preserve the exact method names CrossPoint's HalDisplay / GfxRenderer
+  // call, so that firmware builds unchanged through the EInkDisplay alias. Where
+  // FreeInk's driver architecture already subsumes a CrossPoint optimization
+  // (X4 RED-RAM baseline, single-buffer fast differential) the shim is a thin
+  // state accessor; the real behavior lives in the driver.
+  // ------------------------------------------------------------------------
+
+  // Two-call refresh split. triggerDisplay() loads RAM and fires the waveform;
+  // on X3 it returns while the ~130-770 ms waveform runs so the render task can
+  // overlap non-SPI work, and completeDisplay() waits it out and performs the
+  // post-waveform DTM1 sync + conditioning. On X4 the refresh completes inside
+  // triggerDisplay() (short waveform, RED re-seeded inline) and completeDisplay()
+  // is a no-op — matching CrossPoint's behavior. The framebuffer must not be
+  // overwritten between the two calls; see PanelDriver::displayStart.
+  void triggerDisplay(RefreshMode mode = FAST_REFRESH, bool turnOffScreen = false);
+  void completeDisplay();
+  // True between triggerDisplay() and completeDisplay() while a waveform is in
+  // flight (X3 only; X4 completes inline so this reads false right after trigger).
+  bool isRefreshPending() const { return _splitPending; }
+
+  // Returns true (X4 only) when the controller's RED RAM holds the last-displayed
+  // BW frame, i.e. a fast differential can diff against it. Always false on X3.
+  // Diagnostic/advisory: FreeInk's SSD1677 driver keeps RED re-seeded after every
+  // refresh, so the baseline is maintained without an explicit sync.
+  bool isRedRamSynced() const { return _panelSel != PanelSel::X3 && _redRamSynced; }
+  // Re-establish the X4 RED-RAM differential baseline from the displayed frame.
+  // On FreeInk the SSD1677 driver already re-seeds RED after each single-buffer
+  // refresh, so this only refreshes the advisory flag; kept for API parity.
+  void syncRedRamFromFrameBuffer();
+
+  // Opt in to X4 fast differential against the retained RED-RAM baseline while the
+  // secondary buffer is released. FreeInk's SSD1677 driver does this safely on
+  // every prev==nullptr refresh, so this is an advisory flag (no downgrade path).
+  void setSingleBufferFastDiff(bool enabled) { _singleBufferFastDiff = enabled; }
+  bool singleBufferFastDiff() const { return _singleBufferFastDiff; }
+
+  // X3-only: pick the fast (community) vs accurate (OEM) grayscale LUT bank.
+  // FreeInk's X3 driver currently carries the single community `_gc` bank, so
+  // this stores the preference for getFastGrayscaleLut() but does not yet switch
+  // banks; see Uc8253X3Driver. No effect on X4.
+  void setFastGrayscaleLut(bool fast) { _fastGrayscaleLut = fast; }
+  bool getFastGrayscaleLut() const { return _fastGrayscaleLut; }
+
+  // True when the runtime-selected panel is the Xteink X3 (X4 returns false).
+  bool isX3Mode() const { return _panelSel == PanelSel::X3; }
 
   // EXPERIMENTAL: Windowed update - display only a rectangular region
   void displayWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t h, bool turnOffScreen = false);
@@ -169,15 +220,15 @@ class FreeInkDisplay {
   // the heap cannot supply the buffers (the display is then unusable).
   bool reallocBuffers();
 
-#if FREEINK_FB_PSRAM
 #ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
-  // Release only the secondary (previous-frame) buffer to free ~48-52 KB of
-  // PSRAM temporarily — e.g. during chapter compilation when no rendering
-  // is happening. BW display and fast differential refresh continue to work:
-  // the SSD1677 driver already re-seeds both BW and RED RAM when prev is null,
-  // so the differential baseline stays consistent without the host copy.
-  // Grayscale AA is unavailable until the buffer is restored with
-  // reallocSecondaryBuffer(). No-op if already released. Returns true if freed.
+  // Release only the secondary (previous-frame) buffer to free ~48-52 KB
+  // temporarily — e.g. during chapter compilation when no rendering is
+  // happening. Available on every dual-buffer build (not just PSRAM ones):
+  // CrossPoint's C3 lends the buffer out of internal DRAM. BW display and fast
+  // differential refresh continue to work: the SSD1677 driver already re-seeds
+  // both BW and RED RAM when prev is null, so the differential baseline stays
+  // consistent without the host copy. Grayscale AA is unavailable until restored
+  // with reallocSecondaryBuffer(). No-op if already released. Returns true if freed.
   bool releaseSecondaryBuffer();
 
   // Reallocate the secondary buffer after releaseSecondaryBuffer(). Initialises
@@ -187,7 +238,6 @@ class FreeInkDisplay {
   // Returns true if the secondary buffer is currently allocated.
   bool hasSecondaryBuffer() const;
 #endif  // !EINK_DISPLAY_SINGLE_BUFFER_MODE
-#endif  // FREEINK_FB_PSRAM
 
   // Save the current framebuffer to a PBM file (desktop/test builds only)
   void saveFrameBufferAsPBM(const char* filename);
@@ -213,8 +263,20 @@ class FreeInkDisplay {
   uint8_t* _asyncShadow = nullptr;
   bool _shadowValid = false;
 
+  // triggerDisplay()/completeDisplay() split state. Distinct from _asyncPending:
+  // a pending split is drained by the driver's displayFinish() (which runs the
+  // X3 post-waveform conditioning), not by a plain bus.waitBusy().
+  bool _splitPending = false;
+
   enum class PanelSel : uint8_t { X4, X3, M5 };
   PanelSel _panelSel = PanelSel::X4;
+
+  // CrossPoint compatibility state (see the compatibility surface above).
+  // _redRamSynced mirrors whether the X4 RED-RAM baseline is current (advisory);
+  // the other two are caller preferences echoed back to CrossPoint's HAL.
+  bool _redRamSynced = false;
+  bool _singleBufferFastDiff = false;
+  bool _fastGrayscaleLut = false;
 
   // Runtime display geometry (seeded from the driver at begin()).
   uint16_t displayWidth = DISPLAY_WIDTH;

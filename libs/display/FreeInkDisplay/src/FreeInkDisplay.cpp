@@ -264,8 +264,11 @@ bool FreeInkDisplay::reallocBuffers() {
   return true;
 }
 
-#if FREEINK_FB_PSRAM
 #ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
+// Secondary-buffer release/realloc is available on every dual-buffer build, not
+// just PSRAM ones: CrossPoint's C3 (no PSRAM) lends the ~48-52 KB secondary
+// buffer out of internal DRAM during chapter compilation. allocFrameBufferStorage()
+// is PSRAM-first with a malloc fallback, so this is correct with or without PSRAM.
 bool FreeInkDisplay::releaseSecondaryBuffer() {
   if (!frameBufferActive) return false;
   if (frameBufferActive == frameBuffer0) {
@@ -282,8 +285,7 @@ bool FreeInkDisplay::releaseSecondaryBuffer() {
 bool FreeInkDisplay::reallocSecondaryBuffer() {
   if (frameBufferActive) return true;
   uint8_t** slot = (frameBuffer0 == nullptr) ? &frameBuffer0 : &frameBuffer1;
-  *slot = static_cast<uint8_t*>(heap_caps_malloc(MAX_BUFFER_SIZE, MALLOC_CAP_SPIRAM));
-  if (!*slot) *slot = static_cast<uint8_t*>(malloc(MAX_BUFFER_SIZE));
+  *slot = allocFrameBufferStorage();
   if (!*slot) return false;
   frameBufferActive = *slot;
   memset(frameBufferActive, 0xFF, bufferSize);
@@ -292,13 +294,23 @@ bool FreeInkDisplay::reallocSecondaryBuffer() {
 
 bool FreeInkDisplay::hasSecondaryBuffer() const { return frameBufferActive != nullptr; }
 #endif  // !EINK_DISPLAY_SINGLE_BUFFER_MODE
-#endif  // FREEINK_FB_PSRAM
 
 // ============================================================================
 // Panel operations (delegated to the active driver)
 // ============================================================================
 
 void FreeInkDisplay::syncPendingAsync() {
+  // A pending triggerDisplay() split must complete through the driver so its
+  // post-waveform work (X3 DTM1 sync + conditioning) runs; a plain waitBusy
+  // would skip it and leave the controller mid-pipeline.
+  if (_splitPending) {
+#ifdef EINK_DISPLAY_SINGLE_BUFFER_MODE
+    _driver->displayFinish(_bus, frameBuffer);
+#else
+    _driver->displayFinish(_bus, frameBufferActive ? frameBufferActive : frameBuffer);
+#endif
+    _splitPending = false;
+  }
   if (!_asyncPending) return;
   _bus.waitBusy("async refresh");
   _asyncPending = false;
@@ -325,6 +337,8 @@ void FreeInkDisplay::displayBuffer(RefreshMode mode, bool turnOffScreen) {
   _driver->display(_bus, frameBuffer, frameBufferActive, toInternal(mode), turnOffScreen);
   swapBuffers();
 #endif
+  // X4 re-seeds RED from the displayed frame inside display(); X3 has no RED plane.
+  if (_panelSel != PanelSel::X3) _redRamSynced = true;
 }
 
 void FreeInkDisplay::displayBufferAsync(RefreshMode mode) {
@@ -351,6 +365,46 @@ void FreeInkDisplay::displayBufferAsync(RefreshMode mode) {
   _asyncPending = true;
 }
 
+// ============================================================================
+// CrossPoint EInkDisplay compatibility surface
+// ============================================================================
+
+void FreeInkDisplay::triggerDisplay(RefreshMode mode, bool turnOffScreen) {
+  syncPendingAsync();  // finish any prior split/async refresh before starting another
+#ifdef EINK_DISPLAY_SINGLE_BUFFER_MODE
+  const bool deferred = _driver->displayStart(_bus, frameBuffer, nullptr, toInternal(mode), turnOffScreen);
+  _shadowValid = false;
+#else
+  // Pass frameBufferActive as the previous frame, then swap so the caller draws
+  // into the inactive buffer while the just-displayed frame is preserved for the
+  // X3 post-waveform DTM1 sync the driver stashed a pointer to.
+  const bool deferred = _driver->displayStart(_bus, frameBuffer, frameBufferActive, toInternal(mode), turnOffScreen);
+  swapBuffers();
+#endif
+  _splitPending = deferred;
+  // X4 refreshes complete inline in displayStart() and re-seed RED from the
+  // displayed frame; X3 has no RED plane. Keep the advisory flag truthful.
+  if (_panelSel != PanelSel::X3) _redRamSynced = !deferred;
+}
+
+void FreeInkDisplay::completeDisplay() {
+  if (!_splitPending) return;
+#ifdef EINK_DISPLAY_SINGLE_BUFFER_MODE
+  _driver->displayFinish(_bus, frameBuffer);
+#else
+  // The just-displayed frame is preserved in frameBufferActive after the
+  // triggerDisplay() swap (or frameBuffer if the secondary was released since).
+  _driver->displayFinish(_bus, frameBufferActive ? frameBufferActive : frameBuffer);
+#endif
+  _splitPending = false;
+}
+
+void FreeInkDisplay::syncRedRamFromFrameBuffer() {
+  // SSD1677 already re-seeds RED after each single-buffer refresh, so there is
+  // nothing to push; just keep the advisory flag truthful. No RED plane on X3.
+  if (_panelSel != PanelSel::X3) _redRamSynced = true;
+}
+
 void FreeInkDisplay::displayWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t h, bool turnOffScreen) {
 #if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
   Serial.printf("[EPD] displayWindow %u,%u %ux%u\n", x, y, w, h);
@@ -370,6 +424,7 @@ void FreeInkDisplay::displayGrayBuffer(bool turnOffScreen, const unsigned char* 
 #endif
   syncPendingAsync();
   _shadowValid = false;
+  _redRamSynced = false;  // grayscale leaves RED holding a gray plane, not the BW baseline
   _driver->displayGray(_bus, frameBuffer, turnOffScreen, lut, factoryMode);
 }
 
@@ -406,7 +461,6 @@ void FreeInkDisplay::writeGrayscalePlaneStrip(GrayPlane plane, const uint8_t* ro
 
 bool FreeInkDisplay::supportsStripGrayscale() const { return _driver && _driver->supportsStripGrayscale(); }
 
-#ifdef EINK_DISPLAY_SINGLE_BUFFER_MODE
 void FreeInkDisplay::cleanupGrayscaleBuffers(const uint8_t* bwBuffer) {
   _driver->cleanupGrayscaleBuffers(_bus, bwBuffer);
   // Restore frameBuffer so subsequent BW draws paint onto a valid BW baseline
@@ -414,7 +468,7 @@ void FreeInkDisplay::cleanupGrayscaleBuffers(const uint8_t* bwBuffer) {
   if (frameBuffer && bwBuffer && frameBuffer != bwBuffer)
     memcpy(frameBuffer, bwBuffer, bufferSize);
 }
-#else
+#ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
 void FreeInkDisplay::cleanupGrayscaleWithPreviousBuffer() {
   const uint8_t* baseline = frameBufferActive ? frameBufferActive : frameBuffer;
   _driver->cleanupGrayscaleBuffers(_bus, baseline);

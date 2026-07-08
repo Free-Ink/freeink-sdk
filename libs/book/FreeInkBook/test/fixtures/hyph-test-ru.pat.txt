@@ -1,0 +1,4 @@
+% Tiny Cyrillic test patterns (not real Russian hyphenation — just enough
+% to prove UTF-8 pattern matching, case folding, and char-based minimums).
+о1л
+о1к

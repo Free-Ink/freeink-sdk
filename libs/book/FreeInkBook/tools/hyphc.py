@@ -40,12 +40,20 @@ def compile_patterns(lines):
         key_bytes = "".join(key).encode("utf-8")
         if not key_bytes or len(key_bytes) > 255:
             continue
-        # values has len(key)+1 entries; keep the max on duplicate keys.
+        # The matcher walks UTF-8 BYTES, so expand the per-character values
+        # to byte positions: each character's leading value sits at its first
+        # byte, zeros pad continuation bytes. len(values) == len(key_bytes)+1.
+        byte_values = []
+        for ch, val in zip(key, values[:-1]):
+            byte_values.append(val)
+            byte_values.extend([0] * (len(ch.encode("utf-8")) - 1))
+        byte_values.append(values[-1])
+        # Keep the max on duplicate keys.
         old = table.get(key_bytes)
         if old is None:
-            table[key_bytes] = values
+            table[key_bytes] = byte_values
         else:
-            table[key_bytes] = [max(a, b) for a, b in zip(old, values)]
+            table[key_bytes] = [max(a, b) for a, b in zip(old, byte_values)]
         max_len = max(max_len, len(key_bytes))
     return sorted(table.items()), max_len
 

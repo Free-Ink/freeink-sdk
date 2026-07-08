@@ -58,6 +58,16 @@ c++ -std=c++17 -Wall -Wextra -Werror $INCLUDES \
   $CORE_SRCS test_layout.cpp "$BUILD_DIR"/obj/*.o \
   -o "$BUILD_DIR/test_layout"
 
+# The layout suite also builds and runs under the SMALL and LARGE profiles
+# (BookProfile.h) so neither tier bit-rots.
+c++ -std=c++17 -Wall -Wextra -Werror -DFREEINK_BOOK_SMALL=1 $INCLUDES \
+  $CORE_SRCS test_layout.cpp "$BUILD_DIR"/obj/*.o \
+  -o "$BUILD_DIR/test_layout_small"
+
+c++ -std=c++17 -Wall -Wextra -Werror -DFREEINK_BOOK_LARGE=1 $INCLUDES \
+  $CORE_SRCS test_layout.cpp "$BUILD_DIR"/obj/*.o \
+  -o "$BUILD_DIR/test_layout_large"
+
 c++ -std=c++17 -Wall -Wextra -Werror $INCLUDES \
   $CORE_SRCS test_cache.cpp "$BUILD_DIR"/obj/*.o \
   -o "$BUILD_DIR/test_cache"
@@ -68,9 +78,13 @@ c++ -std=c++17 -Wall -Wextra -Werror $INCLUDES \
 
 python3 ../../tools/hyphc.py ../../third_party/hyphen-patterns/hyph-en-us.pat.txt \
   "$BUILD_DIR/hyph-en-us.fibh"
+python3 ../../tools/hyphc.py ../fixtures/hyph-test-ru.pat.txt \
+  "$BUILD_DIR/hyph-test-ru.fibh"
 
 mkdir -p "$BUILD_DIR/cache"
 "$BUILD_DIR/test_freeinkbook" "$BUILD_DIR/fixtures"
-"$BUILD_DIR/test_layout" "$BUILD_DIR/fixtures" "$BUILD_DIR/hyph-en-us.fibh"
+"$BUILD_DIR/test_layout" "$BUILD_DIR/fixtures" "$BUILD_DIR/hyph-en-us.fibh" "$BUILD_DIR/hyph-test-ru.fibh"
+"$BUILD_DIR/test_layout_small" "$BUILD_DIR/fixtures" "$BUILD_DIR/hyph-en-us.fibh" "$BUILD_DIR/hyph-test-ru.fibh"
+"$BUILD_DIR/test_layout_large" "$BUILD_DIR/fixtures" "$BUILD_DIR/hyph-en-us.fibh" "$BUILD_DIR/hyph-test-ru.fibh"
 "$BUILD_DIR/test_cache" "$BUILD_DIR/fixtures" "$BUILD_DIR/cache"
 "$BUILD_DIR/test_font" "$BUILD_DIR/fixtures" ../fixtures/fonts/DejaVuSans.ttf

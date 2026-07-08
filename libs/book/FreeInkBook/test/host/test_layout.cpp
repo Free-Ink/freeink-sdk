@@ -3,6 +3,7 @@
 // block flow, style runs, page assembly, and — critically — the O(page)
 // memory invariant are all verified with no device or font files.
 
+#include <BookProfile.h>
 #include <FreeInkBook.h>
 #include <cache/PageCache.h>
 #include <layout/ChapterLayout.h>
@@ -136,7 +137,11 @@ class CollectSink : public PageSink {
 };
 
 uint8_t bookBuf[64 * 1024];
+#if FREEINK_BOOK_PROFILE == FREEINK_BOOK_PROFILE_LARGE
+uint8_t scratchBuf[512 * 1024];  // the LARGE tier's fixed buffers need room
+#else
 uint8_t scratchBuf[256 * 1024];
+#endif
 
 char fixturePath[1024];
 const char* fixturesDir = nullptr;
@@ -264,11 +269,18 @@ void testMemoryIndependence() {
 
   std::printf("  layout high water: small %zu B, big %zu B (%u pages)\n", highWater[0],
               highWater[1], bigPages);
-  // Ceiling anatomy: ~48 KB fixed layout buffers (paragraph text + breaks +
-  // bidi levels + line records + run table) + 24 KB page sub-arena + ~50 KB
-  // parse/inflate state. All O(1) in chapter size.
+  // Ceiling anatomy: fixed layout buffers (paragraph text + breaks + bidi
+  // levels + line records + run table) + page sub-arena + ~50 KB
+  // parse/inflate state — all profile-tiered, all O(1) in chapter size.
+#if FREEINK_BOOK_PROFILE == FREEINK_BOOK_PROFILE_SMALL
+  constexpr size_t kCeiling = 120 * 1024;
+#elif FREEINK_BOOK_PROFILE == FREEINK_BOOK_PROFILE_LARGE
+  constexpr size_t kCeiling = 256 * 1024;
+#else
+  constexpr size_t kCeiling = 152 * 1024;
+#endif
   CHECK(bigPages > 10);                             // the big chapter really paginated
-  CHECK(highWater[1] < 152 * 1024);                 // absolute ceiling
+  CHECK(highWater[1] < kCeiling);                   // absolute ceiling
   CHECK(highWater[1] <= highWater[0] + 16 * 1024);  // O(page), not O(chapter)
 }
 
@@ -776,6 +788,7 @@ void testImages() {
   CHECK_EQ(sink.count, 2u);
   CHECK(std::strstr(sink.text, "Text before the picture.") != nullptr);
   CHECK(std::strstr(sink.text, "Text at the end.") != nullptr);
+  if (sink.count < 2) return;  // CHECK doesn't abort — don't walk off the array
 
   // 64x48 fits without scaling; centered in the 752 px content box.
   const PageImage& png = sink.images[0];
@@ -1081,6 +1094,7 @@ struct CjRunSink : PageSink {
     int16_t x;
     int16_t y;
     int32_t width;
+    uint8_t flags;
     char text[192];
   };
   bool onPage(const Page& page) override {
@@ -1089,6 +1103,7 @@ struct CjRunSink : PageSink {
       Rec& rec = runs[count++];
       rec.x = run.x;
       rec.y = run.baselineY;
+      rec.flags = run.styleFlags;
       rec.width = 0;
       uint32_t i = 0;
       while (i < run.len) {
@@ -1292,6 +1307,69 @@ void testCjkLatinGap() {
   CHECK(sink.find("TV\xEB\xA5\xBC") != nullptr);
 }
 
+// Non-ASCII hyphenation: UTF-8 patterns match, uppercase folds, and the
+// left/right minimums count characters (not bytes). Patterns: о1л о1к.
+void testCyrillicHyphenation(const Hyphenator& ru) {
+  uint8_t pos[8];
+  // молоко (6 chars, 12 bytes): break before л (char 2 -> byte 4). The о1к
+  // match (before к, char 4) violates rightmin=3 chars and must be dropped —
+  // in bytes it would have passed, so this pins the char-based minimums.
+  uint8_t n = ru.breakPositions("\xD0\xBC\xD0\xBE\xD0\xBB\xD0\xBE\xD0\xBA\xD0\xBE", 12, pos, 8);
+  CHECK_EQ(n, 1);
+  CHECK_EQ(pos[0], 4);
+  // МОЛОКО folds to the same word.
+  n = ru.breakPositions("\xD0\x9C\xD0\x9E\xD0\x9B\xD0\x9E\xD0\x9A\xD0\x9E", 12, pos, 8);
+  CHECK_EQ(n, 1);
+  CHECK_EQ(pos[0], 4);
+
+  // End to end: a narrow measure forces the second молоко to hyphenate, so
+  // a line ends "…мо-" (hyphen appended to the run, soft break in layout).
+  FakeFont font;
+  LayoutParams params = stickyParams(font);
+  params.language = "ru";
+  params.marginLeft = params.marginRight = 350;  // usable 100 px = 12 chars
+  params.hyphenator = &ru;
+  CollectSink sink(params, font);
+  char path[1024];
+  std::snprintf(path, sizeof(path), "%s/cyrillic.txt", fixturesDir);
+  FILE* f = std::fopen(path, "wb");
+  CHECK(f != nullptr);
+  for (int i = 0; i < 6; ++i)
+    std::fputs("\xD0\xBC\xD0\xBE\xD0\xBB\xD0\xBE\xD0\xBA\xD0\xBE ", f);
+  std::fclose(f);
+  HostFileSource source;
+  CHECK(source.open(path));
+  Arena scratch(scratchBuf, sizeof(scratchBuf));
+  CHECK_EQ(static_cast<int>(ChapterLayout::layoutPlainText(source, params, scratch, sink,
+                                                           nullptr, nullptr)),
+           static_cast<int>(BookStatus::Ok));
+  CHECK(std::strstr(sink.text, "\xD0\xBC\xD0\xBE-") != nullptr);  // мо-
+  CHECK_EQ(sink.geometryViolations, 0);
+}
+
+// Focus reading (CrossPoint parity): each word's first ~45% of characters
+// (clamped 1..9) emits as a bold run; the tail stays regular.
+void testFocusReading() {
+  CjFakeFont font;
+  LayoutParams params = stickyParams(font);
+  params.focusReading = true;
+  CjRunSink sink;
+  CHECK(layoutTxt("focus.txt", "reading focus now", params, sink));
+
+  // 6 runs: rea|ding |fo|cus |n|ow — bold prefix, regular tail per word.
+  CHECK_EQ(sink.count, 6u);
+  const char* expect[6] = {"rea", "ding ", "fo", "cus ", "n", "ow"};
+  const bool bold[6] = {true, false, true, false, true, false};
+  for (uint32_t i = 0; i < 6 && i < sink.count; ++i) {
+    CHECK(std::strcmp(sink.runs[i].text, expect[i]) == 0);
+    CHECK_EQ((sink.runs[i].flags & StyleBold) != 0, bold[i]);
+  }
+
+  // The toggle is a layout input: it must change the cache generation.
+  LayoutParams off = stickyParams(font);
+  CHECK(layoutGenerationHash(params, 1) != layoutGenerationHash(off, 1));
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1336,6 +1414,17 @@ int main(int argc, char** argv) {
   testKoreanSpacing();
   testCjPunctuationCompression();
   testCjkLatinGap();
+  testFocusReading();
+  if (argc > 3) {
+    static uint8_t ruBuf[4096];
+    Hyphenator ru;
+    FILE* rf = std::fopen(argv[3], "rb");
+    CHECK(rf != nullptr);
+    const size_t rn = rf != nullptr ? std::fread(ruBuf, 1, sizeof(ruBuf), rf) : 0;
+    if (rf != nullptr) std::fclose(rf);
+    CHECK(ru.init(ruBuf, static_cast<uint32_t>(rn)));
+    testCyrillicHyphenation(ru);
+  }
 
   std::printf("%d checks, %d failed\n", checksRun, checksFailed);
   return checksFailed == 0 ? 0 : 1;

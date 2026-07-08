@@ -45,6 +45,7 @@ struct LayoutParams {
   uint8_t orphanLines = 2;                       // min paragraph lines at a page bottom
   uint8_t widowLines = 2;                        // min paragraph lines carried over
   bool embeddedStyles = true;                    // honor chapter <style> blocks
+  bool focusReading = false;                     // bold each word's first ~45% (fixation aid)
   const CssStylesheet* stylesheet = nullptr;     // book CSS (optional)
   const Hyphenator* hyphenator = nullptr;        // soft hyphenation (optional)
 };

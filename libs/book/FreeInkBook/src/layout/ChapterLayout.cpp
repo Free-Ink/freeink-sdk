@@ -10,9 +10,7 @@
 
 #include "layout/ChapterLayout.h"
 
-#ifndef FREEINK_BOOK_SMALL
-#define FREEINK_BOOK_SMALL 0
-#endif
+#include "BookProfile.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -33,11 +31,11 @@ namespace {
 // size; a paragraph longer than the buffer is flushed in segments (a layout
 // artifact for pathological paragraphs, never a failure).
 //
-// FREEINK_BOOK_SMALL selects a reduced profile for PSRAM-less MCUs
-// (ESP32-C3 class, ~200 KB free heap): fixed layout buffers shrink from
-// ~62 KB to ~30 KB. Costs: very long paragraphs flush in more segments,
-// dense justified pages split earlier, fewer links/images per page.
-#if FREEINK_BOOK_SMALL
+// The build profile (BookProfile.h) sizes the tiers: SMALL for PSRAM-less
+// MCUs (fixed layout buffers ~30 KB), STANDARD for PSRAM parts (~62 KB),
+// LARGE for generous-RAM targets (headroom for pathological books; pages
+// virtually never split early on capacity).
+#if FREEINK_BOOK_PROFILE == FREEINK_BOOK_PROFILE_SMALL
 constexpr uint32_t kParTextCap = 4096;
 constexpr uint16_t kMaxSpans = 96;
 constexpr uint16_t kMaxRunsPerPage = 384;
@@ -48,6 +46,17 @@ constexpr uint16_t kMaxImagesPerPage = 8;
 constexpr uint16_t kMaxLinksPerPage = 16;
 constexpr uint8_t kMaxLinksPerPar = 6;
 constexpr uint32_t kStyleTextCap = 6 * 1024;
+#elif FREEINK_BOOK_PROFILE == FREEINK_BOOK_PROFILE_LARGE
+constexpr uint32_t kParTextCap = 16384;
+constexpr uint16_t kMaxSpans = 192;
+constexpr uint16_t kMaxRunsPerPage = 1024;
+constexpr uint16_t kMaxLinesPerPar = 1024;
+constexpr uint32_t kPageArenaCap = 48 * 1024;
+constexpr uint8_t kMaxElemDepth = 32;
+constexpr uint16_t kMaxImagesPerPage = 24;
+constexpr uint16_t kMaxLinksPerPage = 48;
+constexpr uint8_t kMaxLinksPerPar = 12;
+constexpr uint32_t kStyleTextCap = 24 * 1024;
 #else
 constexpr uint32_t kParTextCap = 8192;
 constexpr uint16_t kMaxSpans = 128;
@@ -136,7 +145,15 @@ uint32_t encodeUtf8(uint32_t cp, char* out) {
   return 4;
 }
 
-bool isAsciiLetter(char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); }
+// Letters that hyphenation patterns cover: Latin (with accents and the
+// extended blocks), Greek, Cyrillic. Multiplication/division signs sit in
+// the middle of Latin-1 and are excluded.
+bool isHyphLetter(uint32_t cp) {
+  if ((cp >= 'a' && cp <= 'z') || (cp >= 'A' && cp <= 'Z')) return true;
+  if (cp == 0x00D7 || cp == 0x00F7) return false;
+  return (cp >= 0x00C0 && cp <= 0x024F) || (cp >= 0x0370 && cp <= 0x03FF) ||
+         (cp >= 0x0400 && cp <= 0x04FF);
+}
 
 // CJK ideographs, kana, Hangul, fullwidth forms, and the supplementary
 // ideographic planes — the scripts that justify by inter-character expansion
@@ -340,6 +357,7 @@ void reverseUtf8(char* s, uint32_t len) {
 // bits 0-2 bidi level, bits 3-5 form.
 enum : uint8_t {
   kBidiLevelMask = 0x07,
+  kFocusBold = 0x40,  // focus reading: byte belongs to a word's bold prefix
   kFormShift = 3,
   kFormNone = 0,
   kFormIso = 1,
@@ -440,6 +458,46 @@ void shapeArabic(const char* text, uint32_t len, uint8_t* levels, BookFont* font
     for (uint32_t b = start; b < i; ++b)
       levels[b] = static_cast<uint8_t>(levels[b] | (form << kFormShift));
     prevJoins = jt == kJoinD;
+  }
+}
+
+// Focus reading (CrossPoint parity): bold the first ~45% of each word's
+// characters (clamped to 1..9) as a fixation anchor. Letters and apostrophes
+// form words; digits, punctuation, and CJK stay regular. Marked as a bit in
+// the levels array; measurement and emission add StyleBold for marked bytes.
+bool isFocusWordChar(uint32_t cp) {
+  return isHyphLetter(cp) || cp == '\'' || cp == 0x2018 || cp == 0x2019;
+}
+
+void markFocusWords(const char* text, uint32_t len, uint8_t* levels) {
+  uint32_t i = 0;
+  while (i < len) {
+    const uint32_t wordStart = i;
+    uint32_t chars = 0;
+    uint32_t probe = i;
+    while (probe < len) {
+      uint32_t next = probe;
+      const uint32_t cp = decodeUtf8(text, len, next);
+      if (!isFocusWordChar(cp)) break;
+      probe = next;
+      ++chars;
+    }
+    if (chars == 0) {
+      decodeUtf8(text, len, i);
+      continue;
+    }
+    uint32_t bold = chars * 45 / 100;
+    if (bold < 1) bold = 1;
+    if (bold > 9) bold = 9;
+    uint32_t j = wordStart;
+    for (uint32_t c = 0; c < bold; ++c) {
+      const uint32_t at = j;
+      decodeUtf8(text, len, j);
+      for (uint32_t b = at; b < j; ++b) {
+        levels[b] = static_cast<uint8_t>(levels[b] | kFocusBold);
+      }
+    }
+    i = probe;
   }
 }
 
@@ -989,6 +1047,7 @@ class LayoutEngine : public XmlHandler {
       if (shaped != 0 && params_.font->covers(shaped)) cp = shaped;
     }
     while (i < end && &spanAt(i) == &span) {
+      if (params_.focusReading && ((levels_[pos] ^ levels_[i]) & kFocusBold)) break;
       uint32_t j = i;
       const uint32_t next = decodeUtf8(parText_, end, j);
       const uint32_t lig = params_.font->ligature(cp, next, span.flags);
@@ -999,12 +1058,20 @@ class LayoutEngine : public XmlHandler {
     return cp;
   }
 
-  int32_t advanceFor(uint32_t cp, uint32_t prevCp, const Span& span) const {
+  // The focus-reading bold prefix rides in the levels array; every
+  // measurement site resolves its char's effective flags through this.
+  uint8_t focusExtra(uint32_t pos) const {
+    return params_.focusReading && (levels_[pos] & kFocusBold) ? StyleBold : StyleNone;
+  }
+
+  int32_t advanceFor(uint32_t cp, uint32_t prevCp, const Span& span,
+                     uint8_t extraFlags = 0) const {
     if (cp == '\n' || cp == 0xAD) return 0;  // soft hyphen: invisible until a break uses it
     const uint16_t sizePx = spanSizePx(span);
-    int32_t adv = params_.font->advance(cp, sizePx, span.flags);
+    const uint8_t flags = static_cast<uint8_t>(span.flags | extraFlags);
+    int32_t adv = params_.font->advance(cp, sizePx, flags);
     if (prevCp != 0) {
-      adv += params_.font->kerning(prevCp, cp, sizePx, span.flags);
+      adv += params_.font->kerning(prevCp, cp, sizePx, flags);
       if (crossesScripts(prevCp, cp)) adv += sizePx / 4;
       adv += cjkCompression(prevCp, cp, sizePx);
     }
@@ -1020,7 +1087,7 @@ class LayoutEngine : public XmlHandler {
       const uint32_t charStart = i;
       const Span& span = spanAt(charStart);
       const uint32_t cp = decodeShaped(to, i, span);
-      width += advanceFor(cp, prev, span);
+      width += advanceFor(cp, prev, span, focusExtra(charStart));
       prev = cp;
     }
     return width;
@@ -1032,9 +1099,16 @@ class LayoutEngine : public XmlHandler {
   uint32_t tryHyphenBreak(uint32_t lineStart, uint32_t wordStart, int32_t budget) {
     if (params_.hyphenator == nullptr || !params_.hyphenator->ready()) return 0;
     uint32_t wordEnd = wordStart;
-    while (wordEnd < parLen_ && isAsciiLetter(parText_[wordEnd])) ++wordEnd;
+    uint32_t wordChars = 0;
+    while (wordEnd < parLen_) {
+      uint32_t next = wordEnd;
+      const uint32_t cp = decodeUtf8(parText_, parLen_, next);
+      if (!isHyphLetter(cp)) break;
+      wordEnd = next;
+      ++wordChars;
+    }
     const uint32_t wordLen = wordEnd - wordStart;
-    if (wordLen < 5) return 0;
+    if (wordChars < 5) return 0;
 
     uint8_t positions[16];
     const uint8_t n = params_.hyphenator->breakPositions(parText_ + wordStart, wordLen,
@@ -1061,6 +1135,7 @@ class LayoutEngine : public XmlHandler {
     bool hasArabic = false;
     paraRtl_ = computeBidiLevels(parText_, parLen_, levels_, &hasArabic);
     if (hasArabic) shapeArabic(parText_, parLen_, levels_, params_.font);
+    if (params_.focusReading) markFocusWords(parText_, parLen_, levels_);
 
     // "ko-keep-all": word-unit breaking (CSS word-break: keep-all). UAX #14
     // allows breaks between Hangul syllables; this style demotes them so
@@ -1102,7 +1177,7 @@ class LayoutEngine : public XmlHandler {
       const uint32_t charStart = i;
       const Span& shapeSpan = spanAt(charStart);
       const uint32_t cp = decodeShaped(parLen_, i, shapeSpan);
-      const int32_t adv = advanceFor(cp, prevCp, shapeSpan);
+      const int32_t adv = advanceFor(cp, prevCp, shapeSpan, focusExtra(charStart));
 
       if (cp != '\n' && lineWidth + adv > maxWidth && charStart > lineStart) {
         // Try a hyphen inside the overflowing word first; it beats breaking
@@ -1250,6 +1325,7 @@ class LayoutEngine : public XmlHandler {
     bool spaceBefore;     // that gap includes a real space advance
     bool scriptGap;       // quarter-em CJK/Latin air precedes it
     bool compressBefore;  // punctuation pair: half an em comes OUT before it
+    uint8_t extraFlags;   // style added beyond the span's (focus-reading bold)
   };
 
   void placeLine(const LineRec& rec, uint16_t sizePx, int16_t lineHeight, bool firstLine) {
@@ -1303,6 +1379,7 @@ class LayoutEngine : public XmlHandler {
       uint32_t segStart = rec.start;
       const Span* segSpan = &spanAt(rec.start);
       uint8_t segLevel = levels_[rec.start] & kBidiLevelMask;
+      uint8_t segExtra = focusExtra(rec.start);
       bool gapBefore = false, spaceBefore = false, scriptGap = false, compressBefore = false;
       uint32_t linePrev = 0;
       uint32_t i = rec.start;
@@ -1310,7 +1387,7 @@ class LayoutEngine : public XmlHandler {
                        bool nextCompress) {
         if (endPos > segStart && segCount < 64) {
           segs[segCount++] = {segStart, endPos, segSpan, segLevel,
-                              gapBefore, spaceBefore, scriptGap, compressBefore};
+                              gapBefore, spaceBefore, scriptGap, compressBefore, segExtra};
         }
         gapBefore = nextGap;
         spaceBefore = nextSpace;
@@ -1321,6 +1398,7 @@ class LayoutEngine : public XmlHandler {
         const uint32_t charStart = i;
         const Span* span = &spanAt(charStart);
         const uint8_t level = levels_[charStart] & kBidiLevelMask;
+        const uint8_t extra = focusExtra(charStart);
         uint32_t next = charStart;
         const uint32_t cp = decodeShaped(rec.end, next, *span);
 
@@ -1329,6 +1407,7 @@ class LayoutEngine : public XmlHandler {
           segStart = next;
           segSpan = &spanAt(next < rec.end ? next : charStart);
           segLevel = next < rec.end ? (levels_[next] & kBidiLevelMask) : level;
+          segExtra = next < rec.end ? focusExtra(next) : extra;
           linePrev = cp;
           i = next;
           continue;
@@ -1338,11 +1417,13 @@ class LayoutEngine : public XmlHandler {
                             isCjk(cp) &&
                             (hangulStretch || !(isHangul(linePrev) && isHangul(cp)));
         const bool mixGap = linePrev != 0 && crossesScripts(linePrev, cp);
-        if (span != segSpan || level != segLevel || cjkGap || mixGap || compGap) {
+        if (span != segSpan || level != segLevel || extra != segExtra || cjkGap || mixGap ||
+            compGap) {
           close(charStart, cjkGap, false, mixGap, compGap);
           segStart = charStart;
           segSpan = span;
           segLevel = level;
+          segExtra = extra;
         }
         linePrev = cp;
         i = next;
@@ -1425,10 +1506,11 @@ class LayoutEngine : public XmlHandler {
       uint32_t prev = 0;
       while (i < sg.end) {
         const uint32_t cp = decodeShaped(sg.end, i, *sg.span);
-        segWidth += advanceFor(cp, prev, *sg.span);
+        segWidth += advanceFor(cp, prev, *sg.span, sg.extraFlags);
         prev = cp;
       }
     }
+    const uint8_t runFlags = static_cast<uint8_t>(sg.span->flags | sg.extraFlags);
     const uint32_t segLen = sg.end - sg.start;
     const uint32_t copyLen = segLen + segLen / 2 + (addHyphen ? 1u : 0u) + 4;
     if (runCount_ >= kMaxRunsPerPage) {
@@ -1460,7 +1542,7 @@ class LayoutEngine : public XmlHandler {
     if (sg.level & 1) reverseUtf8(copy, outLen);  // store visual order (L2)
     if (addHyphen) {
       copy[outLen++] = '-';
-      segWidth += params_.font->advance('-', spanSizePx(*sg.span), sg.span->flags);
+      segWidth += params_.font->advance('-', spanSizePx(*sg.span), runFlags);
     }
     int16_t runBaseline = baselineY;
     if (sg.span->flags & StyleSuperscript) {
@@ -1473,7 +1555,7 @@ class LayoutEngine : public XmlHandler {
                           static_cast<int16_t>(x),
                           runBaseline,
                           spanSizePx(*sg.span),
-                          sg.span->flags};
+                          runFlags};
     if (sg.span->link != 0 && linkCount_ < kMaxLinksPerPage) {
       const uint8_t li = static_cast<uint8_t>(sg.span->link - 1);
       const uint16_t sz = spanSizePx(*sg.span);

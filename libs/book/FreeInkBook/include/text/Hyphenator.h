@@ -42,7 +42,7 @@ class Hyphenator {
   uint32_t patternCount_ = 0;
   uint8_t maxPatLen_ = 0;
 
-  static constexpr uint32_t kMaxWord = 32;
+  static constexpr uint32_t kMaxWord = 64;  // bytes — Cyrillic runs 2 bytes/char
   static constexpr uint8_t kLeftMin = 2;
   static constexpr uint8_t kRightMin = 3;
 };

@@ -125,9 +125,11 @@ gestures) is a few hundred lines; the storage adapters are ~80.
   ("TV를") with no added air.
 - **Hyphenation** keeps justified gaps tight. `tools/hyphc.py` compiles any
   TeX hyph-utf8 pattern file into either a loadable blob or an embeddable
-  header (`text/hyph_en_us.h` ships pre-generated, ~71 KB of flash). Soft
-  hyphens (U+00AD) are zero-width and render a hyphen only when a line
-  actually breaks there.
+  header (`text/hyph_en_us.h` ships pre-generated, ~71 KB of flash). The
+  matcher is UTF-8 aware — Cyrillic, Greek, and accented-Latin words
+  hyphenate, with case folding and character-based minimums. Soft hyphens
+  (U+00AD) are zero-width and render a hyphen only when a line actually
+  breaks there.
 - **Styles**: per-run font sizes (headings, `small`, `sub`/`sup` with real
   baseline shifts), bold/italic via real faces or synthetic double-strike,
   underline, kerning-aware measurement, and **ligatures** (fi fl ff ffi ffl
@@ -135,6 +137,10 @@ gestures) is a few hundred lines; the storage adapters are ~80.
   rendering needs no shaping logic).
 - **Paragraphs**: widow/orphan control, first-line `text-indent`, block
   margins, `lineSpacingPct` / `paragraphSpacingPct` knobs.
+- **Focus reading** (`LayoutParams.focusReading`): bolds each word's first
+  ~45% of characters (clamped 1–9) as a fixation aid — resolved at layout
+  time into ordinary bold runs, so any bold face (or synthetic bold)
+  renders it.
 - **Bidi (RTL)** is built in: paragraphs are classified per UAX #9
   (first-strong detection, embedding levels, run reordering, bracket
   mirroring), so Hebrew and Arabic text — including embedded Latin words and
@@ -198,13 +204,24 @@ blank rather than failing the page.
 
 ## Memory profiles
 
-The default profile's layout working set is ~200 KB peak (dominated by one
-32 KB inflate window plus fixed buffers) — sized for PSRAM parts.
-`-DFREEINK_BOOK_SMALL=1` shrinks the fixed buffers for PSRAM-less MCUs
-(ESP32-C3 class): measured on real books, text chapters peak ~62 KB and
-image chapters ~153 KB (two inflate states live during an image probe — the
-known remaining squeeze). Costs are graceful: very long paragraphs flush in
-segments, dense pages split a line early, fewer links/images per page.
+One build flag (`BookProfile.h`) tiers every fixed working set to the
+target's RAM class — CI builds and runs the layout suite under all three:
+
+| Profile | Flag | Fixture peak | For |
+|---|---|---|---|
+| Small | `-DFREEINK_BOOK_SMALL=1` | ~106 KB | PSRAM-less MCUs (ESP32-C3) |
+| Standard | *(default)* | ~152 KB | PSRAM parts (ESP32-S3) |
+| Large | `-DFREEINK_BOOK_LARGE=1` | ~231 KB | big PSRAM budgets, host tools |
+
+Small shrinks the fixed buffers gracefully: very long paragraphs flush in
+segments, dense pages split a line early, fewer links/images per page —
+measured on real books, text chapters peak ~62 KB and image chapters
+~153 KB (two inflate states live during an image probe — the known
+remaining squeeze). Large buys headroom for pathological books and much
+bigger font caches (fewer glyph re-rasterizations → faster page renders).
+Runtime capabilities — TTF vs bitmap fonts, Gray8 vs 1-bit rendering,
+arena budgets — are orthogonal and chosen by the caller per device; the
+profile only sets the compile-time ceilings around them.
 
 Book arenas: 64 KB covers normal books (corpus high-water 5–40 KB); webnovel
 omnibuses with 1,800 ZIP entries need ~450 KB. Exhaustion is a clean
@@ -236,7 +253,6 @@ Dropcap float wrap-around (caps render at size, text does not wrap beside
 them), Arabic vowel-mark positioning (harakat shape-correctly but render as
 spacing glyphs, and a mark between lam and alef defeats that ligature),
 Arabic shaping with GSUB-only fonts (Presentation Forms coverage required),
-hyphenation only attempts ASCII-letter words, interlaced PNG, per-run
-character offsets for highlight ranges, and streaming (larger than
-addressable memory) fonts — FreeType behind the same `BookFont` interface is
-the documented path.
+interlaced PNG, per-run character offsets for highlight ranges, and
+streaming (larger than addressable memory) fonts — FreeType behind the same
+`BookFont` interface is the documented path.

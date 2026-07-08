@@ -27,6 +27,8 @@
 
 #include <stdint.h>
 
+#include "BookProfile.h"
+
 #include "BookArena.h"
 #include "BookFont.h"
 
@@ -86,8 +88,19 @@ class TtfFont : public RenderFont {
   AdvanceSlot* advances_ = nullptr;
   GlyphSlot* glyphs_ = nullptr;
 
+  // Profile-scaled: bigger caches on generous-RAM targets mean fewer stb
+  // re-rasterizations — the main page-render speed lever. Slot tables live
+  // in the caller's glyph arena, so size the arena to match.
+#if FREEINK_BOOK_PROFILE == FREEINK_BOOK_PROFILE_SMALL
+  static constexpr uint32_t kAdvanceSlots = 256;
+  static constexpr uint32_t kGlyphSlots = 64;
+#elif FREEINK_BOOK_PROFILE == FREEINK_BOOK_PROFILE_LARGE
+  static constexpr uint32_t kAdvanceSlots = 2048;
+  static constexpr uint32_t kGlyphSlots = 512;
+#else
   static constexpr uint32_t kAdvanceSlots = 512;
   static constexpr uint32_t kGlyphSlots = 128;
+#endif
 };
 
 // Style-aware per-codepoint fallback across up to eight faces. Faces

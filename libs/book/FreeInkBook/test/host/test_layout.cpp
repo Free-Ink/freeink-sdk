@@ -285,6 +285,102 @@ void testMemoryIndependence() {
   CHECK(highWater[1] <= highWater[0] + 16 * 1024);  // O(page), not O(chapter)
 }
 
+// Split-arena mode: parse-side allocations in their own arena must produce
+// byte-identical pages (fragmented-heap hosts pass two ~50 KB blocks where
+// one ~100 KB block does not exist). Also asserts each side's ceiling: the
+// split is only useful if BOTH arenas stay comfortably under a single-block
+// budget.
+void testSplitParseArena() {
+  FakeFont font;
+  LayoutParams params = stickyParams(font);
+
+  // Reference: classic single-arena layout of the big generated chapter.
+  uint32_t singlePages = 0;
+  char singleText[16 * 1024];
+  {
+    OpenedBook opened;
+    CHECK(opened.open("minimal.epub"));
+    const ZipEntry* entry = opened.book.zip().find("OEBPS/text/ch2.xhtml");
+    CHECK(entry != nullptr);
+    CollectSink sink(params, font);
+    CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry, entry->name, params,
+                                                    opened.scratch, sink, &singlePages)),
+             static_cast<int>(BookStatus::Ok));
+    std::snprintf(singleText, sizeof(singleText), "%.*s", static_cast<int>(sizeof(singleText) - 1), sink.text);
+  }
+
+  // Split: layout buffers and parse state in separate ~56 KB arenas.
+  {
+    OpenedBook opened;
+    CHECK(opened.open("minimal.epub"));
+    const ZipEntry* entry = opened.book.zip().find("OEBPS/text/ch2.xhtml");
+    CHECK(entry != nullptr);
+    static uint8_t layoutBuf[224 * 1024];  // sized for the LARGE tier's buffers
+    static uint8_t parseBuf[64 * 1024];
+    Arena layoutArena{layoutBuf, sizeof(layoutBuf)};
+    Arena parseArena{parseBuf, sizeof(parseBuf)};
+    CollectSink sink(params, font);
+    uint32_t pages = 0;
+    CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry, entry->name, params,
+                                                    layoutArena, sink, &pages, nullptr, &parseArena)),
+             static_cast<int>(BookStatus::Ok));
+    CHECK_EQ(pages, singlePages);
+    CHECK(std::strncmp(sink.text, singleText, std::strlen(singleText)) == 0);
+    CHECK_EQ(sink.geometryViolations, 0);
+    CHECK_EQ(parseArena.used(), 0u);   // parse state fully released
+    CHECK_EQ(layoutArena.used(), 0u);  // layout state fully released
+    std::printf("  split arenas: layout high water %zu B, parse high water %zu B\n", layoutArena.highWater(),
+                parseArena.highWater());
+#if FREEINK_BOOK_PROFILE == FREEINK_BOOK_PROFILE_SMALL
+    // The split exists so PSRAM-less hosts can pass two ~50 KB blocks where
+    // no single ~100 KB block survives fragmentation — hold each side to it.
+    CHECK(layoutArena.highWater() < 52 * 1024);
+    CHECK(parseArena.highWater() < 52 * 1024);
+#endif
+  }
+
+  // Device-shaped: the real build path drives a PageCacheWriter as the sink,
+  // and its index accumulates in the LAYOUT arena. This run holds the
+  // combined layout+writer footprint to the same single-block budget — a
+  // StatsSink-only measurement hid a ~10 KB up-front writer reservation that
+  // OOM'd on hardware while every host number said "fits".
+  {
+    class DiscardCacheStorage : public CacheStorage {
+     public:
+      bool exists(const char*) override { return false; }
+      bool remove(const char*) override { return true; }
+      int64_t fileSize(const char*) override { return -1; }
+      int32_t readAt(const char*, uint32_t, void*, uint32_t) override { return -1; }
+      bool beginWrite(const char*) override { return true; }
+      bool write(const void*, uint32_t) override { return true; }
+      bool endWrite() override { return true; }
+    };
+
+    OpenedBook opened;
+    CHECK(opened.open("minimal.epub"));
+    const ZipEntry* entry = opened.book.zip().find("OEBPS/text/ch2.xhtml");
+    CHECK(entry != nullptr);
+    static uint8_t layoutBuf[224 * 1024];
+    static uint8_t parseBuf[64 * 1024];
+    Arena layoutArena{layoutBuf, sizeof(layoutBuf)};
+    Arena parseArena{parseBuf, sizeof(parseBuf)};
+    DiscardCacheStorage cacheStorage;
+    PageCacheWriter writer;
+    CHECK(writer.begin(cacheStorage, "split.fibp", 0x1234u, layoutArena));
+    uint32_t pages = 0;
+    CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry, entry->name, params,
+                                                    layoutArena, writer, &pages, nullptr, &parseArena)),
+             static_cast<int>(BookStatus::Ok));
+    CHECK(writer.finish());
+    CHECK_EQ(pages, singlePages);
+    CHECK_EQ(writer.pageCount(), singlePages);
+    std::printf("  split arenas + writer: layout high water %zu B (writer index included)\n", layoutArena.highWater());
+#if FREEINK_BOOK_PROFILE == FREEINK_BOOK_PROFILE_SMALL
+    CHECK(layoutArena.highWater() < 52 * 1024);
+#endif
+  }
+}
+
 void testEarlyStop() {
   OpenedBook opened;
   CHECK(opened.open("minimal.epub"));
@@ -1471,6 +1567,7 @@ int main(int argc, char** argv) {
   testStylesEntitiesAndBreaks();
   testMemoryIndependence();
   testEarlyStop();
+  testSplitParseArena();
   testCssUnit();
   testStyledChapter();
   testHyphenation(hyphenator);

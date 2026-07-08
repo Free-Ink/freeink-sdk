@@ -103,13 +103,13 @@ bool PageCacheWriter::begin(CacheStorage& storage, const char* name, uint32_t ge
   failed_ = false;
   open_ = false;
 
-  offsets_ = arena.allocArray<uint32_t>(kMaxPages);
-  charStarts_ = arena.allocArray<uint32_t>(kMaxPages);
+  arena_ = &arena;
+  firstChunk_ = nullptr;
+  curChunk_ = nullptr;
   anchorHashes_ = arena.allocArray<uint32_t>(kMaxAnchors);
   anchorChars_ = arena.allocArray<uint32_t>(kMaxAnchors);
   anchorCount_ = 0;
-  if (offsets_ == nullptr || charStarts_ == nullptr || anchorHashes_ == nullptr ||
-      anchorChars_ == nullptr) {
+  if (anchorHashes_ == nullptr || anchorChars_ == nullptr) {
     failed_ = true;
     return false;
   }
@@ -154,8 +154,23 @@ bool PageCacheWriter::onPage(const Page& page) {
     failed_ = true;
     return false;
   }
-  offsets_[pageCount_] = writeOffset_;
-  charStarts_[pageCount_] = page.charStart;
+  const uint32_t slot = pageCount_ % IndexChunk::kEntries;
+  if (slot == 0) {  // current chunk full (or first page): grow the list
+    IndexChunk* chunk = static_cast<IndexChunk*>(arena_->alloc(sizeof(IndexChunk), alignof(IndexChunk)));
+    if (chunk == nullptr) {
+      failed_ = true;
+      return false;
+    }
+    chunk->next = nullptr;
+    if (curChunk_ != nullptr) {
+      curChunk_->next = chunk;
+    } else {
+      firstChunk_ = chunk;
+    }
+    curChunk_ = chunk;
+  }
+  curChunk_->offsets[slot] = writeOffset_;
+  curChunk_->charStarts[slot] = page.charStart;
   ++pageCount_;
 
   uint8_t head[10];
@@ -218,11 +233,14 @@ bool PageCacheWriter::finish() {
   }
 
   const uint32_t indexOffset = writeOffset_;
+  const IndexChunk* chunk = firstChunk_;
   for (uint32_t i = 0; i < pageCount_ && !failed_; ++i) {
+    const uint32_t slot = i % IndexChunk::kEntries;
     uint8_t rec[8];
-    putU32(rec, offsets_[i]);
-    putU32(rec + 4, charStarts_[i]);
+    putU32(rec, chunk->offsets[slot]);
+    putU32(rec + 4, chunk->charStarts[slot]);
     writeRaw(rec, sizeof(rec));
+    if (slot == IndexChunk::kEntries - 1) chunk = chunk->next;
   }
   const uint32_t anchorOffset = writeOffset_;
   for (uint32_t a = 0; a < anchorCount_ && !failed_; ++a) {

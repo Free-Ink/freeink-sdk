@@ -156,14 +156,20 @@ class FreeInkDisplay {
   // and re-displaying instead of fully re-rendering. No-op in single-buffer mode.
   void syncWriteBufferFromActive() const;
 
-#if FREEINK_FB_PSRAM
-  // Release both framebuffers back to the heap. After this call no display
-  // operations may be performed until begin() is called again. Intended for
-  // transient sessions (e.g. a web UI) where the device reboots on exit and the
-  // ~100 KB of PSRAM is more valuable than rendering ability. Safe no-op if
-  // already released.
+  // Release the framebuffer(s) — and the single-buffer async shadow — back to
+  // the heap. After this call no display operations may be performed until
+  // reallocBuffers() (or begin()) runs; the panel keeps showing its last
+  // refreshed image. Two intended uses: transient sessions that reboot on
+  // exit (e.g. a web UI), and lending ~48-100 KB to a memory-hungry phase
+  // such as a chapter layout build. Safe no-op if already released.
   void releaseBuffers();
 
+  // Reallocate after releaseBuffers(): buffers come back white (0xFF), so the
+  // caller must fully redraw before the next display call. Returns false if
+  // the heap cannot supply the buffers (the display is then unusable).
+  bool reallocBuffers();
+
+#if FREEINK_FB_PSRAM
 #ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
   // Release only the secondary (previous-frame) buffer to free ~48-52 KB of
   // PSRAM temporarily — e.g. during chapter compilation when no rendering
@@ -191,6 +197,8 @@ class FreeInkDisplay {
   // Block until a pending async refresh completes (no-op when none is).
   // Every blocking panel operation calls this before touching the bus.
   void syncPendingAsync();
+  // One framebuffer-sized heap block: PSRAM-first where available.
+  static uint8_t* allocFrameBufferStorage();
 
   EpdPins _pins;
   EpdBus _bus;
@@ -214,22 +222,16 @@ class FreeInkDisplay {
   uint16_t displayWidthBytes = DISPLAY_WIDTH_BYTES;
   uint32_t bufferSize = BUFFER_SIZE;
 
-  // Frame buffer (facade-owned). Static DRAM by default; PSRAM heap on devices
-  // with tight DRAM but PSRAM (see FREEINK_FB_PSRAM in BoardConfig.h), allocated
-  // in begin().
-#if FREEINK_FB_PSRAM
+  // Frame buffer (facade-owned), heap-allocated in begin() on every build:
+  // PSRAM-first on devices with it (see FREEINK_FB_PSRAM in BoardConfig.h),
+  // internal DRAM otherwise. Heap-backed even without PSRAM so hosts with a
+  // single tight heap (ESP32-C3) can lend the buffer out via
+  // releaseBuffers()/reallocBuffers() during memory-hungry phases.
   uint8_t* frameBuffer0 = nullptr;
-#else
-  uint8_t frameBuffer0[MAX_BUFFER_SIZE];
-#endif
-  uint8_t* frameBuffer;
+  uint8_t* frameBuffer = nullptr;
 #ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
-#if FREEINK_FB_PSRAM
   uint8_t* frameBuffer1 = nullptr;
-#else
-  uint8_t frameBuffer1[MAX_BUFFER_SIZE];
-#endif
-  uint8_t* frameBufferActive;
+  uint8_t* frameBufferActive = nullptr;
 #endif
 };
 

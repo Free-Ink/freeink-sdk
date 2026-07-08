@@ -43,15 +43,15 @@ namespace {
 // do or don't open.
 constexpr uint32_t kParTextCap = 3072;  // x3 buffers (text/breaks/levels); long paragraphs segment-flush
 constexpr uint16_t kMaxSpans = 96;
-constexpr uint16_t kMaxRunsPerPage = 320;
-constexpr uint16_t kMaxLinesPerPar = 192;
-constexpr uint32_t kPageArenaCap = 8 * 1024;
+constexpr uint16_t kMaxRunsPerPage = 304;
+constexpr uint16_t kMaxLinesPerPar = 176;
+constexpr uint32_t kPageArenaCap = 7 * 1024;
 constexpr uint8_t kMaxElemDepth = 16;
 constexpr uint16_t kMaxImagesPerPage = 8;
 constexpr uint16_t kMaxLinksPerPage = 16;
 constexpr uint8_t kMaxLinksPerPar = 6;
-constexpr uint32_t kStyleTextCap = 4 * 1024;
-constexpr uint16_t kMaxProbedImages = 128;
+constexpr uint32_t kStyleTextCap = 3 * 1024;
+constexpr uint16_t kMaxProbedImages = 96;
 #elif FREEINK_BOOK_PROFILE == FREEINK_BOOK_PROFILE_LARGE
 constexpr uint32_t kParTextCap = 16384;
 constexpr uint16_t kMaxSpans = 192;
@@ -688,8 +688,10 @@ class LayoutEngine : public XmlHandler {
  public:
   LayoutEngine(BookSource& source, const ZipCatalog* zip, const char* chapterHref,
                const LayoutParams& params, Arena& scratch, PageSink& sink,
-               const ProbedImage* probed = nullptr, uint16_t probedCount = 0)
-      : source_(source), zip_(zip), params_(params), scratch_(scratch), sink_(sink),
+               const ProbedImage* probed = nullptr, uint16_t probedCount = 0,
+               Arena* parseArena = nullptr)
+      : source_(source), zip_(zip), params_(params), scratch_(scratch),
+        parseArena_(parseArena != nullptr ? *parseArena : scratch), sink_(sink),
         probed_(probed), probedCount_(probedCount) {
     if (!dirName(chapterHref != nullptr ? chapterHref : "", chapterDir_, sizeof(chapterDir_))) {
       chapterDir_[0] = '\0';
@@ -1080,7 +1082,7 @@ class LayoutEngine : public XmlHandler {
       // Fallback (table overflow or over-long href): probe inline. This is
       // the old two-concurrent-streams path — rare by construction.
       const ZipEntry* entry = zip_->find(resolved);
-      if (entry != nullptr) probeImage(source_, *entry, scratch_, &info);
+      if (entry != nullptr) probeImage(source_, *entry, parseArena_, &info);
     }
     if (resolved == nullptr || info.kind == ImageInfo::Kind::Unknown || info.width == 0 ||
         info.height == 0) {
@@ -1711,6 +1713,7 @@ class LayoutEngine : public XmlHandler {
   const ZipCatalog* zip_;  // nullptr for plain-text layout (no container)
   const LayoutParams& params_;
   Arena& scratch_;
+  Arena& parseArena_;  // inflate/XML state (== scratch_ unless the caller split)
   PageSink& sink_;
   char chapterDir_[512];
 
@@ -1767,11 +1770,16 @@ class LayoutEngine : public XmlHandler {
 BookStatus ChapterLayout::layout(BookSource& source, const ZipCatalog& zip,
                                  const ZipEntry& entry, const char* chapterHref,
                                  const LayoutParams& params, Arena& scratch, PageSink& sink,
-                                 uint32_t* pageCountOut, uint32_t* totalCharsOut) {
+                                 uint32_t* pageCountOut, uint32_t* totalCharsOut,
+                                 Arena* parseScratch) {
   if (params.font == nullptr || params.pageWidth <= 0 || params.pageHeight <= 0) {
     return BookStatus::Unsupported;
   }
   const size_t marked = scratch.mark();
+  // Parse-side allocations (inflate state + XML chunks) go to their own
+  // arena when the caller provides one — see the header note.
+  Arena& parseArena = parseScratch != nullptr ? *parseScratch : scratch;
+  const size_t parseMarked = parseArena.mark();
 
   // Image pre-scan: gather image hrefs in a collector parse, then probe each
   // target's dimensions with only one inflate stream alive at a time. The
@@ -1781,11 +1789,11 @@ BookStatus ChapterLayout::layout(BookSource& source, const ZipCatalog& zip,
   // real errors, and unprobed images fall back to the inline probe.
   ProbedImage* probed = nullptr;
   uint16_t probedCount = 0;
-  if (entryMentionsImages(source, entry, scratch)) {
+  if (entryMentionsImages(source, entry, parseArena)) {
     probed = scratch.allocArray<ProbedImage>(kMaxProbedImages);
     if (probed != nullptr) {
       ImageCollector collector(chapterHref, scratch, probed, kMaxProbedImages);
-      if (XmlSax::parseEntry(source, entry, scratch, collector,
+      if (XmlSax::parseEntry(source, entry, parseArena, collector,
                              /*filterHtmlEntities=*/true) == BookStatus::Ok ||
           collector.count() > 0) {
         probedCount = collector.count();
@@ -1796,7 +1804,7 @@ BookStatus ChapterLayout::layout(BookSource& source, const ZipCatalog& zip,
           const ZipEntry* target = zip.entry(e);
           for (uint16_t i = 0; i < probedCount; ++i) {
             if (probed[i].hrefHash == target->nameHash) {
-              probeImage(source, *target, scratch, &probed[i].info);
+              probeImage(source, *target, parseArena, &probed[i].info);
               break;
             }
           }
@@ -1809,18 +1817,21 @@ BookStatus ChapterLayout::layout(BookSource& source, const ZipCatalog& zip,
     }
   }
 
-  LayoutEngine engine(source, &zip, chapterHref, params, scratch, sink, probed, probedCount);
+  LayoutEngine engine(source, &zip, chapterHref, params, scratch, sink, probed, probedCount,
+                      &parseArena);
   if (!engine.init()) {
     scratch.release(marked);
+    parseArena.release(parseMarked);
     return BookStatus::OutOfMemory;
   }
-  BookStatus status = XmlSax::parseEntry(source, entry, scratch, engine,
+  BookStatus status = XmlSax::parseEntry(source, entry, parseArena, engine,
                                          /*filterHtmlEntities=*/true);
   if (status == BookStatus::Ok && !engine.finish()) status = BookStatus::OutOfMemory;
   if (status == BookStatus::Ok && engine.outOfMemory()) status = BookStatus::OutOfMemory;
   if (pageCountOut != nullptr) *pageCountOut = engine.pageCount();
   if (totalCharsOut != nullptr) *totalCharsOut = engine.totalChars();
   scratch.release(marked);
+  parseArena.release(parseMarked);
   return status;
 }
 

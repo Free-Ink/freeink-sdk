@@ -77,20 +77,44 @@ class StatsSink : public PageSink {
 
 uint8_t bookBuf[768 * 1024];  // webnovel omnibuses: 1800+ zip entries, 1500+ spine items
 uint8_t scratchBuf[512 * 1024];
+uint8_t parseBuf[512 * 1024];  // backing for --parse=N split-arena runs
 uint8_t sheetBuf[128 * 1024];
 uint8_t hyphBuf[96 * 1024];
 
 }  // namespace
 
 int main(int argc, char** argv) {
-  if (argc < 2) {
-    printf("usage: %s <book.epub> [hyph.fibh]\n", argv[0]);
+  // --layout=N/--parse=N emulate a constrained device build: the chapter
+  // loop below then uses a split arena pair of exactly those byte sizes
+  // instead of one huge host arena, so a device OOM reproduces here.
+  size_t layoutCap = 0;
+  size_t parseCap = 0;
+  const char* bookPath = nullptr;
+  const char* hyphPath = nullptr;
+  for (int a = 1; a < argc; ++a) {
+    if (strncmp(argv[a], "--layout=", 9) == 0) {
+      layoutCap = static_cast<size_t>(strtoul(argv[a] + 9, nullptr, 10));
+    } else if (strncmp(argv[a], "--parse=", 8) == 0) {
+      parseCap = static_cast<size_t>(strtoul(argv[a] + 8, nullptr, 10));
+    } else if (bookPath == nullptr) {
+      bookPath = argv[a];
+    } else {
+      hyphPath = argv[a];
+    }
+  }
+  if (bookPath == nullptr) {
+    printf("usage: %s [--layout=BYTES --parse=BYTES] <book.epub> [hyph.fibh]\n", argv[0]);
+    return 2;
+  }
+  const bool split = layoutCap != 0 && parseCap != 0;
+  if (split && (layoutCap > sizeof(scratchBuf) || parseCap > sizeof(scratchBuf))) {
+    printf("arena caps exceed host buffers\n");
     return 2;
   }
 
   HostFileSource source;
-  if (!source.open(argv[1])) {
-    printf("cannot open %s\n", argv[1]);
+  if (!source.open(bookPath)) {
+    printf("cannot open %s\n", bookPath);
     return 2;
   }
 
@@ -128,8 +152,8 @@ int main(int argc, char** argv) {
          sheet.ruleCount, builder.skippedSheets());
 
   Hyphenator hyphenator;
-  if (argc >= 3) {
-    FILE* f = fopen(argv[2], "rb");
+  if (hyphPath != nullptr) {
+    FILE* f = fopen(hyphPath, "rb");
     if (f != nullptr) {
       const size_t n = fread(hyphBuf, 1, sizeof(hyphBuf), f);
       fclose(f);
@@ -157,20 +181,30 @@ int main(int argc, char** argv) {
       ++failChapters;
       continue;
     }
-    Arena layoutArena(scratchBuf, sizeof(scratchBuf));
+    Arena layoutArena(scratchBuf, split ? layoutCap : sizeof(scratchBuf));
+    Arena parseArena(parseBuf, parseCap);
     StatsSink sink;
     uint32_t pages = 0;
-    const BookStatus ls = ChapterLayout::layout(source, book.zip(), *entry, entry->name, params, layoutArena, sink, &pages);
+    const BookStatus ls = ChapterLayout::layout(source, book.zip(), *entry, entry->name, params, layoutArena, sink,
+                                                &pages, nullptr, split ? &parseArena : nullptr);
     if (layoutArena.highWater() > maxHighWater) maxHighWater = layoutArena.highWater();
     totalPages += pages;
     if (ls == BookStatus::Ok) {
       ++okChapters;
       printf("  spine[%2zu] %-52.52s Ok  %4u pages  sizes:", s, item->href, pages);
       for (uint32_t i = 0; i < sink.sizeCount; ++i) printf(" %u", sink.sizes[i]);
+      if (split) {
+        printf("  (layout %zu, parse %zu B)", layoutArena.highWater(), parseArena.highWater());
+      }
       printf("\n");
     } else {
       ++failChapters;
-      printf("  spine[%2zu] %-52.52s %s\n", s, item->href, bookStatusName(ls));
+      printf("  spine[%2zu] %-52.52s %s", s, item->href, bookStatusName(ls));
+      if (split) {
+        printf("  (layout %zu/%zu refused %zu, parse %zu/%zu refused %zu B)", layoutArena.highWater(), layoutCap,
+               layoutArena.failedAllocSize(), parseArena.highWater(), parseCap, parseArena.failedAllocSize());
+      }
+      printf("\n");
     }
   }
   printf("chapters: %u ok, %u failed; %u pages total; layout high water %zu B; "

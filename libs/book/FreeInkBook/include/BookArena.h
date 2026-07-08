@@ -27,6 +27,7 @@ class Arena {
     capacity_ = capacity;
     used_ = 0;
     highWater_ = 0;
+    failedAllocSize_ = 0;
   }
 
   // Discards everything allocated from this arena.
@@ -44,7 +45,10 @@ class Arena {
   void* alloc(size_t size, size_t align = alignof(max_align_t)) {
     if (base_ == nullptr || align == 0 || (align & (align - 1)) != 0) return nullptr;
     const size_t aligned = (used_ + (align - 1)) & ~(align - 1);
-    if (aligned < used_ || size > capacity_ || aligned > capacity_ - size) return nullptr;
+    if (aligned < used_ || size > capacity_ || aligned > capacity_ - size) {
+      if (size > failedAllocSize_) failedAllocSize_ = size;
+      return nullptr;
+    }
     used_ = aligned + size;
     if (used_ > highWater_) highWater_ = used_;
     return base_ + aligned;
@@ -74,12 +78,18 @@ class Arena {
   size_t used() const { return used_; }
   size_t capacity() const { return capacity_; }
   size_t highWater() const { return highWater_; }
+  // Diagnostics: the largest allocation this arena has REFUSED since init()
+  // (0 = none). On an OutOfMemory build this names the request that missed,
+  // which highWater() alone cannot — it records the last success, so an
+  // arena can fail with headroom still showing.
+  size_t failedAllocSize() const { return failedAllocSize_; }
 
  private:
   uint8_t* base_ = nullptr;
   size_t capacity_ = 0;
   size_t used_ = 0;
   size_t highWater_ = 0;
+  size_t failedAllocSize_ = 0;
 };
 
 }  // namespace book

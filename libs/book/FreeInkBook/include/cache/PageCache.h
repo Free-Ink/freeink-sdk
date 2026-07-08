@@ -47,7 +47,8 @@ bool pageCacheName(uint16_t spineIndex, uint32_t generationHash, char* out, uint
 // writer aborts the file (removes the partial) and reports failed().
 class PageCacheWriter : public PageSink {
  public:
-  // The index (8 bytes per page) accumulates in `arena` until finish().
+  // The index (8 bytes per page) accumulates in `arena` in chunks allocated
+  // as pages arrive, until finish(). `arena` must stay valid throughout.
   bool begin(CacheStorage& storage, const char* name, uint32_t generationHash, Arena& arena);
   bool onPage(const Page& page) override;
   void onAnchor(uint32_t idHash, uint32_t charStart) override;
@@ -61,16 +62,22 @@ class PageCacheWriter : public PageSink {
  private:
   bool writeRaw(const void* data, uint32_t len);
 
-  // Index arrays (8 bytes per page + 8 per anchor) accumulate in the caller's
-  // scratch arena for the whole pagination — the dominant fixed cost of a
-  // build after the layout buffers. Profile-tiered like the layout capacities
-  // (BookProfile.h): the small tier trades pathological single-spine books
-  // (>2048 pages at its buffer sizes) for ~20 KB less build scratch.
+  // The page index accumulates as a chunk list allocated on demand, so a
+  // typical 10-30 page chapter costs one ~1 KB chunk instead of the full
+  // kMaxPages reservation (which on the small tier is 8 KB the host cannot
+  // spare during a build). kMaxPages stays as the hard sanity cap only.
+  struct IndexChunk {
+    static constexpr uint32_t kEntries = 128;
+    uint32_t offsets[kEntries];
+    uint32_t charStarts[kEntries];
+    IndexChunk* next;
+  };
+
+  // Profile-tiered like the layout capacities (BookProfile.h): the small
+  // tier trades pathological single-spine books for a smaller anchor table.
 #if FREEINK_BOOK_PROFILE == FREEINK_BOOK_PROFILE_SMALL
   // 1024 pages is ~1.5 M chars of chapter at small-profile page density —
-  // multiples beyond any sanely-authored chapter. The index arrays are the
-  // second-largest fixed cost of a build after the layout buffers, and the
-  // small tier's hosts genuinely cannot spare the extra 9.5 KB.
+  // multiples beyond any sanely-authored chapter.
   static constexpr uint32_t kMaxPages = 1024;
   static constexpr uint32_t kMaxAnchors = 192;
 #elif FREEINK_BOOK_PROFILE == FREEINK_BOOK_PROFILE_LARGE
@@ -83,8 +90,9 @@ class PageCacheWriter : public PageSink {
 
   CacheStorage* storage_ = nullptr;
   const char* name_ = nullptr;
-  uint32_t* offsets_ = nullptr;
-  uint32_t* charStarts_ = nullptr;
+  Arena* arena_ = nullptr;  // chunk source; caller's build scratch
+  IndexChunk* firstChunk_ = nullptr;
+  IndexChunk* curChunk_ = nullptr;
   uint32_t* anchorHashes_ = nullptr;
   uint32_t* anchorChars_ = nullptr;
   uint32_t anchorCount_ = 0;

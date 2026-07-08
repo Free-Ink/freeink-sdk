@@ -143,33 +143,21 @@ void FreeInkDisplay::begin() {
   displayWidthBytes = geom.widthBytes;
   bufferSize = geom.bufferSize;
 
-#if FREEINK_FB_PSRAM
-  // PSRAM-backed framebuffer(s) — allocate once. MAX_BUFFER_SIZE covers the
-  // largest panel in this build (one panel for a single-device M5Paper bin).
-  // Fall back to internal RAM if PSRAM is somehow unavailable.
-  if (!frameBuffer0) {
-    frameBuffer0 = static_cast<uint8_t*>(heap_caps_malloc(MAX_BUFFER_SIZE, MALLOC_CAP_SPIRAM));
-    if (!frameBuffer0) frameBuffer0 = static_cast<uint8_t*>(malloc(MAX_BUFFER_SIZE));
-  }
+  // Heap-backed framebuffer(s) on every build — allocate once. MAX_BUFFER_SIZE
+  // covers the largest panel in this build (one panel for a single-device
+  // M5Paper bin). PSRAM-first where available, internal RAM otherwise; heap
+  // rather than static storage so tight-DRAM hosts can lend the buffer out
+  // via releaseBuffers()/reallocBuffers().
+  if (!frameBuffer0) frameBuffer0 = allocFrameBufferStorage();
 #ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
-  if (!frameBuffer1) {
-    frameBuffer1 = static_cast<uint8_t*>(heap_caps_malloc(MAX_BUFFER_SIZE, MALLOC_CAP_SPIRAM));
-    if (!frameBuffer1) frameBuffer1 = static_cast<uint8_t*>(malloc(MAX_BUFFER_SIZE));
-  }
-#endif
+  if (!frameBuffer1) frameBuffer1 = allocFrameBufferStorage();
 #endif
 
   frameBuffer = frameBuffer0;
-#if FREEINK_FB_PSRAM
-  if (frameBuffer0)  // guard against an allocation failure (OOM); the #if keeps the
-#endif               // static-array build free of a -Waddress always-true warning
-    memset(frameBuffer0, 0xFF, bufferSize);
+  if (frameBuffer0) memset(frameBuffer0, 0xFF, bufferSize);
 #ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
   frameBufferActive = frameBuffer1;
-#if FREEINK_FB_PSRAM
-  if (frameBuffer1)
-#endif
-    memset(frameBuffer1, 0xFF, bufferSize);
+  if (frameBuffer1) memset(frameBuffer1, 0xFF, bufferSize);
 #endif
 
   _driver->begin(_bus);
@@ -237,8 +225,16 @@ void FreeInkDisplay::syncWriteBufferFromActive() const {
 #endif
 }
 
+uint8_t* FreeInkDisplay::allocFrameBufferStorage() {
 #if FREEINK_FB_PSRAM
+  uint8_t* buf = static_cast<uint8_t*>(heap_caps_malloc(MAX_BUFFER_SIZE, MALLOC_CAP_SPIRAM));
+  if (buf) return buf;
+#endif
+  return static_cast<uint8_t*>(malloc(MAX_BUFFER_SIZE));
+}
+
 void FreeInkDisplay::releaseBuffers() {
+  syncPendingAsync();  // a refresh in flight was fed from these buffers
   free(frameBuffer0);
   frameBuffer0 = nullptr;
   frameBuffer = nullptr;
@@ -247,8 +243,28 @@ void FreeInkDisplay::releaseBuffers() {
   frameBuffer1 = nullptr;
   frameBufferActive = nullptr;
 #endif
+  // The lazily-allocated async baseline is framebuffer-sized too; hand it
+  // back as well. It re-allocates (and re-seeds) on the next async display.
+  free(_asyncShadow);
+  _asyncShadow = nullptr;
+  _shadowValid = false;
 }
 
+bool FreeInkDisplay::reallocBuffers() {
+  if (!frameBuffer0) frameBuffer0 = allocFrameBufferStorage();
+  if (!frameBuffer0) return false;
+  frameBuffer = frameBuffer0;
+  memset(frameBuffer0, 0xFF, bufferSize);
+#ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
+  if (!frameBuffer1) frameBuffer1 = allocFrameBufferStorage();
+  if (!frameBuffer1) return false;
+  frameBufferActive = frameBuffer1;
+  memset(frameBuffer1, 0xFF, bufferSize);
+#endif
+  return true;
+}
+
+#if FREEINK_FB_PSRAM
 #ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
 bool FreeInkDisplay::releaseSecondaryBuffer() {
   if (!frameBufferActive) return false;

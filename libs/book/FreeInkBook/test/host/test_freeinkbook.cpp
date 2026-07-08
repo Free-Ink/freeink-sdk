@@ -112,8 +112,12 @@ void testArena() {
   CHECK_EQ(arena.used(), 16u);
   CHECK_EQ(arena.highWater(), 32u);  // high water survives release
 
+  CHECK_EQ(arena.failedAllocSize(), 0u);
   CHECK(arena.alloc(1024, 1) == nullptr);  // exhaustion returns nullptr
   CHECK_EQ(arena.used(), 16u);             // failed alloc does not move cursor
+  CHECK_EQ(arena.failedAllocSize(), 1024u);
+  CHECK(arena.alloc(100, 1) == nullptr);
+  CHECK_EQ(arena.failedAllocSize(), 1024u);  // records the LARGEST refusal
 
   const char* s = arena.strdup("hello");
   CHECK_STREQ(s, "hello");
@@ -121,6 +125,10 @@ void testArena() {
   arena.reset();
   CHECK_EQ(arena.used(), 0u);
   CHECK_EQ(arena.highWater(), 32u);
+  CHECK_EQ(arena.failedAllocSize(), 1024u);  // survives reset; cleared by init
+
+  arena.init(buf, sizeof(buf));
+  CHECK_EQ(arena.failedAllocSize(), 0u);
 }
 
 // --- Path resolution ---------------------------------------------------------

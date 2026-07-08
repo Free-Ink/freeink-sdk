@@ -120,10 +120,17 @@ class ChapterLayout {
   // path) let img elements resolve and probe their targets. All working
   // memory comes from `scratch` and is released before returning.
   // `pageCountOut` (optional) receives the number of pages delivered.
+  //
+  // `parseScratch` (optional) splits the working set into two arenas: the
+  // parse-side allocations (inflate window + decompressor + XML chunks —
+  // ~50 KB for a deflated entry) come from it instead of `scratch`, so
+  // neither arena needs to be a single ~100 KB block. On fragmented
+  // PSRAM-less heaps two ~50 KB blocks fit where one large one cannot.
+  // When null, everything comes from `scratch` (the classic behavior).
   static BookStatus layout(BookSource& source, const ZipCatalog& zip, const ZipEntry& entry,
                            const char* chapterHref, const LayoutParams& params, Arena& scratch,
                            PageSink& sink, uint32_t* pageCountOut = nullptr,
-                           uint32_t* totalCharsOut = nullptr);
+                           uint32_t* totalCharsOut = nullptr, Arena* parseScratch = nullptr);
 
   // Plain-text (.txt) layout: the whole file is one chapter, paragraphs
   // split on blank lines, single newlines flow as spaces. Justification,

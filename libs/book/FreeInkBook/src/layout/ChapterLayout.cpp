@@ -46,6 +46,7 @@ constexpr uint16_t kMaxImagesPerPage = 8;
 constexpr uint16_t kMaxLinksPerPage = 16;
 constexpr uint8_t kMaxLinksPerPar = 6;
 constexpr uint32_t kStyleTextCap = 6 * 1024;
+constexpr uint16_t kMaxProbedImages = 16;
 #elif FREEINK_BOOK_PROFILE == FREEINK_BOOK_PROFILE_LARGE
 constexpr uint32_t kParTextCap = 16384;
 constexpr uint16_t kMaxSpans = 192;
@@ -57,6 +58,7 @@ constexpr uint16_t kMaxImagesPerPage = 24;
 constexpr uint16_t kMaxLinksPerPage = 48;
 constexpr uint8_t kMaxLinksPerPar = 12;
 constexpr uint32_t kStyleTextCap = 24 * 1024;
+constexpr uint16_t kMaxProbedImages = 64;
 #else
 constexpr uint32_t kParTextCap = 8192;
 constexpr uint16_t kMaxSpans = 128;
@@ -68,7 +70,24 @@ constexpr uint16_t kMaxImagesPerPage = 16;
 constexpr uint16_t kMaxLinksPerPage = 24;
 constexpr uint8_t kMaxLinksPerPar = 8;
 constexpr uint32_t kStyleTextCap = 12 * 1024;  // chapter-embedded <style> blocks
+constexpr uint16_t kMaxProbedImages = 32;
 #endif
+
+// --- image dimension pre-scan ---------------------------------------------------
+//
+// Layout needs each <img>'s intrinsic dimensions to reserve space, but probing
+// mid-parse opens a second inflate stream (~47 KB) while the chapter's own
+// parse stream is live — the image-chapter memory peak. Instead the chapter is
+// pre-scanned once (a collector parse gathering resolved image hrefs), the
+// probes run sequentially with only one stream alive at a time, and the main
+// layout parse reads dimensions from this table. The inline probe survives
+// only as a fallback for table overflow or over-long hrefs.
+constexpr uint16_t kProbedHrefCap = 160;  // matches parLinkPath_ path budget
+
+struct ProbedImage {
+  char href[kProbedHrefCap];
+  ImageInfo info;
+};
 
 // LineRec flags.
 constexpr uint8_t kLineLast = 1u << 0;    // paragraph-final or hard break — never justify
@@ -575,11 +594,97 @@ bool isSuppressedElement(const char* local) {
          strcmp(local, "script") == 0 || strcmp(local, "title") == 0;
 }
 
+// Cheap detector: does the raw chapter markup mention an image element at
+// all? Streams the entry once (inflate only, no XML parse) looking for "<im"
+// (matches <img, <image) or ":im" (prefixed forms like <svg:image). False
+// positives just cost one collector parse; false negatives cannot occur for
+// elements the layout engine would match (XML names are case-sensitive and
+// the engine matches lowercase img/image only).
+bool entryMentionsImages(BookSource& source, const ZipEntry& entry, Arena& scratch) {
+  const size_t marked = scratch.mark();
+  ZipEntryReader reader;
+  if (reader.open(source, entry, scratch) != BookStatus::Ok) {
+    scratch.release(marked);
+    return true;  // let the collector parse (and then layout) surface errors
+  }
+  char* buf = static_cast<char*>(scratch.alloc(2048, 1));
+  if (buf == nullptr) {
+    scratch.release(marked);
+    return true;
+  }
+  bool found = false;
+  char carry[2] = {0, 0};
+  while (!found) {
+    const int32_t n = reader.read(buf, 2048);
+    if (n <= 0) break;
+    for (int32_t i = 0; i < n && !found; ++i) {
+      const char c2 = i >= 2 ? buf[i - 2] : carry[i];
+      const char c1 = i >= 1 ? buf[i - 1] : carry[i + 1];
+      if (c1 == 'i' && buf[i] == 'm' && (c2 == '<' || c2 == ':')) found = true;
+    }
+    if (n >= 2) {
+      carry[0] = buf[n - 2];
+      carry[1] = buf[n - 1];
+    } else {
+      carry[0] = carry[1];
+      carry[1] = buf[0];
+    }
+  }
+  scratch.release(marked);
+  return found;
+}
+
+// First pass over an image-bearing chapter: collect each unique <img>/<image>
+// target (resolved to its container path) into the caller's table so the
+// dimension probes can run after this parse stream closes.
+class ImageCollector : public XmlHandler {
+ public:
+  ImageCollector(const char* chapterHref, Arena& scratch, ProbedImage* table, uint16_t cap)
+      : scratch_(scratch), table_(table), cap_(cap) {
+    if (!dirName(chapterHref != nullptr ? chapterHref : "", chapterDir_, sizeof(chapterDir_))) {
+      chapterDir_[0] = '\0';
+    }
+  }
+
+  void onStartElement(const char* name, const char** atts) override {
+    const char* local = localName(name);
+    if (strcmp(local, "img") != 0 && strcmp(local, "image") != 0) return;
+    const char* src = attrLocal(atts, "src");
+    if (src == nullptr) src = attrLocal(atts, "href");  // SVG xlink:href
+    if (src == nullptr) return;
+    const size_t marked = scratch_.mark();
+    const char* resolved = resolveHref(scratch_, chapterDir_, src, nullptr);
+    if (resolved != nullptr && strlen(resolved) < kProbedHrefCap) {
+      bool known = false;
+      for (uint16_t i = 0; i < count_ && !known; ++i) {
+        known = strcmp(table_[i].href, resolved) == 0;
+      }
+      if (!known) {
+        snprintf(table_[count_].href, kProbedHrefCap, "%s", resolved);
+        table_[count_].info = ImageInfo{};
+        if (++count_ >= cap_) stopParse = true;  // rest fall back to inline probes
+      }
+    }
+    scratch_.release(marked);
+  }
+
+  uint16_t count() const { return count_; }
+
+ private:
+  Arena& scratch_;
+  ProbedImage* table_;
+  uint16_t cap_;
+  uint16_t count_ = 0;
+  char chapterDir_[512];
+};
+
 class LayoutEngine : public XmlHandler {
  public:
   LayoutEngine(BookSource& source, const ZipCatalog* zip, const char* chapterHref,
-               const LayoutParams& params, Arena& scratch, PageSink& sink)
-      : source_(source), zip_(zip), params_(params), scratch_(scratch), sink_(sink) {
+               const LayoutParams& params, Arena& scratch, PageSink& sink,
+               const ProbedImage* probed = nullptr, uint16_t probedCount = 0)
+      : source_(source), zip_(zip), params_(params), scratch_(scratch), sink_(sink),
+        probed_(probed), probedCount_(probedCount) {
     if (!dirName(chapterHref != nullptr ? chapterHref : "", chapterDir_, sizeof(chapterDir_))) {
       chapterDir_[0] = '\0';
     }
@@ -956,10 +1061,21 @@ class LayoutEngine : public XmlHandler {
     const size_t marked = scratch_.mark();
     const char* resolved =
         zip_ != nullptr ? resolveHref(scratch_, chapterDir_, src, nullptr) : nullptr;
-    const ZipEntry* entry = resolved != nullptr ? zip_->find(resolved) : nullptr;
     ImageInfo info;
-    if (entry != nullptr) probeImage(source_, *entry, scratch_, &info);
-    if (entry == nullptr || info.kind == ImageInfo::Kind::Unknown || info.width == 0 ||
+    bool prescanned = false;
+    for (uint16_t p = 0; resolved != nullptr && p < probedCount_ && !prescanned; ++p) {
+      if (strcmp(probed_[p].href, resolved) == 0) {
+        info = probed_[p].info;
+        prescanned = true;
+      }
+    }
+    if (!prescanned && resolved != nullptr) {
+      // Fallback (table overflow or over-long href): probe inline. This is
+      // the old two-concurrent-streams path — rare by construction.
+      const ZipEntry* entry = zip_->find(resolved);
+      if (entry != nullptr) probeImage(source_, *entry, scratch_, &info);
+    }
+    if (resolved == nullptr || info.kind == ImageInfo::Kind::Unknown || info.width == 0 ||
         info.height == 0) {
       scratch_.release(marked);  // unknown format or missing target — skip
       return;
@@ -1631,6 +1747,8 @@ class LayoutEngine : public XmlHandler {
   uint8_t currentLink_ = 0;
   PageLink* links_ = nullptr;
   uint16_t linkCount_ = 0;
+  const ProbedImage* probed_ = nullptr;  // pre-scanned image dimensions
+  uint16_t probedCount_ = 0;
   bool lastBreakShy_ = false;   // last ALLOWBREAK sat on a soft hyphen
   uint32_t parCharBase_ = 0;    // chapter chars before the current paragraph
   uint32_t pageCharStart_ = 0;  // anchor of the page being assembled
@@ -1647,7 +1765,36 @@ BookStatus ChapterLayout::layout(BookSource& source, const ZipCatalog& zip,
     return BookStatus::Unsupported;
   }
   const size_t marked = scratch.mark();
-  LayoutEngine engine(source, &zip, chapterHref, params, scratch, sink);
+
+  // Image pre-scan: gather image hrefs in a collector parse, then probe each
+  // target's dimensions with only one inflate stream alive at a time. The
+  // table sits below the layout buffers; everything else the pre-scan used is
+  // released before the main parse, so the chapter peak stays at the
+  // text-chapter level. Failures here are non-fatal — the main parse reports
+  // real errors, and unprobed images fall back to the inline probe.
+  ProbedImage* probed = nullptr;
+  uint16_t probedCount = 0;
+  if (entryMentionsImages(source, entry, scratch)) {
+    probed = scratch.allocArray<ProbedImage>(kMaxProbedImages);
+    if (probed != nullptr) {
+      ImageCollector collector(chapterHref, scratch, probed, kMaxProbedImages);
+      if (XmlSax::parseEntry(source, entry, scratch, collector,
+                             /*filterHtmlEntities=*/true) == BookStatus::Ok ||
+          collector.count() > 0) {
+        probedCount = collector.count();
+        for (uint16_t i = 0; i < probedCount; ++i) {
+          const ZipEntry* target = zip.find(probed[i].href);
+          if (target != nullptr) probeImage(source, *target, scratch, &probed[i].info);
+        }
+      }
+    }
+    if (probedCount == 0) {
+      scratch.release(marked);  // reclaim the unused table
+      probed = nullptr;
+    }
+  }
+
+  LayoutEngine engine(source, &zip, chapterHref, params, scratch, sink, probed, probedCount);
   if (!engine.init()) {
     scratch.release(marked);
     return BookStatus::OutOfMemory;

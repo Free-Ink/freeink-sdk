@@ -627,6 +627,37 @@ class CjkFakeFont : public FakeFont {
   }
 };
 
+// Image dimension pre-scan: an image-bearing chapter must peak at the
+// text-chapter level plus the small probe table — never text + a second
+// concurrent inflate stream (~47 KB), which was the old image-chapter peak.
+void testImagePrescanMemory() {
+  FakeFont font;
+  LayoutParams params = stickyParams(font);
+  const char* items[2] = {"OEBPS/text/ch2.xhtml", "OEBPS/text/ch5.xhtml"};
+  size_t highWater[2] = {0, 0};
+
+  for (int round = 0; round < 2; ++round) {
+    OpenedBook opened;
+    CHECK(opened.open("minimal.epub"));
+    const ZipEntry* entry = opened.book.zip().find(items[round]);
+    CHECK(entry != nullptr);
+    Arena layoutArena{scratchBuf, sizeof(scratchBuf)};  // fresh, isolated measurement
+    CollectSink sink(params, font);
+    CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry,
+                                                    entry->name, params, layoutArena, sink,
+                                                    nullptr)),
+             static_cast<int>(BookStatus::Ok));
+    highWater[round] = layoutArena.highWater();
+  }
+
+  std::printf("  image-chapter high water: text %zu B, image %zu B\n", highWater[0],
+              highWater[1]);
+  // Allowance covers the probed-image table (<= 11 KB at the LARGE tier) and
+  // arena alignment noise; a regression to concurrent probe streams costs
+  // ~47 KB and trips this.
+  CHECK(highWater[1] <= highWater[0] + 24 * 1024);
+}
+
 void testCjk() {
   OpenedBook opened;
   CHECK(opened.open("minimal.epub"));
@@ -1407,6 +1438,7 @@ int main(int argc, char** argv) {
   testKerningAffectsMeasurement();
   testWidowOrphan();
   testImages();
+  testImagePrescanMemory();
   testCjk();
   testPlainText();
   testBidi();

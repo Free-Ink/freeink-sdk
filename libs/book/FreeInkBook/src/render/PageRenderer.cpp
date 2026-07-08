@@ -13,6 +13,15 @@ namespace {
 
 constexpr uint8_t kInkThreshold = 120;  // Mono1Sharp: coverage above this is ink
 
+// Mono1Dithered text contrast curve. Dithering raw coverage linearly reads
+// washed out on e-paper: every edge pixel goes probabilistically gray, and
+// at body sizes edges are a large share of each glyph. Instead: a solid ink
+// core (>= kInkSolid always plots), a faint fringe that never plots
+// (< kInkFloor), and a narrow edge band between them dithered at boosted
+// contrast — stems stay black, edges stay smooth.
+constexpr uint8_t kInkSolid = 140;
+constexpr uint8_t kInkFloor = 40;
+
 // Bayer 4×4 (0..255 domain) — the same matrix DisplayTarget uses for alpha
 // fonts, so SDK chrome and book pages dither identically.
 constexpr uint8_t kBayer4[4][4] = {
@@ -71,9 +80,17 @@ inline void inkPixel(const FrameTarget& t, int32_t x, int32_t y, uint8_t coverag
     case FrameFormat::Mono1Sharp:
       if (coverage >= kInkThreshold) setBlack(t, x, y);
       break;
-    case FrameFormat::Mono1Dithered:
-      if (coverage >= kBayer4[y & 3][x & 3]) setBlack(t, x, y);
+    case FrameFormat::Mono1Dithered: {
+      if (coverage >= kInkSolid) {
+        setBlack(t, x, y);
+        break;
+      }
+      if (coverage < kInkFloor) break;
+      const uint32_t boosted =
+          (static_cast<uint32_t>(coverage - kInkFloor) * 255u) / (kInkSolid - kInkFloor);
+      if (boosted >= kBayer4[y & 3][x & 3]) setBlack(t, x, y);
       break;
+    }
   }
 }
 

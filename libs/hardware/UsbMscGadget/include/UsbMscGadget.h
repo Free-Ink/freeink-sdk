@@ -45,6 +45,7 @@
 // the shared port. Keep a -DARDUINO_USB_MODE=1 build env for OpenOCD/JTAG and
 // crash-proof console work — see docs/usb-msc-gadget.md.
 
+#include <stddef.h>
 #include <stdint.h>
 
 // Canonical default lives in BoardConfig.h's capability section; this fallback
@@ -66,6 +67,33 @@ class UsbMscGadget {
     MediaEjected,       // host ejected the disk (SCSI Start/Stop Unit)
   };
 
+  // A raw block device to serve to the host. `read`/`write` move whole
+  // sectors (`sector` is an index, `count` a sector count) and return false on
+  // failure; `ctx` is passed through untouched. sectorSize must be a power of
+  // two ≤ 4096 (512 for SD cards, the WL sector size for flash partitions) —
+  // it becomes the disk's MSC block size.
+  //
+  // SD-card sessions wire this to SDCardManager's raw mode:
+  //
+  //   static bool sdRead(void*, uint32_t s, uint8_t* d, size_t n) { return SdMan.readRawSectors(s, d, n); }
+  //   static bool sdWrite(void*, uint32_t s, const uint8_t* d, size_t n) { return SdMan.writeRawSectors(s, d, n); }
+  //   ...
+  //   SdMan.beginRaw();  // releases the app's FAT view, card-only init
+  //   UsbMsc.startSession({SdMan.sectorCount(), 512, sdRead, sdWrite, nullptr});
+  //   ...on eject/disconnect: UsbMsc.endSession(); SdMan.begin();
+  //
+  // Shared-SPI-bus boards (e.g. Sticky: SD and panel on one bus): paint the
+  // "connected" screen BEFORE starting the session and leave the display
+  // untouched until it ends — MSC IO runs on the TinyUSB task and must not
+  // interleave with panel SPI traffic. E-ink keeps the image for free.
+  struct BlockSource {
+    uint32_t sectorCount = 0;
+    uint16_t sectorSize = 0;
+    bool (*read)(void* ctx, uint32_t sector, uint8_t* dst, size_t count) = nullptr;
+    bool (*write)(void* ctx, uint32_t sector, const uint8_t* src, size_t count) = nullptr;
+    void* ctx = nullptr;
+  };
+
   // Set up the MSC LUN (no media) + event plumbing and make sure the USB
   // stack is running. `product`/`vendor` are the SCSI INQUIRY strings shown
   // by host OSes (max 16 / 8 chars). If the device is already enumerated by a
@@ -78,6 +106,12 @@ class UsbMscGadget {
   // consumer MUST have unmounted its own filesystem first (e.g. FFat.end()).
   // No-op true if a session is already active.
   bool startSession(const char* partitionLabel = "ffat");
+
+  // Hand an arbitrary block device to the host (e.g. an SD card via
+  // SDCardManager raw mode — see BlockSource above). The consumer MUST have
+  // released every filesystem view of it first. No-op true if a session is
+  // already active.
+  bool startSession(const BlockSource& source);
 
   // Take the disk back: flips media-absent and wl_unmount()s. The consumer
   // remounts its filesystem afterwards. Safe to call when no session is open.

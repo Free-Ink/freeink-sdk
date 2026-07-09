@@ -30,15 +30,35 @@ using Event = freeink::UsbMscGadget::Event;
 USBMSC s_msc;
 
 QueueHandle_t s_events = nullptr;
-wl_handle_t s_wl = WL_INVALID_HANDLE;
 volatile bool s_session = false;
 volatile bool s_hostConnected = false;
-size_t s_sectorSize = 0;
 
-// RMW bounce buffer for the defensive partial-sector write path; sized to the
-// prebuilt CONFIG_WL_SECTOR_SIZE (startSession rejects larger sectors).
+// The block device served to the host (read != nullptr while a session is
+// active). Sessions started by label wrap a wear-levelled flash partition in
+// the thunks below; sessions started with a consumer BlockSource (SD cards)
+// pass through untouched.
+freeink::UsbMscGadget::BlockSource s_src = {};
+wl_handle_t s_wl = WL_INVALID_HANDLE;  // set only for wl-backed sessions
+
+// Bounce buffer for the defensive partial-sector read/write paths; bounds the
+// supported sector size (startSession rejects larger).
 constexpr size_t kMaxSectorSize = 4096;
 uint8_t s_scratch[kMaxSectorSize];
+
+// Wear-levelled flash partition as a BlockSource. wl writes need an explicit
+// erase first (NOR flash); SD-style sources handle that internally.
+bool wlSourceRead(void*, uint32_t sector, uint8_t* dst, size_t count) {
+  if (s_wl == WL_INVALID_HANDLE) return false;
+  return wl_read(s_wl, static_cast<size_t>(sector) * s_src.sectorSize, dst, count * s_src.sectorSize) == ESP_OK;
+}
+
+bool wlSourceWrite(void*, uint32_t sector, const uint8_t* src, size_t count) {
+  if (s_wl == WL_INVALID_HANDLE) return false;
+  const size_t addr = static_cast<size_t>(sector) * s_src.sectorSize;
+  const size_t len = count * s_src.sectorSize;
+  if (wl_erase_range(s_wl, addr, len) != ESP_OK) return false;
+  return wl_write(s_wl, addr, src, len) == ESP_OK;
+}
 
 void postEvent(Event ev) {
   if (!s_events) return;
@@ -70,26 +90,46 @@ void onUsbEvent(void*, esp_event_base_t, int32_t id, void*) {
   }
 }
 
-// MSC callbacks run on the TinyUSB device task. s_wl is invalidated before the
-// unmount in endSession(), so a straggling transfer fails cleanly instead of
-// touching a freed handle.
+// MSC callbacks run on the TinyUSB device task. s_src (and s_wl) are
+// invalidated before teardown in endSession(), so a straggling transfer fails
+// cleanly instead of touching a released device.
 
 int32_t onRead(uint32_t lba, uint32_t offset, void* buffer, uint32_t bufsize) {
-  if (s_wl == WL_INVALID_HANDLE) return -1;
-  if (wl_read(s_wl, static_cast<size_t>(lba) * s_sectorSize + offset, buffer, bufsize) != ESP_OK) return -1;
+  if (!s_src.read) return -1;
+  const size_t ss = s_src.sectorSize;
+
+  // Fast path: whole sectors. With the prebuilt CFG_TUD_MSC_BUFSIZE (4096 = a
+  // WL sector = 8 SD sectors) every transfer lands here.
+  if (offset == 0 && bufsize >= ss && bufsize % ss == 0) {
+    if (!s_src.read(s_src.ctx, lba, static_cast<uint8_t*>(buffer), bufsize / ss)) return -1;
+    return static_cast<int32_t>(bufsize);
+  }
+
+  // Defensive partial-sector reads via the bounce buffer.
+  size_t addr = static_cast<size_t>(lba) * ss + offset;
+  uint32_t remaining = bufsize;
+  uint8_t* dst = static_cast<uint8_t*>(buffer);
+  while (remaining) {
+    const uint32_t sector = static_cast<uint32_t>(addr / ss);
+    const size_t within = addr - static_cast<size_t>(sector) * ss;
+    uint32_t chunk = static_cast<uint32_t>(ss - within);
+    if (chunk > remaining) chunk = remaining;
+    if (!s_src.read(s_src.ctx, sector, s_scratch, 1)) return -1;
+    memcpy(dst, s_scratch + within, chunk);
+    addr += chunk;
+    dst += chunk;
+    remaining -= chunk;
+  }
   return static_cast<int32_t>(bufsize);
 }
 
 int32_t onWrite(uint32_t lba, uint32_t offset, uint8_t* buffer, uint32_t bufsize) {
-  if (s_wl == WL_INVALID_HANDLE) return -1;
-  const size_t ss = s_sectorSize;
+  if (!s_src.write) return -1;
+  const size_t ss = s_src.sectorSize;
 
-  // Fast path: whole-sector writes. The prebuilt CFG_TUD_MSC_BUFSIZE equals
-  // the WL sector size, so in practice every transfer lands here.
+  // Fast path: whole sectors (see onRead).
   if (offset == 0 && bufsize >= ss && bufsize % ss == 0) {
-    const size_t addr = static_cast<size_t>(lba) * ss;
-    if (wl_erase_range(s_wl, addr, bufsize) != ESP_OK) return -1;
-    if (wl_write(s_wl, addr, buffer, bufsize) != ESP_OK) return -1;
+    if (!s_src.write(s_src.ctx, lba, buffer, bufsize / ss)) return -1;
     return static_cast<int32_t>(bufsize);
   }
 
@@ -98,14 +138,13 @@ int32_t onWrite(uint32_t lba, uint32_t offset, uint8_t* buffer, uint32_t bufsize
   uint32_t remaining = bufsize;
   const uint8_t* src = buffer;
   while (remaining) {
-    const size_t sectorAddr = (addr / ss) * ss;
-    const size_t within = addr - sectorAddr;
+    const uint32_t sector = static_cast<uint32_t>(addr / ss);
+    const size_t within = addr - static_cast<size_t>(sector) * ss;
     uint32_t chunk = static_cast<uint32_t>(ss - within);
     if (chunk > remaining) chunk = remaining;
-    if (wl_read(s_wl, sectorAddr, s_scratch, ss) != ESP_OK) return -1;
+    if (!s_src.read || !s_src.read(s_src.ctx, sector, s_scratch, 1)) return -1;
     memcpy(s_scratch + within, src, chunk);
-    if (wl_erase_range(s_wl, sectorAddr, ss) != ESP_OK) return -1;
-    if (wl_write(s_wl, sectorAddr, s_scratch, ss) != ESP_OK) return -1;
+    if (!s_src.write(s_src.ctx, sector, s_scratch, 1)) return -1;
     addr += chunk;
     src += chunk;
     remaining -= chunk;
@@ -159,16 +198,32 @@ bool UsbMscGadget::startSession(const char* partitionLabel) {
 
   const size_t sectorSize = wl_sector_size(wl);
   const size_t sectors = sectorSize ? wl_size(wl) / sectorSize : 0;
-  if (!sectorSize || sectorSize > kMaxSectorSize || !sectors) {
+
+  s_wl = wl;  // the thunks read this; cleared again if the start is rejected
+  BlockSource source;
+  source.sectorCount = static_cast<uint32_t>(sectors);
+  source.sectorSize = static_cast<uint16_t>(sectorSize);
+  source.read = wlSourceRead;
+  source.write = wlSourceWrite;
+  if (!startSession(source)) {
+    s_wl = WL_INVALID_HANDLE;
     wl_unmount(wl);
     return false;
   }
+  return true;
+}
 
-  s_sectorSize = sectorSize;
-  s_wl = wl;
+bool UsbMscGadget::startSession(const BlockSource& source) {
+  if (s_session) return true;
+  if (!source.read || !source.write || !source.sectorCount || !source.sectorSize ||
+      source.sectorSize > kMaxSectorSize) {
+    return false;
+  }
+
+  s_src = source;
   // USBMSC::begin() just publishes LUN geometry (re-callable); the interface
   // itself was registered by s_msc's constructor at static-init time.
-  s_msc.begin(static_cast<uint32_t>(sectors), static_cast<uint16_t>(sectorSize));
+  s_msc.begin(source.sectorCount, source.sectorSize);
   s_msc.isWritable(true);
   s_msc.mediaPresent(true);
   s_session = true;
@@ -177,13 +232,14 @@ bool UsbMscGadget::startSession(const char* partitionLabel) {
 
 void UsbMscGadget::endSession() {
   if (!s_session) return;
-  // Invalidate the handle before unmounting so an in-flight MSC callback
-  // fails cleanly; give the TinyUSB task a beat to drain.
+  // Invalidate the source before teardown so an in-flight MSC callback fails
+  // cleanly; give the TinyUSB task a beat to drain.
   const wl_handle_t wl = s_wl;
   s_wl = WL_INVALID_HANDLE;
+  s_src = {};
   s_msc.mediaPresent(false);
   vTaskDelay(pdMS_TO_TICKS(20));
-  wl_unmount(wl);
+  if (wl != WL_INVALID_HANDLE) wl_unmount(wl);  // consumer sources release their own device
   s_session = false;
 }
 
@@ -207,6 +263,7 @@ namespace freeink {
 
 bool UsbMscGadget::begin(const char*, const char*) { return false; }
 bool UsbMscGadget::startSession(const char*) { return false; }
+bool UsbMscGadget::startSession(const BlockSource&) { return false; }
 void UsbMscGadget::endSession() {}
 bool UsbMscGadget::sessionActive() const { return false; }
 bool UsbMscGadget::hostConnected() const { return false; }

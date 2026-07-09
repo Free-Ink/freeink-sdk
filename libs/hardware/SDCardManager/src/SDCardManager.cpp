@@ -15,6 +15,7 @@ bool SDCardManager::begin() {
   // Native 4-bit SDMMC: SdFat can't drive SDIO, so mount a plain FsVolume on the
   // esp-idf SDMMC block device. FsFile from this volume is the same type the SPI
   // path returns, so the public API and consumers are unchanged.
+  if (rawActive) end();          // leaving a USB raw session: full re-init below
   if (_powerHook) _powerHook();  // board brings up its SD rail (e.g. PMIC) if needed
   if (!_dev) _dev = new freeink::SdmmcBlockDevice();
   if (!_dev->begin(BoardConfig::ACTIVE.sdmmc)) {
@@ -33,24 +34,53 @@ bool SDCardManager::begin() {
   }
   if (Serial) Serial.printf("[%lu] [SD] SDMMC card mounted\n", millis());
   initialized = true;
+  rawActive = false;
   cachedTotalBytes = static_cast<uint64_t>(vol().clusterCount()) * vol().bytesPerCluster();
   cachedUsedBytesValid = false;
   return initialized;
 }
+
+void SDCardManager::end() {
+  _vol.end();
+  if (_dev) _dev->end();
+  initialized = false;
+  rawActive = false;
+  cachedTotalBytes = 0;
+  cachedUsedBytesValid = false;
+}
+
+bool SDCardManager::beginRaw() {
+  if (initialized || rawActive) end();
+  if (_powerHook) _powerHook();
+  if (!_dev) _dev = new freeink::SdmmcBlockDevice();
+  rawActive = _dev->begin(BoardConfig::ACTIVE.sdmmc);
+  if (Serial) Serial.printf("[%lu] [SD] SDMMC raw card init %s\n", millis(), rawActive ? "ok" : "failed");
+  return rawActive;
+}
+
+uint32_t SDCardManager::sectorCount() {
+  return rawActive && _dev ? _dev->sectorCount() : 0;
+}
+
+bool SDCardManager::readRawSectors(uint32_t sector, uint8_t* dst, size_t count) {
+  return rawActive && _dev && _dev->readSectors(sector, dst, count);
+}
+
+bool SDCardManager::writeRawSectors(uint32_t sector, const uint8_t* src, size_t count) {
+  return rawActive && _dev && _dev->writeSectors(sector, src, count);
+}
 #else
 SDCardManager::SDCardManager() : sd() {}
 
-bool SDCardManager::begin() {
-  // Pins/clock come from the runtime-active profile (board-overridable via
-  // BoardConfig::ACTIVE.sd.spiHz; 0 = default). Read after device selection.
-  const uint8_t SD_CS = BoardConfig::ACTIVE.sd.cs;
-  const uint32_t SPI_FQ = BoardConfig::ACTIVE.sd.spiHz != 0 ? BoardConfig::ACTIVE.sd.spiHz : 40000000;
+namespace {
 
-  if (_powerHook) _powerHook();  // board brings up its SD rail (e.g. PMIC) if needed
-
+// Board bring-up shared by begin() and beginRaw(): the GPIO-gated SD power
+// rail, the co-resident display CS deassert on shared buses, and the SPI bus
+// claim. Pins come from the runtime-active profile.
+void prepareSpiBus(uint8_t csPin) {
   // Boards that gate the SD rail with a plain GPIO (e.g. Sticky's SD_PWR_EN on
   // GPIO10) must power it before probing. Active-high enable + a brief settle.
-  // No-op when unassigned, and complements _powerHook for PMIC-gated boards.
+  // No-op when unassigned, and complements the power hook for PMIC-gated boards.
   // gpio_hold_dis first: the sleep path holds this pin LOW and the hold survives
   // the deep-sleep wake reset; the HIGH write is a no-op until it is released.
   if (BoardConfig::ACTIVE.sd.powerEnable >= 0) {
@@ -71,8 +101,22 @@ bool SDCardManager::begin() {
   }
 
   if (BoardConfig::ACTIVE.sd.sclk >= 0 && BoardConfig::ACTIVE.sd.mosi >= 0 && BoardConfig::ACTIVE.sd.miso >= 0) {
-    SPI.begin(BoardConfig::ACTIVE.sd.sclk, BoardConfig::ACTIVE.sd.miso, BoardConfig::ACTIVE.sd.mosi, SD_CS);
+    SPI.begin(BoardConfig::ACTIVE.sd.sclk, BoardConfig::ACTIVE.sd.miso, BoardConfig::ACTIVE.sd.mosi, csPin);
   }
+}
+
+}  // namespace
+
+bool SDCardManager::begin() {
+  // Pins/clock come from the runtime-active profile (board-overridable via
+  // BoardConfig::ACTIVE.sd.spiHz; 0 = default). Read after device selection.
+  const uint8_t SD_CS = BoardConfig::ACTIVE.sd.cs;
+  const uint32_t SPI_FQ = BoardConfig::ACTIVE.sd.spiHz != 0 ? BoardConfig::ACTIVE.sd.spiHz : 40000000;
+
+  if (rawActive) end();  // leaving a USB raw session: full re-init below
+
+  if (_powerHook) _powerHook();  // board brings up its SD rail (e.g. PMIC) if needed
+  prepareSpiBus(SD_CS);
 
   if (!sd.begin(SD_CS, SPI_FQ)) {
     if (Serial)
@@ -90,6 +134,38 @@ bool SDCardManager::begin() {
   }
 
   return initialized;
+}
+
+void SDCardManager::end() {
+  sd.end();  // releases the FAT volume and the card (SdBase::end)
+  initialized = false;
+  rawActive = false;
+  cachedTotalBytes = 0;
+  cachedUsedBytesValid = false;
+}
+
+bool SDCardManager::beginRaw() {
+  if (initialized || rawActive) end();
+  const uint8_t SD_CS = BoardConfig::ACTIVE.sd.cs;
+  const uint32_t SPI_FQ = BoardConfig::ACTIVE.sd.spiHz != 0 ? BoardConfig::ACTIVE.sd.spiHz : 40000000;
+  if (_powerHook) _powerHook();
+  prepareSpiBus(SD_CS);
+  // Card-only init, no FAT mount — same config as sd.begin(cs, hz) uses.
+  rawActive = sd.cardBegin(SdSpiConfig(SD_CS, SHARED_SPI, SPI_FQ));
+  if (Serial) Serial.printf("[%lu] [SD] raw card init %s\n", millis(), rawActive ? "ok" : "failed");
+  return rawActive;
+}
+
+uint32_t SDCardManager::sectorCount() {
+  return rawActive && sd.card() ? sd.card()->sectorCount() : 0;
+}
+
+bool SDCardManager::readRawSectors(uint32_t sector, uint8_t* dst, size_t count) {
+  return rawActive && sd.card() && sd.card()->readSectors(sector, dst, count);
+}
+
+bool SDCardManager::writeRawSectors(uint32_t sector, const uint8_t* src, size_t count) {
+  return rawActive && sd.card() && sd.card()->writeSectors(sector, src, count);
 }
 #endif
 

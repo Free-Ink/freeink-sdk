@@ -32,6 +32,32 @@ class SDCardManager {
   SDCardManager();
   bool begin();
   bool ready() const;
+
+  // --- Raw sector access (USB mass-storage sessions) -------------------------
+  // A USB MSC gadget (libs/hardware/UsbMscGadget) serves the card's raw
+  // 512-byte sectors to a host PC. The firmware's FAT view and the host's must
+  // never coexist on the card, so access is modal:
+  //
+  //   SdMan.beginRaw();          // release the FAT view, card-only init
+  //   ... MSC session: sectorCount / readRawSectors / writeRawSectors ...
+  //   SdMan.end();
+  //   SdMan.begin();             // remount the FAT view for the app
+  //
+  // beginRaw() self-releases a mounted FAT view; begin() self-releases raw
+  // mode — the two are always safe to call in either state.
+
+  // Release the card entirely (FAT view and/or raw mode). begin()/beginRaw()
+  // re-initialize after it.
+  void end();
+
+  // Card-only init (no FAT mount) for serving raw sectors. Uses the same
+  // board power-rail / bus bring-up as begin().
+  bool beginRaw();
+
+  // Raw 512-byte-sector IO; live only after a successful beginRaw().
+  uint32_t sectorCount();  // 0 when raw mode is not live
+  bool readRawSectors(uint32_t sector, uint8_t* dst, size_t count);
+  bool writeRawSectors(uint32_t sector, const uint8_t* src, size_t count);
   // Returns the total card capacity in bytes. Cached at begin(); 0 if not mounted.
   uint64_t sdTotalBytes() const;
   // Returns used space in bytes, cached with a 20-second TTL (freeClusterCount
@@ -81,6 +107,7 @@ class SDCardManager {
   static SDCardManager instance;
 
   bool initialized = false;
+  bool rawActive = false;  // card serving raw sectors (beginRaw), no FAT view
   PowerHook _powerHook = nullptr;
 
   static constexpr uint32_t USED_BYTES_CACHE_TTL_MS = 20000;

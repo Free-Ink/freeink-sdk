@@ -1,11 +1,12 @@
 # UsbMscGadget — device-mode USB mass storage
 
 `libs/hardware/UsbMscGadget` turns an ESP32-S3/S2 board into a removable USB
-disk: plug it into a PC and a wear-levelled internal-flash FAT partition
-(e.g. the `ffat` partition holding a device's documents) appears as a drive.
-The gadget is a composite device — the TinyUSB CDC console stays alive next
-to the MSC interface, so serial logs and esptool flashing keep working on the
-same cable.
+disk: plug it into a PC and the device's storage appears as a drive — either
+a wear-levelled internal-flash FAT partition (e.g. an `ffat` documents
+partition) or the board's **microSD card** (Sticky, M5 PaperColor, Murphy,
+de-link). The gadget is a composite device — the TinyUSB CDC console stays
+alive next to the MSC interface, so serial logs and esptool flashing keep
+working on the same cable.
 
 ## Requirements
 
@@ -56,6 +57,45 @@ PC, at boot while already plugged in, and on host resume. Charging bricks
 never configure, so charging does not trigger transfer mode.
 
 Consumers should also refuse to deep-sleep while `sessionActive()`.
+
+## SD-card sessions
+
+Boards with a microSD slot serve the card instead of (or as well as) internal
+flash. SDCardManager provides the raw side: `beginRaw()` releases the
+firmware's FAT view and re-initializes the card for sector access;
+`sectorCount()` / `readRawSectors()` / `writeRawSectors()` serve 512-byte
+sectors. Wire them into a `BlockSource`:
+
+```cpp
+static bool sdRead(void*, uint32_t s, uint8_t* d, size_t n) { return SdMan.readRawSectors(s, d, n); }
+static bool sdWrite(void*, uint32_t s, const uint8_t* d, size_t n) { return SdMan.writeRawSectors(s, d, n); }
+
+// HostConnected:
+showUsbScreen();                 // paint FIRST on shared-SPI boards (below)
+if (SdMan.beginRaw()) {
+  freeink::UsbMscGadget::BlockSource src{SdMan.sectorCount(), 512, sdRead, sdWrite, nullptr};
+  if (!UsbMsc.startSession(src)) SdMan.begin();   // handover failed — remount
+}
+
+// MediaEjected / HostDisconnected:
+UsbMsc.endSession();
+SdMan.begin();                   // remount the FAT view for the app
+```
+
+Rules specific to SD sessions:
+
+- **Shared SPI bus (Sticky, M5 PaperColor, M5Paper):** MSC callbacks run on
+  the TinyUSB task while the app task owns the e-paper on the same bus. Paint
+  the "connected to computer" screen **before** `startSession()` and leave
+  the display untouched until the session ends — the e-ink image persists on
+  its own. Boards with the SD on its own bus have no such constraint.
+- **Card power** stays up for the whole session; `beginRaw()` runs the same
+  power-rail bring-up as `begin()`.
+- **Physical card removal** mid-session surfaces as IO errors to the host
+  (same as yanking a card out of any reader). The firmware recovers on the
+  next `SdMan.begin()`.
+- The host sees the whole card, whatever filesystem is on it — exFAT cards
+  work over USB even though the firmware side reads them via SdFat.
 
 ## Block layer
 

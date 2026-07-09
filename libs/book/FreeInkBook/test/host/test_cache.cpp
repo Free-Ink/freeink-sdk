@@ -90,7 +90,8 @@ class HostCacheStorage : public CacheStorage {
     return static_cast<int32_t>(n);
   }
   bool beginWrite(const char* name) override {
-    writeFile_ = std::fopen(path(name), "wb");
+    std::snprintf(writePath_, sizeof(writePath_), "%s/%s", dir_, name);
+    writeFile_ = std::fopen(writePath_, "wb");
     return writeFile_ != nullptr;
   }
   bool write(const void* data, uint32_t len) override {
@@ -102,6 +103,16 @@ class HostCacheStorage : public CacheStorage {
     writeFile_ = nullptr;
     return ok;
   }
+  int32_t readBackAt(uint32_t offset, void* dst, uint32_t len) override {
+    if (writeFile_ == nullptr) return -1;
+    std::fflush(writeFile_);
+    FILE* f = std::fopen(writePath_, "rb");
+    if (f == nullptr) return -1;
+    std::fseek(f, static_cast<long>(offset), SEEK_SET);
+    const size_t n = std::fread(dst, 1, len, f);
+    std::fclose(f);
+    return static_cast<int32_t>(n);
+  }
 
  private:
   const char* path(const char* name) {
@@ -110,6 +121,7 @@ class HostCacheStorage : public CacheStorage {
   }
   const char* dir_;
   char pathBuf_[1024];
+  char writePath_[1024];
   FILE* writeFile_ = nullptr;
 };
 
@@ -336,6 +348,107 @@ void testPositionMigration(HostCacheStorage& cache) {
 
 }  // namespace
 
+
+// Incremental build: pages must be readable from the WRITER while the
+// chapter is still laying out (readBackAt), a suspended build must commit a
+// partial file the reader accepts (isPartial, watermark page count, build
+// progress fields), and the partial's pages must be byte-identical to the
+// same pages of a finished build.
+void testPartialCacheAndMidBuildRead(HostCacheStorage& cache) {
+  HostFileSource source;
+  CHECK(source.open(fixture("minimal.epub")));
+  Arena bookArena(bookBuf, sizeof(bookBuf));
+  Arena scratch(scratchBuf, sizeof(scratchBuf));
+  Book book;
+  CHECK_EQ(static_cast<int>(book.open(source, bookArena, scratch)),
+           static_cast<int>(BookStatus::Ok));
+
+  FakeFont font;
+  const LayoutParams params = makeParams(font, 16);
+  const uint32_t hash = layoutGenerationHash(params, /*fontFingerprint=*/1);
+  char name[64];
+  CHECK(pageCacheName(7, hash, name, sizeof(name)));
+  const ZipEntry* entry = book.zip().find(book.spineItem(1)->href);
+  CHECK(entry != nullptr);
+
+  // Reference: capture page 2 from a plain one-shot layout.
+  CapturePageSink direct(2);
+  {
+    const size_t marked = scratch.mark();
+    CHECK_EQ(static_cast<int>(ChapterLayout::layout(source, book.zip(), *entry, entry->name,
+                                                    params, scratch, direct, nullptr)),
+             static_cast<int>(BookStatus::Ok));
+    scratch.release(marked);
+  }
+  CHECK(direct.pages > 10);
+
+  // Incremental: writer as sink, stepped session, stop mid-chapter.
+  const size_t marked = scratch.mark();
+  PageCacheWriter writer;
+  CHECK(writer.begin(cache, name, hash, scratch));
+  ChapterLayoutSession session;
+  CHECK_EQ(static_cast<int>(session.begin(source, &book.zip(), source, *entry, entry->name,
+                                          params, scratch, writer)),
+           static_cast<int>(BookStatus::Ok));
+  while (!session.done() && session.pagesEmitted() < 6) {
+    CHECK_EQ(static_cast<int>(session.step(2)), static_cast<int>(BookStatus::Ok));
+  }
+  CHECK(!session.done());  // genuinely suspended mid-chapter
+  const uint32_t watermark = writer.pageCount();
+  CHECK(watermark >= 6u);
+  CHECK(watermark < direct.pages);
+
+  // Mid-build read-back of page 2 matches the live layout byte for byte.
+  {
+    Arena pageArena(cacheBuf, sizeof(cacheBuf));
+    Page page{};
+    CHECK_EQ(static_cast<int>(writer.readPage(2, pageArena, &page)),
+             static_cast<int>(BookStatus::Ok));
+    CHECK_EQ(page.runCount, direct.runCount);
+    CHECK_EQ(page.charStart, direct.charStart);
+    char text[32 * 1024];
+    uint32_t textLen = 0;
+    for (uint16_t r = 0; r < page.runCount && textLen + page.runs[r].len < sizeof(text); ++r) {
+      std::memcpy(text + textLen, page.runs[r].text, page.runs[r].len);
+      textLen += page.runs[r].len;
+    }
+    text[textLen] = '\0';
+    CHECK(std::strcmp(text, direct.text) == 0);
+    // Index navigation against the writer works mid-build.
+    CHECK_EQ(writer.pageForChar(writer.charStart(3)), 3u);
+  }
+
+  // Suspend: commits a partial the reader accepts and serves.
+  writer.setTotalChars(12345);  // chars-so-far watermark (any value works here)
+  CHECK(writer.suspend(1000, 4000));
+  session.abort();
+  scratch.release(marked);
+
+  Arena cacheArena(cacheBuf, sizeof(cacheBuf));
+  PageCacheReader reader;
+  CHECK_EQ(static_cast<int>(reader.open(cache, name, hash, cacheArena)),
+           static_cast<int>(BookStatus::Ok));
+  CHECK(reader.isPartial());
+  CHECK_EQ(reader.pageCount(), watermark);
+  CHECK_EQ(reader.buildBytesConsumed(), 1000u);
+  CHECK_EQ(reader.buildBytesTotal(), 4000u);
+  {
+    Page page{};
+    CHECK_EQ(static_cast<int>(reader.readPage(2, cacheArena, &page)),
+             static_cast<int>(BookStatus::Ok));
+    CHECK_EQ(page.runCount, direct.runCount);
+    CHECK_EQ(page.charStart, direct.charStart);
+  }
+  // A partial under a different generation is still Stale.
+  {
+    Arena tmpArena(cacheBuf, sizeof(cacheBuf));
+    PageCacheReader stale;
+    CHECK_EQ(static_cast<int>(stale.open(cache, name, hash + 1, tmpArena)),
+             static_cast<int>(BookStatus::Stale));
+  }
+  cache.remove(name);
+}
+
 int main(int argc, char** argv) {
   if (argc < 3) {
     std::printf("usage: %s <fixtures-build-dir> <cache-dir>\n", argv[0]);
@@ -346,6 +459,7 @@ int main(int argc, char** argv) {
 
   testRoundtripAndStaleness(cache);
   testPositionMigration(cache);
+  testPartialCacheAndMidBuildRead(cache);
 
   std::printf("%d checks, %d failed\n", checksRun, checksFailed);
   return checksFailed == 0 ? 0 : 1;

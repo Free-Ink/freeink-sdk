@@ -50,6 +50,19 @@ class CacheStorage {
   virtual bool beginWrite(const char* name) = 0;
   virtual bool write(const void* data, uint32_t len) = 0;
   virtual bool endWrite() = 0;
+
+  // Reads [offset, offset+len) of the file CURRENTLY being written (between
+  // beginWrite and endWrite) without disturbing the write cursor. Returns
+  // bytes read, or negative when unsupported or failed. This is what lets a
+  // page cache serve already-written pages while the chapter is still
+  // building (incremental layout). Implementations typically open the write
+  // stream read-write and seek-read-seek-back.
+  virtual int32_t readBackAt(uint32_t offset, void* dst, uint32_t len) {
+    (void)offset;
+    (void)dst;
+    (void)len;
+    return -1;
+  }
 };
 
 }  // namespace book

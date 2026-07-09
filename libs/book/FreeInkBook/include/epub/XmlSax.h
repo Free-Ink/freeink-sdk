@@ -50,5 +50,41 @@ class XmlSax {
                                XmlHandler& handler, bool filterHtmlEntities = false);
 };
 
+// Resumable form of XmlSax::parseEntry: the caller feeds the parse one chunk
+// at a time and may stop between chunks for as long as it likes (the expat
+// parser, inflate stream, and buffers stay live). This is what lets a chapter
+// lay out incrementally — a few pages per UI tick — instead of in one
+// blocking call. Buffers come from `scratch` at open() and are released by
+// the arena owner, not by close() (arena allocations have no free).
+class XmlSaxSession {
+ public:
+  XmlSaxSession() = default;
+  ~XmlSaxSession() { close(); }
+  XmlSaxSession(const XmlSaxSession&) = delete;
+  XmlSaxSession& operator=(const XmlSaxSession&) = delete;
+
+  BookStatus open(BookSource& source, const ZipEntry& entry, Arena& scratch, XmlHandler& handler,
+                  bool filterHtmlEntities = false);
+  // Reads and parses ONE chunk. Sets *atEnd true once the final (empty) chunk
+  // has been fed — the document is then fully parsed. Returns ParseError /
+  // IoError on failure; Ok otherwise (including when the handler set
+  // stopParse — the caller checks that flag itself).
+  BookStatus feedChunk(bool* atEnd);
+  bool isOpen() const { return parser_ != nullptr; }
+  // Bytes of (filtered) input fed so far vs the entry's total — for
+  // progress estimation while a chapter builds.
+  uint64_t bytesConsumed() const { return bytesConsumed_; }
+  void close();
+
+ private:
+  ZipEntryReader reader_;
+  XmlHandler* handler_ = nullptr;
+  void* parser_ = nullptr;  // XML_Parser; opaque to keep expat out of this header
+  class EntityFilter* filter_ = nullptr;
+  char* buf_ = nullptr;
+  uint64_t bytesConsumed_ = 0;
+  bool finished_ = false;
+};
+
 }  // namespace book
 }  // namespace freeink

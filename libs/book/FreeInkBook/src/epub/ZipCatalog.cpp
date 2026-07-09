@@ -101,11 +101,8 @@ uint32_t ZipCatalog::hashPath(const char* path) {
   return hash;
 }
 
-BookStatus ZipCatalog::open(BookSource& source, Arena& arena) {
-  source_ = &source;
-  entries_ = nullptr;
-  count_ = 0;
-
+BookStatus ZipCatalog::locateCentralDirectory(BookSource& source, uint32_t* dirOffsetOut,
+                                              uint32_t* dirSizeOut, uint16_t* entryCountOut) {
   const uint64_t fileSize = source.size();
   if (fileSize < kEocdMinSize) return BookStatus::NotZip;
 
@@ -144,6 +141,22 @@ BookStatus ZipCatalog::open(BookSource& source, Arena& arena) {
     return BookStatus::Unsupported;  // zip64
   }
   if (static_cast<uint64_t>(dirOffset) + dirSize > fileSize) return BookStatus::Truncated;
+  *dirOffsetOut = dirOffset;
+  *dirSizeOut = dirSize;
+  *entryCountOut = totalEntries;
+  return BookStatus::Ok;
+}
+
+BookStatus ZipCatalog::open(BookSource& source, Arena& arena) {
+  source_ = &source;
+  entries_ = nullptr;
+  count_ = 0;
+
+  uint32_t dirOffset = 0;
+  uint32_t dirSize = 0;
+  uint16_t totalEntries = 0;
+  const BookStatus located = locateCentralDirectory(source, &dirOffset, &dirSize, &totalEntries);
+  if (located != BookStatus::Ok) return located;
 
   ZipEntry* entries = arena.allocArray<ZipEntry>(totalEntries);
   if (entries == nullptr && totalEntries != 0) return BookStatus::OutOfMemory;
@@ -193,6 +206,13 @@ const ZipEntry* ZipCatalog::find(const char* path) const {
   return nullptr;
 }
 
+const ZipEntry* ZipCatalog::findByHash(const uint32_t nameHash) const {
+  for (size_t i = 0; i < count_; ++i) {
+    if (entries_[i].nameHash == nameHash) return &entries_[i];
+  }
+  return nullptr;
+}
+
 BookStatus ZipEntryReader::open(BookSource& source, const ZipEntry& entry, Arena& scratch) {
   source_ = &source;
   entry_ = &entry;
@@ -203,6 +223,16 @@ BookStatus ZipEntryReader::open(BookSource& source, const ZipEntry& entry, Arena
   decompressor_ = nullptr;
   window_ = nullptr;
   inBuf_ = nullptr;
+
+  // Raw (headerless) synthetic entries — see rawEntry(): the source IS the
+  // stored data, starting at offset 0.
+  if (entry.localHeaderOffset == kRawHeaderOffset) {
+    if (entry.method != kMethodStored || entry.compressedSize != entry.uncompressedSize) {
+      return BookStatus::Unsupported;
+    }
+    dataOffset_ = 0;
+    return BookStatus::Ok;
+  }
 
   // The central directory and the local header may disagree on name/extra
   // lengths (some writers add extra fields locally), so the local header is

@@ -21,6 +21,7 @@
 #include "BookStorage.h"
 #include "BookTypes.h"
 #include "css/Css.h"
+#include "epub/XmlSax.h"
 #include "epub/ZipCatalog.h"
 #include "text/Hyphenator.h"
 
@@ -141,6 +142,76 @@ class ChapterLayout {
                                     Arena& scratch, PageSink& sink,
                                     uint32_t* pageCountOut = nullptr,
                                     uint32_t* totalCharsOut = nullptr);
+};
+
+// Resumable chapter layout — the incremental-build primitive. Where
+// ChapterLayout::layout() runs to completion in one call, a session lays out
+// a few pages at a time so a giant single-spine chapter can show its first
+// page immediately and finish behind the reader:
+//
+//   ChapterLayoutSession s;
+//   s.begin(bookSource, &zip, chapterSource, entry, href, params, scratch,
+//           sink, &parseArena);
+//   while (!s.done()) { s.step(4); /* render, handle input, ... */ }
+//
+// `chapterSource` may differ from `bookSource`: extract a deflated chapter to
+// plain storage once and hand it in as a stored entry — the resident parse
+// state then shrinks from ~46 KB (inflate window + decompressor) to ~8 KB,
+// which is what makes holding a session open WHILE rendering pages viable on
+// PSRAM-less hosts. Image probes always use `bookSource` + `zip`.
+//
+// Both arenas must stay valid (and must not be reset) for the session's
+// lifetime. The session does not release its arena marks — the owner resets
+// the arenas after abort()/completion.
+class ChapterLayoutSession {
+ public:
+  ChapterLayoutSession() = default;
+  ~ChapterLayoutSession() { abort(); }
+  ChapterLayoutSession(const ChapterLayoutSession&) = delete;
+  ChapterLayoutSession& operator=(const ChapterLayoutSession&) = delete;
+
+  // Runs the image pre-scan (cheap on a stored chapterSource) and opens the
+  // parse. `zip` may be null for containerless input.
+  //
+  // `prescanScratch` (optional): the pre-scan probes image targets in the
+  // BOOK container, which needs a transient inflate stream (~46 KB) even
+  // when the chapter itself is stored. A resident session should pass a
+  // TEMPORARY large arena here (freed right after begin() returns) and keep
+  // `parseScratch` at the small stored-entry size (~12 KB) — otherwise the
+  // parse arena must be sized for the probe peak for its whole lifetime.
+  BookStatus begin(BookSource& bookSource, const ZipCatalog* zip, BookSource& chapterSource,
+                   const ZipEntry& entry, const char* chapterHref, const LayoutParams& params,
+                   Arena& scratch, PageSink& sink, Arena* parseScratch = nullptr,
+                   Arena* prescanScratch = nullptr);
+
+  // Feeds the parse until at least `minNewPages` more pages were delivered to
+  // the sink or the chapter ends (granularity is one input chunk, so it can
+  // overshoot by a page). On the final step the layout tail is flushed and
+  // done() becomes true. Returns Ok on progress, or the failure status.
+  BookStatus step(uint32_t minNewPages);
+
+  bool done() const { return state_ == State::Done; }
+  bool active() const { return state_ == State::Parsing; }
+  uint32_t pagesEmitted() const;
+  // Valid once done(): total extracted characters (progress denominator).
+  uint32_t totalChars() const;
+  // Input-side progress for estimated-total-pages: bytes fed / entry size.
+  uint64_t bytesConsumed() const { return sax_.bytesConsumed(); }
+  uint64_t bytesTotal() const { return bytesTotal_; }
+
+  // Tears down the parse (safe in any state). The owner resets the arenas.
+  void abort();
+
+ private:
+  enum class State : uint8_t { Idle, Parsing, Done, Failed };
+
+  class CountingSink;  // forwards to the caller sink, counting pages
+
+  XmlSaxSession sax_;
+  void* engine_ = nullptr;        // LayoutEngine, placement-new'd in the arena
+  void* countingSink_ = nullptr;  // CountingSink, placement-new'd in the arena
+  uint64_t bytesTotal_ = 0;
+  State state_ = State::Idle;
 };
 
 }  // namespace book

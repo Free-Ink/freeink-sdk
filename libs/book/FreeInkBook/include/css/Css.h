@@ -13,8 +13,8 @@
 // inline style.
 //
 // Supported properties: font-size (em/%/px/pt/rem + keywords), font-weight,
-// font-style, text-align, text-indent (em/px), margin-top/margin-bottom
-// (em/px, also via the margin shorthand), display:none.
+// font-style, text-align, text-indent (em/px), margin-left/margin-top/
+// margin-bottom (em/px, also via the margin shorthand), display:none.
 
 #include <stdint.h>
 
@@ -32,10 +32,12 @@ enum class TextAlign : uint8_t { Inherit = 0, Left, Right, Center, Justify };
 // override only what they declare.
 struct CssDecl {
   uint16_t sizePct = 0;        // 0 = unset; % of the parent font size
+  bool sizeRootRelative = false;  // true = % of reader root size, for rem
   int8_t weightBold = -1;      // -1 unset, 0 normal, 1 bold
   int8_t styleItalic = -1;     // -1 unset, 0 normal, 1 italic
   TextAlign align = TextAlign::Inherit;
   int16_t textIndentPct = -1;  // -1 unset; % of em
+  int16_t marginLeftPct = -1;   // -1 unset; % of em, applied as inline/block start margin
   int16_t marginTopPct = -1;   // -1 unset; % of em
   int16_t marginBottomPct = -1;
   int8_t displayNone = -1;     // -1 unset, 1 = display:none

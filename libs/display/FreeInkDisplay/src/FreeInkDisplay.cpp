@@ -281,6 +281,28 @@ bool FreeInkDisplay::reallocBuffers() {
   return true;
 }
 
+uint8_t* FreeInkDisplay::lendBuildStorage(uint32_t* sizeOut) {
+  if (_buildLent || frameBuffer0 == nullptr) {
+    if (sizeOut != nullptr) *sizeOut = 0;
+    return nullptr;
+  }
+  syncPendingAsync();  // a refresh in flight was reading these bytes
+  _buildLent = true;
+  frameBuffer = nullptr;   // rendering is unavailable while the bytes are lent
+  _shadowValid = false;    // controller baseline no longer matches
+  if (sizeOut != nullptr) *sizeOut = MAX_BUFFER_SIZE;  // full alloc is usable as scratch
+  return frameBuffer0;     // the allocation itself is never freed, so it never moves
+}
+
+void FreeInkDisplay::returnBuildStorage() {
+  if (!_buildLent) return;
+  _buildLent = false;
+  frameBuffer = frameBuffer0;
+  if (frameBuffer0 != nullptr) memset(frameBuffer0, 0xFF, bufferSize);  // build clobbered it
+  _shadowValid = false;
+}
+
+#if FREEINK_FB_PSRAM
 #ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
 // Secondary-buffer release/realloc is available on every dual-buffer build, not
 // just PSRAM ones: CrossPoint's C3 (no PSRAM) lends the ~48-52 KB secondary

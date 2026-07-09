@@ -13,6 +13,10 @@ namespace {
 constexpr uint16_t kFormatVersion = 3;  // v3: link records + anchor table
 constexpr uint32_t kHeaderSize = 12;
 constexpr uint32_t kFooterSize = 24;  // v3: + anchors + totalChars
+// Partial (suspended-build) footer: the final footer's five u32 fields plus
+// bytesConsumed + bytesTotal, sealed with "FIBx" instead of "FIBX". Old
+// readers see a magic mismatch and treat the file as Stale — safe.
+constexpr uint32_t kPartialFooterSize = 32;
 constexpr uint32_t kMaxBlobSize = 128 * 1024;  // sanity bound on one page
 
 void putU16(uint8_t* p, uint16_t v) {
@@ -55,11 +59,15 @@ uint32_t hashMix(uint32_t hash, uint32_t value) {
 
 }  // namespace
 
+static BookStatus decodePageBlob(const uint8_t* blob, uint32_t blobLen, uint32_t pageIndex,
+                                 Arena& scratch, Page* out);
+
 // Bump when layout BEHAVIOR changes without a format change (ligatures,
 // breaking rules, spacing math) — stale caches would otherwise render with
 // mismatched widths after a firmware update.
-constexpr uint32_t kLayoutRevision = 7;  // 7: image dimension pre-scan
-                                         // (6: focus reading + non-ASCII hyphenation,
+constexpr uint32_t kLayoutRevision = 8;  // 8: inline CSS sizes/margins + line box sizing
+                                         // (7: image dimension pre-scan,
+                                         //  6: focus reading + non-ASCII hyphenation,
                                          //  5: Korean/CJ punct, 4: Arabic, 3: bidi, 2: ligatures)
 
 uint32_t layoutGenerationHash(const LayoutParams& params, uint32_t fontFingerprint) {
@@ -232,23 +240,9 @@ bool PageCacheWriter::finish() {
     return false;
   }
 
-  const uint32_t indexOffset = writeOffset_;
-  const IndexChunk* chunk = firstChunk_;
-  for (uint32_t i = 0; i < pageCount_ && !failed_; ++i) {
-    const uint32_t slot = i % IndexChunk::kEntries;
-    uint8_t rec[8];
-    putU32(rec, chunk->offsets[slot]);
-    putU32(rec + 4, chunk->charStarts[slot]);
-    writeRaw(rec, sizeof(rec));
-    if (slot == IndexChunk::kEntries - 1) chunk = chunk->next;
-  }
-  const uint32_t anchorOffset = writeOffset_;
-  for (uint32_t a = 0; a < anchorCount_ && !failed_; ++a) {
-    uint8_t rec[8];
-    putU32(rec, anchorHashes_[a]);
-    putU32(rec + 4, anchorChars_[a]);
-    writeRaw(rec, sizeof(rec));
-  }
+  uint32_t indexOffset = 0;
+  uint32_t anchorOffset = 0;
+  writeIndexAndAnchors(&indexOffset, &anchorOffset);
   uint8_t footer[kFooterSize];
   putU32(footer, indexOffset);
   putU32(footer + 4, pageCount_);
@@ -268,6 +262,128 @@ bool PageCacheWriter::finish() {
     failed_ = true;
   }
   return !failed_;
+}
+
+bool PageCacheWriter::writeIndexAndAnchors(uint32_t* indexOffsetOut, uint32_t* anchorOffsetOut) {
+  *indexOffsetOut = writeOffset_;
+  const IndexChunk* chunk = firstChunk_;
+  for (uint32_t i = 0; i < pageCount_ && !failed_; ++i) {
+    const uint32_t slot = i % IndexChunk::kEntries;
+    uint8_t rec[8];
+    putU32(rec, chunk->offsets[slot]);
+    putU32(rec + 4, chunk->charStarts[slot]);
+    writeRaw(rec, sizeof(rec));
+    if (slot == IndexChunk::kEntries - 1) chunk = chunk->next;
+  }
+  *anchorOffsetOut = writeOffset_;
+  for (uint32_t a = 0; a < anchorCount_ && !failed_; ++a) {
+    uint8_t rec[8];
+    putU32(rec, anchorHashes_[a]);
+    putU32(rec + 4, anchorChars_[a]);
+    writeRaw(rec, sizeof(rec));
+  }
+  return !failed_;
+}
+
+bool PageCacheWriter::suspend(uint32_t bytesConsumed, uint32_t bytesTotal) {
+  if (failed_ || !open_) {
+    if (open_) {
+      storage_->endWrite();
+      storage_->remove(name_);
+      open_ = false;
+    }
+    return false;
+  }
+
+  uint32_t indexOffset = 0;
+  uint32_t anchorOffset = 0;
+  writeIndexAndAnchors(&indexOffset, &anchorOffset);
+  uint8_t footer[kPartialFooterSize];
+  putU32(footer, indexOffset);
+  putU32(footer + 4, pageCount_);
+  putU32(footer + 8, anchorOffset);
+  putU32(footer + 12, anchorCount_);
+  putU32(footer + 16, totalChars_);
+  putU32(footer + 20, bytesConsumed);
+  putU32(footer + 24, bytesTotal);
+  footer[28] = 'F';
+  footer[29] = 'I';
+  footer[30] = 'B';
+  footer[31] = 'x';
+  writeRaw(footer, sizeof(footer));
+
+  const bool committed = !failed_ && storage_->endWrite();
+  open_ = false;
+  if (!committed) {
+    storage_->remove(name_);
+    failed_ = true;
+  }
+  return !failed_;
+}
+
+const PageCacheWriter::IndexChunk* PageCacheWriter::chunkFor(uint32_t pageIndex) const {
+  const IndexChunk* chunk = firstChunk_;
+  for (uint32_t hops = pageIndex / IndexChunk::kEntries; hops > 0 && chunk != nullptr; --hops) {
+    chunk = chunk->next;
+  }
+  return chunk;
+}
+
+uint32_t PageCacheWriter::charStart(uint32_t pageIndex) const {
+  if (pageIndex >= pageCount_) return 0;
+  const IndexChunk* chunk = chunkFor(pageIndex);
+  return chunk != nullptr ? chunk->charStarts[pageIndex % IndexChunk::kEntries] : 0;
+}
+
+uint32_t PageCacheWriter::pageForChar(uint32_t charOffset) const {
+  if (pageCount_ == 0) return 0;
+  // Linear over the chunk list — a giant chapter is ~6 chunks; this runs on
+  // position restore, not per page turn.
+  uint32_t best = 0;
+  const IndexChunk* chunk = firstChunk_;
+  for (uint32_t i = 0; i < pageCount_ && chunk != nullptr; ++i) {
+    const uint32_t slot = i % IndexChunk::kEntries;
+    if (chunk->charStarts[slot] <= charOffset) best = i;
+    if (slot == IndexChunk::kEntries - 1) chunk = chunk->next;
+  }
+  return best;
+}
+
+bool PageCacheWriter::charForAnchor(uint32_t idHash, uint32_t* charOut) const {
+  for (uint32_t a = 0; a < anchorCount_; ++a) {
+    if (anchorHashes_[a] == idHash) {
+      *charOut = anchorChars_[a];
+      return true;
+    }
+  }
+  return false;
+}
+
+BookStatus PageCacheWriter::readPage(uint32_t pageIndex, Arena& scratch, Page* out) {
+  if (!open_ || failed_) return BookStatus::NotFound;
+  if (pageIndex >= pageCount_) return BookStatus::NotFound;
+  const IndexChunk* chunk = chunkFor(pageIndex);
+  if (chunk == nullptr) return BookStatus::NotFound;
+  const uint32_t blobOffset = chunk->offsets[pageIndex % IndexChunk::kEntries];
+  uint32_t blobEnd = writeOffset_;
+  if (pageIndex + 1 < pageCount_) {
+    const IndexChunk* nextChunk =
+        (pageIndex + 1) % IndexChunk::kEntries == 0 ? chunk->next : chunk;
+    if (nextChunk == nullptr) return BookStatus::NotFound;
+    blobEnd = nextChunk->offsets[(pageIndex + 1) % IndexChunk::kEntries];
+  }
+  if (blobEnd <= blobOffset || blobEnd - blobOffset > kMaxBlobSize) return BookStatus::Stale;
+  const uint32_t blobLen = blobEnd - blobOffset;
+
+  uint8_t* blob = static_cast<uint8_t*>(scratch.alloc(blobLen, 4));
+  if (blob == nullptr) return BookStatus::OutOfMemory;
+  uint32_t got = 0;
+  while (got < blobLen) {
+    const int32_t n = storage_->readBackAt(blobOffset + got, blob + got, blobLen - got);
+    if (n <= 0) return BookStatus::IoError;  // readBackAt unsupported or short
+    got += static_cast<uint32_t>(n);
+  }
+  return decodePageBlob(blob, blobLen, pageIndex, scratch, out);
 }
 
 // --- reader ------------------------------------------------------------------
@@ -293,18 +409,35 @@ BookStatus PageCacheReader::open(CacheStorage& storage, const char* name, uint32
   if (getU16(header + 4) != kFormatVersion) return BookStatus::Stale;
   if (getU32(header + 8) != expectedHash) return BookStatus::Stale;
 
-  uint8_t footer[kFooterSize];
-  if (!readFully(storage, name, static_cast<uint32_t>(size) - kFooterSize, footer, sizeof(footer))) {
+  // The trailing magic tells final ("FIBX", 24-byte footer) from partial
+  // ("FIBx", 32-byte footer with build-progress fields) — see
+  // PageCacheWriter::suspend(). A torn write matches neither: Stale.
+  uint8_t magic[4];
+  if (!readFully(storage, name, static_cast<uint32_t>(size) - 4, magic, sizeof(magic))) {
     return BookStatus::IoError;
   }
-  if (memcmp(footer + 20, "FIBX", 4) != 0) return BookStatus::Stale;  // torn write
+  isPartial_ = memcmp(magic, "FIBx", 4) == 0;
+  buildBytesConsumed_ = 0;
+  buildBytesTotal_ = 0;
+  if (!isPartial_ && memcmp(magic, "FIBX", 4) != 0) return BookStatus::Stale;  // torn write
+  const uint32_t footerSize = isPartial_ ? kPartialFooterSize : kFooterSize;
+  if (size < static_cast<int64_t>(kHeaderSize + footerSize)) return BookStatus::Stale;
+
+  uint8_t footer[kPartialFooterSize];
+  if (!readFully(storage, name, static_cast<uint32_t>(size) - footerSize, footer, footerSize)) {
+    return BookStatus::IoError;
+  }
   indexOffset_ = getU32(footer);
   const uint32_t pageCount = getU32(footer + 4);
   const uint32_t anchorOffset = getU32(footer + 8);
   const uint32_t anchorCount = getU32(footer + 12);
   totalChars_ = getU32(footer + 16);
+  if (isPartial_) {
+    buildBytesConsumed_ = getU32(footer + 20);
+    buildBytesTotal_ = getU32(footer + 24);
+  }
   if (indexOffset_ < kHeaderSize ||
-      static_cast<int64_t>(anchorOffset) + static_cast<int64_t>(anchorCount) * 8 + kFooterSize !=
+      static_cast<int64_t>(anchorOffset) + static_cast<int64_t>(anchorCount) * 8 + footerSize !=
           size ||
       static_cast<int64_t>(indexOffset_) + static_cast<int64_t>(pageCount) * 8 !=
           static_cast<int64_t>(anchorOffset)) {
@@ -380,7 +513,15 @@ BookStatus PageCacheReader::readPage(uint32_t pageIndex, Arena& scratch, Page* o
   if (!readFully(*storage_, name_, blobOffset, blob, blobLen)) {
     return BookStatus::IoError;
   }
+  return decodePageBlob(blob, blobLen, pageIndex, scratch, out);
+}
 
+// Decodes one serialized page blob into a Page whose records/strings live in
+// `scratch`. Shared by PageCacheReader::readPage (final files) and
+// PageCacheWriter::readPage (mid-build read-back of the open write stream).
+static BookStatus decodePageBlob(const uint8_t* blob, uint32_t blobLen, uint32_t pageIndex,
+                                 Arena& scratch, Page* out) {
+  if (blobLen < 10) return BookStatus::Stale;
   const uint32_t charStart = getU32(blob);
   const uint16_t runCount = getU16(blob + 4);
   const uint16_t imageCount = getU16(blob + 6);

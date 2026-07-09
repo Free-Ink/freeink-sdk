@@ -5,96 +5,22 @@
 #include <string.h>
 
 #include "epub/XmlSax.h"
+#include "XmlUtil.h"
 
 namespace freeink {
 namespace book {
 
+using xmlutil::attrExact;
+using xmlutil::attrLocal;
+using xmlutil::hasToken;
+using xmlutil::kMaxTextCapture;
+using xmlutil::localIs;
+using xmlutil::TextCapture;
+
 namespace {
 
 constexpr size_t kMaxPath = 512;
-constexpr size_t kMaxTextCapture = 255;
 constexpr int kMaxTocDepth = 255;
-
-// EPUB documents bind namespace prefixes inconsistently ("dc:title",
-// "opf:item", or no prefix at all), so elements and attributes are matched on
-// the local part of the qualified name.
-const char* localName(const char* qname) {
-  const char* colon = strrchr(qname, ':');
-  return colon != nullptr ? colon + 1 : qname;
-}
-
-bool localIs(const char* qname, const char* local) {
-  return strcmp(localName(qname), local) == 0;
-}
-
-const char* attrLocal(const char** atts, const char* local) {
-  for (int i = 0; atts != nullptr && atts[i] != nullptr; i += 2) {
-    if (localIs(atts[i], local)) return atts[i + 1];
-  }
-  return nullptr;
-}
-
-const char* attrExact(const char** atts, const char* qname) {
-  for (int i = 0; atts != nullptr && atts[i] != nullptr; i += 2) {
-    if (strcmp(atts[i], qname) == 0) return atts[i + 1];
-  }
-  return nullptr;
-}
-
-// True when `value` contains `token` as a whitespace-separated word (for
-// attributes like properties="nav scripted").
-bool hasToken(const char* value, const char* token) {
-  if (value == nullptr) return false;
-  const size_t tokenLen = strlen(token);
-  const char* p = value;
-  while (*p != '\0') {
-    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') ++p;
-    const char* start = p;
-    while (*p != '\0' && *p != ' ' && *p != '\t' && *p != '\n' && *p != '\r') ++p;
-    if (static_cast<size_t>(p - start) == tokenLen && strncmp(start, token, tokenLen) == 0) {
-      return true;
-    }
-  }
-  return false;
-}
-
-// Fixed-capacity accumulator for element text (titles, labels). Content
-// beyond the cap is truncated, never overflowed.
-struct TextCapture {
-  char buf[kMaxTextCapture + 1];
-  size_t len = 0;
-  bool active = false;
-
-  void begin() {
-    active = true;
-    len = 0;
-    buf[0] = '\0';
-  }
-  void end() { active = false; }
-  void add(const char* text, int textLen) {
-    if (!active || textLen <= 0) return;
-    size_t n = static_cast<size_t>(textLen);
-    if (len + n > kMaxTextCapture) n = kMaxTextCapture - len;
-    memcpy(buf + len, text, n);
-    len += n;
-    buf[len] = '\0';
-  }
-  // Trims leading/trailing ASCII whitespace in place and returns the string.
-  const char* trimmed() {
-    size_t start = 0;
-    while (start < len && (buf[start] == ' ' || buf[start] == '\t' || buf[start] == '\n' ||
-                           buf[start] == '\r')) {
-      ++start;
-    }
-    size_t stop = len;
-    while (stop > start && (buf[stop - 1] == ' ' || buf[stop - 1] == '\t' ||
-                            buf[stop - 1] == '\n' || buf[stop - 1] == '\r')) {
-      --stop;
-    }
-    buf[stop] = '\0';
-    return buf + start;
-  }
-};
 
 int hexDigit(char c) {
   if (c >= '0' && c <= '9') return c - '0';
@@ -225,6 +151,22 @@ class PackageHandler : public XmlHandler {
   PackageHandler(Mode mode, Arena& bookArena, const char* opfDir)
       : mode_(mode), arena_(bookArena), opfDir_(opfDir) {}
 
+  // A book repeats a handful of media types across its whole manifest —
+  // "application/xhtml+xml" alone appears once per chapter (1,700+ times in
+  // webnovel omnibuses; ~38 KB of duplicate strdup). Intern: same string,
+  // allocated once.
+  const char* internMediaType(const char* mediaType) {
+    for (uint8_t i = 0; i < internedCount_; ++i) {
+      if (strcmp(interned_[i], mediaType) == 0) return interned_[i];
+    }
+    const char* copy = arena_.strdup(mediaType);
+    if (copy != nullptr && internedCount_ < kMaxInterned) interned_[internedCount_++] = copy;
+    return copy;
+  }
+  static constexpr uint8_t kMaxInterned = 12;
+  const char* interned_[kMaxInterned] = {};
+  uint8_t internedCount_ = 0;
+
   void onStartElement(const char* name, const char** atts) override {
     if (localIs(name, "metadata")) {
       ++inMetadata_;
@@ -262,7 +204,7 @@ class PackageHandler : public XmlHandler {
           item.id = arena_.strdup(id);
           item.idHash = ZipCatalog::hashPath(id);
           item.href = resolveHref(arena_, opfDir_, href, nullptr);
-          item.mediaType = mediaType != nullptr ? arena_.strdup(mediaType) : "";
+          item.mediaType = mediaType != nullptr ? internMediaType(mediaType) : "";
           const char* properties = attrLocal(atts, "properties");
           item.isNav = hasToken(properties, "nav");
           item.isCoverImage = hasToken(properties, "cover-image");

@@ -59,9 +59,26 @@ class PageCacheWriter : public PageSink {
   bool failed() const { return failed_; }
   uint32_t pageCount() const { return pageCount_; }
 
- private:
-  bool writeRaw(const void* data, uint32_t len);
+  // --- Mid-build access (incremental layout) -------------------------------
+  // While a chapter is still building, the writer can serve the pages it has
+  // already written: the index lives in its chunk list, and the blob bytes
+  // come back through CacheStorage::readBackAt(). This is what lets the
+  // reader UI show page N while layout continues past it.
+  BookStatus readPage(uint32_t pageIndex, Arena& scratch, Page* out);
+  uint32_t charStart(uint32_t pageIndex) const;
+  // Last written page whose charStart <= charOffset (0 when none yet).
+  uint32_t pageForChar(uint32_t charOffset) const;
+  bool charForAnchor(uint32_t idHash, uint32_t* charOut) const;
 
+  // Commits the build-so-far as a PARTIAL cache file: index + anchors + a
+  // partial footer carrying `bytesConsumed`/`bytesTotal` (input-side build
+  // progress, for estimated-total display) and the chars extracted so far.
+  // PageCacheReader::open() accepts the partial (isPartial() true) so a
+  // reopened book serves these pages instantly while a fresh background
+  // build re-lays the rest. The writer is closed afterwards.
+  bool suspend(uint32_t bytesConsumed, uint32_t bytesTotal);
+
+ private:
   // The page index accumulates as a chunk list allocated on demand, so a
   // typical 10-30 page chapter costs one ~1 KB chunk instead of the full
   // kMaxPages reservation (which on the small tier is 8 KB the host cannot
@@ -73,12 +90,19 @@ class PageCacheWriter : public PageSink {
     IndexChunk* next;
   };
 
+  bool writeRaw(const void* data, uint32_t len);
+  const IndexChunk* chunkFor(uint32_t pageIndex) const;
+  // Streams the page index + anchor table; shared by finish() and suspend().
+  bool writeIndexAndAnchors(uint32_t* indexOffsetOut, uint32_t* anchorOffsetOut);
+
   // Profile-tiered like the layout capacities (BookProfile.h): the small
   // tier trades pathological single-spine books for a smaller anchor table.
 #if FREEINK_BOOK_PROFILE == FREEINK_BOOK_PROFILE_SMALL
-  // 1024 pages is ~1.5 M chars of chapter at small-profile page density —
-  // multiples beyond any sanely-authored chapter.
-  static constexpr uint32_t kMaxPages = 1024;
+  // With the chunked index the cap costs nothing up front — the build arena
+  // is the real limit (~8 B/page as chunks). Whole-novel single-spine files
+  // exceed 1024 pages routinely (observed: 1174), so the cap matches the
+  // standard tier and exists only as a runaway backstop.
+  static constexpr uint32_t kMaxPages = 4096;
   static constexpr uint32_t kMaxAnchors = 192;
 #elif FREEINK_BOOK_PROFILE == FREEINK_BOOK_PROFILE_LARGE
   static constexpr uint32_t kMaxPages = 8192;
@@ -110,6 +134,17 @@ class PageCacheReader {
   // Index data (8 bytes per page) and a copy of `name` are read into `arena`
   // and stay valid until that arena resets.
   BookStatus open(CacheStorage& storage, const char* name, uint32_t expectedHash, Arena& arena);
+
+  // True when the file is a suspended partial build (see
+  // PageCacheWriter::suspend): pageCount() is a watermark, not the chapter
+  // total, and totalChars() covers only the built prefix. Callers serve
+  // these pages immediately and rebuild the rest in the background.
+  bool isPartial() const { return isPartial_; }
+  // Input-side progress the partial was suspended at — the basis for an
+  // estimated total page count (pageCount / consumed * total). 0 on final
+  // caches.
+  uint32_t buildBytesConsumed() const { return buildBytesConsumed_; }
+  uint32_t buildBytesTotal() const { return buildBytesTotal_; }
 
   uint32_t pageCount() const { return pageCount_; }
   uint32_t charStart(uint32_t pageIndex) const {
@@ -143,6 +178,9 @@ class PageCacheReader {
   uint32_t totalChars_ = 0;
   uint32_t pageCount_ = 0;
   uint32_t indexOffset_ = 0;
+  uint32_t buildBytesConsumed_ = 0;
+  uint32_t buildBytesTotal_ = 0;
+  bool isPartial_ = false;
 };
 
 }  // namespace book

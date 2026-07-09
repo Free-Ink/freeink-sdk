@@ -290,6 +290,143 @@ void testMemoryIndependence() {
 // one ~100 KB block does not exist). Also asserts each side's ceiling: the
 // split is only useful if BOTH arenas stay comfortably under a single-block
 // budget.
+// Resumable layout: a stepped session must deliver byte-identical pages to
+// the one-shot call (which is itself the session pumped to completion), take
+// multiple steps to finish a big chapter, and respect the raw-chapterSource
+// mode (chapter bytes from an extracted file, image probes from the book).
+void testChapterLayoutSession() {
+  FakeFont font;
+  LayoutParams params = stickyParams(font);
+
+  // Reference: one-shot layout of the big generated chapter.
+  uint32_t refPages = 0;
+  char refText[16 * 1024];
+  {
+    OpenedBook opened;
+    CHECK(opened.open("minimal.epub"));
+    const ZipEntry* entry = opened.book.zip().find("OEBPS/text/ch2.xhtml");
+    CHECK(entry != nullptr);
+    CollectSink sink(params, font);
+    CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry,
+                                                    entry->name, params, opened.scratch, sink,
+                                                    &refPages)),
+             static_cast<int>(BookStatus::Ok));
+    std::snprintf(refText, sizeof(refText), "%.*s", static_cast<int>(sizeof(refText) - 1),
+                  sink.text);
+  }
+  CHECK(refPages > 50);  // the fixture really is a big chapter
+
+  // Stepped: 4 pages per step; identical output, genuinely incremental.
+  {
+    OpenedBook opened;
+    CHECK(opened.open("minimal.epub"));
+    const ZipEntry* entry = opened.book.zip().find("OEBPS/text/ch2.xhtml");
+    CHECK(entry != nullptr);
+    CollectSink sink(params, font);
+    ChapterLayoutSession session;
+    CHECK_EQ(static_cast<int>(session.begin(opened.source, &opened.book.zip(), opened.source,
+                                            *entry, entry->name, params, opened.scratch, sink)),
+             static_cast<int>(BookStatus::Ok));
+    uint32_t steps = 0;
+    uint64_t lastConsumed = 0;
+    while (!session.done()) {
+      CHECK_EQ(static_cast<int>(session.step(4)), static_cast<int>(BookStatus::Ok));
+      CHECK(session.bytesConsumed() >= lastConsumed);  // monotonic input progress
+      lastConsumed = session.bytesConsumed();
+      ++steps;
+      CHECK(steps < 100000u);  // no livelock
+    }
+    CHECK(steps > 5);  // it really ran incrementally, not one big gulp
+    CHECK_EQ(session.pagesEmitted(), refPages);
+    CHECK(std::strncmp(sink.text, refText, std::strlen(refText)) == 0);
+    CHECK_EQ(sink.geometryViolations, 0);
+    CHECK(session.totalChars() > 0);
+  }
+
+  // Raw chapterSource: extract the IMAGE chapter to a buffer, lay it out as
+  // a headerless stored entry with probes still resolving via the book zip.
+  {
+    OpenedBook opened;
+    CHECK(opened.open("minimal.epub"));
+    const ZipEntry* entry = opened.book.zip().find("OEBPS/text/ch5.xhtml");
+    CHECK(entry != nullptr);
+
+    // One-shot reference for the image chapter.
+    uint32_t imgRefPages = 0;
+    char imgRefText[16 * 1024];
+    {
+      CollectSink sink(params, font);
+      const size_t mark = opened.scratch.mark();
+      CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry,
+                                                      entry->name, params, opened.scratch, sink,
+                                                      &imgRefPages)),
+               static_cast<int>(BookStatus::Ok));
+      opened.scratch.release(mark);
+      std::snprintf(imgRefText, sizeof(imgRefText), "%.*s", static_cast<int>(sizeof(imgRefText) - 1),
+                    sink.text);
+    }
+
+    // Extract the chapter bytes (the app does this to SD; here to a buffer).
+    static uint8_t extracted[64 * 1024];
+    uint32_t extractedLen = 0;
+    {
+      const size_t mark = opened.scratch.mark();
+      ZipEntryReader reader;
+      CHECK_EQ(static_cast<int>(reader.open(opened.source, *entry, opened.scratch)),
+               static_cast<int>(BookStatus::Ok));
+      for (;;) {
+        const int32_t n = reader.read(extracted + extractedLen,
+                                      static_cast<uint32_t>(sizeof(extracted) - extractedLen));
+        CHECK(n >= 0);
+        if (n <= 0) break;
+        extractedLen += static_cast<uint32_t>(n);
+      }
+      opened.scratch.release(mark);
+    }
+    CHECK_EQ(extractedLen, entry->uncompressedSize);
+
+    class MemSource : public BookSource {
+     public:
+      MemSource(const uint8_t* data, uint32_t len) : data_(data), len_(len) {}
+      int32_t readAt(uint64_t offset, void* dst, uint32_t len) override {
+        if (offset >= len_) return 0;
+        const uint32_t n = static_cast<uint32_t>(
+            len < len_ - static_cast<uint32_t>(offset) ? len : len_ - static_cast<uint32_t>(offset));
+        std::memcpy(dst, data_ + offset, n);
+        return static_cast<int32_t>(n);
+      }
+      uint64_t size() const override { return len_; }
+
+     private:
+      const uint8_t* data_;
+      uint32_t len_;
+    };
+    MemSource chapterSource(extracted, extractedLen);
+    const ZipEntry rawEntry = ZipEntryReader::rawEntry(extractedLen);
+
+    class ImageCountingSink : public CollectSink {
+     public:
+      ImageCountingSink(const LayoutParams& p, BookFont& f) : CollectSink(p, f) {}
+      bool onPage(const Page& page) override {
+        images += page.imageCount;
+        return CollectSink::onPage(page);
+      }
+      uint32_t images = 0;
+    };
+    ImageCountingSink sink(params, font);
+    ChapterLayoutSession session;
+    CHECK_EQ(static_cast<int>(session.begin(opened.source, &opened.book.zip(), chapterSource,
+                                            rawEntry, entry->name, params, opened.scratch, sink)),
+             static_cast<int>(BookStatus::Ok));
+    while (!session.done()) {
+      CHECK_EQ(static_cast<int>(session.step(2)), static_cast<int>(BookStatus::Ok));
+    }
+    CHECK_EQ(session.pagesEmitted(), imgRefPages);
+    CHECK(std::strncmp(sink.text, imgRefText, std::strlen(imgRefText)) == 0);
+    CHECK(sink.images > 0);  // the image really laid out via book-side probes
+  }
+}
+
 void testSplitParseArena() {
   FakeFont font;
   LayoutParams params = stickyParams(font);
@@ -513,7 +650,7 @@ void testStyledChapter() {
 
   auto findRun = [&](const char* prefix) -> const PageTextRun* {
     for (uint32_t r = 0; r < rs.count; ++r) {
-      if (std::strncmp(rs.runText[r], prefix, std::strlen(prefix)) == 0) return &rs.runs[r];
+      if (std::strstr(rs.runText[r], prefix) != nullptr) return &rs.runs[r];
     }
     return nullptr;
   };
@@ -572,6 +709,158 @@ void testStyledChapter() {
   const PageTextRun* inlineBold = findRun("INLINE-BOLD-MARKER");
   CHECK(inlineBold != nullptr);
   CHECK((inlineBold->styleFlags & StyleBold) != 0);
+}
+
+void testInlineFontSizes() {
+  OpenedBook opened;
+  CHECK(opened.open("minimal.epub"));
+
+  FakeFont font;
+  LayoutParams params = stickyParams(font);
+  params.pageWidth = 220;
+  static uint8_t sheetBuf[32 * 1024];
+  Arena sheetArena(sheetBuf, sizeof(sheetBuf));
+  CssStylesheetBuilder builder;
+  CHECK(builder.begin(sheetArena));
+  const char css[] =
+      ".em120 { font-size: 1.2em }\n"
+      ".em070 { font-size: 0.7em }\n"
+      ".outer150 { font-size: 1.5em }\n"
+      ".inner050 { font-size: 0.5em }\n"
+      ".rem060 { font-size: 0.6rem }\n"
+      ".opener { font-size: 1.6em }\n"
+      ".footnote { font-size: 80% }\n"
+      ".sup { vertical-align: super; font-size: 0.7em }\n"
+      ".huge400 { font-size: 400% }\n"
+      ".tiny10 { font-size: 10% }\n";
+  builder.addText(css, sizeof(css) - 1);
+  static CssStylesheet sheet;
+  sheet = builder.finish();
+  params.stylesheet = &sheet;
+
+  struct RunSink : PageSink {
+    struct Line {
+      uint32_t page;
+      int16_t baselineY;
+      uint16_t maxSizePx;
+    };
+    bool onPage(const Page& page) override {
+      int16_t lastBaseline = -1;
+      for (uint16_t r = 0; r < page.runCount && count < 256; ++r) {
+        runs[count] = page.runs[r];
+        char* copy = text + textUsed;
+        std::memcpy(copy, page.runs[r].text, page.runs[r].len);
+        copy[page.runs[r].len] = '\0';
+        textUsed += page.runs[r].len + 1;
+        runText[count] = copy;
+        ++count;
+
+        if (page.runs[r].baselineY != lastBaseline && lineCount < 128) {
+          lines[lineCount++] = {page.pageIndex, page.runs[r].baselineY, page.runs[r].sizePx};
+          lastBaseline = page.runs[r].baselineY;
+        } else if (lineCount > 0 && page.runs[r].sizePx > lines[lineCount - 1].maxSizePx) {
+          lines[lineCount - 1].maxSizePx = page.runs[r].sizePx;
+        }
+      }
+      return true;
+    }
+    PageTextRun runs[256];
+    const char* runText[256];
+    uint32_t count = 0;
+    Line lines[128];
+    uint32_t lineCount = 0;
+    char text[32 * 1024];
+    uint32_t textUsed = 0;
+  } rs;
+
+  const ZipEntry* entry = opened.book.zip().find("OEBPS/text/font_sizes.xhtml");
+  CHECK(entry != nullptr);
+  CHECK_EQ(static_cast<int>(ChapterLayout::layout(opened.source, opened.book.zip(), *entry,
+                                                  entry->name, params, opened.scratch, rs,
+                                                  nullptr)),
+           static_cast<int>(BookStatus::Ok));
+
+  auto findRun = [&](const char* prefix) -> const PageTextRun* {
+    for (uint32_t r = 0; r < rs.count; ++r) {
+      if (std::strstr(rs.runText[r], prefix) != nullptr) return &rs.runs[r];
+    }
+    return nullptr;
+  };
+
+  const PageTextRun* small = findRun("SMALLTAG");
+  CHECK(small != nullptr);
+  if (small != nullptr) CHECK_EQ(small->sizePx, 12);
+  const PageTextRun* big = findRun("BIGTAG");
+  CHECK(big != nullptr);
+  if (big != nullptr) CHECK_EQ(big->sizePx, 19);
+  const PageTextRun* doubleSmall = findRun("DOUBLESMALL");
+  CHECK(doubleSmall != nullptr);
+  if (doubleSmall != nullptr) CHECK_EQ(doubleSmall->sizePx, 10);
+  const PageTextRun* sup = findRun("SUPTAG");
+  CHECK(sup != nullptr);
+  if (sup != nullptr) {
+    CHECK_EQ(sup->sizePx, 8);
+    CHECK((sup->styleFlags & StyleSuperscript) != 0);
+  }
+  const PageTextRun* sub = findRun("SUBTAG");
+  CHECK(sub != nullptr);
+  if (sub != nullptr) {
+    CHECK_EQ(sub->sizePx, 8);
+    CHECK((sub->styleFlags & StyleSubscript) != 0);
+  }
+
+  const PageTextRun* inline070 = findRun("INLINE070");
+  CHECK(inline070 != nullptr);
+  if (inline070 != nullptr) CHECK_EQ(inline070->sizePx, 11);
+  const PageTextRun* marginLeft = findRun("MARGINLEFT3EM");
+  CHECK(marginLeft != nullptr);
+  if (marginLeft != nullptr) {
+    CHECK_EQ(marginLeft->x, params.marginLeft + 48);
+    CHECK_EQ(marginLeft->sizePx, 11);
+  }
+  const PageTextRun* em120 = findRun("EM120");
+  CHECK(em120 != nullptr);
+  if (em120 != nullptr) CHECK_EQ(em120->sizePx, 19);
+  const PageTextRun* outer = findRun("OUTER150");
+  CHECK(outer != nullptr);
+  if (outer != nullptr) CHECK_EQ(outer->sizePx, 24);
+  const PageTextRun* inner = findRun("INNER075");
+  CHECK(inner != nullptr);
+  if (inner != nullptr) CHECK_EQ(inner->sizePx, 12);
+  const PageTextRun* rem = findRun("REM060");
+  CHECK(rem != nullptr);
+  if (rem != nullptr) CHECK_EQ(rem->sizePx, 9);
+
+  const PageTextRun* opener = findRun("OPENER160");
+  CHECK(opener != nullptr);
+  if (opener != nullptr) CHECK_EQ(opener->sizePx, 25);
+  const PageTextRun* footnote = findRun("FOOTNOTE080");
+  CHECK(footnote != nullptr);
+  if (footnote != nullptr) CHECK_EQ(footnote->sizePx, 12);
+
+  const PageTextRun* supCss = findRun("SUPCSS42");
+  CHECK(supCss != nullptr);
+  if (supCss != nullptr) {
+    CHECK_EQ(supCss->sizePx, 11);
+    CHECK((supCss->styleFlags & StyleSuperscript) != 0);
+  }
+
+  const PageTextRun* huge = findRun("HUGEWORD");
+  CHECK(huge != nullptr);
+  if (huge != nullptr) CHECK_EQ(huge->sizePx, 40);  // 400% clamps to 250% of 16.
+  const PageTextRun* tiny = findRun("TINYWORD");
+  CHECK(tiny != nullptr);
+  if (tiny != nullptr) CHECK_EQ(tiny->sizePx, 4);  // 10% clamps to 30% of 16.
+
+  int overlapRisk = 0;
+  for (uint32_t i = 1; i < rs.lineCount; ++i) {
+    if (rs.lines[i].page != rs.lines[i - 1].page) continue;
+    if (rs.lines[i - 1].maxSizePx >= 40 &&
+        rs.lines[i].baselineY - rs.lines[i - 1].baselineY < 44) {
+      ++overlapRisk;
+    }
+  }
+  CHECK_EQ(overlapRisk, 0);
 }
 
 void testHyphenation(const Hyphenator& hyphenator) {
@@ -1568,8 +1857,10 @@ int main(int argc, char** argv) {
   testMemoryIndependence();
   testEarlyStop();
   testSplitParseArena();
+  testChapterLayoutSession();
   testCssUnit();
   testStyledChapter();
+  testInlineFontSizes();
   testHyphenation(hyphenator);
   testKerningAffectsMeasurement();
   testWidowOrphan();

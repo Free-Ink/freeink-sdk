@@ -7,6 +7,7 @@
 #include "epub/MinizConfig.h"
 #include "epub/PackageParsers.h"
 #include "epub/XmlSax.h"
+#include "epub/XmlUtil.h"
 
 #include <stdio.h>
 
@@ -15,33 +16,7 @@
 namespace freeink {
 namespace book {
 
-namespace {
-
-// META-INF/encryption.xml does NOT always mean DRM: retail EPUBs routinely
-// declare only obfuscated embedded fonts (IDPF or Adobe mangling), which the
-// engine never reads anyway. Only actual content encryption (ADEPT, LCP —
-// anything beyond the two font-obfuscation algorithms) makes a book
-// unreadable.
-class EncryptionScan : public XmlHandler {
- public:
-  void onStartElement(const char* name, const char** atts) override {
-    const char* colon = strrchr(name, ':');
-    const char* local = colon != nullptr ? colon + 1 : name;
-    if (strcmp(local, "EncryptionMethod") != 0) return;
-    for (int i = 0; atts != nullptr && atts[i] != nullptr; i += 2) {
-      const char* acolon = strrchr(atts[i], ':');
-      const char* alocal = acolon != nullptr ? acolon + 1 : atts[i];
-      if (strcmp(alocal, "Algorithm") != 0) continue;
-      const char* alg = atts[i + 1];
-      const bool fontObfuscation = strcmp(alg, "http://www.idpf.org/2008/embedding") == 0 ||
-                                   strcmp(alg, "http://ns.adobe.com/pdf/enc#RC") == 0;
-      if (!fontObfuscation) contentEncrypted = true;
-    }
-  }
-  bool contentEncrypted = false;
-};
-
-}  // namespace
+using xmlutil::EncryptionScan;
 
 const char* vendorVersions() {
   static char buf[96];

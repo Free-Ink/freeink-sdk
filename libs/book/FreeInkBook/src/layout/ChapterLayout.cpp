@@ -10,6 +10,8 @@
 
 #include "layout/ChapterLayout.h"
 
+#include <new>
+
 #include "BookProfile.h"
 
 #include <stdio.h>
@@ -563,12 +565,14 @@ CssDecl elementDefaults(const char* local) {
   } else if (strcmp(local, "i") == 0 || strcmp(local, "em") == 0 || strcmp(local, "cite") == 0) {
     d.styleItalic = 1;
   } else if (strcmp(local, "small") == 0) {
-    d.sizePct = 87;
+    d.sizePct = 80;
+  } else if (strcmp(local, "big") == 0) {
+    d.sizePct = 120;
   } else if (strcmp(local, "sub") == 0) {
-    d.sizePct = 75;
+    d.sizePct = 50;
     d.vertAlign = 2;
   } else if (strcmp(local, "sup") == 0) {
-    d.sizePct = 75;
+    d.sizePct = 50;
     d.vertAlign = 1;
   } else if (strcmp(local, "u") == 0 || strcmp(local, "ins") == 0) {
     d.underline = 1;
@@ -779,6 +783,11 @@ class LayoutEngine : public XmlHandler {
     }
     if (hasInline) decl.applyOver(inlineDecl);
     pushState(decl);
+    if (decl.marginLeftPct >= 0) {
+      pendingMarginRootPct_ += static_cast<uint32_t>(currentSizePct()) *
+                               static_cast<uint16_t>(decl.marginLeftPct) / 100;
+      noteStyleChange();
+    }
 
     // id="" anchors: record the chapter char offset for link/footnote jumps.
     if (const char* id = attrLocal(atts, "id")) {
@@ -898,6 +907,7 @@ class LayoutEngine : public XmlHandler {
     uint16_t start;
     uint8_t flags;
     uint16_t sizePct;
+    uint16_t marginBeforeRootPct;
     uint8_t link;  // 0 = none, else 1-based index into parLinks_
   };
 
@@ -908,6 +918,7 @@ class LayoutEngine : public XmlHandler {
     uint16_t spaceCount;   // adjustable spaces (Latin justification)
     uint16_t cjkGaps;      // CJ boundaries (inter-character justification)
     uint16_t hangulGaps;   // Hangul boundaries — stretch only on space-less lines
+    uint8_t maxSizePct;
     uint8_t flags;
   };
 
@@ -935,8 +946,10 @@ class LayoutEngine : public XmlHandler {
     const ElemState& parent = stack_[stackTop_];
     ElemState next = parent;
     if (decl.sizePct != 0) {
-      const uint32_t scaled = static_cast<uint32_t>(parent.sizePct) * decl.sizePct / 100;
-      next.sizePct = static_cast<uint16_t>(scaled < 25 ? 25 : (scaled > 400 ? 400 : scaled));
+      const uint32_t scaled = decl.sizeRootRelative
+                                  ? decl.sizePct
+                                  : static_cast<uint32_t>(parent.sizePct) * decl.sizePct / 100;
+      next.sizePct = static_cast<uint16_t>(scaled < 30 ? 30 : (scaled > 250 ? 250 : scaled));
     }
     if (decl.weightBold == 1) next.flags |= StyleBold;
     if (decl.weightBold == 0) next.flags &= static_cast<uint8_t>(~StyleBold);
@@ -970,20 +983,35 @@ class LayoutEngine : public XmlHandler {
   uint8_t currentFlags() const { return stack_[stackTop_].flags; }
   uint16_t currentSizePct() const { return stack_[stackTop_].sizePct; }
 
+  uint16_t currentPendingMarginRootPct() const {
+    return pendingMarginRootPct_ > 65535u ? 65535u : static_cast<uint16_t>(pendingMarginRootPct_);
+  }
+
   // --- paragraph accumulation ------------------------------------------------
 
   void noteStyleChange() {
     if (spanCount_ == 0) return;  // paragraph text not started yet
     const uint8_t flags = currentFlags();
     const uint16_t sizePct = currentSizePct();
+    const uint16_t marginBeforeRootPct = currentPendingMarginRootPct();
     Span& last = spans_[spanCount_ - 1];
-    if (last.flags == flags && last.sizePct == sizePct && last.link == currentLink_) return;
+    if (last.flags == flags && last.sizePct == sizePct && last.link == currentLink_ &&
+        marginBeforeRootPct == 0) {
+      return;
+    }
     if (last.start == parLen_) {
       last.flags = flags;
       last.sizePct = sizePct;
       last.link = currentLink_;
+      last.marginBeforeRootPct = static_cast<uint16_t>(
+          last.marginBeforeRootPct + marginBeforeRootPct > 65535u
+              ? 65535u
+              : last.marginBeforeRootPct + marginBeforeRootPct);
+      pendingMarginRootPct_ = 0;
     } else if (spanCount_ < kMaxSpans) {
-      spans_[spanCount_++] = {static_cast<uint16_t>(parLen_), flags, sizePct, currentLink_};
+      spans_[spanCount_++] = {static_cast<uint16_t>(parLen_), flags, sizePct,
+                              marginBeforeRootPct, currentLink_};
+      pendingMarginRootPct_ = 0;
     }
   }
 
@@ -997,7 +1025,9 @@ class LayoutEngine : public XmlHandler {
       continued_ = true;  // continuation lines get no first-line indent
     }
     if (spanCount_ == 0) {
-      spans_[spanCount_++] = {0, currentFlags(), currentSizePct(), currentLink_};
+      spans_[spanCount_++] = {0, currentFlags(), currentSizePct(),
+                              currentPendingMarginRootPct(), currentLink_};
+      pendingMarginRootPct_ = 0;
     }
     parText_[parLen_++] = c;
   }
@@ -1020,6 +1050,7 @@ class LayoutEngine : public XmlHandler {
     resetParagraphLinks();
     parLen_ = 0;
     spanCount_ = 0;
+    pendingMarginRootPct_ = 0;
     pendingSpace_ = false;
   }
 
@@ -1035,6 +1066,7 @@ class LayoutEngine : public XmlHandler {
     resetParagraphLinks();
     parLen_ = 0;
     spanCount_ = 0;
+    pendingMarginRootPct_ = 0;
     pendingSpace_ = false;
   }
 
@@ -1043,14 +1075,21 @@ class LayoutEngine : public XmlHandler {
                                 params_.lineSpacingPct / 100);
   }
 
+  uint16_t sizePxForPct(uint16_t sizePct) const {
+    const uint32_t size = static_cast<uint32_t>(params_.baseSizePx) * sizePct / 100;
+    return static_cast<uint16_t>(size < 1 ? 1 : size);
+  }
+
   uint16_t paragraphSizePx() const {
-    const uint32_t size = static_cast<uint32_t>(params_.baseSizePx) * para_.sizePct / 100;
-    return static_cast<uint16_t>(size < 8 ? 8 : size);
+    return sizePxForPct(para_.sizePct);
   }
 
   uint16_t spanSizePx(const Span& span) const {
-    const uint32_t size = static_cast<uint32_t>(params_.baseSizePx) * span.sizePct / 100;
-    return static_cast<uint16_t>(size < 8 ? 8 : size);
+    return sizePxForPct(span.sizePct);
+  }
+
+  int32_t marginBeforePx(const Span& span) const {
+    return static_cast<int32_t>(params_.baseSizePx) * span.marginBeforeRootPct / 100;
   }
 
   const Span& spanAt(uint32_t byteOffset) const {
@@ -1211,6 +1250,10 @@ class LayoutEngine : public XmlHandler {
     while (i < to) {
       const uint32_t charStart = i;
       const Span& span = spanAt(charStart);
+      if (charStart == span.start && span.marginBeforeRootPct > 0) {
+        width += marginBeforePx(span);
+        prev = 0;
+      }
       const uint32_t cp = decodeShaped(to, i, span);
       width += advanceFor(cp, prev, span, focusExtra(charStart));
       prev = cp;
@@ -1302,7 +1345,11 @@ class LayoutEngine : public XmlHandler {
       const uint32_t charStart = i;
       const Span& shapeSpan = spanAt(charStart);
       const uint32_t cp = decodeShaped(parLen_, i, shapeSpan);
-      const int32_t adv = advanceFor(cp, prevCp, shapeSpan, focusExtra(charStart));
+      const int32_t leadingMargin =
+          charStart == shapeSpan.start ? marginBeforePx(shapeSpan) : 0;
+      const int32_t adv =
+          leadingMargin + advanceFor(cp, leadingMargin > 0 ? 0 : prevCp, shapeSpan,
+                                     focusExtra(charStart));
 
       if (cp != '\n' && lineWidth + adv > maxWidth && charStart > lineStart) {
         // Try a hyphen inside the overflowing word first; it beats breaking
@@ -1361,13 +1408,19 @@ class LayoutEngine : public XmlHandler {
     rec.start = start;
     rec.end = end;
     rec.flags = flags;
+    rec.maxSizePct = static_cast<uint8_t>(para_.sizePct > 255 ? 255 : para_.sizePct);
     rec.spaceCount = 0;
     rec.cjkGaps = 0;
     rec.hangulGaps = 0;
     uint32_t prev = 0;
     uint32_t i = start;
     while (i < end) {
+      const uint32_t charStart = i;
       const uint32_t cp = decodeUtf8(parText_, end, i);
+      const uint16_t charSizePct = spanAt(charStart).sizePct;
+      if (charSizePct > rec.maxSizePct) {
+        rec.maxSizePct = static_cast<uint8_t>(charSizePct > 255 ? 255 : charSizePct);
+      }
       if (cp == ' ') {
         ++rec.spaceCount;
       } else if (prev != 0 && isCjk(prev) && isCjk(cp) &&
@@ -1392,7 +1445,6 @@ class LayoutEngine : public XmlHandler {
       return;
     }
     const uint16_t sizePx = paragraphSizePx();
-    const int16_t lineHeight = lineHeightFor(sizePx);
     advanceY(static_cast<int16_t>(static_cast<int32_t>(sizePx) * para_.spaceBeforePct *
                                   params_.paragraphSpacingPct / 10000));
 
@@ -1400,8 +1452,14 @@ class LayoutEngine : public XmlHandler {
 
     uint32_t idx = 0;
     while (idx < lineCount_ && !failed_ && !stopParse) {
-      const int32_t availPx = (params_.pageHeight - params_.marginBottom) - pageY_;
-      uint32_t avail = availPx > 0 ? static_cast<uint32_t>(availPx / lineHeight) : 0;
+      int32_t availPx = (params_.pageHeight - params_.marginBottom) - pageY_;
+      uint32_t avail = 0;
+      for (uint32_t probe = idx; probe < lineCount_ && availPx > 0; ++probe) {
+        const int16_t lineHeight = lineHeightFor(sizePxForPct(lines_[probe].maxSizePct));
+        if (lineHeight > availPx) break;
+        availPx -= lineHeight;
+        ++avail;
+      }
       const uint32_t remaining = lineCount_ - idx;
       const bool hasContent = runCount_ > 0 || pageY_ > params_.marginTop;
 
@@ -1424,7 +1482,9 @@ class LayoutEngine : public XmlHandler {
       }
 
       for (uint32_t l = 0; l < take && !failed_ && !stopParse; ++l) {
-        placeLine(lines_[idx + l], sizePx, lineHeight, idx + l == 0);
+        const uint16_t lineBoxSizePx = sizePxForPct(lines_[idx + l].maxSizePct);
+        placeLine(lines_[idx + l], sizePx, lineBoxSizePx, lineHeightFor(lineBoxSizePx),
+                  idx + l == 0);
       }
       idx += take;
       if (idx < lineCount_ && !stopParse) emitPage();
@@ -1435,6 +1495,7 @@ class LayoutEngine : public XmlHandler {
     parCharBase_ += countChars(parText_, parLen_);
     parLen_ = 0;
     spanCount_ = 0;
+    pendingMarginRootPct_ = 0;
     pendingSpace_ = false;
     continued_ = false;
   }
@@ -1453,7 +1514,8 @@ class LayoutEngine : public XmlHandler {
     uint8_t extraFlags;   // style added beyond the span's (focus-reading bold)
   };
 
-  void placeLine(const LineRec& rec, uint16_t sizePx, int16_t lineHeight, bool firstLine) {
+  void placeLine(const LineRec& rec, uint16_t sizePx, uint16_t lineBoxSizePx,
+                 int16_t lineHeight, bool firstLine) {
     if (rec.end == rec.start) {  // blank line (e.g. double <br/>)
       pageY_ += lineHeight;
       return;
@@ -1495,7 +1557,7 @@ class LayoutEngine : public XmlHandler {
     const int32_t perGap = justify ? leftover / static_cast<int32_t>(gaps) : 0;
     int32_t gapRemainder = justify ? leftover % static_cast<int32_t>(gaps) : 0;
 
-    int16_t baselineY = static_cast<int16_t>(pageY_ + params_.font->ascent(sizePx));
+    int16_t baselineY = static_cast<int16_t>(pageY_ + params_.font->ascent(lineBoxSizePx));
 
     // --- collect segments in LOGICAL order -----------------------------------
     Seg segs[64];
@@ -1611,6 +1673,9 @@ class LayoutEngine : public XmlHandler {
         } else if (logicalOwner.compressBefore) {
           x -= spanSizePx(*logicalOwner.span) / 2;  // punctuation pair overlap
         }
+      }
+      if (sg.start == sg.span->start && sg.span->marginBeforeRootPct > 0) {
+        x += marginBeforePx(*sg.span);
       }
       const bool lastLogical = sg.end == rec.end;
       const bool addHyphen = lastLogical && (rec.flags & kLineHyphen) != 0 && !paraRtl_;
@@ -1729,6 +1794,7 @@ class LayoutEngine : public XmlHandler {
 
   uint32_t parLen_ = 0;
   uint16_t spanCount_ = 0;
+  uint32_t pendingMarginRootPct_ = 0;
   uint32_t lineCount_ = 0;
   ParaStyle para_{100, StyleNone, TextAlign::Left, 0, 0, 0, 40};
   bool pendingSpace_ = false;
@@ -1767,69 +1833,191 @@ class LayoutEngine : public XmlHandler {
 
 }  // namespace
 
+namespace {
+
+// Image pre-scan: gather image hrefs in a collector parse (reading the
+// chapter from `chapterSource`), then probe each target's dimensions in the
+// BOOK container with only one inflate stream alive at a time. The table
+// sits below the layout buffers; everything else the pre-scan used is
+// released before the main parse, so the chapter peak stays at the
+// text-chapter level. Failures here are non-fatal — the main parse reports
+// real errors, and unprobed images fall back to the inline probe.
+void prescanImages(BookSource& bookSource, const ZipCatalog* zip, BookSource& chapterSource,
+                   const ZipEntry& entry, const char* chapterHref, Arena& scratch,
+                   Arena& parseArena, ProbedImage** probedOut, uint16_t* probedCountOut) {
+  *probedOut = nullptr;
+  *probedCountOut = 0;
+  if (zip == nullptr) return;
+  const size_t tableMark = scratch.mark();
+  ProbedImage* probed = nullptr;
+  uint16_t probedCount = 0;
+  if (entryMentionsImages(chapterSource, entry, parseArena)) {
+    probed = scratch.allocArray<ProbedImage>(kMaxProbedImages);
+    if (probed != nullptr) {
+      ImageCollector collector(chapterHref, scratch, probed, kMaxProbedImages);
+      if (XmlSax::parseEntry(chapterSource, entry, parseArena, collector,
+                             /*filterHtmlEntities=*/true) == BookStatus::Ok ||
+          collector.count() > 0) {
+        probedCount = collector.count();
+        // Resolve each collected href through the catalog's hash lookup (the
+        // same name hash find() keys on) -- virtual, so an SD-backed catalog
+        // serves this without an in-RAM entry table. A missing target keeps
+        // kind=Unknown and layout skips the image, exactly as the inline
+        // probe path did.
+        for (uint16_t i = 0; i < probedCount; ++i) {
+          const ZipEntry* target = zip->findByHash(probed[i].hrefHash);
+          if (target != nullptr) probeImage(bookSource, *target, parseArena, &probed[i].info);
+        }
+      }
+    }
+    if (probedCount == 0) {
+      scratch.release(tableMark);  // reclaim the unused table
+      probed = nullptr;
+    }
+  }
+  // No parseArena release here: every helper above self-releases its own
+  // allocations, and in single-arena mode a release to a pre-table mark
+  // would clobber the probed table (parseArena aliases scratch then).
+  *probedOut = probed;
+  *probedCountOut = probedCount;
+}
+
+}  // namespace
+
+// --- ChapterLayoutSession ----------------------------------------------------
+
+class ChapterLayoutSession::CountingSink : public PageSink {
+ public:
+  explicit CountingSink(PageSink& inner) : inner_(inner) {}
+  void onAnchor(uint32_t idHash, uint32_t charStart) override {
+    inner_.onAnchor(idHash, charStart);
+  }
+  bool onPage(const Page& page) override {
+    ++pages_;
+    return inner_.onPage(page);
+  }
+  uint32_t pages() const { return pages_; }
+
+ private:
+  PageSink& inner_;
+  uint32_t pages_ = 0;
+};
+
+BookStatus ChapterLayoutSession::begin(BookSource& bookSource, const ZipCatalog* zip,
+                                       BookSource& chapterSource, const ZipEntry& entry,
+                                       const char* chapterHref, const LayoutParams& params,
+                                       Arena& scratch, PageSink& sink, Arena* parseScratch,
+                                       Arena* prescanScratch) {
+  abort();
+  if (params.font == nullptr || params.pageWidth <= 0 || params.pageHeight <= 0) {
+    return BookStatus::Unsupported;
+  }
+  Arena& parseArena = parseScratch != nullptr ? *parseScratch : scratch;
+  Arena& prescanArena = prescanScratch != nullptr ? *prescanScratch : parseArena;
+  bytesTotal_ = entry.uncompressedSize;
+
+  ProbedImage* probed = nullptr;
+  uint16_t probedCount = 0;
+  prescanImages(bookSource, zip, chapterSource, entry, chapterHref, scratch, prescanArena, &probed,
+                &probedCount);
+
+  auto* counting =
+      static_cast<CountingSink*>(scratch.alloc(sizeof(CountingSink), alignof(CountingSink)));
+  auto* engine =
+      static_cast<LayoutEngine*>(scratch.alloc(sizeof(LayoutEngine), alignof(LayoutEngine)));
+  if (counting == nullptr || engine == nullptr) return BookStatus::OutOfMemory;
+  counting = new (counting) CountingSink(sink);
+  engine = new (engine) LayoutEngine(bookSource, zip, chapterHref, params, scratch, *counting,
+                                     probed, probedCount, &parseArena);
+  countingSink_ = counting;
+  engine_ = engine;
+  if (!engine->init()) {
+    state_ = State::Failed;
+    return BookStatus::OutOfMemory;
+  }
+
+  const BookStatus st = sax_.open(chapterSource, entry, parseArena, *engine,
+                                  /*filterHtmlEntities=*/true);
+  if (st != BookStatus::Ok) {
+    state_ = State::Failed;
+    return st;
+  }
+  state_ = State::Parsing;
+  return BookStatus::Ok;
+}
+
+BookStatus ChapterLayoutSession::step(uint32_t minNewPages) {
+  if (state_ == State::Done) return BookStatus::Ok;
+  if (state_ != State::Parsing) return BookStatus::Unsupported;
+  auto* engine = static_cast<LayoutEngine*>(engine_);
+  auto* counting = static_cast<CountingSink*>(countingSink_);
+
+  const uint32_t startPages = counting->pages();
+  bool atEnd = false;
+  BookStatus status = BookStatus::Ok;
+  while (!atEnd && !engine->stopParse && counting->pages() - startPages < minNewPages) {
+    status = sax_.feedChunk(&atEnd);
+    if (status != BookStatus::Ok) break;
+  }
+  if (status == BookStatus::Ok && (atEnd || engine->stopParse)) {
+    if (!engine->finish()) status = BookStatus::OutOfMemory;
+    if (status == BookStatus::Ok && engine->outOfMemory()) status = BookStatus::OutOfMemory;
+    sax_.close();
+    state_ = status == BookStatus::Ok ? State::Done : State::Failed;
+    return status;
+  }
+  if (status != BookStatus::Ok) {
+    if (status != BookStatus::OutOfMemory && engine->outOfMemory()) {
+      status = BookStatus::OutOfMemory;
+    }
+    sax_.close();
+    state_ = State::Failed;
+  }
+  return status;
+}
+
+uint32_t ChapterLayoutSession::pagesEmitted() const {
+  return countingSink_ != nullptr ? static_cast<const CountingSink*>(countingSink_)->pages() : 0;
+}
+
+uint32_t ChapterLayoutSession::totalChars() const {
+  return engine_ != nullptr ? static_cast<const LayoutEngine*>(engine_)->totalChars() : 0;
+}
+
+void ChapterLayoutSession::abort() {
+  sax_.close();
+  if (engine_ != nullptr) {
+    static_cast<LayoutEngine*>(engine_)->~LayoutEngine();
+    engine_ = nullptr;
+  }
+  if (countingSink_ != nullptr) {
+    static_cast<CountingSink*>(countingSink_)->~CountingSink();
+    countingSink_ = nullptr;
+  }
+  bytesTotal_ = 0;
+  state_ = State::Idle;
+}
+
 BookStatus ChapterLayout::layout(BookSource& source, const ZipCatalog& zip,
                                  const ZipEntry& entry, const char* chapterHref,
                                  const LayoutParams& params, Arena& scratch, PageSink& sink,
                                  uint32_t* pageCountOut, uint32_t* totalCharsOut,
                                  Arena* parseScratch) {
-  if (params.font == nullptr || params.pageWidth <= 0 || params.pageHeight <= 0) {
-    return BookStatus::Unsupported;
-  }
+  // One-shot = a session pumped to completion; a single code path keeps
+  // stepped and blocking layouts byte-identical by construction.
   const size_t marked = scratch.mark();
-  // Parse-side allocations (inflate state + XML chunks) go to their own
-  // arena when the caller provides one — see the header note.
   Arena& parseArena = parseScratch != nullptr ? *parseScratch : scratch;
   const size_t parseMarked = parseArena.mark();
 
-  // Image pre-scan: gather image hrefs in a collector parse, then probe each
-  // target's dimensions with only one inflate stream alive at a time. The
-  // table sits below the layout buffers; everything else the pre-scan used is
-  // released before the main parse, so the chapter peak stays at the
-  // text-chapter level. Failures here are non-fatal — the main parse reports
-  // real errors, and unprobed images fall back to the inline probe.
-  ProbedImage* probed = nullptr;
-  uint16_t probedCount = 0;
-  if (entryMentionsImages(source, entry, parseArena)) {
-    probed = scratch.allocArray<ProbedImage>(kMaxProbedImages);
-    if (probed != nullptr) {
-      ImageCollector collector(chapterHref, scratch, probed, kMaxProbedImages);
-      if (XmlSax::parseEntry(source, entry, parseArena, collector,
-                             /*filterHtmlEntities=*/true) == BookStatus::Ok ||
-          collector.count() > 0) {
-        probedCount = collector.count();
-        // One pass over the catalog, matched by the same name hash find()
-        // keys on. A missing target keeps kind=Unknown and layout skips the
-        // image, exactly as the inline probe path did.
-        for (size_t e = 0; e < zip.entryCount() && probedCount > 0; ++e) {
-          const ZipEntry* target = zip.entry(e);
-          for (uint16_t i = 0; i < probedCount; ++i) {
-            if (probed[i].hrefHash == target->nameHash) {
-              probeImage(source, *target, parseArena, &probed[i].info);
-              break;
-            }
-          }
-        }
-      }
-    }
-    if (probedCount == 0) {
-      scratch.release(marked);  // reclaim the unused table
-      probed = nullptr;
-    }
+  ChapterLayoutSession session;
+  BookStatus status =
+      session.begin(source, &zip, source, entry, chapterHref, params, scratch, sink, parseScratch);
+  while (status == BookStatus::Ok && !session.done()) {
+    status = session.step(UINT32_MAX);
   }
-
-  LayoutEngine engine(source, &zip, chapterHref, params, scratch, sink, probed, probedCount,
-                      &parseArena);
-  if (!engine.init()) {
-    scratch.release(marked);
-    parseArena.release(parseMarked);
-    return BookStatus::OutOfMemory;
-  }
-  BookStatus status = XmlSax::parseEntry(source, entry, parseArena, engine,
-                                         /*filterHtmlEntities=*/true);
-  if (status == BookStatus::Ok && !engine.finish()) status = BookStatus::OutOfMemory;
-  if (status == BookStatus::Ok && engine.outOfMemory()) status = BookStatus::OutOfMemory;
-  if (pageCountOut != nullptr) *pageCountOut = engine.pageCount();
-  if (totalCharsOut != nullptr) *totalCharsOut = engine.totalChars();
+  if (pageCountOut != nullptr) *pageCountOut = session.pagesEmitted();
+  if (totalCharsOut != nullptr) *totalCharsOut = session.totalChars();
+  session.abort();
   scratch.release(marked);
   parseArena.release(parseMarked);
   return status;

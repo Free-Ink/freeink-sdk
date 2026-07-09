@@ -43,7 +43,8 @@ struct Cursor {
 };
 
 // Parses "<number><unit>" into % of em. Returns -1 if unusable.
-int32_t lengthToPct(const char* v, uint32_t len) {
+int32_t lengthToPct(const char* v, uint32_t len, bool* rootRelativeOut = nullptr) {
+  if (rootRelativeOut != nullptr) *rootRelativeOut = false;
   // number
   uint32_t i = 0;
   bool neg = false;
@@ -79,6 +80,7 @@ int32_t lengthToPct(const char* v, uint32_t len) {
     pct = whole * 100 + frac * 100 / fracDiv;
   } else if (unitLen == 3 && strncmp(unit, "rem", 3) == 0) {
     pct = whole * 100 + frac * 100 / fracDiv;
+    if (rootRelativeOut != nullptr) *rootRelativeOut = true;
   } else if (unitLen == 1 && unit[0] == '%') {
     pct = whole + (fracDiv > 1 ? frac / fracDiv : 0);
   } else if (unitLen == 2 && strncmp(unit, "px", 2) == 0) {
@@ -118,8 +120,12 @@ void applyDeclaration(CssDecl* decl, const char* prop, uint32_t propLen, const c
     else if (valueIs("x-large")) decl->sizePct = 150;
     else if (valueIs("xx-large")) decl->sizePct = 200;
     else {
-      const int32_t pct = lengthToPct(value, valueLen);
-      if (pct > 0) decl->sizePct = static_cast<uint16_t>(pct > 400 ? 400 : pct);
+      bool rootRelative = false;
+      const int32_t pct = lengthToPct(value, valueLen, &rootRelative);
+      if (pct > 0) {
+        decl->sizePct = static_cast<uint16_t>(pct > 400 ? 400 : pct);
+        decl->sizeRootRelative = rootRelative;
+      }
     }
   } else if (propIs("font-weight")) {
     if (valueIs("bold") || valueIs("bolder")) decl->weightBold = 1;
@@ -136,6 +142,9 @@ void applyDeclaration(CssDecl* decl, const char* prop, uint32_t propLen, const c
   } else if (propIs("text-indent")) {
     const int32_t pct = lengthToPct(value, valueLen);
     if (pct >= 0) decl->textIndentPct = static_cast<int16_t>(pct > 1000 ? 1000 : pct);
+  } else if (propIs("margin-left")) {
+    const int32_t pct = lengthToPct(value, valueLen);
+    if (pct >= 0) decl->marginLeftPct = static_cast<int16_t>(pct > 1000 ? 1000 : pct);
   } else if (propIs("margin-top")) {
     const int32_t pct = lengthToPct(value, valueLen);
     if (pct >= 0) decl->marginTopPct = static_cast<int16_t>(pct > 1000 ? 1000 : pct);
@@ -162,8 +171,11 @@ void applyDeclaration(CssDecl* decl, const char* prop, uint32_t propLen, const c
       const int32_t top = lengthToPct(parts[0], partLens[0]);
       const uint32_t bottomIdx = count >= 3 ? 2 : 0;
       const int32_t bottom = lengthToPct(parts[bottomIdx], partLens[bottomIdx]);
+      const uint32_t leftIdx = count >= 4 ? 3 : (count >= 2 ? 1 : 0);
+      const int32_t left = lengthToPct(parts[leftIdx], partLens[leftIdx]);
       if (top >= 0) decl->marginTopPct = static_cast<int16_t>(top > 1000 ? 1000 : top);
       if (bottom >= 0) decl->marginBottomPct = static_cast<int16_t>(bottom > 1000 ? 1000 : bottom);
+      if (left >= 0) decl->marginLeftPct = static_cast<int16_t>(left > 1000 ? 1000 : left);
     }
   } else if (propIs("display")) {
     if (valueIs("none")) decl->displayNone = 1;
@@ -223,11 +235,15 @@ bool parseSimpleSelector(const char* sel, uint32_t len, uint32_t* elemHash,
 }  // namespace
 
 void CssDecl::applyOver(const CssDecl& over) {
-  if (over.sizePct != 0) sizePct = over.sizePct;
+  if (over.sizePct != 0) {
+    sizePct = over.sizePct;
+    sizeRootRelative = over.sizeRootRelative;
+  }
   if (over.weightBold >= 0) weightBold = over.weightBold;
   if (over.styleItalic >= 0) styleItalic = over.styleItalic;
   if (over.align != TextAlign::Inherit) align = over.align;
   if (over.textIndentPct >= 0) textIndentPct = over.textIndentPct;
+  if (over.marginLeftPct >= 0) marginLeftPct = over.marginLeftPct;
   if (over.marginTopPct >= 0) marginTopPct = over.marginTopPct;
   if (over.marginBottomPct >= 0) marginBottomPct = over.marginBottomPct;
   if (over.displayNone >= 0) displayNone = over.displayNone;

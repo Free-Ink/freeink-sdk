@@ -30,13 +30,21 @@ struct ZipEntry {
   uint16_t method = 0;         // 0 = stored, 8 = deflate
 };
 
+// find()/findByHash() are virtual so an SD-backed catalog (BookCatalog) can
+// present the same lookup surface to layout and rendering without holding the
+// in-RAM entry table this class builds.
 class ZipCatalog {
  public:
+  virtual ~ZipCatalog() = default;
+
   // Parses the central directory. Entry records and names are allocated from
   // `arena` and remain valid until that arena resets.
   BookStatus open(BookSource& source, Arena& arena);
 
-  const ZipEntry* find(const char* path) const;
+  virtual const ZipEntry* find(const char* path) const;
+  // Lookup by ZipCatalog::hashPath of the container path. Layout resolves
+  // image/link targets through pre-hashed hrefs, so this is the hot form.
+  virtual const ZipEntry* findByHash(uint32_t nameHash) const;
   size_t entryCount() const { return count_; }
   const ZipEntry* entry(size_t index) const {
     return index < count_ ? &entries_[index] : nullptr;
@@ -44,6 +52,11 @@ class ZipCatalog {
   BookSource* source() const { return source_; }
 
   static uint32_t hashPath(const char* path);
+
+  // Locates the end-of-central-directory record -- shared by open() and the
+  // container fingerprint that keys the SD-backed catalog.
+  static BookStatus locateCentralDirectory(BookSource& source, uint32_t* dirOffsetOut,
+                                           uint32_t* dirSizeOut, uint16_t* entryCountOut);
 
  private:
   BookSource* source_ = nullptr;
@@ -58,6 +71,24 @@ class ZipCatalog {
 // a negative value on error.
 class ZipEntryReader {
  public:
+  // Marks a synthetic entry as HEADERLESS: the source is the raw entry data
+  // itself (offset 0), not a ZIP container. See rawEntry().
+  static constexpr uint32_t kRawHeaderOffset = 0xFFFFFFFFu;
+
+  // Synthesizes an entry describing a raw stored byte range — e.g. a chapter
+  // previously extracted (inflated) to its own file so later layout passes
+  // can skip the ~46 KB inflate state. open() reads it from offset 0 without
+  // expecting a ZIP local header.
+  static ZipEntry rawEntry(uint32_t size) {
+    ZipEntry e;
+    e.name = "";
+    e.compressedSize = size;
+    e.uncompressedSize = size;
+    e.localHeaderOffset = kRawHeaderOffset;
+    e.method = 0;  // stored
+    return e;
+  }
+
   BookStatus open(BookSource& source, const ZipEntry& entry, Arena& scratch);
   int32_t read(void* dst, uint32_t len);
   uint32_t totalProduced() const { return produced_; }

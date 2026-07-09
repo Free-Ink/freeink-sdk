@@ -169,6 +169,22 @@ class FreeInkDisplay {
   // the heap cannot supply the buffers (the display is then unusable).
   bool reallocBuffers();
 
+  // Lend the primary framebuffer's STORAGE to a transient in-heap build (a
+  // chapter/catalog layout) WITHOUT freeing it. Unlike releaseBuffers() +
+  // reallocBuffers(), the allocation never moves: freeing and re-mallocing
+  // the 48 KB relocated it to a fresh heap position each cycle and
+  // progressively fragmented the (PSRAM-less) heap until large arenas could
+  // no longer be allocated. Here the caller borrows the framebuffer's own
+  // bytes as build scratch; rendering is unavailable (getFrameBuffer() is
+  // null) until returnBuildStorage(). Returns the buffer and its usable byte
+  // length; null if already lent. Single-buffer path only (the C3 case).
+  uint8_t* lendBuildStorage(uint32_t* sizeOut);
+
+  // Reclaim the storage lent by lendBuildStorage(): re-enables rendering and
+  // clears the framebuffer to white (the build overwrote it), so the caller
+  // must fully redraw. Cannot fail (no allocation). No-op if not lent.
+  void returnBuildStorage();
+
 #if FREEINK_FB_PSRAM
 #ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
   // Release only the secondary (previous-frame) buffer to free ~48-52 KB of
@@ -212,6 +228,7 @@ class FreeInkDisplay {
   bool _asyncPending = false;
   uint8_t* _asyncShadow = nullptr;
   bool _shadowValid = false;
+  bool _buildLent = false;  // framebuffer storage lent to a build (see lendBuildStorage)
 
   enum class PanelSel : uint8_t { X4, X3, M5 };
   PanelSel _panelSel = PanelSel::X4;

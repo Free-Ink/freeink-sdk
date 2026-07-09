@@ -1,0 +1,10 @@
+{
+  "name": "UsbMscGadget",
+  "version": "1.0.0",
+  "description": "FreeInk USB mass-storage gadget: device-mode MSC on the ESP32-S3/S2 USB-OTG port, exposing a wear-levelled internal-flash FAT partition to a host PC as a removable USB disk. Capability-gated by FREEINK_CAP_USB_MSC — compiles the TinyUSB/wear-levelling glue only when enabled AND the build runs the TinyUSB stack (-DARDUINO_USB_MODE=0), otherwise links stub bodies and references no USB code. The MSC LUN is always enumerated but reports no media until the consumer hands the partition over (startSession); the consumer owns filesystem unmount/remount policy around the session. NOTE: the TinyUSB/OTG stack displaces the S3's USB-Serial-JTAG console/debugger on the shared port — keep a -DARDUINO_USB_MODE=1 build env for JTAG debugging (see docs/usb-msc-gadget.md).",
+  "keywords": "usb, otg, msc, mass-storage, tinyusb, wear-levelling, fatfs, gadget",
+  "authors": [{"name": "FreeInk SDK Contributors"}],
+  "dependencies": {},
+  "platforms": "espressif32",
+  "frameworks": ["arduino"]
+}

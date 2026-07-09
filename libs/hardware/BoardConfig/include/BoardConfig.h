@@ -158,6 +158,18 @@
 #define FREEINK_BLE_HID_REQUIRE_MITM 0
 #endif
 
+// USB mass-storage gadget (device-mode MSC on the USB-OTG port). The
+// UsbMscGadget lib exposes a wear-levelled internal-flash FAT partition to a
+// host PC as a removable USB disk; it compiles its TinyUSB glue only when this
+// is set AND the build runs the TinyUSB stack (-DARDUINO_USB_MODE=0), otherwise
+// it links stub bodies and pulls in no USB code. Default off: it's an opt-in
+// feature, not board-derived. ESP32-S3/S2 only (USB-OTG required). NOTE: the
+// OTG stack displaces the S3's USB-Serial-JTAG console/debugger on the shared
+// port — keep a -DARDUINO_USB_MODE=1 env for JTAG (see docs/usb-msc-gadget.md).
+#ifndef FREEINK_CAP_USB_MSC
+#define FREEINK_CAP_USB_MSC 0
+#endif
+
 // I2C fuel-gauge battery backend. Compiled in when a build contains a gauge
 // device (X3's BQ27220, or LilyGo's BQ27220+BQ25896). Selection is then *runtime*
 // per active profile (BatteryMonitor uses the gauge only when

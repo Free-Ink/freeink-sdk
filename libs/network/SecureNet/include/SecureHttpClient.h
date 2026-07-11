@@ -33,6 +33,7 @@
 #include <cctype>
 #include <cstdint>
 #include <cstdlib>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -42,6 +43,9 @@ namespace freeink {
 
 class SecureHttpClient {
  public:
+  using DataCallback = std::function<bool(const uint8_t* data, size_t len)>;
+  using AbortCallback = std::function<bool()>;
+
   // Skip peer verification (SecureClient does likewise). Required today because
   // the wolfSSL transport has no CA bundle wired up; see setCACert().
   void setInsecure() { _insecure = true; }
@@ -69,6 +73,9 @@ class SecureHttpClient {
   }
 
   int GET() { return sendRequest("GET", nullptr, 0); }
+  int GET(const DataCallback& onData, const AbortCallback& shouldAbort = nullptr) {
+    return sendRequest("GET", nullptr, 0, onData, shouldAbort);
+  }
   int POST(const std::string& payload) {
     return sendRequest("POST", reinterpret_cast<const uint8_t*>(payload.data()), payload.size());
   }
@@ -81,8 +88,26 @@ class SecureHttpClient {
   // body (which may be empty or, on a mid-stream drop, truncated) is available
   // via getString().
   int sendRequest(const char* method, const uint8_t* payload, size_t payloadLen) {
+    return sendRequest(method, payload, payloadLen, [this](const uint8_t* data, size_t len) {
+      _body.append(reinterpret_cast<const char*>(data), len);
+      return true;
+    });
+  }
+
+  // Performs the request and streams the response body to `onData` as chunks
+  // arrive. Returns the HTTP status code, or -1 on transport/header failure.
+  // Inspect responseComplete(), callbackAborted(), and aborted() to distinguish
+  // an incomplete body from a caller-initiated stop.
+  int sendRequest(const char* method, const uint8_t* payload, size_t payloadLen, const DataCallback& onData,
+                  const AbortCallback& shouldAbort = nullptr) {
     _status = 0;
     _body.clear();
+    _responseHeaders.clear();
+    _contentLength = 0;
+    _haveContentLength = false;
+    _bodyComplete = false;
+    _callbackAborted = false;
+    _aborted = false;
 
     WiFiClient plain;
     SecureClient secure;
@@ -98,6 +123,7 @@ class SecureHttpClient {
       client = &plain;
     }
     client->setTimeout(_timeoutMs / 1000);
+    if (isAborted(shouldAbort)) return -1;
     if (!client->connect(_host.c_str(), _port)) return -1;
 
     std::string req =
@@ -110,17 +136,15 @@ class SecureHttpClient {
 
     const unsigned long headerDeadline = millis() + _timeoutMs;
     std::string line;
-    if (!readLine(*client, line, headerDeadline)) {
+    if (!readLine(*client, line, headerDeadline, shouldAbort)) {
       client->stop();
       return -1;
     }
     // "HTTP/1.1 200 OK" — the status code starts at offset 9.
     _status = line.size() >= 12 ? atoi(line.c_str() + 9) : 0;
 
-    size_t contentLength = 0;
-    bool haveLength = false;
     std::string transferEncoding;
-    while (readLine(*client, line, headerDeadline)) {
+    while (readLine(*client, line, headerDeadline, shouldAbort)) {
       if (line.empty()) break;  // end of headers
       const size_t colon = line.find(':');
       if (colon == std::string::npos) continue;
@@ -128,21 +152,30 @@ class SecureHttpClient {
       std::string value = line.substr(colon + 1);
       while (!value.empty() && value.front() == ' ') value.erase(value.begin());
       for (char& c : name) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+      _responseHeaders.push_back(Header{name, value});
       if (name == "content-length") {
-        contentLength = static_cast<size_t>(strtoul(value.c_str(), nullptr, 10));
-        haveLength = true;
+        _contentLength = static_cast<size_t>(strtoul(value.c_str(), nullptr, 10));
+        _haveContentLength = true;
       } else if (name == "transfer-encoding") {
         for (char& c : value) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
         transferEncoding = value;
       }
     }
+    if (_aborted) {
+      client->stop();
+      return -1;
+    }
 
     if (transferEncoding.find("chunked") != std::string::npos) {
-      readChunked(*client);
-    } else if (haveLength) {
-      readFixed(*client, contentLength);
+      _bodyComplete = readChunked(*client, onData, shouldAbort);
+    } else if (transferEncoding.empty() || transferEncoding == "identity") {
+      if (_haveContentLength) {
+        _bodyComplete = readFixed(*client, _contentLength, onData, shouldAbort);
+      } else {
+        _bodyComplete = readUntilClose(*client, onData, shouldAbort);
+      }
     } else {
-      readUntilClose(*client);
+      _bodyComplete = false;
     }
     client->stop();
     return _status;
@@ -151,11 +184,52 @@ class SecureHttpClient {
   const std::string& getString() const { return _body; }
   int getStatus() const { return _status; }
   int getSize() const { return static_cast<int>(_body.size()); }
+  bool responseComplete() const { return _bodyComplete; }
+  bool callbackAborted() const { return _callbackAborted; }
+  bool aborted() const { return _aborted; }
+  bool hasContentLength() const { return _haveContentLength; }
+  size_t getContentLength() const { return _contentLength; }
+
+  std::string getHeader(const std::string& headerName) const {
+    std::string normalized = headerName;
+    for (char& c : normalized) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+    for (const Header& header : _responseHeaders) {
+      if (header.name == normalized) return header.value;
+    }
+    return "";
+  }
+
+  static bool resolveUrl(const std::string& baseUrl, const std::string& location, std::string& resolved) {
+    if (location.find("://") != std::string::npos) {
+      resolved = location;
+      return true;
+    }
+    std::string scheme;
+    std::string host;
+    std::string path;
+    uint16_t port = 0;
+    if (!parseUrl(baseUrl, scheme, host, path, port)) return false;
+    const std::string authority = hostHeaderFor(scheme, host, port);
+    if (!location.empty() && location[0] == '/') {
+      resolved = scheme + "://" + authority + location;
+      return true;
+    }
+    std::string parent = path;
+    const size_t slash = parent.rfind('/');
+    parent = slash == std::string::npos ? "/" : parent.substr(0, slash + 1);
+    resolved = scheme + "://" + authority + parent + location;
+    return true;
+  }
 
   // True if the library was built with wolfSSL TLS 1.3 support enabled.
   static bool tls13Available() { return SecureClient::tls13Available(); }
 
  private:
+  struct Header {
+    std::string name;
+    std::string value;
+  };
+
   static bool parseUrl(const std::string& url, std::string& scheme, std::string& host, std::string& path,
                        uint16_t& port) {
     const size_t schemeEnd = url.find("://");
@@ -178,16 +252,37 @@ class SecureHttpClient {
   }
 
   std::string hostHeader() const {
-    const uint16_t defaultPort = _scheme == "https" ? 443 : 80;
-    if (_port == 0 || _port == defaultPort) return _host;
-    return _host + ":" + std::to_string(_port);
+    return hostHeaderFor(_scheme, _host, _port);
+  }
+
+  static std::string hostHeaderFor(const std::string& scheme, const std::string& host, uint16_t port) {
+    const uint16_t defaultPort = scheme == "https" ? 443 : 80;
+    if (port == 0 || port == defaultPort) return host;
+    return host + ":" + std::to_string(port);
+  }
+
+  bool isAborted(const AbortCallback& shouldAbort) {
+    if (shouldAbort && shouldAbort()) {
+      _aborted = true;
+      return true;
+    }
+    return false;
+  }
+
+  bool emitBody(const DataCallback& onData, const uint8_t* data, size_t len) {
+    if (!onData(data, len)) {
+      _callbackAborted = true;
+      return false;
+    }
+    return true;
   }
 
   // Reads one CRLF-terminated line (CR stripped). Returns false on timeout, a
   // closed connection with no pending data, or an over-long line.
-  bool readLine(Client& c, std::string& line, unsigned long deadline) {
+  bool readLine(Client& c, std::string& line, unsigned long deadline, const AbortCallback& shouldAbort = nullptr) {
     line.clear();
     while (static_cast<int32_t>(millis() - deadline) < 0) {
+      if (isAborted(shouldAbort)) return false;
       while (c.available() > 0) {
         const int ch = c.read();
         if (ch < 0) break;
@@ -204,61 +299,64 @@ class SecureHttpClient {
     return false;
   }
 
-  // Appends exactly `count` body bytes (or fewer if the stream ends early).
-  void readFixed(Client& c, size_t count) {
+  // Streams exactly `count` body bytes.
+  bool readFixed(Client& c, size_t count, const DataCallback& onData, const AbortCallback& shouldAbort = nullptr) {
     uint8_t buf[READ_CHUNK];
     size_t remaining = count;
     unsigned long deadline = millis() + _timeoutMs;
     while (remaining > 0) {
+      if (isAborted(shouldAbort)) return false;
       const size_t want = remaining < sizeof(buf) ? remaining : sizeof(buf);
       const int n = c.read(buf, want);
       if (n <= 0) {
-        if (!c.connected() && c.available() == 0) return;
-        if (static_cast<int32_t>(millis() - deadline) >= 0) return;
+        if (!c.connected() && c.available() == 0) return false;
+        if (static_cast<int32_t>(millis() - deadline) >= 0) return false;
         delay(2);
         continue;
       }
       deadline = millis() + _timeoutMs;
-      _body.append(reinterpret_cast<const char*>(buf), static_cast<size_t>(n));
+      if (!emitBody(onData, buf, static_cast<size_t>(n))) return false;
       remaining -= static_cast<size_t>(n);
     }
+    return true;
   }
 
-  // Appends body bytes until the peer closes (Connection: close, no length).
-  void readUntilClose(Client& c) {
+  // Streams body bytes until the peer closes (Connection: close, no length).
+  bool readUntilClose(Client& c, const DataCallback& onData, const AbortCallback& shouldAbort = nullptr) {
     uint8_t buf[READ_CHUNK];
     unsigned long deadline = millis() + _timeoutMs;
     for (;;) {
+      if (isAborted(shouldAbort)) return false;
       const int n = c.read(buf, sizeof(buf));
       if (n <= 0) {
-        if (!c.connected() && c.available() == 0) return;
-        if (static_cast<int32_t>(millis() - deadline) >= 0) return;
+        if (!c.connected() && c.available() == 0) return true;
+        if (static_cast<int32_t>(millis() - deadline) >= 0) return false;
         delay(2);
         continue;
       }
       deadline = millis() + _timeoutMs;
-      _body.append(reinterpret_cast<const char*>(buf), static_cast<size_t>(n));
+      if (!emitBody(onData, buf, static_cast<size_t>(n))) return false;
     }
   }
 
-  // Decodes a chunked body into _body. Stops at the zero-size chunk (then
-  // drains any trailers) or on a truncated read.
-  void readChunked(Client& c) {
+  // Decodes a chunked body. Stops at the zero-size chunk and drains trailers.
+  bool readChunked(Client& c, const DataCallback& onData, const AbortCallback& shouldAbort = nullptr) {
     std::string line;
     for (;;) {
-      if (!readLine(c, line, millis() + _timeoutMs)) return;
+      if (isAborted(shouldAbort)) return false;
+      if (!readLine(c, line, millis() + _timeoutMs, shouldAbort)) return false;
       const size_t ext = line.find(';');
-      const unsigned long size = strtoul((ext == std::string::npos ? line : line.substr(0, ext)).c_str(), nullptr, 16);
+      const std::string sizeText = ext == std::string::npos ? line : line.substr(0, ext);
+      char* end = nullptr;
+      const unsigned long size = strtoul(sizeText.c_str(), &end, 16);
+      if (end == sizeText.c_str()) return false;
       if (size == 0) {
-        while (readLine(c, line, millis() + _timeoutMs) && !line.empty()) {
+        while (readLine(c, line, millis() + _timeoutMs, shouldAbort) && !line.empty()) {
         }
-        return;
+        return !_aborted;
       }
-      const size_t before = _body.size();
-      readFixed(c, size);
-      if (_body.size() - before < size) return;  // truncated mid-chunk
-      readLine(c, line,
-               millis() + _timeoutMs);  // consume the data's trailing CRLF
+      if (!readFixed(c, size, onData, shouldAbort)) return false;
+      if (!readLine(c, line, millis() + _timeoutMs, shouldAbort)) return false;  // consume trailing CRLF
     }
   }
 
@@ -269,10 +367,16 @@ class SecureHttpClient {
   std::string _host;
   std::string _path;
   std::string _body;
+  std::vector<Header> _responseHeaders;
   uint16_t _port = 0;
   int _status = 0;
+  size_t _contentLength = 0;
   const char* _rootCA = nullptr;
   bool _insecure = false;
+  bool _haveContentLength = false;
+  bool _bodyComplete = false;
+  bool _callbackAborted = false;
+  bool _aborted = false;
   uint32_t _timeoutMs = 15000;
   std::vector<std::string> _headers;
 };

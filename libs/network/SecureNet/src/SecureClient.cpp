@@ -40,6 +40,11 @@ int wcRecv(WOLFSSL* /*ssl*/, char* buf, int sz, void* ctx) {
   if (n <= 0) return WOLFSSL_CBIO_ERR_WANT_READ;
   return n;
 }
+
+bool isWantIo(const int err) {
+  return err == WOLFSSL_ERROR_WANT_READ || err == WOLFSSL_ERROR_WANT_WRITE || err == WOLFSSL_CBIO_ERR_WANT_READ ||
+         err == WOLFSSL_CBIO_ERR_WANT_WRITE;
+}
 }  // namespace
 
 int SecureClient::connectWithMethod(const char* host, uint16_t port, void* method, const char* label) {
@@ -73,7 +78,7 @@ int SecureClient::connectWithMethod(const char* host, uint16_t port, void* metho
   int ret;
   while ((ret = wolfSSL_connect(ssl)) != WOLFSSL_SUCCESS) {
     const int err = wolfSSL_get_error(ssl, ret);
-    if (err != WOLFSSL_ERROR_WANT_READ && err != WOLFSSL_ERROR_WANT_WRITE) {
+    if (!isWantIo(err)) {
       if (Serial) Serial.printf("[SecureClient] wolfSSL_connect failed (%s): %d\n", label, err);
       stop();
       return 0;
@@ -122,7 +127,7 @@ int SecureClient::read(uint8_t* buf, size_t size) {
   if (n > 0) return n;
 
   const int err = wolfSSL_get_error(ssl, n);
-  if (err == WOLFSSL_ERROR_WANT_READ || err == WOLFSSL_ERROR_WANT_WRITE) return 0;
+  if (isWantIo(err)) return 0;
   if (err == WOLFSSL_ERROR_ZERO_RETURN) {
     _connected = false;
     return 0;

@@ -360,8 +360,8 @@ class SecureHttpClient {
     }
   }
 
-  static constexpr size_t READ_CHUNK = 128;  // body read buffer (small: kept on stack)
-  static constexpr size_t MAX_LINE = 4096;   // header / chunk-size line cap
+  static constexpr size_t READ_CHUNK = 1024;  // body read buffer; keep TLS downloads moving
+  static constexpr size_t MAX_LINE = 4096;    // header / chunk-size line cap
 
   std::string _scheme;
   std::string _host;

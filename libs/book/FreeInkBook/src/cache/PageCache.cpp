@@ -65,8 +65,9 @@ static BookStatus decodePageBlob(const uint8_t* blob, uint32_t blobLen, uint32_t
 // Bump when layout BEHAVIOR changes without a format change (ligatures,
 // breaking rules, spacing math) — stale caches would otherwise render with
 // mismatched widths after a firmware update.
-constexpr uint32_t kLayoutRevision = 8;  // 8: inline CSS sizes/margins + line box sizing
-                                         // (7: image dimension pre-scan,
+constexpr uint32_t kLayoutRevision = 9;  // 9: uniform per-paragraph line grid (CrossPoint parity)
+                                         // (8: inline CSS sizes/margins + line box sizing,
+                                         //  7: image dimension pre-scan,
                                          //  6: focus reading + non-ASCII hyphenation,
                                          //  5: Korean/CJ punct, 4: Arabic, 3: bidi, 2: ligatures)
 

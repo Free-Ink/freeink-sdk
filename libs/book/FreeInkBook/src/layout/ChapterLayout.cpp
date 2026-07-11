@@ -918,7 +918,6 @@ class LayoutEngine : public XmlHandler {
     uint16_t spaceCount;   // adjustable spaces (Latin justification)
     uint16_t cjkGaps;      // CJ boundaries (inter-character justification)
     uint16_t hangulGaps;   // Hangul boundaries — stretch only on space-less lines
-    uint8_t maxSizePct;
     uint8_t flags;
   };
 
@@ -1408,19 +1407,13 @@ class LayoutEngine : public XmlHandler {
     rec.start = start;
     rec.end = end;
     rec.flags = flags;
-    rec.maxSizePct = static_cast<uint8_t>(para_.sizePct > 255 ? 255 : para_.sizePct);
     rec.spaceCount = 0;
     rec.cjkGaps = 0;
     rec.hangulGaps = 0;
     uint32_t prev = 0;
     uint32_t i = start;
     while (i < end) {
-      const uint32_t charStart = i;
       const uint32_t cp = decodeUtf8(parText_, end, i);
-      const uint16_t charSizePct = spanAt(charStart).sizePct;
-      if (charSizePct > rec.maxSizePct) {
-        rec.maxSizePct = static_cast<uint8_t>(charSizePct > 255 ? 255 : charSizePct);
-      }
       if (cp == ' ') {
         ++rec.spaceCount;
       } else if (prev != 0 && isCjk(prev) && isCjk(cp) &&
@@ -1445,6 +1438,12 @@ class LayoutEngine : public XmlHandler {
       return;
     }
     const uint16_t sizePx = paragraphSizePx();
+    // One line height for the whole paragraph, from the paragraph font size.
+    // Inline spans render at their own size on this shared grid — larger
+    // spans do NOT inflate their line box (CrossPoint parity: pages keep a
+    // uniform baseline grid and a stable line count regardless of inline
+    // font-size styling).
+    const int16_t lineHeight = lineHeightFor(sizePx);
     advanceY(static_cast<int16_t>(static_cast<int32_t>(sizePx) * para_.spaceBeforePct *
                                   params_.paragraphSpacingPct / 10000));
 
@@ -1452,14 +1451,8 @@ class LayoutEngine : public XmlHandler {
 
     uint32_t idx = 0;
     while (idx < lineCount_ && !failed_ && !stopParse) {
-      int32_t availPx = (params_.pageHeight - params_.marginBottom) - pageY_;
-      uint32_t avail = 0;
-      for (uint32_t probe = idx; probe < lineCount_ && availPx > 0; ++probe) {
-        const int16_t lineHeight = lineHeightFor(sizePxForPct(lines_[probe].maxSizePct));
-        if (lineHeight > availPx) break;
-        availPx -= lineHeight;
-        ++avail;
-      }
+      const int32_t availPx = (params_.pageHeight - params_.marginBottom) - pageY_;
+      const uint32_t avail = availPx > 0 ? static_cast<uint32_t>(availPx / lineHeight) : 0;
       const uint32_t remaining = lineCount_ - idx;
       const bool hasContent = runCount_ > 0 || pageY_ > params_.marginTop;
 
@@ -1482,9 +1475,7 @@ class LayoutEngine : public XmlHandler {
       }
 
       for (uint32_t l = 0; l < take && !failed_ && !stopParse; ++l) {
-        const uint16_t lineBoxSizePx = sizePxForPct(lines_[idx + l].maxSizePct);
-        placeLine(lines_[idx + l], sizePx, lineBoxSizePx, lineHeightFor(lineBoxSizePx),
-                  idx + l == 0);
+        placeLine(lines_[idx + l], sizePx, lineHeight, idx + l == 0);
       }
       idx += take;
       if (idx < lineCount_ && !stopParse) emitPage();
@@ -1514,8 +1505,7 @@ class LayoutEngine : public XmlHandler {
     uint8_t extraFlags;   // style added beyond the span's (focus-reading bold)
   };
 
-  void placeLine(const LineRec& rec, uint16_t sizePx, uint16_t lineBoxSizePx,
-                 int16_t lineHeight, bool firstLine) {
+  void placeLine(const LineRec& rec, uint16_t sizePx, int16_t lineHeight, bool firstLine) {
     if (rec.end == rec.start) {  // blank line (e.g. double <br/>)
       pageY_ += lineHeight;
       return;
@@ -1557,7 +1547,7 @@ class LayoutEngine : public XmlHandler {
     const int32_t perGap = justify ? leftover / static_cast<int32_t>(gaps) : 0;
     int32_t gapRemainder = justify ? leftover % static_cast<int32_t>(gaps) : 0;
 
-    int16_t baselineY = static_cast<int16_t>(pageY_ + params_.font->ascent(lineBoxSizePx));
+    int16_t baselineY = static_cast<int16_t>(pageY_ + params_.font->ascent(sizePx));
 
     // --- collect segments in LOGICAL order -----------------------------------
     Seg segs[64];

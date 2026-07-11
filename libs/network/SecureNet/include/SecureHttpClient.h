@@ -30,6 +30,7 @@
 #include <Arduino.h>
 #include <WiFiClient.h>
 
+#include <algorithm>
 #include <cctype>
 #include <cstdint>
 #include <cstdlib>
@@ -151,13 +152,15 @@ class SecureHttpClient {
       std::string name = line.substr(0, colon);
       std::string value = line.substr(colon + 1);
       while (!value.empty() && value.front() == ' ') value.erase(value.begin());
-      for (char& c : name) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+      std::transform(name.begin(), name.end(), name.begin(),
+                     [](unsigned char c) { return static_cast<char>(tolower(c)); });
       _responseHeaders.push_back(Header{name, value});
       if (name == "content-length") {
         _contentLength = static_cast<size_t>(strtoul(value.c_str(), nullptr, 10));
         _haveContentLength = true;
       } else if (name == "transfer-encoding") {
-        for (char& c : value) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+        std::transform(value.begin(), value.end(), value.begin(),
+                       [](unsigned char c) { return static_cast<char>(tolower(c)); });
         transferEncoding = value;
       }
     }
@@ -192,11 +195,11 @@ class SecureHttpClient {
 
   std::string getHeader(const std::string& headerName) const {
     std::string normalized = headerName;
-    for (char& c : normalized) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
-    for (const Header& header : _responseHeaders) {
-      if (header.name == normalized) return header.value;
-    }
-    return "";
+    std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+                   [](unsigned char c) { return static_cast<char>(tolower(c)); });
+    const auto found = std::find_if(_responseHeaders.begin(), _responseHeaders.end(),
+                                    [&normalized](const Header& header) { return header.name == normalized; });
+    return found == _responseHeaders.end() ? "" : found->value;
   }
 
   static bool resolveUrl(const std::string& baseUrl, const std::string& location, std::string& resolved) {
@@ -347,9 +350,9 @@ class SecureHttpClient {
       if (!readLine(c, line, millis() + _timeoutMs, shouldAbort)) return false;
       const size_t ext = line.find(';');
       const std::string sizeText = ext == std::string::npos ? line : line.substr(0, ext);
-      char* end = nullptr;
-      const unsigned long size = strtoul(sizeText.c_str(), &end, 16);
-      if (end == sizeText.c_str()) return false;
+      char* parseEnd = nullptr;
+      const unsigned long size = strtoul(sizeText.c_str(), &parseEnd, 16);
+      if (parseEnd == sizeText.c_str()) return false;
       if (size == 0) {
         while (readLine(c, line, millis() + _timeoutMs, shouldAbort) && !line.empty()) {
         }

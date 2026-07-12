@@ -21,6 +21,7 @@ struct QwertyKeyboardProps {
   int16_t gap = 3;
   int16_t minTouchSize = 28;
   uint8_t keyRadius = 0;
+  int16_t bottomHitOverflow = 0;
   KeyboardLayoutId layout = KeyboardLayoutId::QwertyEn;
   bool shifted = false;
   bool symbols = false;
@@ -54,6 +55,7 @@ void qwertyKeyboard(Frame<MaxInteractions>& frame, Rect rect, const QwertyKeyboa
   keyboardProps.gap = props.gap;
   keyboardProps.minTouchSize = props.minTouchSize;
   keyboardProps.keyRadius = props.keyRadius;
+  keyboardProps.bottomHitOverflow = props.bottomHitOverflow;
   keyboardProps.inactiveSelection = props.inactiveSelection;
   keyboard(frame, rect, keyboardProps);
 }

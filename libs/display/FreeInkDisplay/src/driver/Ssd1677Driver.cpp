@@ -81,8 +81,8 @@ static const Ssd1677Config& ssd1677StickyConfig() {
       DRIVER_OUTPUT_SCAN,
       0x01,  // borderWaveformInit: vendor FULL/partial-clear border
       0x5A,  // halfRefreshTemp (unused once fullSeqOverride loads temperature itself)
-      lut_grayscale,
-      lut_grayscale_revert,
+      lut_grayscale_sticky,         // own copy: voltage tail is per-module, tune there
+      lut_grayscale_revert_sticky,  // (see Ssd1677Luts.h), never in the shared X4 LUT
       0xF7,  // fullSeqOverride: vendor FULL update sequence
       0xFF,  // fastSeqOverride: vendor PARTIAL/DU update sequence (the actual fast path)
       0x00,  // halfSeqOverride: use fullSeqOverride
@@ -91,6 +91,8 @@ static const Ssd1677Config& ssd1677StickyConfig() {
       0x00,  // borderWaveformHalf: use borderWaveformFull
       0x80,  // borderWaveformGray: hold at VCOM; follow-LUT (0x01) drives the border
              // black under the grayscale LUT (black frame on every AA/cover refresh)
+      true,  // grayPowerUpFirst: vendor sequences power down after every refresh, so
+             // settle the rails before the short gray LUT phases (see Ssd1677Config)
   };
   return cfg;
 }
@@ -287,6 +289,15 @@ void Ssd1677Driver::refresh(EpdBus& bus, RefreshMode mode, bool turnOff, bool as
 #endif
 }
 
+void Ssd1677Driver::powerOn(EpdBus& bus) {
+  if (_isScreenOn) return;
+  bus.cmd(CMD_DISPLAY_UPDATE_CTRL2);
+  bus.data(0xC0);  // CLOCK_ON | ANALOG_ON
+  bus.cmd(CMD_MASTER_ACTIVATION);
+  bus.waitBusy("gray power-on");
+  _isScreenOn = true;
+}
+
 void Ssd1677Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
   displayImpl(bus, fb, prev, mode, turnOff, /*async=*/false);
 }
@@ -447,6 +458,9 @@ void Ssd1677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
     bus.waitBusy("factory_gray");
     _isScreenOn = false;  // 0xC7 always powers down after the update
   } else {
+    // Settled rails before the gray waveform (no-op where the panel is already
+    // on, i.e. the X4's fast path). refresh() then sends 0x0C, not 0xCC.
+    if (_cfg.grayPowerUpFirst) powerOn(bus);
     refresh(bus, RefreshMode::Fast, turnOff);
   }
 
@@ -469,6 +483,9 @@ void Ssd1677Driver::grayscaleRevert(EpdBus& bus, const uint8_t* fb) {
   if (!_inGrayscaleMode) return;
   _inGrayscaleMode = false;
   setCustomLut(bus, true, _cfg.grayRevertLut);
+  // Same rail-settling rule as displayGray: the revert LUT's phases are just as
+  // short, and an under-driven revert leaves gray residue behind.
+  if (_cfg.grayPowerUpFirst) powerOn(bus);
   refresh(bus, RefreshMode::Fast, false);
   setCustomLut(bus, false, nullptr);
 }

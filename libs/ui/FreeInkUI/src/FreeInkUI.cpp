@@ -305,7 +305,20 @@ const char* keyboardAltOutputFor(const KeyboardLayout& layout, int16_t value) {
     for (uint8_t col = 0; col < layout.rows[row].count; ++col) {
       const KeyboardKey& key = layout.rows[row].keys[col];
       if (key.value != value) continue;
-      return key.kind == KeyKind::Normal ? key.alt : nullptr;
+      if (key.kind != KeyKind::Normal) return nullptr;
+      if (key.alt) return key.alt;
+      // ASCII letters without an explicit alt flip case (hold-for-capital).
+      // Static buffer: single UI-loop caller assumption (see header doc).
+      static char flipped[2] = {0, 0};
+      if (value >= 'a' && value <= 'z') {
+        flipped[0] = static_cast<char>(value - ('a' - 'A'));
+        return flipped;
+      }
+      if (value >= 'A' && value <= 'Z') {
+        flipped[0] = static_cast<char>(value + ('a' - 'A'));
+        return flipped;
+      }
+      return nullptr;
     }
   }
   return nullptr;

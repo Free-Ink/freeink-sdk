@@ -157,9 +157,9 @@ void list(Frame<MaxInteractions>& frame, Rect rect, const ListProps& props) {
     const int16_t subH = item.subtitle ? frame.target().lineHeight(props.subtitleText.font) : 0;
     Rect band = content;
     if (item.subtitle) {
-      int16_t top = static_cast<int16_t>(content.y + (content.height - labelH - subH) / 2);
-      if (top < content.y) top = content.y;
-      band = Rect{content.x, top, content.width, labelH};
+      int16_t bandTop = static_cast<int16_t>(content.y + (content.height - labelH - subH) / 2);
+      if (bandTop < content.y) bandTop = content.y;
+      band = Rect{content.x, bandTop, content.width, labelH};
     }
 
     const BitmapRef icon = item.icon ? item.icon : resolveBitmap(frame.assets(), item.iconAsset);

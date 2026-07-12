@@ -124,6 +124,19 @@ namespace {
 #define K(label, output, value) KeyboardKey{label, output, KeyKind::Normal, StateNormal, value, 1, true}
 #define K2(label, output, value) KeyboardKey{label, output, KeyKind::Normal, StateNormal, value, 2, true}
 #define KS(label, kind, value, units) KeyboardKey{label, nullptr, kind, StateNormal, value, units, true}
+#define KA(label, output, value, alt) KeyboardKey{label, output, KeyKind::Normal, StateNormal, value, 1, true, alt}
+
+// Optional digit row for the letter layers (builtinKeyboardLayout's numberRow
+// flag). Each digit long-presses to its shift symbol; the shifted variant
+// swaps the pair so shift-then-tap matches long-press output.
+static const KeyboardKey NUM_ROW[] = {KA("1", "1", '1', "!"), KA("2", "2", '2', "@"), KA("3", "3", '3', "#"),
+                                      KA("4", "4", '4', "$"), KA("5", "5", '5', "%"), KA("6", "6", '6', "^"),
+                                      KA("7", "7", '7', "&"), KA("8", "8", '8', "*"), KA("9", "9", '9', "("),
+                                      KA("0", "0", '0', ")")};
+static const KeyboardKey NUM_SHIFT_ROW[] = {KA("!", "!", '!', "1"), KA("@", "@", '@', "2"), KA("#", "#", '#', "3"),
+                                            KA("$", "$", '$', "4"), KA("%", "%", '%', "5"), KA("^", "^", '^', "6"),
+                                            KA("&", "&", '&', "7"), KA("*", "*", '*', "8"), KA("(", "(", '(', "9"),
+                                            KA(")", ")", ')', "0")};
 
 static const KeyboardKey EN_ROW1[] = {K("q", "q", 'q'), K("w", "w", 'w'), K("e", "e", 'e'), K("r", "r", 'r'),
                                       K("t", "t", 't'), K("y", "y", 'y'), K("u", "u", 'u'), K("i", "i", 'i'),
@@ -228,27 +241,48 @@ static const KeyboardLayout FR_LAYOUT{FR_ROWS, 4};
 static const KeyboardLayout DE_LAYOUT{DE_ROWS, 4};
 static const KeyboardLayout ES_LAYOUT{ES_ROWS, 4};
 
+// numberRow variants: the digit row prepended to each letter layer.
+static const KeyboardRow EN_NUM_ROWS[] = {{NUM_ROW, 10, 0}, {EN_ROW1, 10, 0}, {EN_ROW2, 9, 1}, {EN_ROW3, 9, 0},
+                                          {EN_ROW4, 3, 0}};
+static const KeyboardRow EN_SHIFT_NUM_ROWS[] = {{NUM_SHIFT_ROW, 10, 0}, {EN_SHIFT_ROW1, 10, 0}, {EN_SHIFT_ROW2, 9, 1},
+                                                {EN_SHIFT_ROW3, 9, 0},  {EN_ROW4, 3, 0}};
+static const KeyboardRow FR_NUM_ROWS[] = {{NUM_ROW, 10, 0}, {FR_ROW1, 10, 0}, {FR_ROW2, 10, 0}, {FR_ROW3, 9, 0},
+                                          {EN_ROW4, 3, 0}};
+static const KeyboardRow DE_NUM_ROWS[] = {{NUM_ROW, 10, 0}, {DE_ROW1, 10, 0}, {DE_ROW2, 10, 0}, {DE_ROW3, 10, 0},
+                                          {EN_ROW4, 3, 0}};
+static const KeyboardRow ES_NUM_ROWS[] = {{NUM_ROW, 10, 0}, {ES_ROW1, 10, 0}, {ES_ROW2, 10, 0}, {ES_ROW3, 9, 0},
+                                          {EN_ROW4, 3, 0}};
+
+static const KeyboardLayout EN_NUM_LAYOUT{EN_NUM_ROWS, 5};
+static const KeyboardLayout EN_SHIFT_NUM_LAYOUT{EN_SHIFT_NUM_ROWS, 5};
+static const KeyboardLayout FR_NUM_LAYOUT{FR_NUM_ROWS, 5};
+static const KeyboardLayout DE_NUM_LAYOUT{DE_NUM_ROWS, 5};
+static const KeyboardLayout ES_NUM_LAYOUT{ES_NUM_ROWS, 5};
+
 #undef K
 #undef K2
 #undef KS
+#undef KA
 
 }  // namespace
 
-const KeyboardLayout& builtinKeyboardLayout(KeyboardLayoutId id, bool shifted, bool symbols) {
+const KeyboardLayout& builtinKeyboardLayout(KeyboardLayoutId id, bool shifted, bool symbols, bool numberRow) {
   // In the symbols layers `shifted` selects the second page: the shift slot
   // reads "#+=" on page one and "123" on page two, mirroring phone keyboards.
+  // The symbols pages already carry digits, so numberRow only affects the
+  // letter layers.
   if (symbols) return shifted ? SYMBOL2_LAYOUT : SYMBOL_LAYOUT;
-  if (shifted && id == KeyboardLayoutId::QwertyEn) return EN_SHIFT_LAYOUT;
+  if (shifted && id == KeyboardLayoutId::QwertyEn) return numberRow ? EN_SHIFT_NUM_LAYOUT : EN_SHIFT_LAYOUT;
   switch (id) {
     case KeyboardLayoutId::AzertyFr:
-      return FR_LAYOUT;
+      return numberRow ? FR_NUM_LAYOUT : FR_LAYOUT;
     case KeyboardLayoutId::QwertzDe:
-      return DE_LAYOUT;
+      return numberRow ? DE_NUM_LAYOUT : DE_LAYOUT;
     case KeyboardLayoutId::SpanishEs:
-      return ES_LAYOUT;
+      return numberRow ? ES_NUM_LAYOUT : ES_LAYOUT;
     case KeyboardLayoutId::QwertyEn:
     default:
-      return EN_LAYOUT;
+      return numberRow ? EN_NUM_LAYOUT : EN_LAYOUT;
   }
 }
 
@@ -261,6 +295,17 @@ const char* keyboardOutputFor(const KeyboardLayout& layout, int16_t value) {
       // Space keys draw a glyph instead of a label, so the layout tables leave
       // their output null — but they still insert text.
       if (key.kind == KeyKind::Space) return key.output ? key.output : " ";
+    }
+  }
+  return nullptr;
+}
+
+const char* keyboardAltOutputFor(const KeyboardLayout& layout, int16_t value) {
+  for (uint8_t row = 0; row < layout.rowCount; ++row) {
+    for (uint8_t col = 0; col < layout.rows[row].count; ++col) {
+      const KeyboardKey& key = layout.rows[row].keys[col];
+      if (key.value != value) continue;
+      return key.kind == KeyKind::Normal ? key.alt : nullptr;
     }
   }
   return nullptr;

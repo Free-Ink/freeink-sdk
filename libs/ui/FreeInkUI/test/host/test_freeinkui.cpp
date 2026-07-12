@@ -350,6 +350,40 @@ void testDisabledSkipsTouch() {
   CHECK(!buffer.route(tap));
 }
 
+void testLongPressRouting() {
+  InteractionBuffer<8> buffer;
+  buffer.addInteraction(Interaction{Rect{0, 0, 100, 100}, 1, 5,
+                                    static_cast<uint16_t>(InputTouch | InputLongPress | InputConfirm), StateNormal, 0});
+  buffer.addInteraction(Interaction{Rect{100, 0, 100, 100}, 2, 0, InputTouch, StateNormal, 0});
+
+  InputSnapshot tap;
+  tap.touchReleased = true;
+  tap.touchX = 10;
+  tap.touchY = 10;
+  ActionEvent event = buffer.route(tap);
+  CHECK_EQ(event.action, 1);
+  CHECK(!event.longPress);
+
+  InputSnapshot hold = tap;
+  hold.longPress = true;
+  event = buffer.route(hold);
+  CHECK_EQ(event.action, 1);
+  CHECK_EQ(event.value, 5);
+  CHECK(event.longPress);
+
+  // A touch-only interaction never receives long-press releases.
+  hold.touchX = 110;
+  CHECK(!buffer.route(hold));
+
+  // Non-touch dispatch paths report longPress false.
+  buffer.setFocusedIndex(0);
+  InputSnapshot confirm;
+  confirm.confirm = true;
+  event = buffer.route(confirm);
+  CHECK_EQ(event.action, 1);
+  CHECK(!event.longPress);
+}
+
 void testFocusNavigationWrapsAndSkips() {
   InteractionBuffer<8> buffer;
   buffer.addInteraction(Interaction{Rect{0, 0, 10, 10}, 1, 0, InputDefault, StateNormal, 0});
@@ -1906,6 +1940,51 @@ void testKeyboardEntry() {
   CHECK(!kb.key(QWERTY_KEY_MODE));
 }
 
+void testNumberRowLayouts() {
+  // numberRow prepends a digit row to every letter layer; symbols ignore it.
+  const KeyboardLayout& en = builtinKeyboardLayout(KeyboardLayoutId::QwertyEn, false, false, true);
+  CHECK_EQ(en.rowCount, 5);
+  CHECK(std::strcmp(en.rows[0].keys[0].output, "1") == 0);
+  CHECK(std::strcmp(en.rows[0].keys[0].alt, "!") == 0);
+  CHECK(std::strcmp(en.rows[1].keys[0].output, "q") == 0);
+
+  // Shifted English swaps the digit/symbol pairs (symbol primary, digit alt).
+  const KeyboardLayout& enShift = builtinKeyboardLayout(KeyboardLayoutId::QwertyEn, true, false, true);
+  CHECK_EQ(enShift.rowCount, 5);
+  CHECK(std::strcmp(enShift.rows[0].keys[0].output, "!") == 0);
+  CHECK(std::strcmp(enShift.rows[0].keys[0].alt, "1") == 0);
+  CHECK(std::strcmp(enShift.rows[1].keys[0].output, "Q") == 0);
+
+  // Localized letter layers gain the same digit row.
+  const KeyboardLayout& fr = builtinKeyboardLayout(KeyboardLayoutId::AzertyFr, false, false, true);
+  CHECK_EQ(fr.rowCount, 5);
+  CHECK(std::strcmp(fr.rows[1].keys[0].output, "a") == 0);
+
+  // Symbols pages already carry digits: numberRow is a no-op there.
+  CHECK_EQ(builtinKeyboardLayout(KeyboardLayoutId::QwertyEn, false, true, true).rowCount, 4);
+
+  // Alt lookup: digit ids resolve to their long-press symbol; keys without an
+  // alternate (and non-normal keys) return nullptr.
+  CHECK(std::strcmp(keyboardAltOutputFor(en, '1'), "!") == 0);
+  CHECK(keyboardAltOutputFor(en, 'q') == nullptr);
+  CHECK(keyboardAltOutputFor(en, QWERTY_KEY_BACKSPACE) == nullptr);
+}
+
+void testKeyboardEntryLongPressAlt() {
+  char buf[8] = "";
+  KeyboardEntry kb;
+  kb.numberRow = true;
+  kb.attach(buf, sizeof buf);
+
+  CHECK(kb.key('1'));
+  CHECK(kb.key('1', /*longPress=*/true));  // alt output
+  CHECK(std::strcmp(buf, "1!") == 0);
+
+  // Long-press on a key without an alternate falls back to normal output.
+  CHECK(kb.key('q', /*longPress=*/true));
+  CHECK(std::strcmp(buf, "1!q") == 0);
+}
+
 void testHeaderLeadingButton() {
   FakeDrawTarget draw;
   DeviceContext device = makeDevice();
@@ -2328,6 +2407,7 @@ int main() {
   testEnsureMinTouchRect();
   testTouchRouting();
   testDisabledSkipsTouch();
+  testLongPressRouting();
   testFocusNavigationWrapsAndSkips();
   testConfirmIgnoresStaleFocus();
   testConfirmRespectsInputMask();
@@ -2364,6 +2444,8 @@ int main() {
   testLocalizedKeyboardLayout();
   testSymbolKeyboardPages();
   testKeyboardEntry();
+  testNumberRowLayouts();
+  testKeyboardEntryLongPressAlt();
   testHeaderLeadingButton();
   testScreenKeyboardUsesResponsiveHeight();
   testEReaderChromeMenusAndPanels();

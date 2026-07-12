@@ -28,6 +28,9 @@ struct KeyboardKey {
   int16_t value = 0;       // Stable key id returned in ActionEvent::value.
   uint8_t widthUnits = 1;  // Relative visual width within the row.
   bool enabled = true;
+  // UTF-8 alternate output for normal keys: drawn as a small corner hint and
+  // inserted on long-press (ActionEvent::longPress; see keyboardAltOutputFor).
+  const char* alt = nullptr;
 };
 
 struct KeyboardRow {
@@ -51,6 +54,10 @@ struct KeyboardProps {
   uint16_t inputMask = InputDefault;
   int16_t selectedIndex = -1;
   TextStyle labelText{};
+  // Style for the small corner hint drawn on keys that define `alt`. The
+  // color follows the key's resolved foreground; set the font here (typically
+  // the small slot).
+  TextStyle altText{};
   StyleSet keyStyles{};
   Insets padding{5, 5, 5, 5};
   int16_t gap = 3;
@@ -59,7 +66,13 @@ struct KeyboardProps {
   bool inactiveSelection = false;
 };
 
-const KeyboardLayout& builtinKeyboardLayout(KeyboardLayoutId id, bool shifted = false, bool symbols = false);
+// `numberRow` prepends a dedicated digit row (with shift-symbol alternates on
+// long-press) to the letter layers — for entry fields where digits must stay
+// one tap away (passwords, hosts, ports). The symbol layers already carry
+// digits, so they ignore the flag. Shift swaps the row to symbols-primary on
+// QwertyEn; the other languages keep their single letter layer.
+const KeyboardLayout& builtinKeyboardLayout(KeyboardLayoutId id, bool shifted = false, bool symbols = false,
+                                            bool numberRow = false);
 
 // The UTF-8 text a key id inserts under the given layout (nullptr for
 // shift/mode/delete/OK and unknown ids). Keys report stable ids in
@@ -67,6 +80,10 @@ const KeyboardLayout& builtinKeyboardLayout(KeyboardLayoutId id, bool shifted = 
 // ids above 1000 — so casting the value to char corrupts non-ASCII layouts;
 // always insert through this lookup.
 const char* keyboardOutputFor(const KeyboardLayout& layout, int16_t value);
+
+// The UTF-8 alternate a key id inserts on long-press (KeyboardKey::alt), or
+// nullptr when the key defines none. Pair with ActionEvent::longPress.
+const char* keyboardAltOutputFor(const KeyboardLayout& layout, int16_t value);
 
 // The editing state every on-screen-keyboard consumer otherwise hand-rolls:
 // the shift/symbols layers, layout-correct UTF-8 append, and multi-byte-aware
@@ -79,6 +96,7 @@ class KeyboardEntry {
   KeyboardLayoutId layout = KeyboardLayoutId::QwertyEn;
   bool shifted = false;
   bool symbols = false;
+  bool numberRow = false;
 
   // Point the entry at a NUL-terminated buffer (capacity includes the NUL).
   // Editing resumes from the buffer's current contents.
@@ -95,9 +113,13 @@ class KeyboardEntry {
   }
 
   // Insert the key's layout output (ActionEvent::value from the key action).
-  // Shift auto-releases after one letter; symbol pages are sticky.
-  bool key(int16_t value) {
-    const char* out = keyboardOutputFor(builtinKeyboardLayout(layout, shifted, symbols), value);
+  // Shift auto-releases after one letter; symbol pages are sticky. Pass
+  // ActionEvent::longPress to insert the key's alternate output when it has
+  // one (falls back to the normal output otherwise).
+  bool key(int16_t value, bool longPress = false) {
+    const KeyboardLayout& current = builtinKeyboardLayout(layout, shifted, symbols, numberRow);
+    const char* out = longPress ? keyboardAltOutputFor(current, value) : nullptr;
+    if (!out) out = keyboardOutputFor(current, value);
     if (!symbols) shifted = false;
     if (!out || !buf_) return false;
     size_t n = 0;
@@ -196,6 +218,20 @@ void keyboard(Frame<MaxInteractions>& frame, Rect rect, const KeyboardProps& pro
       if (iconSize > maxSize) iconSize = maxSize;
       frame.target().bitmap(centeredRect(keyRect, Size{iconSize, iconSize}), lucideDeleteIcon16(),
                             BitmapMode::Contain, ink);
+      return;
+    }
+
+    if (key.kind == KeyKind::Normal && key.alt) {
+      // Corner hint for the long-press alternate. Ink follows the key's
+      // resolved foreground so the hint stays legible on selected/active keys.
+      TextStyle altStyle = props.altText;
+      altStyle.align = TextAlign::Right;
+      altStyle.maxLines = 1;
+      altStyle.color = styles.resolve(frame.stateFor(action, key.value, state)).foreground.color;
+      const int16_t altLh = frame.target().lineHeight(altStyle.font);
+      frame.target().text(Rect{static_cast<int16_t>(keyRect.x + 2), static_cast<int16_t>(keyRect.y + 2),
+                               static_cast<int16_t>(keyRect.width - 5), altLh},
+                          key.alt, altStyle);
       return;
     }
 

@@ -55,23 +55,16 @@ class PanelDriver {
     display(bus, fb, prev, RefreshMode::Fast, turnOff);
   }
 
-  // Non-blocking variant: load RAM and start the panel waveform, then return
-  // without waiting on BUSY. The panel refreshes from its own RAM copy, so the
-  // caller may redraw `fb` immediately; the facade polls the BUSY pin and
-  // guards against issuing another operation until the refresh completes.
-  // Default falls back to the blocking display() so drivers gain async
-  // support one at a time without breaking correctness.
-  virtual void displayAsync(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode) {
-    display(bus, fb, prev, mode, false);
-  }
-  // True when displayAsync() actually returns while the panel refreshes. The
-  // facade uses this to skip async bookkeeping on drivers that fall back to
-  // the blocking display() — otherwise the post-refresh BUSY poll can spin a
-  // full edge-detect timeout against an already-idle panel (X3TwoPhase: 1 s).
+  // True when displayStart() defers (returns true) rather than completing
+  // inline. Lets the facade skip async scaffolding (shadow setup) on blocking
+  // drivers without a trial call, and lets hosts size overlap buffers up
+  // front. Must agree with what displayStart() actually returns.
   virtual bool supportsAsyncDisplay() const { return false; }
 
   // Two-call refresh split (CrossPoint EInkDisplay::triggerDisplay/completeDisplay).
-  // Unlike displayAsync, `fb` must stay intact until displayFinish() returns:
+  // For the shadowed async path the facade passes its own baseline copy as
+  // `prev`, so the live fb may be redrawn immediately; otherwise `fb` must
+  // stay intact until displayFinish() returns:
   // controllers whose post-waveform pipeline re-reads the host frame (UC8253 X3
   // syncs DTM1 and runs conditioning passes after BUSY) need it. The contract is
   // the caller does non-SPI CPU work in the gap and issues no other bus op until

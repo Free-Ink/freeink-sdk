@@ -115,15 +115,21 @@ static Ssd1677Config fastDuRefreshShortcut(Ssd1677Config base) {
   return base;
 }
 
-// Xteink X4 (as shipped in Witch Reader): the shared default plus the fast-DU
-// shortcut. Kept X4-specific so de-link / LilyGo / M5PaperV11 keep the 0xFC
-// default until each is validated to run 0x1C fast (then they call the shortcut
-// too). A d2-class board that shares this panel can reuse ssd1677X4Config() or
-// build its own base and layer the same shortcut(s).
+// Xteink X4 with the fast-DU shortcut — OPT-IN via -DFREEINK_X4_FAST_DU_SHORTCUT.
+// The X4 default stays the stock 0xFC absolute partial sequence: the 0x1C path
+// skips the per-refresh temperature load and power sequencing, which is the
+// community-sdk behavior the stock-parity work moved away from after ghosting /
+// blotching reports on some panels ("weaker partial selection shows heavy
+// ghosting", see ssd1677DefaultConfig). Enable the flag only after validating
+// long reading sessions across temperatures on your panel (~85 ms/refresh win).
+// A d2-class board that shares this panel can reuse ssd1677X4Config() or build
+// its own base and layer the same shortcut(s).
+#ifdef FREEINK_X4_FAST_DU_SHORTCUT
 static const Ssd1677Config& ssd1677X4Config() {
   static const Ssd1677Config cfg = fastDuRefreshShortcut(ssd1677DefaultConfig());
   return cfg;
 }
+#endif
 
 Ssd1677Driver::Ssd1677Driver(const Ssd1677Config& cfg)
     : _cfg(cfg),
@@ -330,12 +336,19 @@ void Ssd1677Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev,
   displayImpl(bus, fb, prev, mode, turnOff, /*async=*/false);
 }
 
-// Async: fire the refresh and return; the facade polls BUSY and guards the
-// next operation. Skips the single-buffer post-refresh baseline resync — the
-// facade supplies `prev` (its shadow of the last-displayed frame) on every
-// async update, so RED is rewritten fresh each time instead.
-void Ssd1677Driver::displayAsync(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode) {
-  displayImpl(bus, fb, prev, mode, /*turnOff=*/false, /*async=*/true);
+// Deferred refresh: fire the update and return; displayFinish() waits it out.
+// Skips the single-buffer post-refresh baseline resync — the facade supplies
+// `prev` (its shadow) on shadowed updates, and the no-shadow/grayscale flow
+// re-seeds the baseline itself (cleanupGrayscaleBuffers).
+bool Ssd1677Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode,
+                                 bool turnOff) {
+  displayImpl(bus, fb, prev, mode, turnOff, /*async=*/true);
+  return true;
+}
+
+void Ssd1677Driver::displayFinish(EpdBus& bus, const uint8_t* fb) {
+  (void)fb;  // X4 post-waveform needs nothing from the host frame
+  bus.waitRefreshComplete("refresh");
 }
 
 void Ssd1677Driver::displayImpl(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff,
@@ -604,9 +617,11 @@ static const Ssd1677Config& ssd1677ActiveConfig() { return FREEINK_SSD1677_CONFI
 static const Ssd1677Config& ssd1677ActiveConfig() {
   switch (BoardConfig::ACTIVE.board) {
     case BoardConfig::Board::Sticky: return ssd1677StickyConfig();
-    // X4 layers the fast-DU shortcut on the default; a board that shares the
-    // panel and has validated the shortcut adds its own case here the same way.
+    // X4 layers the fast-DU shortcut on the default only when the build has
+    // opted in (see ssd1677X4Config); stock 0xFC parity otherwise.
+#ifdef FREEINK_X4_FAST_DU_SHORTCUT
     case BoardConfig::Board::XteinkX4: return ssd1677X4Config();
+#endif
     default: return ssd1677DefaultConfig();
   }
 }

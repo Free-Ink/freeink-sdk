@@ -326,8 +326,41 @@ bool FreeInkDisplay::reallocSecondaryBuffer() {
   *slot = allocFrameBufferStorage();
   if (!*slot) return false;
   frameBufferActive = *slot;
-  memset(frameBufferActive, 0xFF, bufferSize);
+  // Best-effort seed with the last frame the host displayed: correct when the
+  // caller reallocs before drawing the next page (frameBuffer then still holds
+  // the on-screen frame), and it gives windowed updates a sane prev. But the
+  // host may have scribbled or cleared the framebuffer since the last refresh
+  // (blocking section builds warm image caches + clearScreen before this), so
+  // the seed is UNPROVEN as a differential baseline — arm the one-shot below
+  // so the next full-frame FAST diffs against the controller's retained RED
+  // plane instead of pushing this copy into RED. Diffing a new page against a
+  // wrong baseline leaves undriven pixels: a baked-in ghost of whatever the
+  // panel showed (e.g. the indexing popup) on every section crossing. (open-x4
+  // avoided this by skipping the RED write while _redRamSynced; FreeInk's
+  // driver always writes RED from prev, so prev must never be trusted here.)
+  if (frameBuffer) {
+    memcpy(frameBufferActive, frameBuffer, bufferSize);
+  } else {
+    memset(frameBufferActive, 0xFF, bufferSize);
+  }
+  _redBaselineAuthoritative = true;
   return true;
+}
+
+const uint8_t* FreeInkDisplay::consumePrevFrameFor(RefreshMode effectiveMode) {
+  const uint8_t* prev = frameBufferActive;
+  if (_redBaselineAuthoritative) {
+    // One-shot (see the header): after reallocSecondaryBuffer() the secondary
+    // is unproven; the controller's RED RAM is the only trustworthy baseline.
+    // FAST diffs against it via the prev==nullptr single-buffer path; non-fast
+    // modes rewrite RED absolutely, so either way the baseline is
+    // re-established and the flag can drop.
+    _redBaselineAuthoritative = false;
+    if (effectiveMode == FAST_REFRESH && prev != nullptr) {
+      prev = nullptr;
+    }
+  }
+  return prev;
 }
 
 bool FreeInkDisplay::hasSecondaryBuffer() const { return frameBufferActive != nullptr; }
@@ -338,29 +371,27 @@ bool FreeInkDisplay::hasSecondaryBuffer() const { return frameBufferActive != nu
 // ============================================================================
 
 void FreeInkDisplay::syncPendingAsync() {
-  // A pending triggerDisplay() split must complete through the driver so its
-  // post-waveform work (X3 DTM1 sync + conditioning) runs; a plain waitBusy
-  // would skip it and leave the controller mid-pipeline.
-  if (_splitPending) {
+  // Single pending state: any deferred refresh — X4 async fire or X3 split —
+  // completes through the driver's displayFinish(), which waits out the
+  // waveform (ISR edge wait, done-level fast path) and runs any post-waveform
+  // pipeline (X3 DTM1 sync + conditioning). A plain waitBusy would skip that
+  // and leave the controller mid-pipeline.
+  if (!_refreshPending) return;
 #ifdef EINK_DISPLAY_SINGLE_BUFFER_MODE
-    _driver->displayFinish(_bus, frameBuffer);
+  _driver->displayFinish(_bus, frameBuffer);
 #else
-    _driver->displayFinish(_bus, frameBufferActive ? frameBufferActive : frameBuffer);
+  _driver->displayFinish(_bus, frameBufferActive ? frameBufferActive : frameBuffer);
 #endif
-    _splitPending = false;
-  }
-  if (!_asyncPending) return;
-  _bus.waitBusy("async refresh");
-  _asyncPending = false;
+  _refreshPending = false;
 }
 
 bool FreeInkDisplay::supportsAsyncRefresh() const { return _driver != nullptr && _driver->supportsAsyncDisplay(); }
 
 bool FreeInkDisplay::refreshBusy() {
-  if (!_asyncPending) return false;
-  if (_bus.isBusy()) return true;
-  _asyncPending = false;
-  return false;
+  // Does NOT clear the pending state on completion: the driver's post-waveform
+  // work (X3 DTM1 sync) must run through displayFinish(). When this returns
+  // false, call waitRefreshComplete() (or any blocking display op) to drain it.
+  return _refreshPending && _bus.isBusy();
 }
 
 void FreeInkDisplay::displayBuffer(RefreshMode mode, bool turnOffScreen) {
@@ -374,42 +405,68 @@ void FreeInkDisplay::displayBuffer(RefreshMode mode, bool turnOffScreen) {
   // framebuffer; the async shadow no longer matches what is displayed.
   _shadowValid = false;
 #else
-  _driver->display(_bus, frameBuffer, frameBufferActive, toInternal(resolveReleasedMode(mode)), turnOffScreen);
+  const RefreshMode effMode = resolveReleasedMode(mode);
+  _driver->display(_bus, frameBuffer, consumePrevFrameFor(effMode), toInternal(effMode), turnOffScreen);
   swapBuffers();
 #endif
   // X4 re-seeds RED from the displayed frame inside display(); X3 has no RED plane.
   if (_panelSel != PanelSel::X3) _redRamSynced = true;
 }
 
-void FreeInkDisplay::displayBufferAsync(RefreshMode mode) {
+void FreeInkDisplay::displayBufferAsync(RefreshMode mode) { displayAsyncImpl(mode, /*turnOffScreen=*/false); }
+
+void FreeInkDisplay::displayAsyncImpl(RefreshMode mode, bool turnOffScreen, bool noShadow) {
   // Blocking-fallback drivers finish the refresh inside displayAsync(); marking
   // it pending would make the next BUSY sync spin an edge-detect timeout
   // against an idle panel (X3TwoPhase: 1 s). Take the blocking path outright.
   if (!_driver->supportsAsyncDisplay()) {
-    displayBuffer(mode);
+    displayBuffer(mode, turnOffScreen);
     return;
   }
   syncPendingAsync();
 #ifdef EINK_DISPLAY_SINGLE_BUFFER_MODE
+  if (noShadow) {
+    // Shadow-free contract: the caller keeps the framebuffer untouched until
+    // the refresh completes and rebuilds the differential baseline itself
+    // (e.g. the tiled-grayscale cleanup), so controller RAM stays the
+    // baseline (prev = nullptr) and no 48 KB shadow is allocated.
+    _refreshPending = _driver->displayStart(_bus, frameBuffer, nullptr, toInternal(mode), turnOffScreen);
+    _shadowValid = false;
+    return;
+  }
+  // The shadow contract lets the caller redraw the framebuffer immediately —
+  // a panel whose displayFinish() re-reads the frame (X3 DTM1 sync) cannot
+  // honor that; take the blocking path there. Use the noShadow entry (with its
+  // frame-intact contract) or triggerDisplay() for X3 overlap.
+  if (_panelSel == PanelSel::X3) {
+    displayBuffer(mode, turnOffScreen);
+    return;
+  }
   if (_asyncShadow == nullptr) {
     _asyncShadow = static_cast<uint8_t*>(malloc(bufferSize));
     _shadowValid = false;
   }
   if (_asyncShadow == nullptr) {  // allocation failed: blocking fallback
-    displayBuffer(mode);
+    displayBuffer(mode, turnOffScreen);
     return;
   }
   // First async update after boot or a blocking display: the controller's RED
   // plane still holds the displayed frame (single-buffer prev = nullptr path);
   // from then on the shadow supplies the baseline on every update.
-  _driver->displayAsync(_bus, frameBuffer, _shadowValid ? _asyncShadow : nullptr, toInternal(mode));
+  _refreshPending =
+      _driver->displayStart(_bus, frameBuffer, _shadowValid ? _asyncShadow : nullptr, toInternal(mode), turnOffScreen);
   memcpy(_asyncShadow, frameBuffer, bufferSize);
   _shadowValid = true;
 #else
-  _driver->displayAsync(_bus, frameBuffer, frameBufferActive, toInternal(resolveReleasedMode(mode)));
+  (void)noShadow;  // dual-buffer: the secondary buffer is the baseline; no shadow exists
+  const RefreshMode effMode = resolveReleasedMode(mode);
+  // consumePrevFrameFor may return nullptr post-realloc: the driver then diffs
+  // against retained RED and, being async, skips the post-refresh resync — RED
+  // simply keeps that baseline until the next update rewrites it.
+  _refreshPending =
+      _driver->displayStart(_bus, frameBuffer, consumePrevFrameFor(effMode), toInternal(effMode), turnOffScreen);
   swapBuffers();
 #endif
-  _asyncPending = true;
 }
 
 // ============================================================================
@@ -425,27 +482,36 @@ void FreeInkDisplay::triggerDisplay(RefreshMode mode, bool turnOffScreen) {
   // Pass frameBufferActive as the previous frame, then swap so the caller draws
   // into the inactive buffer while the just-displayed frame is preserved for the
   // X3 post-waveform DTM1 sync the driver stashed a pointer to.
-  const bool deferred =
-      _driver->displayStart(_bus, frameBuffer, frameBufferActive, toInternal(resolveReleasedMode(mode)), turnOffScreen);
+  const RefreshMode effMode = resolveReleasedMode(mode);
+  const bool deferred = _driver->displayStart(_bus, frameBuffer, consumePrevFrameFor(effMode), toInternal(effMode),
+                                              turnOffScreen);
   swapBuffers();
 #endif
-  _splitPending = deferred;
+  _refreshPending = deferred;
   // X4 refreshes complete inline in displayStart() and re-seed RED from the
   // displayed frame; X3 has no RED plane. Keep the advisory flag truthful.
   if (_panelSel != PanelSel::X3) _redRamSynced = !deferred;
 }
 
-void FreeInkDisplay::completeDisplay() {
-  if (!_splitPending) return;
-#ifdef EINK_DISPLAY_SINGLE_BUFFER_MODE
-  _driver->displayFinish(_bus, frameBuffer);
-#else
-  // The just-displayed frame is preserved in frameBufferActive after the
-  // triggerDisplay() swap (or frameBuffer if the secondary was released since).
-  _driver->displayFinish(_bus, frameBufferActive ? frameBufferActive : frameBuffer);
-#endif
-  _splitPending = false;
+void FreeInkDisplay::triggerDisplayAsync(RefreshMode mode, bool turnOffScreen) {
+  if (_panelSel == PanelSel::X3) {
+    // X3's triggerDisplay() already returns while the waveform runs;
+    // completeDisplay() remains its finish and finishDisplayAsync() a no-op.
+    triggerDisplay(mode, turnOffScreen);
+    return;
+  }
+  displayAsyncImpl(mode, turnOffScreen);
+  // The waveform is reading RED; until something re-seeds it (the grayscale
+  // cleanup that follows in the inline-AA flow, or the next blocking display)
+  // it is not a valid post-waveform baseline. In the released-secondary case
+  // the driver's async path also skips its post-refresh BW/RED resync.
+  _redRamSynced = false;
 }
+
+// Compat aliases: one pending state, one finish path (see syncPendingAsync).
+void FreeInkDisplay::finishDisplayAsync() { syncPendingAsync(); }
+
+void FreeInkDisplay::completeDisplay() { syncPendingAsync(); }
 
 void FreeInkDisplay::syncRedRamFromFrameBuffer() {
   // X3 has no host-managed previous-frame plane (its baseline lives in DTM1); the
@@ -470,28 +536,16 @@ void FreeInkDisplay::syncRedRamFromFrameBuffer() {
   const uint8_t* onScreen = frameBufferActive ? frameBufferActive : frameBuffer;
   if (onScreen) _driver->seedPreviousFrame(_bus, onScreen);
   _redRamSynced = true;
+  // The host just asserted a known baseline; the post-realloc one-shot (if
+  // armed) is superseded.
+  _redBaselineAuthoritative = false;
 #endif
 }
 
+// Kept as a stable entry point for firmware already calling it; the logic
+// lives in displayAsyncImpl's noShadow path.
 void FreeInkDisplay::displayBufferAsyncNoShadow(RefreshMode mode) {
-  // Same blocking fallback as displayBufferAsync (see comment there).
-  if (!_driver->supportsAsyncDisplay()) {
-    displayBuffer(mode);
-    return;
-  }
-  syncPendingAsync();
-#ifdef EINK_DISPLAY_SINGLE_BUFFER_MODE
-  // prev = nullptr: controller RAM still holds the last-displayed frame as the
-  // differential baseline (same contract as the blocking single-buffer path).
-  // The shadow is neither allocated nor consulted; per the header contract the
-  // caller keeps the framebuffer untouched until the refresh completes.
-  _driver->displayAsync(_bus, frameBuffer, nullptr, toInternal(mode));
-  _shadowValid = false;
-#else
-  _driver->displayAsync(_bus, frameBuffer, frameBufferActive, toInternal(mode));
-  swapBuffers();
-#endif
-  _asyncPending = true;
+  displayAsyncImpl(mode, /*turnOffScreen=*/false, /*noShadow=*/true);
 }
 
 void FreeInkDisplay::displayWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t h, bool turnOffScreen) {

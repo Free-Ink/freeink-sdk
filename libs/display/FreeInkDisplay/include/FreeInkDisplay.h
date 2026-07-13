@@ -123,8 +123,13 @@ class FreeInkDisplay {
   void displayBufferAsyncNoShadow(RefreshMode mode = FAST_REFRESH);
   // True while an async refresh is still running on the panel.
   bool refreshBusy();
-  // Block until a pending async refresh completes (no-op when none is).
-  void waitRefreshComplete() { syncPendingAsync(); }
+  // Block until a pending refresh completes (no-op when none is): the async
+  // window drains via the ISR edge wait (finishDisplayAsync), a trigger/complete
+  // split via syncPendingAsync's displayFinish path.
+  void waitRefreshComplete() {
+    finishDisplayAsync();
+    syncPendingAsync();
+  }
   // True when the active driver's displayAsync() genuinely returns while the
   // panel refreshes; false where it falls back to a blocking refresh. Callers
   // can skip overlap scaffolding (e.g. whole-plane grayscale buffers) when
@@ -150,9 +155,27 @@ class FreeInkDisplay {
   // overwritten between the two calls; see PanelDriver::displayStart.
   void triggerDisplay(RefreshMode mode = FAST_REFRESH, bool turnOffScreen = false);
   void completeDisplay();
-  // True between triggerDisplay() and completeDisplay() while a waveform is in
-  // flight (X3 only; X4 completes inline so this reads false right after trigger).
-  bool isRefreshPending() const { return _splitPending; }
+
+  // X4 async variant of the trigger/complete split (CrossPoint
+  // EInkDisplay::triggerDisplayAsync/finishDisplayAsync). triggerDisplayAsync()
+  // performs the full update (RAM writes, MASTER_ACTIVATION, buffer swap) but
+  // returns while the waveform runs; finishDisplayAsync() sleeps until it
+  // completes (busy-wait power/slice hooks active) and clears the pending
+  // state. Between the calls the caller may do CPU/RAM-only work — the write
+  // framebuffer is free (the swap already happened, the controller scans its
+  // own RAM) — but must issue no display/bus operation; same-task contract as
+  // triggerDisplay()/completeDisplay(). Every blocking display call self-heals
+  // by waiting out an unfinished async refresh first (syncPendingAsync()).
+  //
+  // On X3, triggerDisplayAsync() falls back to triggerDisplay() — already
+  // non-blocking there, with completeDisplay() as its finish — and
+  // finishDisplayAsync() is a no-op.
+  void triggerDisplayAsync(RefreshMode mode = FAST_REFRESH, bool turnOffScreen = false);
+  void finishDisplayAsync();
+
+  // True while a deferred refresh is in flight (any of the async/trigger entry
+  // points until the finish/wait is consumed).
+  bool isRefreshPending() const { return _refreshPending; }
 
   // Returns true (X4 only) when the controller's RED RAM holds the last-displayed
   // BW frame, i.e. a fast differential can diff against it. Always false on X3.
@@ -267,8 +290,12 @@ class FreeInkDisplay {
   // Returns true if freed.
   bool releaseSecondaryBuffer();
 
-  // Reallocate the secondary buffer after releaseSecondaryBuffer(). Initialises
-  // it to white (0xFF). Returns true on success; false if malloc fails.
+  // Reallocate the secondary buffer after releaseSecondaryBuffer(). Seeds it
+  // from the live framebuffer — the on-screen frame in released mode — so the
+  // previously-displayed-frame contract holds and the next FAST refresh diffs
+  // against a correct RED baseline (seeding white ghosts the first post-realloc
+  // page; see the .cpp). Call BEFORE drawing the next frame into the
+  // framebuffer. Returns true on success; false if malloc fails.
   bool reallocSecondaryBuffer();
 
   // Returns true if the secondary buffer is currently allocated.
@@ -283,6 +310,9 @@ class FreeInkDisplay {
   // Block until a pending async refresh completes (no-op when none is).
   // Every blocking panel operation calls this before touching the bus.
   void syncPendingAsync();
+  // Shared body of displayBufferAsync() / triggerDisplayAsync(): fire the
+  // update and return while the waveform runs (_asyncPending set).
+  void displayAsyncImpl(RefreshMode mode, bool turnOffScreen, bool noShadow = false);
   // One framebuffer-sized heap block: PSRAM-first where available.
   static uint8_t* allocFrameBufferStorage();
 #ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
@@ -301,15 +331,31 @@ class FreeInkDisplay {
   // baseline while the app redraws the live framebuffer. _shadowValid drops
   // whenever a blocking display path runs (the controller RAM then holds the
   // baseline again).
-  bool _asyncPending = false;
+  // One pending flag for every deferred refresh (X4 async fire, X3 split);
+  // drained by syncPendingAsync() through the driver's displayFinish().
+  bool _refreshPending = false;
   uint8_t* _asyncShadow = nullptr;
   bool _shadowValid = false;
   bool _buildLent = false;  // framebuffer storage lent to a build (see lendBuildStorage)
 
-  // triggerDisplay()/completeDisplay() split state. Distinct from _asyncPending:
-  // a pending split is drained by the driver's displayFinish() (which runs the
-  // X3 post-waveform conditioning), not by a plain bus.waitBusy().
-  bool _splitPending = false;
+#ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
+  // One-shot, armed by reallocSecondaryBuffer(): the controller's RED RAM still
+  // holds the on-screen frame (host allocation never touches controller RAM),
+  // while the fresh secondary may not — the host may have scribbled or cleared
+  // the framebuffer between release and realloc (blocking section builds do:
+  // image warm + clearScreen before the realloc), so the seed copied there is
+  // unproven. The next full-frame FAST must diff against the retained RED
+  // baseline (prev = nullptr, single-buffer path; the driver's post-refresh
+  // resync then re-establishes BW/RED from the displayed frame) instead of
+  // pushing the unproven secondary into RED — pushing a wrong baseline leaves
+  // undriven pixels: a baked-in ghost of whatever the panel showed (e.g. the
+  // indexing popup) until the next absolute waveform. A non-fast update
+  // rewrites RED absolutely anyway and just clears the flag.
+  bool _redBaselineAuthoritative = false;
+  // Consume the one-shot for a full-frame update: returns the prev pointer the
+  // driver should diff against for `effectiveMode`.
+  const uint8_t* consumePrevFrameFor(RefreshMode effectiveMode);
+#endif
 
   enum class PanelSel : uint8_t { X4, X3, M5 };
   PanelSel _panelSel = PanelSel::X4;

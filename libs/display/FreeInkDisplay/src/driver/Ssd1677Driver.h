@@ -21,8 +21,7 @@ struct Ssd1677Config {
   uint8_t driverOutputScan;         // CMD 0x01 base scan byte (0x02); mirrorY ORs TB
   uint8_t borderWaveformInit;        // CMD 0x3C value written during controller init
   uint8_t halfRefreshTemp;          // temperature byte written for HALF refresh
-  const unsigned char* grayLut;     // 110-byte custom LUT for grayscale display
-  const unsigned char* grayRevertLut;  // 110-byte custom LUT to revert grayscale
+  const unsigned char* grayLut;  // 110-byte custom LUT for grayscale display
   // Absolute Display Update Control 2 (0x22) sequence values, per refresh type.
   // 0 = use the driver's built-in X4 values (incremental, keeps the panel powered
   // between fast refreshes). A panel whose OTP waveform isn't selected by the X4
@@ -85,7 +84,9 @@ class Ssd1677Driver : public PanelDriver {
   void displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut, bool factoryMode) override;
   void cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) override;
 
-  void grayscaleRevert(EpdBus& bus, const uint8_t* fb) override;
+  // No grayscaleRevert override: stock parity — the OEM firmware has no revert
+  // waveform. Grayscale exits via cleanupGrayscaleBuffers (RED resync) or a
+  // promoted single-pass HALF clean in displayImpl/displayWindow.
   void setCustomLut(EpdBus& bus, bool enabled, const unsigned char* data) override;
 
  private:

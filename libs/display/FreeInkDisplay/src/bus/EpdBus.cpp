@@ -137,25 +137,34 @@ EpdBus::Transaction EpdBus::beginTxn() {
 }
 
 void EpdBus::cmd(uint8_t c) {
-  auto txn = beginTxn();
-  txn.cmd(c);
+  auto txn = transaction();
+  digitalWrite(_pins.dc, LOW);
+  digitalWrite(_pins.cs, LOW);
+  txn.transfer(c);
 }
 
 void EpdBus::data(uint8_t d) {
-  auto txn = beginTxn();
-  txn.data(d);
+  auto txn = transaction();
+  digitalWrite(_pins.dc, HIGH);
+  digitalWrite(_pins.cs, LOW);
+  txn.transfer(d);
 }
 
 void EpdBus::data(const uint8_t* d, uint16_t len) {
-  auto txn = beginTxn();
-  txn.writeBytes(d, len);
+  auto txn = transaction();
+  digitalWrite(_pins.dc, HIGH);
+  digitalWrite(_pins.cs, LOW);
+  SPI.writeBytes(d, len);
 }
 
 void EpdBus::cmdData(uint8_t c, const uint8_t* d, uint16_t len) {
-  auto txn = beginTxn();
-  txn.cmd(c);
+  auto txn = transaction();
+  digitalWrite(_pins.cs, LOW);
+  digitalWrite(_pins.dc, LOW);
+  txn.transfer(c);
   if (len > 0 && d != nullptr) {
-    txn.writeBytes(d, len);
+    digitalWrite(_pins.dc, HIGH);
+    SPI.writeBytes(d, len);
   }
 }
 

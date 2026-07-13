@@ -9,6 +9,7 @@
 
 #include <Arduino.h>
 #include <SPI.h>
+#include <utility>
 
 namespace freeink {
 
@@ -33,7 +34,47 @@ struct EpdPins {
 };
 
 class EpdBus {
+ private:
+  class SpiPmLock {
+   public:
+    SpiPmLock() = default;
+    explicit SpiPmLock(bool acquireNow);
+    ~SpiPmLock();
+
+    SpiPmLock(const SpiPmLock&) = delete;
+    SpiPmLock& operator=(const SpiPmLock&) = delete;
+    SpiPmLock(SpiPmLock&& other) noexcept;
+    SpiPmLock& operator=(SpiPmLock&& other) noexcept;
+
+    void acquire();
+    void release();
+
+   private:
+    bool _acquired = false;
+  };
+
  public:
+  class Transaction {
+   public:
+    explicit Transaction(EpdBus& bus);
+    ~Transaction();
+
+    Transaction(const Transaction&) = delete;
+    Transaction& operator=(const Transaction&) = delete;
+    Transaction(Transaction&& other) noexcept;
+    Transaction& operator=(Transaction&& other) noexcept;
+
+    void end();
+    void cmd(uint8_t c);
+    void data(uint8_t d);
+    void writeBytes(const uint8_t* d, uint16_t len);
+
+   private:
+    EpdBus* _bus = nullptr;
+    SpiPmLock _pmLock;
+    bool _active = false;
+  };
+
   // coCs: a co-resident chip-select (e.g. the SD card sharing the SPI bus on
   // M5 PaperColor) that must be held de-asserted during panel transactions.
   void begin(const EpdPins& pins, uint32_t spiHz, BusyPolarity busy, int8_t spiMiso = -1, int8_t coCs = -1);
@@ -50,12 +91,8 @@ class EpdBus {
   void cmdData(uint8_t c, const uint8_t* d, uint16_t len);
   void cmdData2(uint8_t c, uint8_t d0, uint8_t d1);
 
-  // Grouped transaction primitives (used by multi-step sequences, e.g. M5).
-  void beginTxn();
-  void endTxn();
-  void rawCmd(uint8_t c);                            // assumes a transaction is open
-  void rawData(uint8_t d);                           // assumes a transaction is open
-  void rawWriteBytes(const uint8_t* d, uint16_t len);  // bulk data, transaction open
+  // Scoped grouped transaction (used by multi-step sequences, e.g. M5).
+  [[nodiscard]] Transaction transaction();
 
   // Wait for a refresh/operation to finish using the configured (or given) polarity.
   void waitBusy(const char* tag = nullptr);
@@ -121,15 +158,17 @@ class EpdBus {
     delay(fallbackDelayMs);
   }
 
-  void acquireSpiPmLock();
-  void releaseSpiPmLock();
+  void beginRawTransaction();
+  void endRawTransaction();
+  void rawCmd(uint8_t c);
+  void rawData(uint8_t d);
+  void rawWriteBytes(const uint8_t* d, uint16_t len);
 
   EpdPins _pins{-1, -1, -1, -1, -1, -1};
   SPISettings _spi;
   BusyPolarity _busy = BusyPolarity::ActiveHigh;
   uint32_t _spiHz = 40000000;
   int8_t _coCs = -1;
-  bool _spiApbLockHeld = false;
 };
 
 }  // namespace freeink

@@ -358,7 +358,9 @@ void FreeInkDisplay::displayBuffer(RefreshMode mode, bool turnOffScreen) {
   if (_panelSel != PanelSel::X3) _redRamSynced = true;
 }
 
-void FreeInkDisplay::displayBufferAsync(RefreshMode mode) {
+void FreeInkDisplay::displayBufferAsync(RefreshMode mode) { displayAsyncImpl(mode, /*turnOffScreen=*/false); }
+
+void FreeInkDisplay::displayAsyncImpl(RefreshMode mode, bool turnOffScreen) {
   syncPendingAsync();
 #ifdef EINK_DISPLAY_SINGLE_BUFFER_MODE
   if (_asyncShadow == nullptr) {
@@ -366,17 +368,17 @@ void FreeInkDisplay::displayBufferAsync(RefreshMode mode) {
     _shadowValid = false;
   }
   if (_asyncShadow == nullptr) {  // allocation failed: blocking fallback
-    displayBuffer(mode);
+    displayBuffer(mode, turnOffScreen);
     return;
   }
   // First async update after boot or a blocking display: the controller's RED
   // plane still holds the displayed frame (single-buffer prev = nullptr path);
   // from then on the shadow supplies the baseline on every update.
-  _driver->displayAsync(_bus, frameBuffer, _shadowValid ? _asyncShadow : nullptr, toInternal(mode));
+  _driver->displayAsync(_bus, frameBuffer, _shadowValid ? _asyncShadow : nullptr, toInternal(mode), turnOffScreen);
   memcpy(_asyncShadow, frameBuffer, bufferSize);
   _shadowValid = true;
 #else
-  _driver->displayAsync(_bus, frameBuffer, frameBufferActive, toInternal(resolveReleasedMode(mode)));
+  _driver->displayAsync(_bus, frameBuffer, frameBufferActive, toInternal(resolveReleasedMode(mode)), turnOffScreen);
   swapBuffers();
 #endif
   _asyncPending = true;
@@ -403,6 +405,31 @@ void FreeInkDisplay::triggerDisplay(RefreshMode mode, bool turnOffScreen) {
   // X4 refreshes complete inline in displayStart() and re-seed RED from the
   // displayed frame; X3 has no RED plane. Keep the advisory flag truthful.
   if (_panelSel != PanelSel::X3) _redRamSynced = !deferred;
+}
+
+void FreeInkDisplay::triggerDisplayAsync(RefreshMode mode, bool turnOffScreen) {
+  if (_panelSel == PanelSel::X3) {
+    // X3's triggerDisplay() already returns while the waveform runs;
+    // completeDisplay() remains its finish and finishDisplayAsync() a no-op.
+    triggerDisplay(mode, turnOffScreen);
+    return;
+  }
+  displayAsyncImpl(mode, turnOffScreen);
+  // The waveform is reading RED; until something re-seeds it (the grayscale
+  // cleanup that follows in the inline-AA flow, or the next blocking display)
+  // it is not a valid post-waveform baseline. In the released-secondary case
+  // the driver's async path also skips its post-refresh BW/RED resync.
+  _redRamSynced = false;
+}
+
+void FreeInkDisplay::finishDisplayAsync() {
+  if (!_asyncPending) return;
+  // Sleep out the remaining waveform on the BUSY completion edge — or the
+  // hooked poll when a slice hook is installed; the busy-wait power hooks fire
+  // either way. Handles an already-finished waveform (the work between trigger
+  // and finish outlasted it) via the wait's done-level fast path.
+  _bus.waitRefreshComplete("x4 async trigger");
+  _asyncPending = false;
 }
 
 void FreeInkDisplay::completeDisplay() {

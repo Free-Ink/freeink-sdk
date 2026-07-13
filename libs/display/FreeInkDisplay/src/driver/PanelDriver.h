@@ -59,10 +59,13 @@ class PanelDriver {
   // without waiting on BUSY. The panel refreshes from its own RAM copy, so the
   // caller may redraw `fb` immediately; the facade polls the BUSY pin and
   // guards against issuing another operation until the refresh completes.
-  // Default falls back to the blocking display() so drivers gain async
-  // support one at a time without breaking correctness.
-  virtual void displayAsync(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode) {
-    display(bus, fb, prev, mode, false);
+  // `turnOff` folds the panel power-down into the update sequence (the
+  // controller self-sequences it at the end of the waveform), matching the
+  // blocking display(). Default falls back to the blocking display() so
+  // drivers gain async support one at a time without breaking correctness.
+  virtual void displayAsync(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode,
+                            bool turnOff = false) {
+    display(bus, fb, prev, mode, turnOff);
   }
 
   // Two-call refresh split (CrossPoint EInkDisplay::triggerDisplay/completeDisplay).

@@ -323,9 +323,13 @@ void Ssd1677Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev,
 // Async: fire the refresh and return; the facade polls BUSY and guards the
 // next operation. Skips the single-buffer post-refresh baseline resync — the
 // facade supplies `prev` (its shadow of the last-displayed frame) on every
-// async update, so RED is rewritten fresh each time instead.
-void Ssd1677Driver::displayAsync(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode) {
-  displayImpl(bus, fb, prev, mode, /*turnOff=*/false, /*async=*/true);
+// async update, so RED is rewritten fresh each time instead. (The facade's
+// dual-buffer triggerDisplayAsync() path may pass prev == nullptr when the
+// secondary buffer is released; the skipped resync there is deliberate — the
+// grayscale cleanup that follows re-seeds both planes.)
+void Ssd1677Driver::displayAsync(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode,
+                                 bool turnOff) {
+  displayImpl(bus, fb, prev, mode, turnOff, /*async=*/true);
 }
 
 void Ssd1677Driver::displayImpl(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff,

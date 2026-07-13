@@ -135,9 +135,29 @@ class FreeInkDisplay {
   // overwritten between the two calls; see PanelDriver::displayStart.
   void triggerDisplay(RefreshMode mode = FAST_REFRESH, bool turnOffScreen = false);
   void completeDisplay();
-  // True between triggerDisplay() and completeDisplay() while a waveform is in
-  // flight (X3 only; X4 completes inline so this reads false right after trigger).
-  bool isRefreshPending() const { return _splitPending; }
+
+  // X4 async variant of the trigger/complete split (CrossPoint
+  // EInkDisplay::triggerDisplayAsync/finishDisplayAsync). triggerDisplayAsync()
+  // performs the full update (RAM writes, MASTER_ACTIVATION, buffer swap) but
+  // returns while the waveform runs; finishDisplayAsync() sleeps until it
+  // completes (busy-wait power/slice hooks active) and clears the pending
+  // state. Between the calls the caller may do CPU/RAM-only work — the write
+  // framebuffer is free (the swap already happened, the controller scans its
+  // own RAM) — but must issue no display/bus operation; same-task contract as
+  // triggerDisplay()/completeDisplay(). Every blocking display call self-heals
+  // by waiting out an unfinished async refresh first (syncPendingAsync()).
+  //
+  // On X3, triggerDisplayAsync() falls back to triggerDisplay() — already
+  // non-blocking there, with completeDisplay() as its finish — and
+  // finishDisplayAsync() is a no-op.
+  void triggerDisplayAsync(RefreshMode mode = FAST_REFRESH, bool turnOffScreen = false);
+  void finishDisplayAsync();
+
+  // True while a refresh is in flight: between triggerDisplay() and
+  // completeDisplay() (X3's deferred split; X4 completes inline) and during an
+  // X4 async window (triggerDisplayAsync()/displayBufferAsync() until the wait
+  // is consumed).
+  bool isRefreshPending() const { return _splitPending || _asyncPending; }
 
   // Returns true (X4 only) when the controller's RED RAM holds the last-displayed
   // BW frame, i.e. a fast differential can diff against it. Always false on X3.
@@ -252,6 +272,9 @@ class FreeInkDisplay {
   // Block until a pending async refresh completes (no-op when none is).
   // Every blocking panel operation calls this before touching the bus.
   void syncPendingAsync();
+  // Shared body of displayBufferAsync() / triggerDisplayAsync(): fire the
+  // update and return while the waveform runs (_asyncPending set).
+  void displayAsyncImpl(RefreshMode mode, bool turnOffScreen);
   // One framebuffer-sized heap block: PSRAM-first where available.
   static uint8_t* allocFrameBufferStorage();
 #ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE

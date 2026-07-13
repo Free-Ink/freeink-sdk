@@ -72,8 +72,6 @@ void dropdown(Frame<MaxInteractions>& frame, Rect rect, const DropdownProps& pro
     const int16_t shift = static_cast<int16_t>(iconSize + props.gap);
     content.x = static_cast<int16_t>(content.x + shift);
     content.width = static_cast<int16_t>(content.width - shift);
-    band.x = content.x;
-    band.width = content.width;
   }
   const int16_t indicatorW = props.indicatorWidth < 8 ? 8 : props.indicatorWidth;
   Rect indicator{static_cast<int16_t>(content.right() - indicatorW), content.y, indicatorW, content.height};

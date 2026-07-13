@@ -12,6 +12,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <string>
 
 namespace {
 
@@ -852,15 +853,95 @@ void testInlineFontSizes() {
   CHECK(tiny != nullptr);
   if (tiny != nullptr) CHECK_EQ(tiny->sizePx, 4);  // 10% clamps to 30% of 16.
 
-  int overlapRisk = 0;
-  for (uint32_t i = 1; i < rs.lineCount; ++i) {
-    if (rs.lines[i].page != rs.lines[i - 1].page) continue;
-    if (rs.lines[i - 1].maxSizePx >= 40 &&
-        rs.lines[i].baselineY - rs.lines[i - 1].baselineY < 44) {
-      ++overlapRisk;
-    }
+}
+
+// CrossPoint parity: inline font-size spans must not disturb the line grid.
+// Every page starts its first line at the same spot and advances by the body
+// line height, even when a line carries a much larger span (drop caps, styled
+// openers). Regression test for per-line line-box sizing, which made pages
+// start at inconsistent offsets and hold varying line counts.
+void testInlineSizesKeepLineGrid() {
+  static uint8_t sheetBuf[32 * 1024];
+  Arena sheetArena(sheetBuf, sizeof(sheetBuf));
+  CssStylesheetBuilder builder;
+  CHECK(builder.begin(sheetArena));
+  const char css[] = "p { margin: 0 } .dc { font-size: 300% }";
+  builder.addText(css, sizeof(css) - 1);
+  CssStylesheet sheet = builder.finish();
+
+  FakeFont font;
+  LayoutParams params = stickyParams(font);
+  params.stylesheet = &sheet;
+
+  std::string xhtml =
+      "<?xml version=\"1.0\"?><html xmlns=\"http://www.w3.org/1999/xhtml\">"
+      "<head><title>t</title></head><body>";
+  for (int p = 0; p < 8; ++p) {
+    xhtml += "<p><span class=\"dc\">L</span>orem ";
+    for (int w = 0; w < 60; ++w) xhtml += "ipsum dolor sit amet consectetur adipiscing ";
+    xhtml += "</p>";
   }
-  CHECK_EQ(overlapRisk, 0);
+  xhtml += "</body></html>";
+
+  struct GridSink : PageSink {
+    bool onPage(const Page& page) override {
+      ++pages;
+      int16_t prev = -1;
+      bool first = true;
+      for (uint16_t r = 0; r < page.runCount; ++r) {
+        const int16_t y = page.runs[r].baselineY;
+        if (y == prev) continue;
+        if (first) {
+          if (firstBaseline == -1) firstBaseline = y;
+          if (y != firstBaseline) ++firstLineDrift;
+          first = false;
+        } else if (y - prev != 20) {  // FakeFont: lineHeight(16) = 20
+          ++pitchViolations;
+        }
+        prev = y;
+      }
+      return true;
+    }
+    uint32_t pages = 0;
+    int16_t firstBaseline = -1;
+    int firstLineDrift = 0;
+    int pitchViolations = 0;
+  } gs;
+
+  class MemSource : public BookSource {
+   public:
+    MemSource(const uint8_t* data, uint32_t len) : data_(data), len_(len) {}
+    int32_t readAt(uint64_t offset, void* dst, uint32_t len) override {
+      if (offset >= len_) return 0;
+      const uint32_t n = static_cast<uint32_t>(
+          len < len_ - static_cast<uint32_t>(offset) ? len
+                                                     : len_ - static_cast<uint32_t>(offset));
+      std::memcpy(dst, data_ + offset, n);
+      return static_cast<int32_t>(n);
+    }
+    uint64_t size() const override { return len_; }
+
+   private:
+    const uint8_t* data_;
+    uint32_t len_;
+  };
+  MemSource src(reinterpret_cast<const uint8_t*>(xhtml.data()),
+                static_cast<uint32_t>(xhtml.size()));
+  const ZipEntry entry = ZipEntryReader::rawEntry(static_cast<uint32_t>(xhtml.size()));
+
+  Arena scratch(scratchBuf, sizeof(scratchBuf));
+  ChapterLayoutSession session;
+  CHECK_EQ(static_cast<int>(session.begin(src, nullptr, src, entry, "ch.xhtml", params,
+                                          scratch, gs)),
+           static_cast<int>(BookStatus::Ok));
+  while (!session.done()) {
+    CHECK_EQ(static_cast<int>(session.step(4)), static_cast<int>(BookStatus::Ok));
+  }
+
+  CHECK(gs.pages > 2);
+  CHECK_EQ(gs.firstBaseline, params.marginTop + 16);  // marginTop + ascent(16)
+  CHECK_EQ(gs.firstLineDrift, 0);   // every page's first line starts at the same spot
+  CHECK_EQ(gs.pitchViolations, 0);  // uniform grid despite the 300% drop caps
 }
 
 void testHyphenation(const Hyphenator& hyphenator) {
@@ -1861,6 +1942,7 @@ int main(int argc, char** argv) {
   testCssUnit();
   testStyledChapter();
   testInlineFontSizes();
+  testInlineSizesKeepLineGrid();
   testHyphenation(hyphenator);
   testKerningAffectsMeasurement();
   testWidowOrphan();

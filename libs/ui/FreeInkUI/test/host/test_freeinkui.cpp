@@ -350,6 +350,40 @@ void testDisabledSkipsTouch() {
   CHECK(!buffer.route(tap));
 }
 
+void testLongPressRouting() {
+  InteractionBuffer<8> buffer;
+  buffer.addInteraction(Interaction{Rect{0, 0, 100, 100}, 1, 5,
+                                    static_cast<uint16_t>(InputTouch | InputLongPress | InputConfirm), StateNormal, 0});
+  buffer.addInteraction(Interaction{Rect{100, 0, 100, 100}, 2, 0, InputTouch, StateNormal, 0});
+
+  InputSnapshot tap;
+  tap.touchReleased = true;
+  tap.touchX = 10;
+  tap.touchY = 10;
+  ActionEvent event = buffer.route(tap);
+  CHECK_EQ(event.action, 1);
+  CHECK(!event.longPress);
+
+  InputSnapshot hold = tap;
+  hold.longPress = true;
+  event = buffer.route(hold);
+  CHECK_EQ(event.action, 1);
+  CHECK_EQ(event.value, 5);
+  CHECK(event.longPress);
+
+  // A touch-only interaction never receives long-press releases.
+  hold.touchX = 110;
+  CHECK(!buffer.route(hold));
+
+  // Non-touch dispatch paths report longPress false.
+  buffer.setFocusedIndex(0);
+  InputSnapshot confirm;
+  confirm.confirm = true;
+  event = buffer.route(confirm);
+  CHECK_EQ(event.action, 1);
+  CHECK(!event.longPress);
+}
+
 void testFocusNavigationWrapsAndSkips() {
   InteractionBuffer<8> buffer;
   buffer.addInteraction(Interaction{Rect{0, 0, 10, 10}, 1, 0, InputDefault, StateNormal, 0});
@@ -1906,6 +1940,155 @@ void testKeyboardEntry() {
   CHECK(!kb.key(QWERTY_KEY_MODE));
 }
 
+void testNumberRowLayouts() {
+  // numberRow prepends a digit row to every letter layer; symbols ignore it.
+  const KeyboardLayout& en = builtinKeyboardLayout(KeyboardLayoutId::QwertyEn, false, false, true);
+  CHECK_EQ(en.rowCount, 5);
+  CHECK(std::strcmp(en.rows[0].keys[0].output, "1") == 0);
+  CHECK(std::strcmp(en.rows[0].keys[0].alt, "!") == 0);
+  CHECK(std::strcmp(en.rows[1].keys[0].output, "q") == 0);
+
+  // Shifted English swaps the digit/symbol pairs (symbol primary, digit alt).
+  const KeyboardLayout& enShift = builtinKeyboardLayout(KeyboardLayoutId::QwertyEn, true, false, true);
+  CHECK_EQ(enShift.rowCount, 5);
+  CHECK(std::strcmp(enShift.rows[0].keys[0].output, "!") == 0);
+  CHECK(std::strcmp(enShift.rows[0].keys[0].alt, "1") == 0);
+  CHECK(std::strcmp(enShift.rows[1].keys[0].output, "Q") == 0);
+
+  // Localized letter layers gain the same digit row.
+  const KeyboardLayout& fr = builtinKeyboardLayout(KeyboardLayoutId::AzertyFr, false, false, true);
+  CHECK_EQ(fr.rowCount, 5);
+  CHECK(std::strcmp(fr.rows[1].keys[0].output, "a") == 0);
+
+  // Symbols pages already carry digits: numberRow is a no-op there.
+  CHECK_EQ(builtinKeyboardLayout(KeyboardLayoutId::QwertyEn, false, true, true).rowCount, 4);
+
+  // Alt lookup: digit ids resolve to their long-press symbol; letters flip
+  // case (see testKeyboardAltCaseFlip); non-normal keys return nullptr.
+  CHECK(std::strcmp(keyboardAltOutputFor(en, '1'), "!") == 0);
+  CHECK(std::strcmp(keyboardAltOutputFor(en, 'q'), "Q") == 0);
+  CHECK(keyboardAltOutputFor(en, QWERTY_KEY_BACKSPACE) == nullptr);
+}
+
+void testKeyboardEntryLongPressAlt() {
+  char buf[8] = "";
+  KeyboardEntry kb;
+  kb.numberRow = true;
+  kb.attach(buf, sizeof buf);
+
+  CHECK(kb.key('1'));
+  CHECK(kb.key('1', /*longPress=*/true));  // alt output
+  CHECK(std::strcmp(buf, "1!") == 0);
+
+  // Letters without an explicit alt flip case on long-press.
+  CHECK(kb.key('q', /*longPress=*/true));
+  CHECK(std::strcmp(buf, "1!Q") == 0);
+}
+
+void testKeyboardAltCaseFlip() {
+  const KeyboardLayout& en = builtinKeyboardLayout(KeyboardLayoutId::QwertyEn);
+  CHECK(std::strcmp(keyboardAltOutputFor(en, 'q'), "Q") == 0);
+  const KeyboardLayout& enShift = builtinKeyboardLayout(KeyboardLayoutId::QwertyEn, true);
+  CHECK(std::strcmp(keyboardAltOutputFor(enShift, 'Q'), "q") == 0);
+  // Non-letters without an explicit alt still have none; special keys never do.
+  const KeyboardLayout& sym = builtinKeyboardLayout(KeyboardLayoutId::QwertyEn, false, true);
+  CHECK(keyboardAltOutputFor(sym, '/') == nullptr);
+  CHECK(keyboardAltOutputFor(en, QWERTY_KEY_BACKSPACE) == nullptr);
+}
+
+void testTouchHoldRouter() {
+  InteractionBuffer<8> interactions;
+  const auto rebuild = [&] {
+    interactions.clear();
+    interactions.addInteraction(Interaction{Rect{10, 10, 40, 40}, 1, 'q',
+                                            static_cast<uint16_t>(InputTouch | InputLongPress), StateNormal, 0});
+    interactions.addInteraction(Interaction{Rect{60, 10, 40, 40}, 1, QWERTY_KEY_BACKSPACE,
+                                            static_cast<uint16_t>(InputTouch | InputLongPress), StateNormal, 0});
+  };
+  rebuild();
+
+  TouchHoldRouter router;
+
+  // Quick tap: no hold event while down, tap release dispatches once.
+  auto r = router.update(interactions, true, 20, 20, false, 0, 0, true, 1000);
+  CHECK(!r.event);
+  CHECK(r.activeChanged);
+  r = router.update(interactions, false, 0, 0, true, 20, 20, false, 1100);
+  CHECK_EQ(r.event.value, 'q');
+  CHECK(!r.event.longPress);
+
+  // Hold past the threshold: long-press fires exactly once at threshold and
+  // the timer must NOT re-arm on later frames (the repeat bug), and the real
+  // release is swallowed.
+  r = router.update(interactions, true, 20, 20, false, 0, 0, true, 2000);
+  CHECK(!r.event);
+  r = router.update(interactions, true, 20, 20, false, 0, 0, true, 2360);
+  CHECK_EQ(r.event.value, 'q');
+  CHECK(r.event.longPress);
+  r = router.update(interactions, true, 20, 20, false, 0, 0, true, 2800);
+  CHECK(!r.event);
+  r = router.update(interactions, true, 20, 20, false, 0, 0, true, 3300);
+  CHECK(!r.event);
+  r = router.update(interactions, false, 0, 0, true, 20, 20, false, 3400);
+  CHECK(!r.event);  // swallowed
+
+  // Delete key uses the longer threshold.
+  r = router.update(interactions, true, 70, 20, false, 0, 0, true, 4000);
+  r = router.update(interactions, true, 70, 20, false, 0, 0, true, 4500);
+  CHECK(!r.event);  // 500ms < 900ms override
+  r = router.update(interactions, true, 70, 20, false, 0, 0, true, 4950);
+  CHECK_EQ(r.event.value, QWERTY_KEY_BACKSPACE);
+  CHECK(r.event.longPress);
+  router.reset();
+
+  // Sliding onto another key restarts the hold timer.
+  r = router.update(interactions, true, 20, 20, false, 0, 0, true, 6000);
+  r = router.update(interactions, true, 70, 20, false, 0, 0, true, 6300);
+  CHECK(r.activeChanged);
+  r = router.update(interactions, true, 70, 20, false, 0, 0, true, 6500);
+  CHECK(!r.event);  // only 200ms on the new key
+  router.reset();
+
+  // Contact drifting into a swipe clears the active highlight.
+  r = router.update(interactions, true, 20, 20, false, 0, 0, true, 7000);
+  CHECK(interactions.activeIndex() >= 0);
+  r = router.update(interactions, false, 0, 0, false, 0, 0, false, 7100);
+  CHECK(r.activeChanged);
+  CHECK(interactions.activeIndex() < 0);
+
+  // Release drifting off the pressed key (within tap slop) still dispatches
+  // the key the press landed on — finger occlusion drops releases low.
+  r = router.update(interactions, true, 20, 20, false, 0, 0, true, 8000);
+  r = router.update(interactions, false, 0, 0, true, 20, 55, false, 8100);  // below the key
+  CHECK_EQ(r.event.value, 'q');
+  CHECK(!r.event.longPress);
+}
+
+void testKeyboardBottomHitOverflow() {
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice();
+  InputSnapshot input;
+
+  const auto hitBottomFor = [&](const int16_t overflow, const int16_t value) {
+    InteractionBuffer<48> interactions;
+    Frame<48> frame(draw, device, input, interactions);
+    KeyboardProps props;
+    props.layout = &builtinKeyboardLayout(KeyboardLayoutId::QwertyEn);
+    props.keyAction = 77;
+    props.bottomHitOverflow = overflow;
+    keyboard(frame, Rect{0, 0, 480, 200}, props);
+    for (size_t i = 0; i < interactions.count(); ++i) {
+      const Interaction& it = interactions.data()[i];
+      if (it.value == value) return it.rect.bottom();
+    }
+    return static_cast<int16_t>(-1);
+  };
+
+  // The overflow extends only the last row's hit band.
+  CHECK_EQ(hitBottomFor(20, QWERTY_KEY_ENTER), hitBottomFor(0, QWERTY_KEY_ENTER) + 20);
+  CHECK_EQ(hitBottomFor(20, 'q'), hitBottomFor(0, 'q'));
+}
+
 void testHeaderLeadingButton() {
   FakeDrawTarget draw;
   DeviceContext device = makeDevice();
@@ -2328,6 +2511,7 @@ int main() {
   testEnsureMinTouchRect();
   testTouchRouting();
   testDisabledSkipsTouch();
+  testLongPressRouting();
   testFocusNavigationWrapsAndSkips();
   testConfirmIgnoresStaleFocus();
   testConfirmRespectsInputMask();
@@ -2364,6 +2548,11 @@ int main() {
   testLocalizedKeyboardLayout();
   testSymbolKeyboardPages();
   testKeyboardEntry();
+  testNumberRowLayouts();
+  testKeyboardEntryLongPressAlt();
+  testKeyboardAltCaseFlip();
+  testTouchHoldRouter();
+  testKeyboardBottomHitOverflow();
   testHeaderLeadingButton();
   testScreenKeyboardUsesResponsiveHeight();
   testEReaderChromeMenusAndPanels();

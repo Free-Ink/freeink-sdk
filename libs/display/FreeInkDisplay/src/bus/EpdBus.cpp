@@ -128,47 +128,31 @@ void EpdBus::reset(uint16_t extraSettleMs) {
 EpdBus::Transaction EpdBus::transaction() { return Transaction(*this); }
 
 EpdBus::Transaction EpdBus::beginTxn() {
-  auto txn = transaction();
   if (_coCs >= 0) {
     digitalWrite(_coCs, HIGH);
   }
+  auto txn = transaction();
   digitalWrite(_pins.cs, LOW);
   return txn;
 }
 
 void EpdBus::cmd(uint8_t c) {
-  auto txn = transaction();
-  if (_coCs >= 0) {
-    digitalWrite(_coCs, HIGH);
-  }
-  digitalWrite(_pins.cs, LOW);
+  auto txn = beginTxn();
   txn.cmd(c);
 }
 
 void EpdBus::data(uint8_t d) {
-  auto txn = transaction();
-  if (_coCs >= 0) {
-    digitalWrite(_coCs, HIGH);
-  }
-  digitalWrite(_pins.cs, LOW);
+  auto txn = beginTxn();
   txn.data(d);
 }
 
 void EpdBus::data(const uint8_t* d, uint16_t len) {
-  auto txn = transaction();
-  if (_coCs >= 0) {
-    digitalWrite(_coCs, HIGH);
-  }
-  digitalWrite(_pins.cs, LOW);
+  auto txn = beginTxn();
   txn.writeBytes(d, len);
 }
 
 void EpdBus::cmdData(uint8_t c, const uint8_t* d, uint16_t len) {
-  auto txn = transaction();
-  if (_coCs >= 0) {
-    digitalWrite(_coCs, HIGH);
-  }
-  digitalWrite(_pins.cs, LOW);
+  auto txn = beginTxn();
   txn.cmd(c);
   if (len > 0 && d != nullptr) {
     txn.writeBytes(d, len);
@@ -288,15 +272,10 @@ void EpdBus::writeMirroredPlane(const uint8_t* plane, uint16_t height, uint16_t 
 
 void EpdBus::sendPlaneFlipped(uint8_t ramCmd, const uint8_t* plane, uint16_t height, uint16_t widthBytes) {
   cmd(ramCmd);  // own CS pulse
-  auto txn = transaction();  // single CS-low burst for the whole plane
-  if (_coCs >= 0) {
-    digitalWrite(_coCs, HIGH);
-  }
-  digitalWrite(_pins.cs, LOW);
+  auto txn = beginTxn();  // single CS-low burst for the whole plane
   for (int y = static_cast<int>(height) - 1; y >= 0; y--) {
     txn.writeBytes(plane + static_cast<uint32_t>(y) * widthBytes, widthBytes);
   }
-  txn.end();
 }
 
 void EpdBus::fillPlane(uint8_t ramCmd, uint8_t fillByte, uint16_t height, uint16_t widthBytes) {
@@ -304,15 +283,10 @@ void EpdBus::fillPlane(uint8_t ramCmd, uint8_t fillByte, uint16_t height, uint16
   if (widthBytes > sizeof(row)) widthBytes = sizeof(row);
   memset(row, fillByte, widthBytes);
   cmd(ramCmd);
-  auto txn = transaction();
-  if (_coCs >= 0) {
-    digitalWrite(_coCs, HIGH);
-  }
-  digitalWrite(_pins.cs, LOW);
+  auto txn = beginTxn();
   for (uint16_t y = 0; y < height; y++) {
     txn.writeBytes(row, widthBytes);
   }
-  txn.end();
 }
 
 }  // namespace freeink

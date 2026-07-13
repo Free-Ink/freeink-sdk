@@ -84,7 +84,6 @@ void Uc8253MurphyDriver::writePlane(EpdBus& bus, uint8_t command, const uint8_t*
     }
     txn.writeBytes(row, CTRL_WB);
   }
-  txn.end();
 }
 
 void Uc8253MurphyDriver::fillPlane(EpdBus& bus, uint8_t command, uint8_t fillByte) {

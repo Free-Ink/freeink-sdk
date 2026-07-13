@@ -7,104 +7,8 @@
 
 namespace freeink {
 
-namespace {
-
-#if defined(ARDUINO) && defined(CONFIG_PM_ENABLE) && CONFIG_PM_ENABLE
-esp_pm_lock_handle_t epdSpiApbLock() {
-  static esp_pm_lock_handle_t lock = nullptr;
-  static bool attempted = false;
-  if (!attempted) {
-    attempted = true;
-    if (esp_pm_lock_create(ESP_PM_APB_FREQ_MAX, 0, "freeink-epd-spi", &lock) != ESP_OK) {
-      lock = nullptr;
-    }
-  }
-  return lock;
-}
-
-esp_pm_lock_handle_t epdNoLightSleepLock() {
-  static esp_pm_lock_handle_t lock = nullptr;
-  static bool attempted = false;
-  if (!attempted) {
-    attempted = true;
-    if (esp_pm_lock_create(ESP_PM_NO_LIGHT_SLEEP, 0, "freeink-epd-bus", &lock) != ESP_OK) {
-      lock = nullptr;
-    }
-  }
-  return lock;
-}
-#endif
-
-class NoLightSleepLock {
- public:
-  NoLightSleepLock() {
-#if defined(ARDUINO) && defined(CONFIG_PM_ENABLE) && CONFIG_PM_ENABLE
-    _lock = epdNoLightSleepLock();
-    _acquired = _lock != nullptr && esp_pm_lock_acquire(_lock) == ESP_OK;
-#endif
-  }
-
-  ~NoLightSleepLock() {
-#if defined(ARDUINO) && defined(CONFIG_PM_ENABLE) && CONFIG_PM_ENABLE
-    if (_acquired) esp_pm_lock_release(_lock);
-#endif
-  }
-
-  NoLightSleepLock(const NoLightSleepLock&) = delete;
-  NoLightSleepLock& operator=(const NoLightSleepLock&) = delete;
-
- private:
-#if defined(ARDUINO) && defined(CONFIG_PM_ENABLE) && CONFIG_PM_ENABLE
-  esp_pm_lock_handle_t _lock = nullptr;
-#endif
-  bool _acquired = false;
-};
-
-}  // namespace
-
-EpdBus::SpiPmLock::SpiPmLock(bool acquireNow) {
-  if (acquireNow) {
-    acquire();
-  }
-}
-
-EpdBus::SpiPmLock::~SpiPmLock() { release(); }
-
-EpdBus::SpiPmLock::SpiPmLock(SpiPmLock&& other) noexcept {
-  _acquired = other._acquired;
-  other._acquired = false;
-}
-
-EpdBus::SpiPmLock& EpdBus::SpiPmLock::operator=(SpiPmLock&& other) noexcept {
-  if (this != &other) {
-    release();
-    _acquired = other._acquired;
-    other._acquired = false;
-  }
-  return *this;
-}
-
-void EpdBus::SpiPmLock::acquire() {
-#if defined(ARDUINO) && defined(CONFIG_PM_ENABLE) && CONFIG_PM_ENABLE
-  if (_acquired) {
-    return;
-  }
-  esp_pm_lock_handle_t lock = epdSpiApbLock();
-  _acquired = lock != nullptr && esp_pm_lock_acquire(lock) == ESP_OK;
-#endif
-}
-
-void EpdBus::SpiPmLock::release() {
-#if defined(ARDUINO) && defined(CONFIG_PM_ENABLE) && CONFIG_PM_ENABLE
-  if (_acquired) {
-    esp_pm_lock_release(epdSpiApbLock());
-    _acquired = false;
-  }
-#endif
-}
-
-EpdBus::Transaction::Transaction(EpdBus& bus) : _bus(&bus), _pmLock(true), _active(true) {
-  _bus->beginRawTransaction();
+EpdBus::Transaction::Transaction(EpdBus& bus) : _bus(&bus), _pmLock(bus), _active(true) {
+  SPI.beginTransaction(_bus->_spi);
 }
 
 EpdBus::Transaction::~Transaction() { end(); }
@@ -131,19 +35,46 @@ void EpdBus::Transaction::end() {
   if (!_active || _bus == nullptr) {
     return;
   }
-  _bus->endRawTransaction();
+  digitalWrite(_bus->_pins.cs, HIGH);
+  SPI.endTransaction();
   _pmLock.release();
   _active = false;
 }
 
-void EpdBus::Transaction::cmd(uint8_t c) { _bus->rawCmd(c); }
+uint8_t EpdBus::Transaction::transfer(uint8_t d) { return SPI.transfer(d); }
 
-void EpdBus::Transaction::data(uint8_t d) { _bus->rawData(d); }
+void EpdBus::Transaction::cmd(uint8_t c) {
+  digitalWrite(_bus->_pins.dc, LOW);
+  SPI.transfer(c);
+  digitalWrite(_bus->_pins.dc, HIGH);
+}
 
-void EpdBus::Transaction::writeBytes(const uint8_t* d, uint16_t len) { _bus->rawWriteBytes(d, len); }
+void EpdBus::Transaction::data(uint8_t d) {
+  digitalWrite(_bus->_pins.dc, HIGH);
+  SPI.transfer(d);
+}
+
+void EpdBus::Transaction::writeBytes(const uint8_t* d, uint16_t len) {
+  digitalWrite(_bus->_pins.dc, HIGH);
+  SPI.writeBytes(d, len);
+}
+
+EpdBus::~EpdBus() {
+#if defined(ARDUINO) && defined(CONFIG_PM_ENABLE) && CONFIG_PM_ENABLE
+  if (_spiApbLock != nullptr) {
+    esp_pm_lock_delete(_spiApbLock);
+    _spiApbLock = nullptr;
+  }
+  if (_noLightSleepLock != nullptr) {
+    esp_pm_lock_delete(_noLightSleepLock);
+    _noLightSleepLock = nullptr;
+  }
+#endif
+}
 
 void EpdBus::begin(const EpdPins& pins, uint32_t spiHz, BusyPolarity busy, int8_t spiMiso, int8_t coCs) {
-  NoLightSleepLock noLightSleepLock;
+  createPmLocks();
+  NoLightSleepLockGuard noLightSleepLock(*this);
   _pins = pins;
   _spiHz = spiHz;
   _busy = busy;
@@ -163,7 +94,9 @@ void EpdBus::begin(const EpdPins& pins, uint32_t spiHz, BusyPolarity busy, int8_
   }
 
   {
-    SpiPmLock spiPmLock(true);
+    // SPI.begin() configures the peripheral/dividers from the current APB clock;
+    // keep APB fixed here so the setup matches the requested display SPI rate.
+    SpiApbLockGuard spiPmLock(*this);
     SPI.begin(pins.sclk, spiMiso, pins.mosi, pins.cs);
   }
 
@@ -180,7 +113,7 @@ void EpdBus::begin(const EpdPins& pins, uint32_t spiHz, BusyPolarity busy, int8_
 }
 
 void EpdBus::reset(uint16_t extraSettleMs) {
-  NoLightSleepLock noLightSleepLock;
+  NoLightSleepLockGuard noLightSleepLock(*this);
   digitalWrite(_pins.rst, HIGH);
   delay(20);
   digitalWrite(_pins.rst, LOW);
@@ -194,23 +127,48 @@ void EpdBus::reset(uint16_t extraSettleMs) {
 
 EpdBus::Transaction EpdBus::transaction() { return Transaction(*this); }
 
+EpdBus::Transaction EpdBus::beginTxn() {
+  auto txn = transaction();
+  if (_coCs >= 0) {
+    digitalWrite(_coCs, HIGH);
+  }
+  digitalWrite(_pins.cs, LOW);
+  return txn;
+}
+
 void EpdBus::cmd(uint8_t c) {
   auto txn = transaction();
+  if (_coCs >= 0) {
+    digitalWrite(_coCs, HIGH);
+  }
+  digitalWrite(_pins.cs, LOW);
   txn.cmd(c);
 }
 
 void EpdBus::data(uint8_t d) {
   auto txn = transaction();
+  if (_coCs >= 0) {
+    digitalWrite(_coCs, HIGH);
+  }
+  digitalWrite(_pins.cs, LOW);
   txn.data(d);
 }
 
 void EpdBus::data(const uint8_t* d, uint16_t len) {
   auto txn = transaction();
+  if (_coCs >= 0) {
+    digitalWrite(_coCs, HIGH);
+  }
+  digitalWrite(_pins.cs, LOW);
   txn.writeBytes(d, len);
 }
 
 void EpdBus::cmdData(uint8_t c, const uint8_t* d, uint16_t len) {
   auto txn = transaction();
+  if (_coCs >= 0) {
+    digitalWrite(_coCs, HIGH);
+  }
+  digitalWrite(_pins.cs, LOW);
   txn.cmd(c);
   if (len > 0 && d != nullptr) {
     txn.writeBytes(d, len);
@@ -222,33 +180,19 @@ void EpdBus::cmdData2(uint8_t c, uint8_t d0, uint8_t d1) {
   cmdData(c, d, 2);
 }
 
-void EpdBus::beginRawTransaction() {
-  if (_coCs >= 0) {
-    digitalWrite(_coCs, HIGH);
+void EpdBus::createPmLocks() {
+#if defined(ARDUINO) && defined(CONFIG_PM_ENABLE) && CONFIG_PM_ENABLE
+  if (_spiApbLock == nullptr) {
+    if (esp_pm_lock_create(ESP_PM_APB_FREQ_MAX, 0, "freeink-epd-spi", &_spiApbLock) != ESP_OK) {
+      _spiApbLock = nullptr;
+    }
   }
-  SPI.beginTransaction(_spi);
-  digitalWrite(_pins.cs, LOW);
-}
-
-void EpdBus::endRawTransaction() {
-  digitalWrite(_pins.cs, HIGH);
-  SPI.endTransaction();
-}
-
-void EpdBus::rawCmd(uint8_t c) {
-  digitalWrite(_pins.dc, LOW);
-  SPI.transfer(c);
-  digitalWrite(_pins.dc, HIGH);
-}
-
-void EpdBus::rawData(uint8_t d) {
-  digitalWrite(_pins.dc, HIGH);
-  SPI.transfer(d);
-}
-
-void EpdBus::rawWriteBytes(const uint8_t* d, uint16_t len) {
-  digitalWrite(_pins.dc, HIGH);
-  SPI.writeBytes(d, len);
+  if (_noLightSleepLock == nullptr) {
+    if (esp_pm_lock_create(ESP_PM_NO_LIGHT_SLEEP, 0, "freeink-epd-bus", &_noLightSleepLock) != ESP_OK) {
+      _noLightSleepLock = nullptr;
+    }
+  }
+#endif
 }
 
 void EpdBus::waitBusy(const char* tag) { waitBusy(_busy, tag); }
@@ -345,9 +289,14 @@ void EpdBus::writeMirroredPlane(const uint8_t* plane, uint16_t height, uint16_t 
 void EpdBus::sendPlaneFlipped(uint8_t ramCmd, const uint8_t* plane, uint16_t height, uint16_t widthBytes) {
   cmd(ramCmd);  // own CS pulse
   auto txn = transaction();  // single CS-low burst for the whole plane
+  if (_coCs >= 0) {
+    digitalWrite(_coCs, HIGH);
+  }
+  digitalWrite(_pins.cs, LOW);
   for (int y = static_cast<int>(height) - 1; y >= 0; y--) {
     txn.writeBytes(plane + static_cast<uint32_t>(y) * widthBytes, widthBytes);
   }
+  txn.end();
 }
 
 void EpdBus::fillPlane(uint8_t ramCmd, uint8_t fillByte, uint16_t height, uint16_t widthBytes) {
@@ -356,9 +305,14 @@ void EpdBus::fillPlane(uint8_t ramCmd, uint8_t fillByte, uint16_t height, uint16
   memset(row, fillByte, widthBytes);
   cmd(ramCmd);
   auto txn = transaction();
+  if (_coCs >= 0) {
+    digitalWrite(_coCs, HIGH);
+  }
+  digitalWrite(_pins.cs, LOW);
   for (uint16_t y = 0; y < height; y++) {
     txn.writeBytes(row, widthBytes);
   }
+  txn.end();
 }
 
 }  // namespace freeink

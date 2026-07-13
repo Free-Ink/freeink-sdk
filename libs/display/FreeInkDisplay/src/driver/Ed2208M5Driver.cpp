@@ -93,7 +93,7 @@ void Ed2208M5Driver::initController(EpdBus& bus) {
       0x84, 1, 0x01,
   };
 
-  auto txn = bus.transaction();
+  auto txn = bus.beginTxn();
   for (size_t i = 0; i < sizeof(initCommands);) {
     const uint8_t command = initCommands[i++];
     const uint8_t length = initCommands[i++];
@@ -109,6 +109,7 @@ void Ed2208M5Driver::initController(EpdBus& bus) {
   txn.data(static_cast<uint8_t>(PANEL_WIDTH & 0xFF));
   txn.data(static_cast<uint8_t>((PANEL_HEIGHT >> 8) & 0xFF));
   txn.data(static_cast<uint8_t>(PANEL_HEIGHT & 0xFF));
+  txn.end();
 }
 
 void Ed2208M5Driver::begin(EpdBus& bus) {
@@ -138,7 +139,7 @@ void Ed2208M5Driver::writeFrame(EpdBus& bus, const uint8_t* fb) {
 #endif
   uint8_t packedRow[PANEL_WIDTH / 2];
 
-  auto txn = bus.transaction();
+  auto txn = bus.beginTxn();
   txn.cmd(0x10);
   for (uint16_t panelY = 0; panelY < PANEL_HEIGHT; ++panelY) {
     for (uint16_t panelX = 0; panelX < PANEL_WIDTH; panelX += 2) {
@@ -158,6 +159,7 @@ void Ed2208M5Driver::writeFrame(EpdBus& bus, const uint8_t* fb) {
     }
     txn.writeBytes(packedRow, sizeof(packedRow));
   }
+  txn.end();
 }
 
 void Ed2208M5Driver::setPartialWindow(EpdBus::Transaction& txn, uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
@@ -177,18 +179,20 @@ void Ed2208M5Driver::setPartialWindow(EpdBus::Transaction& txn, uint16_t x, uint
 
 void Ed2208M5Driver::powerOn(EpdBus& bus) {
   if (_panelPowerOn) return;
-  auto txn = bus.transaction();
+  auto txn = bus.beginTxn();
   txn.cmd(0x04);
   waitBusy(bus);
+  txn.end();
   _panelPowerOn = true;
 }
 
 void Ed2208M5Driver::powerOff(EpdBus& bus) {
   if (!_panelPowerOn) return;
-  auto txn = bus.transaction();
+  auto txn = bus.beginTxn();
   txn.cmd(0x02);
   txn.data(0x00);
   waitBusy(bus);
+  txn.end();
   _panelPowerOn = false;
 }
 
@@ -271,7 +275,7 @@ void Ed2208M5Driver::refresh(EpdBus& bus, uint16_t dirtyX, uint16_t dirtyY, uint
   _completeNextRefresh = false;
   powerOn(bus);
 
-  auto txn = bus.transaction();
+  auto txn = bus.beginTxn();
   txn.cmd(0x06);
   txn.data(0x6F);
   txn.data(0x1F);
@@ -304,10 +308,11 @@ void Ed2208M5Driver::refresh(EpdBus& bus, uint16_t dirtyX, uint16_t dirtyY, uint
       delay(10);
     }
     delay(BUSY_SETTLE_MS);
-    auto powerOffTxn = bus.transaction();
+    auto powerOffTxn = bus.beginTxn();
     powerOffTxn.cmd(0x02);  // POWER_OFF
     powerOffTxn.data(0x00);
     waitBusy(bus);
+    powerOffTxn.end();
     _panelPowerOn = false;
   } else {
     interruptRefresh(bus);

@@ -72,7 +72,7 @@ void Uc8253MurphyDriver::loadLut(EpdBus& bus, const Uc8253MurphyLutBank& bank) {
 // (240x416). Controller pixel (cx,cy) maps to framebuffer (srcX=cy, srcY=fbH-1-cx).
 void Uc8253MurphyDriver::writePlane(EpdBus& bus, uint8_t command, const uint8_t* fb) {
   bus.cmd(command);
-  auto txn = bus.transaction();
+  auto txn = bus.beginTxn();
   uint8_t row[CTRL_WB];
   for (uint16_t cy = 0; cy < CTRL_H; cy++) {
     const uint16_t srcX = cy;  // 0..415 -> framebuffer column
@@ -84,6 +84,7 @@ void Uc8253MurphyDriver::writePlane(EpdBus& bus, uint8_t command, const uint8_t*
     }
     txn.writeBytes(row, CTRL_WB);
   }
+  txn.end();
 }
 
 void Uc8253MurphyDriver::fillPlane(EpdBus& bus, uint8_t command, uint8_t fillByte) {

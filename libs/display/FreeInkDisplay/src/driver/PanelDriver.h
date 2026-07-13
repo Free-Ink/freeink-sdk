@@ -64,6 +64,11 @@ class PanelDriver {
   virtual void displayAsync(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode) {
     display(bus, fb, prev, mode, false);
   }
+  // True when displayAsync() actually returns while the panel refreshes. The
+  // facade uses this to skip async bookkeeping on drivers that fall back to
+  // the blocking display() — otherwise the post-refresh BUSY poll can spin a
+  // full edge-detect timeout against an already-idle panel (X3TwoPhase: 1 s).
+  virtual bool supportsAsyncDisplay() const { return false; }
 
   // Two-call refresh split (CrossPoint EInkDisplay::triggerDisplay/completeDisplay).
   // Unlike displayAsync, `fb` must stay intact until displayFinish() returns:

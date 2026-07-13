@@ -302,7 +302,6 @@ void FreeInkDisplay::returnBuildStorage() {
   _shadowValid = false;
 }
 
-#if FREEINK_FB_PSRAM
 #ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
 // Secondary-buffer release/realloc is available on every dual-buffer build, not
 // just PSRAM ones: CrossPoint's C3 (no PSRAM) lends the ~48-52 KB secondary
@@ -355,6 +354,8 @@ void FreeInkDisplay::syncPendingAsync() {
   _asyncPending = false;
 }
 
+bool FreeInkDisplay::supportsAsyncRefresh() const { return _driver != nullptr && _driver->supportsAsyncDisplay(); }
+
 bool FreeInkDisplay::refreshBusy() {
   if (!_asyncPending) return false;
   if (_bus.isBusy()) return true;
@@ -381,6 +382,13 @@ void FreeInkDisplay::displayBuffer(RefreshMode mode, bool turnOffScreen) {
 }
 
 void FreeInkDisplay::displayBufferAsync(RefreshMode mode) {
+  // Blocking-fallback drivers finish the refresh inside displayAsync(); marking
+  // it pending would make the next BUSY sync spin an edge-detect timeout
+  // against an idle panel (X3TwoPhase: 1 s). Take the blocking path outright.
+  if (!_driver->supportsAsyncDisplay()) {
+    displayBuffer(mode);
+    return;
+  }
   syncPendingAsync();
 #ifdef EINK_DISPLAY_SINGLE_BUFFER_MODE
   if (_asyncShadow == nullptr) {
@@ -463,6 +471,27 @@ void FreeInkDisplay::syncRedRamFromFrameBuffer() {
   if (onScreen) _driver->seedPreviousFrame(_bus, onScreen);
   _redRamSynced = true;
 #endif
+}
+
+void FreeInkDisplay::displayBufferAsyncNoShadow(RefreshMode mode) {
+  // Same blocking fallback as displayBufferAsync (see comment there).
+  if (!_driver->supportsAsyncDisplay()) {
+    displayBuffer(mode);
+    return;
+  }
+  syncPendingAsync();
+#ifdef EINK_DISPLAY_SINGLE_BUFFER_MODE
+  // prev = nullptr: controller RAM still holds the last-displayed frame as the
+  // differential baseline (same contract as the blocking single-buffer path).
+  // The shadow is neither allocated nor consulted; per the header contract the
+  // caller keeps the framebuffer untouched until the refresh completes.
+  _driver->displayAsync(_bus, frameBuffer, nullptr, toInternal(mode));
+  _shadowValid = false;
+#else
+  _driver->displayAsync(_bus, frameBuffer, frameBufferActive, toInternal(mode));
+  swapBuffers();
+#endif
+  _asyncPending = true;
 }
 
 void FreeInkDisplay::displayWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t h, bool turnOffScreen) {

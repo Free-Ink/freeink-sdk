@@ -113,8 +113,23 @@ class FreeInkDisplay {
   // frame as the differential baseline; if that allocation fails it falls
   // back to the blocking path.
   void displayBufferAsync(RefreshMode mode = FAST_REFRESH);
+  // Async refresh without the single-buffer shadow (no extra RAM). The caller
+  // promises (a) not to touch the framebuffer until the refresh completes
+  // (waitRefreshComplete() / refreshBusy()==false / any blocking call), and
+  // (b) to rebuild the controller's differential baseline itself before the
+  // next differential update — e.g. the tiled-grayscale reader path, whose
+  // cleanupGrayscaleBuffers() resyncs the baseline from the framebuffer.
+  // In dual-buffer mode this is identical to displayBufferAsync().
+  void displayBufferAsyncNoShadow(RefreshMode mode = FAST_REFRESH);
   // True while an async refresh is still running on the panel.
   bool refreshBusy();
+  // Block until a pending async refresh completes (no-op when none is).
+  void waitRefreshComplete() { syncPendingAsync(); }
+  // True when the active driver's displayAsync() genuinely returns while the
+  // panel refreshes; false where it falls back to a blocking refresh. Callers
+  // can skip overlap scaffolding (e.g. whole-plane grayscale buffers) when
+  // there is nothing to overlap.
+  bool supportsAsyncRefresh() const;
 
   // ------------------------------------------------------------------------
   // CrossPoint EInkDisplay compatibility surface.
@@ -238,7 +253,6 @@ class FreeInkDisplay {
   // must fully redraw. Cannot fail (no allocation). No-op if not lent.
   void returnBuildStorage();
 
-#if FREEINK_FB_PSRAM
 #ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
   // Release only the secondary (previous-frame) buffer to free ~48-52 KB
   // temporarily — e.g. during chapter compilation when no rendering is

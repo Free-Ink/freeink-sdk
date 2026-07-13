@@ -305,7 +305,22 @@ bool FreeInkDisplay::reallocSecondaryBuffer() {
   *slot = allocFrameBufferStorage();
   if (!*slot) return false;
   frameBufferActive = *slot;
-  memset(frameBufferActive, 0xFF, bufferSize);
+  // Seed the new secondary with the frame on the panel, not white. By contract
+  // frameBufferActive holds the previously-displayed frame — the next FAST
+  // refresh writes it into RED RAM as the differential baseline. In released
+  // single-buffer mode frameBuffer holds exactly that frame (each blocking
+  // refresh resynced controller RAM from it), and callers realloc before
+  // drawing the next page into it. Seeding white instead made the first
+  // post-realloc FAST diff the new page against white, leaving every pixel
+  // that is white-in-new but dark-on-panel undriven — a baked-in ghost of the
+  // indexing popup / last page on every section crossing. (open-x4 avoided
+  // this by skipping the RED write entirely while _redRamSynced; FreeInk's
+  // driver always writes RED from prev, so prev itself must be correct.)
+  if (frameBuffer) {
+    memcpy(frameBufferActive, frameBuffer, bufferSize);
+  } else {
+    memset(frameBufferActive, 0xFF, bufferSize);
+  }
   return true;
 }
 

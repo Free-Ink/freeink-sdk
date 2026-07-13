@@ -256,8 +256,12 @@ class FreeInkDisplay {
   // Returns true if freed.
   bool releaseSecondaryBuffer();
 
-  // Reallocate the secondary buffer after releaseSecondaryBuffer(). Initialises
-  // it to white (0xFF). Returns true on success; false if malloc fails.
+  // Reallocate the secondary buffer after releaseSecondaryBuffer(). Seeds it
+  // from the live framebuffer — the on-screen frame in released mode — so the
+  // previously-displayed-frame contract holds and the next FAST refresh diffs
+  // against a correct RED baseline (seeding white ghosts the first post-realloc
+  // page; see the .cpp). Call BEFORE drawing the next frame into the
+  // framebuffer. Returns true on success; false if malloc fails.
   bool reallocSecondaryBuffer();
 
   // Returns true if the secondary buffer is currently allocated.

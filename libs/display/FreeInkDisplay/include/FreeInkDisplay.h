@@ -306,6 +306,25 @@ class FreeInkDisplay {
   // X3 post-waveform conditioning), not by a plain bus.waitBusy().
   bool _splitPending = false;
 
+#ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
+  // One-shot, armed by reallocSecondaryBuffer(): the controller's RED RAM still
+  // holds the on-screen frame (host allocation never touches controller RAM),
+  // while the fresh secondary may not — the host may have scribbled or cleared
+  // the framebuffer between release and realloc (blocking section builds do:
+  // image warm + clearScreen before the realloc), so the seed copied there is
+  // unproven. The next full-frame FAST must diff against the retained RED
+  // baseline (prev = nullptr, single-buffer path; the driver's post-refresh
+  // resync then re-establishes BW/RED from the displayed frame) instead of
+  // pushing the unproven secondary into RED — pushing a wrong baseline leaves
+  // undriven pixels: a baked-in ghost of whatever the panel showed (e.g. the
+  // indexing popup) until the next absolute waveform. A non-fast update
+  // rewrites RED absolutely anyway and just clears the flag.
+  bool _redBaselineAuthoritative = false;
+  // Consume the one-shot for a full-frame update: returns the prev pointer the
+  // driver should diff against for `effectiveMode`.
+  const uint8_t* consumePrevFrameFor(RefreshMode effectiveMode);
+#endif
+
   enum class PanelSel : uint8_t { X4, X3, M5 };
   PanelSel _panelSel = PanelSel::X4;
 

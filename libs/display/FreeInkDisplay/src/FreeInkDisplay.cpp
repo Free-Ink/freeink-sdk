@@ -305,23 +305,41 @@ bool FreeInkDisplay::reallocSecondaryBuffer() {
   *slot = allocFrameBufferStorage();
   if (!*slot) return false;
   frameBufferActive = *slot;
-  // Seed the new secondary with the frame on the panel, not white. By contract
-  // frameBufferActive holds the previously-displayed frame — the next FAST
-  // refresh writes it into RED RAM as the differential baseline. In released
-  // single-buffer mode frameBuffer holds exactly that frame (each blocking
-  // refresh resynced controller RAM from it), and callers realloc before
-  // drawing the next page into it. Seeding white instead made the first
-  // post-realloc FAST diff the new page against white, leaving every pixel
-  // that is white-in-new but dark-on-panel undriven — a baked-in ghost of the
-  // indexing popup / last page on every section crossing. (open-x4 avoided
-  // this by skipping the RED write entirely while _redRamSynced; FreeInk's
-  // driver always writes RED from prev, so prev itself must be correct.)
+  // Best-effort seed with the last frame the host displayed: correct when the
+  // caller reallocs before drawing the next page (frameBuffer then still holds
+  // the on-screen frame), and it gives windowed updates a sane prev. But the
+  // host may have scribbled or cleared the framebuffer since the last refresh
+  // (blocking section builds warm image caches + clearScreen before this), so
+  // the seed is UNPROVEN as a differential baseline — arm the one-shot below
+  // so the next full-frame FAST diffs against the controller's retained RED
+  // plane instead of pushing this copy into RED. Diffing a new page against a
+  // wrong baseline leaves undriven pixels: a baked-in ghost of whatever the
+  // panel showed (e.g. the indexing popup) on every section crossing. (open-x4
+  // avoided this by skipping the RED write while _redRamSynced; FreeInk's
+  // driver always writes RED from prev, so prev must never be trusted here.)
   if (frameBuffer) {
     memcpy(frameBufferActive, frameBuffer, bufferSize);
   } else {
     memset(frameBufferActive, 0xFF, bufferSize);
   }
+  _redBaselineAuthoritative = true;
   return true;
+}
+
+const uint8_t* FreeInkDisplay::consumePrevFrameFor(RefreshMode effectiveMode) {
+  const uint8_t* prev = frameBufferActive;
+  if (_redBaselineAuthoritative) {
+    // One-shot (see the header): after reallocSecondaryBuffer() the secondary
+    // is unproven; the controller's RED RAM is the only trustworthy baseline.
+    // FAST diffs against it via the prev==nullptr single-buffer path; non-fast
+    // modes rewrite RED absolutely, so either way the baseline is
+    // re-established and the flag can drop.
+    _redBaselineAuthoritative = false;
+    if (effectiveMode == FAST_REFRESH && prev != nullptr) {
+      prev = nullptr;
+    }
+  }
+  return prev;
 }
 
 bool FreeInkDisplay::hasSecondaryBuffer() const { return frameBufferActive != nullptr; }
@@ -366,7 +384,8 @@ void FreeInkDisplay::displayBuffer(RefreshMode mode, bool turnOffScreen) {
   // framebuffer; the async shadow no longer matches what is displayed.
   _shadowValid = false;
 #else
-  _driver->display(_bus, frameBuffer, frameBufferActive, toInternal(resolveReleasedMode(mode)), turnOffScreen);
+  const RefreshMode effMode = resolveReleasedMode(mode);
+  _driver->display(_bus, frameBuffer, consumePrevFrameFor(effMode), toInternal(effMode), turnOffScreen);
   swapBuffers();
 #endif
   // X4 re-seeds RED from the displayed frame inside display(); X3 has no RED plane.
@@ -393,7 +412,11 @@ void FreeInkDisplay::displayAsyncImpl(RefreshMode mode, bool turnOffScreen) {
   memcpy(_asyncShadow, frameBuffer, bufferSize);
   _shadowValid = true;
 #else
-  _driver->displayAsync(_bus, frameBuffer, frameBufferActive, toInternal(resolveReleasedMode(mode)), turnOffScreen);
+  const RefreshMode effMode = resolveReleasedMode(mode);
+  // consumePrevFrameFor may return nullptr post-realloc: the driver then diffs
+  // against retained RED and, being async, skips the post-refresh resync — RED
+  // simply keeps that baseline until the next update rewrites it.
+  _driver->displayAsync(_bus, frameBuffer, consumePrevFrameFor(effMode), toInternal(effMode), turnOffScreen);
   swapBuffers();
 #endif
   _asyncPending = true;
@@ -412,8 +435,9 @@ void FreeInkDisplay::triggerDisplay(RefreshMode mode, bool turnOffScreen) {
   // Pass frameBufferActive as the previous frame, then swap so the caller draws
   // into the inactive buffer while the just-displayed frame is preserved for the
   // X3 post-waveform DTM1 sync the driver stashed a pointer to.
-  const bool deferred =
-      _driver->displayStart(_bus, frameBuffer, frameBufferActive, toInternal(resolveReleasedMode(mode)), turnOffScreen);
+  const RefreshMode effMode = resolveReleasedMode(mode);
+  const bool deferred = _driver->displayStart(_bus, frameBuffer, consumePrevFrameFor(effMode), toInternal(effMode),
+                                              turnOffScreen);
   swapBuffers();
 #endif
   _splitPending = deferred;
@@ -482,6 +506,9 @@ void FreeInkDisplay::syncRedRamFromFrameBuffer() {
   const uint8_t* onScreen = frameBufferActive ? frameBufferActive : frameBuffer;
   if (onScreen) _driver->seedPreviousFrame(_bus, onScreen);
   _redRamSynced = true;
+  // The host just asserted a known baseline; the post-realloc one-shot (if
+  // armed) is superseded.
+  _redBaselineAuthoritative = false;
 #endif
 }
 

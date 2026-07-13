@@ -1,8 +1,29 @@
 #include "EpdBus.h"
 
 #include <driver/gpio.h>
+#if defined(ARDUINO) && defined(CONFIG_PM_ENABLE) && CONFIG_PM_ENABLE
+#include <esp_pm.h>
+#endif
 
 namespace freeink {
+
+namespace {
+
+#if defined(ARDUINO) && defined(CONFIG_PM_ENABLE) && CONFIG_PM_ENABLE
+esp_pm_lock_handle_t epdSpiApbLock() {
+  static esp_pm_lock_handle_t lock = nullptr;
+  static bool attempted = false;
+  if (!attempted) {
+    attempted = true;
+    if (esp_pm_lock_create(ESP_PM_APB_FREQ_MAX, 0, "freeink-epd-spi", &lock) != ESP_OK) {
+      lock = nullptr;
+    }
+  }
+  return lock;
+}
+#endif
+
+}  // namespace
 
 void EpdBus::begin(const EpdPins& pins, uint32_t spiHz, BusyPolarity busy, int8_t spiMiso, int8_t coCs) {
   _pins = pins;
@@ -10,6 +31,7 @@ void EpdBus::begin(const EpdPins& pins, uint32_t spiHz, BusyPolarity busy, int8_
   _busy = busy;
   _coCs = coCs;
   _spi = SPISettings(spiHz, MSBFIRST, SPI_MODE0);
+  _spiApbLockHeld = false;
 
   // Power the EPD rail first (boards that gate it, e.g. Sticky's EP_PWR_EN), so the
   // panel is alive before SPI bring-up and the reset pulse. No-op when unassigned.
@@ -49,34 +71,65 @@ void EpdBus::reset(uint16_t extraSettleMs) {
   }
 }
 
+void EpdBus::acquireSpiPmLock() {
+#if defined(ARDUINO) && defined(CONFIG_PM_ENABLE) && CONFIG_PM_ENABLE
+  if (_spiApbLockHeld) {
+    return;
+  }
+  esp_pm_lock_handle_t lock = epdSpiApbLock();
+  if (lock != nullptr && esp_pm_lock_acquire(lock) == ESP_OK) {
+    _spiApbLockHeld = true;
+  }
+#endif
+}
+
+void EpdBus::releaseSpiPmLock() {
+#if defined(ARDUINO) && defined(CONFIG_PM_ENABLE) && CONFIG_PM_ENABLE
+  if (!_spiApbLockHeld) {
+    return;
+  }
+  esp_pm_lock_handle_t lock = epdSpiApbLock();
+  if (lock != nullptr && esp_pm_lock_release(lock) == ESP_OK) {
+    _spiApbLockHeld = false;
+  }
+#endif
+}
+
 void EpdBus::cmd(uint8_t c) {
+  acquireSpiPmLock();
   SPI.beginTransaction(_spi);
   digitalWrite(_pins.dc, LOW);
   digitalWrite(_pins.cs, LOW);
   SPI.transfer(c);
   digitalWrite(_pins.cs, HIGH);
   SPI.endTransaction();
+  releaseSpiPmLock();
 }
 
 void EpdBus::data(uint8_t d) {
+  acquireSpiPmLock();
   SPI.beginTransaction(_spi);
   digitalWrite(_pins.dc, HIGH);
   digitalWrite(_pins.cs, LOW);
   SPI.transfer(d);
   digitalWrite(_pins.cs, HIGH);
   SPI.endTransaction();
+  releaseSpiPmLock();
 }
 
 void EpdBus::data(const uint8_t* d, uint16_t len) {
+  acquireSpiPmLock();
   SPI.beginTransaction(_spi);
   digitalWrite(_pins.dc, HIGH);
   digitalWrite(_pins.cs, LOW);
   SPI.writeBytes(d, len);
   digitalWrite(_pins.cs, HIGH);
   SPI.endTransaction();
+  releaseSpiPmLock();
 }
 
 void EpdBus::cmdData(uint8_t c, const uint8_t* d, uint16_t len) {
+  acquireSpiPmLock();
   SPI.beginTransaction(_spi);
   digitalWrite(_pins.cs, LOW);
   digitalWrite(_pins.dc, LOW);
@@ -87,6 +140,7 @@ void EpdBus::cmdData(uint8_t c, const uint8_t* d, uint16_t len) {
   }
   digitalWrite(_pins.cs, HIGH);
   SPI.endTransaction();
+  releaseSpiPmLock();
 }
 
 void EpdBus::cmdData2(uint8_t c, uint8_t d0, uint8_t d1) {
@@ -98,6 +152,7 @@ void EpdBus::beginTxn() {
   if (_coCs >= 0) {
     digitalWrite(_coCs, HIGH);
   }
+  acquireSpiPmLock();
   SPI.beginTransaction(_spi);
   digitalWrite(_pins.cs, LOW);
 }
@@ -105,6 +160,7 @@ void EpdBus::beginTxn() {
 void EpdBus::endTxn() {
   digitalWrite(_pins.cs, HIGH);
   SPI.endTransaction();
+  releaseSpiPmLock();
 }
 
 void EpdBus::rawCmd(uint8_t c) {

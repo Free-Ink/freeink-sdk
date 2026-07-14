@@ -32,6 +32,7 @@
 
 #include <Arduino.h>
 #include <WiFiClient.h>
+#include <base64.h>
 
 #include <algorithm>
 #include <cctype>
@@ -65,6 +66,17 @@ class SecureHttpClient {
     _insecure = false;
   }
   void setTimeout(uint32_t ms) { _timeoutMs = ms; }
+  // HTTP Basic authentication, sent on every request while set (OPDS servers
+  // commonly protect their catalogs this way). An empty user disables it; an
+  // empty password with a non-empty user is valid per RFC 7617.
+  void setBasicAuth(const std::string& user, const std::string& pass) {
+    _authUser = user;
+    _authPass = pass;
+  }
+  void clearBasicAuth() {
+    _authUser.clear();
+    _authPass.clear();
+  }
   // Identify the client. Sent on every request: several CDNs (notably
   // Cloudflare in front of OPDS catalogs) answer UA-less requests with 403.
   void setUserAgent(const std::string& ua) { _userAgent = ua; }
@@ -345,6 +357,10 @@ class SecureHttpClient {
     std::string req = std::string(method) + " " + _path + " HTTP/1.1\r\nHost: " + hostHeader() + "\r\n";
     req += "User-Agent: " + _userAgent + "\r\n";
     req += _reuse ? "Connection: keep-alive\r\n" : "Connection: close\r\n";
+    if (!_authUser.empty()) {
+      const std::string creds = _authUser + ":" + _authPass;
+      req += "Authorization: Basic " + std::string(base64::encode(creds.c_str()).c_str()) + "\r\n";
+    }
     for (const std::string& h : _headers) req += h;
     if (payload && payloadLen) req += "Content-Length: " + std::to_string(payloadLen) + "\r\n";
     req += "\r\n";
@@ -475,6 +491,8 @@ class SecureHttpClient {
   size_t _contentLength = 0;
   const char* _rootCA = nullptr;
   std::string _userAgent = "FreeInk-ESP32";
+  std::string _authUser;
+  std::string _authPass;
   bool _insecure = false;
   bool _haveContentLength = false;
   bool _bodyComplete = false;

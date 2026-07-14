@@ -250,6 +250,7 @@ tight. Each defaults on when an included device needs it; force with `=0`/`=1`:
 | `-DEINK_DISPLAY_SINGLE_BUFFER_MODE=1` | single framebuffer (uses controller RAM as previous frame) |
 | `-DFREEINK_FB_PSRAM=1` | place the facade framebuffer(s) in PSRAM heap (`MALLOC_CAP_SPIRAM`, allocated in `begin()`) instead of static DRAM `.bss`; auto-on for M5Paper, off everywhere else |
 | `-DFREEINK_NET_WOLFSSL=1` | enable the wolfSSL TLS 1.3 transport in `SecureNet` |
+| `-DFREEINK_NET_WOLFSSL_CERTS=1` | enable wolfSSL certificate verification and hostname checks in `SecureNet` |
 
 Panel **orientation/mirroring** is per-board data, not a flag: set `BoardProfile.orientation`
 (`NO_FLIP`, `MIRROR_X`, `MIRROR_Y`, or `ROTATE_180`). The SSD1677 driver applies it in

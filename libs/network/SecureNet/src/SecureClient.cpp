@@ -80,8 +80,16 @@ int SecureClient::connectWithMethod(const char* host, uint16_t port, void* metho
   if (_insecure) {
     wolfSSL_CTX_set_verify(ctx, WOLFSSL_VERIFY_NONE, nullptr);
   } else if (_rootCA) {
-    wolfSSL_CTX_load_verify_buffer(ctx, reinterpret_cast<const unsigned char*>(_rootCA),
-                                   strlen(_rootCA), WOLFSSL_FILETYPE_PEM);
+    // A CA that fails to parse must fail the connect, not silently continue
+    // against an empty trust store (every verified handshake would then fail
+    // with a misleading no-signer error).
+    if (wolfSSL_CTX_load_verify_buffer(ctx, reinterpret_cast<const unsigned char*>(_rootCA), strlen(_rootCA),
+                                       WOLFSSL_FILETYPE_PEM) != WOLFSSL_SUCCESS) {
+      if (Serial) Serial.printf("[SecureClient] setCACert PEM did not parse (%s)\n", label);
+      stop();
+      return 0;
+    }
+    wolfSSL_CTX_set_verify(ctx, WOLFSSL_VERIFY_PEER, nullptr);
   }
   wolfSSL_SetIORecv(ctx, wcRecv);
   wolfSSL_SetIOSend(ctx, wcSend);
@@ -96,6 +104,12 @@ int SecureClient::connectWithMethod(const char* host, uint16_t port, void* metho
   wolfSSL_SetIOReadCtx(ssl, &_transport);
   wolfSSL_SetIOWriteCtx(ssl, &_transport);
   wolfSSL_UseSNI(ssl, WOLFSSL_SNI_HOST_NAME, host, strlen(host));
+  if (!_insecure && _rootCA) {
+    // Chain verification alone accepts ANY certificate signed by the trusted
+    // roots, regardless of which server it was issued to. Also match the
+    // hostname against the certificate's SAN/CN.
+    wolfSSL_check_domain_name(ssl, host);
+  }
 
   // The recv callback is non-blocking (returns WANT_READ when no bytes are
   // buffered), so wolfSSL_connect must be retried across handshake round-trips

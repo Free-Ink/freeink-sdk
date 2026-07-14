@@ -102,16 +102,20 @@ void parseReportMapHints(const uint8_t* map, size_t len) {
 // slot decode did not handle (consumer / compact / non-standard layouts). Prefers
 // the report-map-hinted byte, else the first meaningful non-zero byte. Returns 0
 // when the report carries no code (a release frame).
-uint8_t extractPrimaryCode(const uint8_t* p, size_t n) {
+uint8_t extractPrimaryCode(const uint8_t* p, size_t n, size_t* codeIdx = nullptr) {
   const size_t lim = n < 8 ? n : 8;
   // NOTE: do NOT skip 0x01 here. In a keyboard report 0x01 is ErrorRollOver, but in
   // a consumer / vendor report it is a valid button code (e.g. a 3-byte page-turner
   // report of "01 00 00" on press, "00 00 00" on release). Only zero means "no code".
   if (g_preferredByteIndex != 0xFF && g_preferredByteIndex < n && p[g_preferredByteIndex] != 0) {
+    if (codeIdx) *codeIdx = g_preferredByteIndex;
     return p[g_preferredByteIndex];
   }
   for (size_t i = 0; i < lim; ++i) {
-    if (p[i] != 0) return p[i];
+    if (p[i] != 0) {
+      if (codeIdx) *codeIdx = i;
+      return p[i];
+    }
   }
   return 0;
 }
@@ -747,8 +751,37 @@ void BleKeyboardHost::onReportIngest(const uint8_t* data, size_t len) {
   // representative code and surface it (edge-detected so one press == one event).
   const bool tryGeneric = !emittedKb && (g_hasConsumerPage || !g_hasKeyboardPage || n < 7);
   if (tryGeneric) {
-    const uint8_t code = extractPrimaryCode(p, n);
-    if (code != 0 && code != g_lastGenericCode) emitUsage(code, 0);
+    size_t codeIdx = 0;
+    const uint8_t code = extractPrimaryCode(p, n, &codeIdx);
+    // Gamepad-style modes keep constant bits in the button byte and only clear
+    // the pressed bit on release (ino gamebrick mode T: 0x13 pressed -> 0x12
+    // released, bit0 is the button). "code changed" alone emits a phantom
+    // second press on that release frame. A press must SET at least one bit
+    // the previous code didn't have; a bit-subset of the previous code is a
+    // (partial) release, never a new press. Value-coded remotes are unaffected
+    // in practice: their release frame is all-zero (code 0), and the 150 ms
+    // stale-release timeout in poll() zeroes g_lastGenericCode between any two
+    // human-separated presses.
+    if (code != 0 && code != g_lastGenericCode && (code & ~g_lastGenericCode) != 0) {
+      // Press edge. Gamepad modes raise the SAME "button down" bit for every
+      // button and carry the identity in a later byte (gamebrick T: press
+      // frames "13 C4 .." vs "13 DC .." for two buttons, bit-identical across
+      // presses). Emitting the code byte would make all buttons bind as one,
+      // so emit the first non-zero byte after the code byte instead. Gated to
+      // composite reports (code in byte 0 of a >=5-byte report) so simple
+      // value-coded remotes (e.g. "01 00 00", or trailing battery bytes) keep
+      // emitting their code byte and existing bindings survive.
+      uint8_t identity = code;
+      if (codeIdx == 0 && n >= 5) {
+        for (size_t i = 1; i < (n < 8 ? n : 8); ++i) {
+          if (p[i] != 0) {
+            identity = p[i];
+            break;
+          }
+        }
+      }
+      emitUsage(identity, 0);
+    }
     g_lastGenericCode = code;
   } else if (emittedKb) {
     g_lastGenericCode = 0;

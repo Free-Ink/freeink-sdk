@@ -57,6 +57,7 @@ class SecureClient : public Client {
   WiFiClient _transport;
   const char* _rootCA = nullptr;
   bool _insecure = false;
+  int _lastConnectErr = 0;  // wolfSSL_get_error() from the last failed handshake; 0 = none
   void* _ssl = nullptr;  // WOLFSSL* (opaque to keep wolfSSL headers out of here)
   void* _ctx = nullptr;  // WOLFSSL_CTX*
   bool _connected = false;

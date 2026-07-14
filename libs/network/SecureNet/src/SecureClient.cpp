@@ -4,6 +4,7 @@
 // build free of the wolfSSL dependency while leaving a single, well-defined
 // integration point for the TLS 1.3 transport.
 #if defined(FREEINK_NET_WOLFSSL)
+#include <wolfssl/error-ssl.h>  // VERIFY_CERT_ERROR, DOMAIN_NAME_MISMATCH (SSL-layer codes)
 #include <wolfssl/ssl.h>
 #endif
 
@@ -49,6 +50,26 @@ int wcRecv(WOLFSSL* /*ssl*/, char* buf, int sz, void* ctx) {
 bool isWantIo(const int err) {
   return err == WOLFSSL_ERROR_WANT_READ || err == WOLFSSL_ERROR_WANT_WRITE || err == WOLFSSL_CBIO_ERR_WANT_READ ||
          err == WOLFSSL_CBIO_ERR_WANT_WRITE;
+}
+
+// True if the wolfSSL error code is a peer-certificate-verification failure
+// (as opposed to a transport/protocol failure). A verification failure is
+// deterministic for a given server: retrying the handshake with a different
+// TLS version (or any number of times) cannot change the outcome.
+bool isVerificationError(const int err) {
+  switch (err) {
+    case ASN_NO_SIGNER_E:    // no trusted root for the chain
+    case ASN_SIG_CONFIRM_E:  // signature check failed
+    case ASN_BEFORE_DATE_E:  // notBefore in the future (device clock)
+    case ASN_AFTER_DATE_E:   // expired
+    case ASN_SELF_SIGNED_E:
+    case CRL_CERT_DATE_ERR:
+    case VERIFY_CERT_ERROR:  // generic certificate verification failure
+    case DOMAIN_NAME_MISMATCH:
+      return true;
+    default:
+      return false;
+  }
 }
 }  // namespace
 
@@ -119,11 +140,13 @@ int SecureClient::connectWithMethod(const char* host, uint16_t port, void* metho
   while ((ret = wolfSSL_connect(ssl)) != WOLFSSL_SUCCESS) {
     const int err = wolfSSL_get_error(ssl, ret);
     if (!isWantIo(err)) {
+      _lastConnectErr = err;
       if (Serial) Serial.printf("[SecureClient] wolfSSL_connect failed (%s): %d\n", label, err);
       stop();
       return 0;
     }
     if (static_cast<int32_t>(millis() - deadline) >= 0) {
+      _lastConnectErr = WOLFSSL_ERROR_WANT_READ;  // classify a timeout as transport, not verification
       if (Serial) {
         Serial.printf("[SecureClient] handshake timeout (%s): last err %d, transport %s, free heap %u\n", label, err,
                       _transport.connected() ? "up" : "down", (unsigned)ESP.getFreeHeap());
@@ -142,11 +165,22 @@ int SecureClient::connectWithMethod(const char* host, uint16_t port, void* metho
 }
 
 int SecureClient::connect(const char* host, uint16_t port) {
+  // _lastConnectErr must not leak across connects: a TCP/DNS failure records no
+  // handshake error, and a stale verification code from an earlier attempt
+  // would misclassify it.
+  _lastConnectErr = 0;
+
   // Negotiate the highest mutually supported version rather than pinning TLS 1.3:
   // self-hosted / Let's Encrypt nginx often tops out at TLS 1.2, and a 1.3-only
   // client fails those handshakes outright. v23 still selects 1.3 when the peer
   // offers it (WOLFSSL_TLS13 is enabled) and falls back to 1.2 otherwise.
   if (connectWithMethod(host, port, wolfSSLv23_client_method(), "auto")) return 1;
+
+  // A verification failure is deterministic: the same certificate fails the
+  // same checks over TLS 1.2, so the retry below would only burn another
+  // handshake (seconds of latency plus the ECC/RSA heap spike) to reach the
+  // identical error.
+  if (isVerificationError(_lastConnectErr)) return 0;
 
   // Some TLS 1.2-only servers are intolerant of a TLS 1.3-capable ClientHello
   // and abort with a fatal handshake_failure alert. Retry with an explicit

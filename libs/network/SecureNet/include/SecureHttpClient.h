@@ -23,7 +23,8 @@
 //     http.end();
 //   }
 //
-// Header-only. Callers must pass a final URL (no redirect following here).
+// Header-only. Redirects are returned to the caller by default; opt in to
+// following them with setFollowRedirects().
 //
 // OPT-IN: requires -DFREEINK_NET_WOLFSSL=1 for TLS. With the flag off,
 // SecureClient is an inert stub and https requests fail at connect()
@@ -66,6 +67,17 @@ class SecureHttpClient {
     _insecure = false;
   }
   void setTimeout(uint32_t ms) { _timeoutMs = ms; }
+  // Follow up to maxHops redirect hops (default 0: 3xx responses are returned
+  // to the caller, matching the previous behavior). While following, the
+  // intermediate 3xx bodies are drained and discarded; only the final
+  // response reaches the caller. 303 — and, per long-standing convention,
+  // 301/302 after a POST — continue as GET without the request body; 307/308
+  // preserve method and body.
+  void setFollowRedirects(int maxHops) { _followRedirects = maxHops < 0 ? 0 : maxHops; }
+  // Allow a redirect to step down from https to http. Off by default, because
+  // the downgrade silently drops transport security; when refused, following
+  // stops and the caller sees the 3xx.
+  void setAllowRedirectDowngrade(bool allow) { _allowRedirectDowngrade = allow; }
   // HTTP Basic authentication, sent on every request while set (OPDS servers
   // commonly protect their catalogs this way). An empty user disables it; an
   // empty password with a non-empty user is valid per RFC 7617.
@@ -130,6 +142,47 @@ class SecureHttpClient {
   // an incomplete body from a caller-initiated stop.
   int sendRequest(const char* method, const uint8_t* payload, size_t payloadLen, const DataCallback& onData,
                   const AbortCallback& shouldAbort = nullptr) {
+    std::string activeMethod = method;
+    const uint8_t* activePayload = payload;
+    size_t activePayloadLen = payloadLen;
+    for (int hop = 0;; ++hop) {
+      const int status = sendRequestOnce(activeMethod.c_str(), activePayload, activePayloadLen, onData, shouldAbort);
+      if (status < 0 || hop >= _followRedirects || !isRedirectStatus(status)) return status;
+
+      const std::string location = getHeader("location");
+      if (location.empty()) return status;
+      const std::string base = _scheme + "://" + hostHeader() + _path;
+      std::string next;
+      if (!resolveUrl(base, location, next)) return status;
+      std::string scheme;
+      std::string host;
+      std::string path;
+      uint16_t port = 0;
+      if (!parseUrl(next, scheme, host, path, port)) return status;
+      // Refuse to silently drop transport security: a https -> http redirect
+      // stops here (the caller sees the 3xx) unless explicitly allowed.
+      if (_scheme == "https" && scheme == "http" && !_allowRedirectDowngrade) return status;
+      _scheme = scheme;
+      _host = host;
+      _path = path;
+      _port = port;
+
+      // 303 always continues as GET; after 301/302, long-standing convention
+      // downgrades POST to GET too. 307/308 preserve method and body.
+      if ((status == 301 || status == 302 || status == 303) && activeMethod != "GET" && activeMethod != "HEAD") {
+        activeMethod = "GET";
+        activePayload = nullptr;
+        activePayloadLen = 0;
+      }
+    }
+  }
+
+  // One request/response transaction against the URL state — never follows
+  // redirects. When following is enabled and the response is a 3xx, its body
+  // is drained but NOT delivered to onData (only the final response's body
+  // reaches the caller's sink).
+  int sendRequestOnce(const char* method, const uint8_t* payload, size_t payloadLen, const DataCallback& onData,
+                      const AbortCallback& shouldAbort = nullptr) {
     _status = 0;
     _body.clear();
     _responseHeaders.clear();
@@ -201,14 +254,21 @@ class SecureHttpClient {
 
       // A close-delimited body (no framing) ends WITH the connection, so it can
       // never leave a reusable socket behind.
+      // A 3xx body that is about to be followed is protocol plumbing, not
+      // payload: drain it (keeping the connection reusable for the next hop)
+      // without touching the caller's sink.
+      const bool discardBody = _followRedirects > 0 && isRedirectStatus(_status);
+      const DataCallback discard = [](const uint8_t*, size_t) { return true; };
+      const DataCallback& bodySink = discardBody ? discard : onData;
+
       bool reusableFraming = true;
       if (transferEncoding.find("chunked") != std::string::npos) {
-        _bodyComplete = readChunked(*_conn, onData, shouldAbort);
+        _bodyComplete = readChunked(*_conn, bodySink, shouldAbort);
       } else if (transferEncoding.empty() || transferEncoding == "identity") {
         if (_haveContentLength) {
-          _bodyComplete = readFixed(*_conn, _contentLength, onData, shouldAbort);
+          _bodyComplete = readFixed(*_conn, _contentLength, bodySink, shouldAbort);
         } else {
-          _bodyComplete = readUntilClose(*_conn, onData, shouldAbort);
+          _bodyComplete = readUntilClose(*_conn, bodySink, shouldAbort);
           reusableFraming = false;
         }
       } else {
@@ -272,6 +332,10 @@ class SecureHttpClient {
     std::string name;
     std::string value;
   };
+
+  static bool isRedirectStatus(int status) {
+    return status == 301 || status == 302 || status == 303 || status == 307 || status == 308;
+  }
 
   static bool parseUrl(const std::string& url, std::string& scheme, std::string& host, std::string& path,
                        uint16_t& port) {
@@ -494,6 +558,8 @@ class SecureHttpClient {
   std::string _authUser;
   std::string _authPass;
   bool _insecure = false;
+  int _followRedirects = 0;
+  bool _allowRedirectDowngrade = false;
   bool _haveContentLength = false;
   bool _bodyComplete = false;
   bool _callbackAborted = false;

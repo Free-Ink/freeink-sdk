@@ -65,6 +65,9 @@ class SecureHttpClient {
     _insecure = false;
   }
   void setTimeout(uint32_t ms) { _timeoutMs = ms; }
+  // Identify the client. Sent on every request: several CDNs (notably
+  // Cloudflare in front of OPDS catalogs) answer UA-less requests with 403.
+  void setUserAgent(const std::string& ua) { _userAgent = ua; }
   // Keep the connection open between requests to the same scheme://host:port
   // (the default). Reusing the TLS session skips a full handshake per request —
   // seconds of latency plus the ECC/RSA heap spike on PSRAM-less boards.
@@ -340,6 +343,7 @@ class SecureHttpClient {
   // keep-alive socket often surfaces first as a failed write.
   bool writeRequest(const char* method, const uint8_t* payload, size_t payloadLen) {
     std::string req = std::string(method) + " " + _path + " HTTP/1.1\r\nHost: " + hostHeader() + "\r\n";
+    req += "User-Agent: " + _userAgent + "\r\n";
     req += _reuse ? "Connection: keep-alive\r\n" : "Connection: close\r\n";
     for (const std::string& h : _headers) req += h;
     if (payload && payloadLen) req += "Content-Length: " + std::to_string(payloadLen) + "\r\n";
@@ -470,6 +474,7 @@ class SecureHttpClient {
   int _status = 0;
   size_t _contentLength = 0;
   const char* _rootCA = nullptr;
+  std::string _userAgent = "FreeInk-ESP32";
   bool _insecure = false;
   bool _haveContentLength = false;
   bool _bodyComplete = false;

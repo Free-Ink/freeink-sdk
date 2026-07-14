@@ -313,8 +313,10 @@ class FreeInkDisplay {
   // Shared body of displayBufferAsync() / triggerDisplayAsync(): fire the
   // update and return while the waveform runs (_asyncPending set).
   void displayAsyncImpl(RefreshMode mode, bool turnOffScreen, bool noShadow = false);
-  // One framebuffer-sized heap block: PSRAM-first where available.
-  static uint8_t* allocFrameBufferStorage();
+  // One framebuffer-sized heap block (runtime panel's bufferSize, not
+  // MAX_BUFFER_SIZE): PSRAM-first where available. Valid only after begin()
+  // has seeded geometry / panel selection is final.
+  uint8_t* allocFrameBufferStorage() const;
 #ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
   // Downgrade a FAST request to HALF when the secondary (previous-frame) buffer is
   // released and the caller hasn't opted into single-buffer fast-diff — mirrors the

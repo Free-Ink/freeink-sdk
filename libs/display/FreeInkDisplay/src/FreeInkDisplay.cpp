@@ -242,12 +242,18 @@ void FreeInkDisplay::syncWriteBufferFromActive() const {
 #endif
 }
 
-uint8_t* FreeInkDisplay::allocFrameBufferStorage() {
+uint8_t* FreeInkDisplay::allocFrameBufferStorage() const {
+  // MEMFIX-PORT: runtime-sized framebuffer (~4-5 KB on X4); portable SDK change
+  // Sized to the RUNTIME panel, not MAX_BUFFER_SIZE: the dual-panel C3 binary
+  // otherwise pays the largest panel's size on every board (X4 measured a
+  // 53.2 KB block for its 48.0 KB framebuffer — 5.2 KB of dead slack in the
+  // heap map). Panel selection (setDisplayX3) precedes begin(), and every
+  // caller runs after geometry is seeded, so bufferSize is final here.
 #if FREEINK_FB_PSRAM
-  uint8_t* buf = static_cast<uint8_t*>(heap_caps_malloc(MAX_BUFFER_SIZE, MALLOC_CAP_SPIRAM));
+  uint8_t* buf = static_cast<uint8_t*>(heap_caps_malloc(bufferSize, MALLOC_CAP_SPIRAM));
   if (buf) return buf;
 #endif
-  return static_cast<uint8_t*>(malloc(MAX_BUFFER_SIZE));
+  return static_cast<uint8_t*>(malloc(bufferSize));
 }
 
 void FreeInkDisplay::releaseBuffers() {
@@ -290,7 +296,7 @@ uint8_t* FreeInkDisplay::lendBuildStorage(uint32_t* sizeOut) {
   _buildLent = true;
   frameBuffer = nullptr;   // rendering is unavailable while the bytes are lent
   _shadowValid = false;    // controller baseline no longer matches
-  if (sizeOut != nullptr) *sizeOut = MAX_BUFFER_SIZE;  // full alloc is usable as scratch
+  if (sizeOut != nullptr) *sizeOut = bufferSize;  // full alloc is usable as scratch
   return frameBuffer0;     // the allocation itself is never freed, so it never moves
 }
 

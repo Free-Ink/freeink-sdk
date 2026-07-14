@@ -22,6 +22,9 @@
 #include <Client.h>
 #include <WiFiClient.h>
 
+#include <cstddef>
+#include <cstdint>
+
 namespace freeink {
 
 class SecureClient : public Client {
@@ -58,6 +61,13 @@ class SecureClient : public Client {
   uint8_t connected() override;
   operator bool() override { return connected(); }
 
+  // Heap low-water sampled ACROSS the last handshake (free bytes / largest
+  // contiguous block). Distinct from ESP.getMinFreeHeap() (all-time since
+  // boot): this isolates what the TLS handshake itself cost, which is where
+  // PSRAM-less boards run out first. SIZE_MAX until a connect() has run.
+  size_t handshakeMinFree() const { return _handshakeMinFree; }
+  size_t handshakeMinLargest() const { return _handshakeMinLargest; }
+
   // True if the library was built with wolfSSL TLS 1.3 support enabled.
   static bool tls13Available();
 
@@ -72,7 +82,9 @@ class SecureClient : public Client {
   bool _insecure = false;
   bool _allowInsecureFallback = false;
   bool _lastWasInsecure = false;
-  int _lastConnectErr = 0;  // wolfSSL_get_error() from the last failed handshake; 0 = none
+  int _lastConnectErr = 0;                 // wolfSSL_get_error() from the last failed handshake; 0 = none
+  size_t _handshakeMinFree = SIZE_MAX;     // heap trough during the last handshake
+  size_t _handshakeMinLargest = SIZE_MAX;  // largest-block trough during the last handshake
   void* _ssl = nullptr;  // WOLFSSL* (opaque to keep wolfSSL headers out of here)
   void* _ctx = nullptr;  // WOLFSSL_CTX*
   bool _connected = false;

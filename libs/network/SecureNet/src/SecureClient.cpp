@@ -1,5 +1,7 @@
 #include "SecureClient.h"
 
+#include <esp_heap_caps.h>
+
 // wolfSSL is only pulled in when explicitly enabled. This keeps the default SDK
 // build free of the wolfSSL dependency while leaving a single, well-defined
 // integration point for the TLS 1.3 transport.
@@ -149,9 +151,22 @@ int SecureClient::connectWithMethod(const char* host, uint16_t port, void* metho
   // The recv callback is non-blocking (returns WANT_READ when no bytes are
   // buffered), so wolfSSL_connect must be retried across handshake round-trips
   // rather than called once.
+  //
+  // Sample the heap low-water across the handshake (this is where the ECC/RSA
+  // bignum allocations peak) so callers can report the handshake's real heap
+  // trough, distinct from the all-time ESP.getMinFreeHeap() figure. The two
+  // heap walks per 5 ms retry are noise next to the handshake crypto itself.
+  auto sampleHeapTrough = [this]() {
+    const size_t freeNow = esp_get_free_heap_size();
+    const size_t largestNow = heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT);
+    if (freeNow < _handshakeMinFree) _handshakeMinFree = freeNow;
+    if (largestNow < _handshakeMinLargest) _handshakeMinLargest = largestNow;
+  };
+  sampleHeapTrough();
   const uint32_t deadline = millis() + 15000;
   int ret;
   while ((ret = wolfSSL_connect(ssl)) != WOLFSSL_SUCCESS) {
+    sampleHeapTrough();
     const int err = wolfSSL_get_error(ssl, ret);
     if (!isWantIo(err)) {
       _lastConnectErr = err;
@@ -170,6 +185,7 @@ int SecureClient::connectWithMethod(const char* host, uint16_t port, void* metho
     }
     delay(5);
   }
+  sampleHeapTrough();
   _connected = true;
   if (Serial) {
     Serial.printf("[SecureClient] handshake ok (%s): %s / %s in %lu ms\n", label, wolfSSL_get_version(ssl),
@@ -206,6 +222,8 @@ int SecureClient::connect(const char* host, uint16_t port) {
   // would misclassify it.
   _lastConnectErr = 0;
   _lastWasInsecure = false;
+  _handshakeMinFree = SIZE_MAX;
+  _handshakeMinLargest = SIZE_MAX;
 
   // Explicitly insecure (setInsecure()): skip verification outright.
   if (_insecure) {

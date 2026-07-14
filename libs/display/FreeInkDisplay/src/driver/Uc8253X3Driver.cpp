@@ -153,6 +153,11 @@ void Uc8253X3Driver::begin(EpdBus& bus) {
 }
 
 void Uc8253X3Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
+  displayStart(bus, fb, prev, mode, turnOff);
+  displayFinish(bus, fb);
+}
+
+bool Uc8253X3Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
   (void)prev;
   if (!_isScreenOn && !turnOff) {
     mode = RefreshMode::Half;  // wake transition gets a stronger waveform
@@ -192,7 +197,33 @@ void Uc8253X3Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev
     _isScreenOn = true;
   }
   bus.cmd(CMD_DISPLAY_REFRESH);
-  bus.waitBusy(" X3_DRF");
+  // Confirm the waveform actually started (BUSY dropped LOW) before handing the
+  // CPU back, so displayFinish()'s waitBusy() only rides out the second
+  // (LOW->HIGH) phase. Short timeout: a missed edge just falls through to the
+  // full two-phase wait in displayFinish().
+  {
+    const int8_t busyPin = bus.pins().busy;
+    const unsigned long t0 = millis();
+    while (digitalRead(busyPin) == HIGH && millis() - t0 < 50) delay(1);
+  }
+  _pendingTurnOff = turnOff;
+  _pendingDoFullSync = doFullSync;
+  _pendingFastMode = fastMode;
+  _pendingRefresh = true;
+  return true;
+}
+
+void Uc8253X3Driver::displayFinish(EpdBus& bus, const uint8_t* fb) {
+  if (!_pendingRefresh) return;
+  _pendingRefresh = false;
+  const bool turnOff = _pendingTurnOff;
+  const bool doFullSync = _pendingDoFullSync;
+  const bool fastMode = _pendingFastMode;
+
+  // ISR-backed wait: displayStart() already confirmed BUSY dropped LOW, so the
+  // waveform is running and waitRefreshComplete() will wake on the exact
+  // completion edge rather than polling at 1 ms granularity.
+  bus.waitRefreshComplete(" X3_DRF");
   if (turnOff) {
     bus.cmd(CMD_POWER_OFF);
     bus.waitBusy(" X3_POF");
@@ -203,7 +234,7 @@ void Uc8253X3Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev
 
   uint8_t postConditionPasses = 0;
   if (doFullSync) {
-    if (forcedFullSync) postConditionPasses = _forcedConditionPassesNext;
+    if (_forceFullSyncNext) postConditionPasses = _forcedConditionPassesNext;
     else if (_initialFullSyncsRemaining == 1) postConditionPasses = 1;
   }
   if (postConditionPasses > 0) {

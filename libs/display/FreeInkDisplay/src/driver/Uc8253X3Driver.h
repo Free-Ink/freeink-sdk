@@ -59,6 +59,13 @@ class Uc8253X3Driver : public PanelDriver {
   void deepSleep(EpdBus& bus) override;
 
   void display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) override;
+  // Refresh split: displayStart fires the waveform and returns while the ~130-770 ms
+  // X3 waveform runs (so the render task can overlap non-SPI work); displayFinish
+  // waits BUSY out and runs the post-waveform DTM1 sync + conditioning passes.
+  // display() above is exactly displayStart()+displayFinish().
+  bool displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) override;
+  void displayFinish(EpdBus& bus, const uint8_t* fb) override;
+  bool supportsAsyncDisplay() const override { return true; }
 
   bool supportsStripGrayscale() const override { return true; }
   void displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, RefreshMode fallback, bool turnOff) override;
@@ -97,6 +104,16 @@ class Uc8253X3Driver : public PanelDriver {
     bool lastBaseWasPartial = false;
     bool lsbValid = false;
   } _grayState;
+
+  // Refresh split state: what displayStart() decided, replayed by displayFinish()
+  // for the post-waveform DTM1 sync + conditioning. _pendingRefresh guards against
+  // a displayFinish() with no matching displayStart(). The just-displayed frame is
+  // NOT stashed here: the facade re-supplies it fresh to displayFinish() because
+  // the caller may release/realloc the buffer holding it in the gap.
+  bool _pendingRefresh = false;
+  bool _pendingTurnOff = false;
+  bool _pendingDoFullSync = false;
+  bool _pendingFastMode = false;
 };
 
 PanelDriver& uc8253X3Driver();

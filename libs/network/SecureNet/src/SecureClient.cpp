@@ -73,7 +73,9 @@ bool isVerificationError(const int err) {
 }
 }  // namespace
 
-int SecureClient::connectWithMethod(const char* host, uint16_t port, void* method, const char* label) {
+// One handshake attempt at a fixed TLS method and verification level.
+int SecureClient::connectWithMethod(const char* host, uint16_t port, void* method, const char* label,
+                                    bool verifyPeer) {
 #if defined(FREEINK_WOLFSSL_DEBUG)
   // Routes wolfSSL's internal trace through wolfSSL_Arduino_Serial_Print (the
   // application provides that hook). Shows exactly where a handshake stalls.
@@ -98,7 +100,7 @@ int SecureClient::connectWithMethod(const char* host, uint16_t port, void* metho
   }
   _ctx = ctx;
 
-  if (_insecure) {
+  if (!verifyPeer || _insecure) {
     wolfSSL_CTX_set_verify(ctx, WOLFSSL_VERIFY_NONE, nullptr);
   } else if (_rootCA) {
     // A CA that fails to parse must fail the connect, not silently continue
@@ -125,7 +127,7 @@ int SecureClient::connectWithMethod(const char* host, uint16_t port, void* metho
   wolfSSL_SetIOReadCtx(ssl, &_transport);
   wolfSSL_SetIOWriteCtx(ssl, &_transport);
   wolfSSL_UseSNI(ssl, WOLFSSL_SNI_HOST_NAME, host, strlen(host));
-  if (!_insecure && _rootCA) {
+  if (verifyPeer && !_insecure && _rootCA) {
     // Chain verification alone accepts ANY certificate signed by the trusted
     // roots, regardless of which server it was issued to. Also match the
     // hostname against the certificate's SAN/CN.
@@ -164,17 +166,14 @@ int SecureClient::connectWithMethod(const char* host, uint16_t port, void* metho
   return 1;
 }
 
-int SecureClient::connect(const char* host, uint16_t port) {
-  // _lastConnectErr must not leak across connects: a TCP/DNS failure records no
-  // handshake error, and a stale verification code from an earlier attempt
-  // would misclassify it.
-  _lastConnectErr = 0;
-
+// One connect attempt at a fixed verification level, including the TLS 1.2
+// version-intolerance retry.
+int SecureClient::connectAtVerify(const char* host, uint16_t port, bool verifyPeer) {
   // Negotiate the highest mutually supported version rather than pinning TLS 1.3:
   // self-hosted / Let's Encrypt nginx often tops out at TLS 1.2, and a 1.3-only
   // client fails those handshakes outright. v23 still selects 1.3 when the peer
   // offers it (WOLFSSL_TLS13 is enabled) and falls back to 1.2 otherwise.
-  if (connectWithMethod(host, port, wolfSSLv23_client_method(), "auto")) return 1;
+  if (connectWithMethod(host, port, wolfSSLv23_client_method(), "auto", verifyPeer)) return 1;
 
   // A verification failure is deterministic: the same certificate fails the
   // same checks over TLS 1.2, so the retry below would only burn another
@@ -186,7 +185,42 @@ int SecureClient::connect(const char* host, uint16_t port) {
   // and abort with a fatal handshake_failure alert. Retry with an explicit
   // TLS 1.2 ClientHello before giving up.
   if (Serial) Serial.println("[SecureClient] retrying with TLS 1.2-only handshake");
-  return connectWithMethod(host, port, wolfTLSv1_2_client_method(), "tls1.2");
+  return connectWithMethod(host, port, wolfTLSv1_2_client_method(), "tls1.2", verifyPeer);
+}
+
+int SecureClient::connect(const char* host, uint16_t port) {
+  // _lastConnectErr must not leak across connects: a TCP/DNS failure records no
+  // handshake error, and a stale verification code from an earlier attempt
+  // would misclassify it.
+  _lastConnectErr = 0;
+  _lastWasInsecure = false;
+
+  // Explicitly insecure (setInsecure()): skip verification outright.
+  if (_insecure) {
+    const int ok = connectAtVerify(host, port, /*verifyPeer=*/false);
+    _lastWasInsecure = ok == 1;
+    return ok;
+  }
+
+  // Verified-first.
+  if (connectAtVerify(host, port, /*verifyPeer=*/true)) return 1;
+
+  // Only a verification-class failure can be helped by retrying without
+  // verification; transport/protocol failures would fail the same way again.
+  if (_allowInsecureFallback && isVerificationError(_lastConnectErr)) {
+    if (Serial) {
+      Serial.printf("[SecureClient] WARNING: certificate verify failed for %s (err %d); retrying WITHOUT verification\n",
+                    host, _lastConnectErr);
+    }
+    const int ok = connectAtVerify(host, port, /*verifyPeer=*/false);
+    _lastWasInsecure = ok == 1;
+    return ok;
+  }
+
+  if (isVerificationError(_lastConnectErr) && Serial) {
+    Serial.printf("[SecureClient] certificate verify failed for %s (err %d); failing closed\n", host, _lastConnectErr);
+  }
+  return 0;
 }
 
 int SecureClient::connect(IPAddress ip, uint16_t port) {

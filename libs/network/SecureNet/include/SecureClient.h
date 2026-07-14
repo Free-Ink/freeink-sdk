@@ -32,6 +32,16 @@ class SecureClient : public Client {
   // Certificate / verification configuration (applied before connect()).
   void setCACert(const char* rootCA);
   void setInsecure();  // skip peer verification (testing only)
+  // Opt-in: when a CA is set and the handshake fails with a verification-class
+  // error (untrusted/expired/self-signed/mismatched certificate), retry once
+  // with verification disabled, logging a warning. Off by default — security-
+  // critical callers (OTA) must leave this off so downloads fail closed.
+  // Transport/protocol failures never trigger the fallback.
+  void setAllowInsecureFallback(bool allow) { _allowInsecureFallback = allow; }
+  // True if the last successful connect() ended on an unverified handshake
+  // (via setInsecure() or the fallback above) — an audit hook for callers that
+  // surface a "connection not verified" indicator.
+  bool lastConnectWasInsecure() const { return _lastWasInsecure; }
 
   // Connect and perform a TLS 1.3 handshake to host:port (uses the SNI host).
   int connect(IPAddress ip, uint16_t port) override;
@@ -52,11 +62,16 @@ class SecureClient : public Client {
   static bool tls13Available();
 
  private:
-  int connectWithMethod(const char* host, uint16_t port, void* method, const char* label);
+  // One handshake attempt at a fixed TLS method and verification level.
+  int connectWithMethod(const char* host, uint16_t port, void* method, const char* label, bool verifyPeer);
+  // One connect attempt at a fixed verification level, incl. the TLS 1.2 retry.
+  int connectAtVerify(const char* host, uint16_t port, bool verifyPeer);
 
   WiFiClient _transport;
   const char* _rootCA = nullptr;
   bool _insecure = false;
+  bool _allowInsecureFallback = false;
+  bool _lastWasInsecure = false;
   int _lastConnectErr = 0;  // wolfSSL_get_error() from the last failed handshake; 0 = none
   void* _ssl = nullptr;  // WOLFSSL* (opaque to keep wolfSSL headers out of here)
   void* _ctx = nullptr;  // WOLFSSL_CTX*

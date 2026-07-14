@@ -547,8 +547,13 @@ class SecureHttpClient {
     }
   }
 
-  static constexpr size_t READ_CHUNK = 1024;  // body read buffer; keep TLS downloads moving
-  static constexpr size_t MAX_LINE = 4096;    // header / chunk-size line cap
+  // Body read buffer. 2 KB drains wolfSSL's decrypted TLS records in few
+  // enough read() calls to keep large downloads moving: at 512 B a consuming
+  // firmware measured ~30 KB/s and slow CDNs (Cloudflare) dropped the
+  // connection mid-stream; 2 KB removed the stall. Stack-allocated in the
+  // body readers, so kept modest.
+  static constexpr size_t READ_CHUNK = 2048;
+  static constexpr size_t MAX_LINE = 4096;  // header / chunk-size line cap
 
   // Kept-alive connection state. _conn points at _secure or _plain while a
   // connection is held open, and null otherwise.

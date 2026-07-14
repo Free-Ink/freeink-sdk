@@ -762,25 +762,40 @@ void BleKeyboardHost::onReportIngest(const uint8_t* data, size_t len) {
     // in practice: their release frame is all-zero (code 0), and the 150 ms
     // stale-release timeout in poll() zeroes g_lastGenericCode between any two
     // human-separated presses.
-    if (code != 0 && code != g_lastGenericCode && (code & ~g_lastGenericCode) != 0) {
-      // Press edge. Gamepad modes raise the SAME "button down" bit for every
-      // button and carry the identity in a later byte (gamebrick T: press
-      // frames "13 C4 .." vs "13 DC .." for two buttons, bit-identical across
-      // presses). Emitting the code byte would make all buttons bind as one,
-      // so emit the first non-zero byte after the code byte instead. Gated to
-      // composite reports (code in byte 0 of a >=5-byte report) so simple
-      // value-coded remotes (e.g. "01 00 00", or trailing battery bytes) keep
-      // emitting their code byte and existing bindings survive.
-      uint8_t identity = code;
-      if (codeIdx == 0 && n >= 5) {
-        for (size_t i = 1; i < (n < 8 ? n : 8); ++i) {
-          if (p[i] != 0) {
-            identity = p[i];
-            break;
-          }
+    const bool pressEdge = code != 0 && code != g_lastGenericCode && (code & ~g_lastGenericCode) != 0;
+    const bool releaseEdge = code != 0 && code != g_lastGenericCode && (code & ~g_lastGenericCode) == 0;
+    if (codeIdx == 0 && n >= 5) {
+      // Gamepad/axis-pair mode (ino gamebrick T): byte 0 is a status byte whose
+      // bit0 is "pressed" (0x13 press -> 0x12 release), bytes 1-4 are two 16-bit
+      // LE axes centered at ~2000. Every button raises the same pressed bit; the
+      // identity lives in where the axes sit. The FIRST press frame is not
+      // trustworthy (a direction press starts near center and ramps toward its
+      // extreme over several frames), but the release frame still carries the
+      // final held values ("12 D0 07 84 03" = up, "12 D0 07 10 0E" = down,
+      // "12 B8 0B D0 07" = A, "12 B8 0B C4 09" = B). So classify on the release
+      // edge: quantize each axis into low/center/high and emit a synthetic code
+      // from the zone pair. Both-axes-centered carries no identity (bare
+      // release) and emits nothing.
+      if (releaseEdge) {
+        uint16_t axis1, axis2;  // memcpy: p may be unaligned (RISC-V faults on unaligned loads)
+        memcpy(&axis1, p + 1, sizeof(axis1));
+        memcpy(&axis2, p + 3, sizeof(axis2));
+        constexpr uint16_t kAxisCenter = 2000;
+        constexpr uint16_t kAxisDeadband = 300;  // B rests at center+500; center noise stays inside +/-300
+        const auto zone = [](uint16_t v) -> uint8_t {
+          if (v < kAxisCenter - kAxisDeadband) return 0;
+          if (v > kAxisCenter + kAxisDeadband) return 2;
+          return 1;
+        };
+        const uint8_t zonePair = zone(axis1) * 3 + zone(axis2);
+        if (zonePair != 4) {  // 4 = both centered: nothing to bind
+          emitUsage(0x40 + zonePair, 0);
         }
       }
-      emitUsage(identity, 0);
+    } else if (pressEdge) {
+      // Value-coded remotes (e.g. "01 00 00" press, all-zero release): the code
+      // byte IS the identity; emit on the press edge as before.
+      emitUsage(code, 0);
     }
     g_lastGenericCode = code;
   } else if (emittedKb) {

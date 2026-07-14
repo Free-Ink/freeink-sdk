@@ -6,6 +6,18 @@
 #if defined(FREEINK_NET_WOLFSSL)
 #include <wolfssl/error-ssl.h>  // VERIFY_CERT_ERROR, DOMAIN_NAME_MISMATCH (SSL-layer codes)
 #include <wolfssl/ssl.h>
+
+// The Arduino-wolfSSL library's logging.c references this hook. It is normally
+// defined in the library's wolfssl.h sketch glue, which is only compiled into
+// sketch builds — a PlatformIO lib_deps build never compiles it and fails at
+// link time with an undefined reference. Provide a weak default (routing to
+// Serial) so SDK consumers link out of the box; an application that defines its
+// own (e.g. routing into its logger) overrides this one. Signature must match
+// wolfcrypt/logging.h exactly (int return).
+extern "C" __attribute__((weak)) int wolfSSL_Arduino_Serial_Print(const char* const s) {
+  if (s && Serial) Serial.printf("[wolfSSL] %s\n", s);
+  return 0;
+}
 #endif
 
 namespace freeink {

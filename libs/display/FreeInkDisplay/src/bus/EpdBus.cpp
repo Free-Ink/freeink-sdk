@@ -4,8 +4,19 @@
 #if defined(ARDUINO) && defined(CONFIG_PM_ENABLE) && CONFIG_PM_ENABLE
 #include <esp_pm.h>
 #endif
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 
 namespace freeink {
+
+static DRAM_ATTR SemaphoreHandle_t s_epdRefreshDone = nullptr;
+
+static void IRAM_ATTR epdBusyIsr() {
+  if (!s_epdRefreshDone) return;
+  BaseType_t woken = pdFALSE;
+  xSemaphoreGiveFromISR(s_epdRefreshDone, &woken);
+  if (woken) portYIELD_FROM_ISR();
+}
 
 EpdBus::Transaction::Transaction(EpdBus& bus) : _bus(&bus), _pmLock(bus), _active(true) {
   SPI.beginTransaction(_bus->_spi);
@@ -80,6 +91,8 @@ void EpdBus::begin(const EpdPins& pins, uint32_t spiHz, BusyPolarity busy, int8_
   _busy = busy;
   _coCs = coCs;
   _spi = SPISettings(spiHz, MSBFIRST, SPI_MODE0);
+
+  if (!s_epdRefreshDone) s_epdRefreshDone = xSemaphoreCreateBinary();
 
   // Power the EPD rail first (boards that gate it, e.g. Sticky's EP_PWR_EN), so the
   // panel is alive before SPI bring-up and the reset pulse. No-op when unassigned.
@@ -259,6 +272,47 @@ void EpdBus::waitBusy(BusyPolarity p, const char* tag) {
   if (hookFired && _busyWaitEndHook != nullptr) _busyWaitEndHook();
   if (p == BusyPolarity::X3TwoPhase && !x3SawLow) return;
 
+  if (tag && Serial) {
+    Serial.printf("[%lu]   Wait complete: %s (%lu ms)\n", millis(), tag, millis() - start);
+  }
+}
+
+void EpdBus::waitRefreshComplete(const char* tag) {
+  if (_busyWaitSliceHook != nullptr) {
+    waitBusy(tag);
+    return;
+  }
+  if (!s_epdRefreshDone) {
+    waitBusy(tag);
+    return;
+  }
+
+  const bool activeHigh = (_busy == BusyPolarity::ActiveHigh);
+  const int doneEdge = activeHigh ? FALLING : RISING;
+  const int doneLevel = activeHigh ? LOW : HIGH;
+  const int workingLevel = activeHigh ? HIGH : LOW;
+  const unsigned long start = millis();
+
+  {
+    const unsigned long c0 = millis();
+    while (digitalRead(_pins.busy) != workingLevel && millis() - c0 < 20) delay(1);
+  }
+
+  xSemaphoreTake(s_epdRefreshDone, 0);
+  attachInterrupt(digitalPinToInterrupt(_pins.busy), epdBusyIsr, doneEdge);
+
+  if (digitalRead(_pins.busy) == doneLevel) {
+    detachInterrupt(digitalPinToInterrupt(_pins.busy));
+    xSemaphoreTake(s_epdRefreshDone, 0);
+    return;
+  }
+
+  const bool hook = (_busyWaitBeginHook != nullptr);
+  if (hook) _busyWaitBeginHook();
+  xSemaphoreTake(s_epdRefreshDone, pdMS_TO_TICKS(30000));
+  if (hook && _busyWaitEndHook != nullptr) _busyWaitEndHook();
+
+  detachInterrupt(digitalPinToInterrupt(_pins.busy));
   if (tag && Serial) {
     Serial.printf("[%lu]   Wait complete: %s (%lu ms)\n", millis(), tag, millis() - start);
   }

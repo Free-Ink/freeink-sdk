@@ -51,6 +51,9 @@ class SecureHttpClient {
  public:
   using DataCallback = std::function<bool(const uint8_t* data, size_t len)>;
   using AbortCallback = std::function<bool()>;
+  // (bytes so far, total from Content-Length or 0 when unknown).
+  // Return false to abort the transfer.
+  using ProgressCallback = std::function<bool(size_t downloaded, size_t total)>;
 
   SecureHttpClient() = default;
   ~SecureHttpClient() { end(); }
@@ -67,6 +70,11 @@ class SecureHttpClient {
     _insecure = false;
   }
   void setTimeout(uint32_t ms) { _timeoutMs = ms; }
+  // Progress reporting for response bodies (download meters). Called after
+  // each delivered chunk with the running byte count; never called for
+  // drained redirect bodies. Returning false aborts the transfer (reported
+  // via callbackAborted()). Clear with nullptr.
+  void setProgressCallback(const ProgressCallback& progress) { _progress = progress; }
   // Follow up to maxHops redirect hops (default 0: 3xx responses are returned
   // to the caller, matching the previous behavior). While following, the
   // intermediate 3xx bodies are drained and discarded; only the final
@@ -260,6 +268,8 @@ class SecureHttpClient {
       const bool discardBody = _followRedirects > 0 && isRedirectStatus(_status);
       const DataCallback discard = [](const uint8_t*, size_t) { return true; };
       const DataCallback& bodySink = discardBody ? discard : onData;
+      _downloaded = 0;
+      _reportProgress = !discardBody && static_cast<bool>(_progress);
 
       bool reusableFraming = true;
       if (transferEncoding.find("chunked") != std::string::npos) {
@@ -446,6 +456,11 @@ class SecureHttpClient {
       _callbackAborted = true;
       return false;
     }
+    _downloaded += len;
+    if (_reportProgress && !_progress(_downloaded, _haveContentLength ? _contentLength : 0)) {
+      _callbackAborted = true;
+      return false;
+    }
     return true;
   }
 
@@ -560,6 +575,9 @@ class SecureHttpClient {
   bool _insecure = false;
   int _followRedirects = 0;
   bool _allowRedirectDowngrade = false;
+  ProgressCallback _progress;
+  size_t _downloaded = 0;
+  bool _reportProgress = false;
   bool _haveContentLength = false;
   bool _bodyComplete = false;
   bool _callbackAborted = false;

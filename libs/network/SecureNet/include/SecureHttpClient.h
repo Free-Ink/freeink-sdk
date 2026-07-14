@@ -8,7 +8,10 @@
 // that API. Instead this implements the small slice of HTTP/1.1 that firmware
 // needs — GET/POST/PUT with custom headers and a buffered response body —
 // directly over SecureClient, handling Content-Length, chunked, and
-// connection-close-delimited responses.
+// connection-close-delimited responses. Connections are kept alive and reused
+// across requests to the same scheme://host:port (see setReuse), so a burst of
+// requests — an OPDS crawl, a sync exchange, a multi-file download — pays for
+// one TLS handshake instead of one per request.
 //
 // Usage:
 //   SecureHttpClient http;
@@ -47,6 +50,12 @@ class SecureHttpClient {
   using DataCallback = std::function<bool(const uint8_t* data, size_t len)>;
   using AbortCallback = std::function<bool()>;
 
+  SecureHttpClient() = default;
+  ~SecureHttpClient() { end(); }
+  // Non-copyable: owns a live connection and a Client* into its own members.
+  SecureHttpClient(const SecureHttpClient&) = delete;
+  SecureHttpClient& operator=(const SecureHttpClient&) = delete;
+
   // Skip peer verification (SecureClient does likewise). Required today because
   // the wolfSSL transport has no CA bundle wired up; see setCACert().
   void setInsecure() { _insecure = true; }
@@ -56,6 +65,11 @@ class SecureHttpClient {
     _insecure = false;
   }
   void setTimeout(uint32_t ms) { _timeoutMs = ms; }
+  // Keep the connection open between requests to the same scheme://host:port
+  // (the default). Reusing the TLS session skips a full handshake per request —
+  // seconds of latency plus the ECC/RSA heap spike on PSRAM-less boards.
+  // setReuse(false) restores connection-per-request behavior.
+  void setReuse(bool reuse) { _reuse = reuse; }
 
   // Parse the URL and reset per-request state. Returns false on a malformed
   // URL.
@@ -65,9 +79,9 @@ class SecureHttpClient {
     _status = 0;
     return parseUrl(url, _scheme, _host, _path, _port);
   }
-  // Each request uses Connection: close, so there is no socket to release here;
-  // present for symmetry with HTTPClient call sites.
-  void end() {}
+  // Closes the kept-alive connection (if any). Call when done with a server;
+  // the next request transparently reconnects.
+  void end() { closeConnection(); }
 
   void addHeader(const std::string& name, const std::string& value) {
     _headers.push_back(name + ": " + value + "\r\n");
@@ -110,78 +124,89 @@ class SecureHttpClient {
     _callbackAborted = false;
     _aborted = false;
 
-    WiFiClient plain;
-    SecureClient secure;
-    Client* client;
-    if (_scheme == "https") {
-      if (_insecure) {
-        secure.setInsecure();
-      } else if (_rootCA) {
-        secure.setCACert(_rootCA);
+    // One transparent retry: a keep-alive server may close the connection
+    // between requests at any time, and the race surfaces as a write failure
+    // or a missing status line on a socket that looked connected. That is a
+    // property of the reused connection, not of the request, so it earns one
+    // attempt on a fresh connection. A request that failed on a fresh
+    // connection is a real error and is not retried.
+    for (int attempt = 0; attempt < 2; ++attempt) {
+      const bool reusing = connectionMatches();
+      if (isAborted(shouldAbort)) return -1;
+      if (!ensureConnected()) return -1;
+
+      if (!writeRequest(method, payload, payloadLen)) {
+        closeConnection();
+        if (reusing && attempt == 0) continue;
+        return -1;
       }
-      client = &secure;
-    } else {
-      client = &plain;
-    }
-    client->setTimeout(_timeoutMs / 1000);
-    if (isAborted(shouldAbort)) return -1;
-    if (!client->connect(_host.c_str(), _port)) return -1;
 
-    std::string req =
-        std::string(method) + " " + _path + " HTTP/1.1\r\nHost: " + hostHeader() + "\r\nConnection: close\r\n";
-    for (const std::string& h : _headers) req += h;
-    if (payload && payloadLen) req += "Content-Length: " + std::to_string(payloadLen) + "\r\n";
-    req += "\r\n";
-    client->write(reinterpret_cast<const uint8_t*>(req.data()), req.size());
-    if (payload && payloadLen) client->write(payload, payloadLen);
+      const unsigned long headerDeadline = millis() + _timeoutMs;
+      std::string line;
+      if (!readLine(*_conn, line, headerDeadline, shouldAbort)) {
+        closeConnection();
+        if (reusing && attempt == 0 && !_aborted) continue;
+        return -1;
+      }
+      // "HTTP/1.1 200 OK" — the status code starts at offset 9.
+      _status = line.size() >= 12 ? atoi(line.c_str() + 9) : 0;
+      // HTTP/1.0 peers default to connection-per-request; only an explicit
+      // Connection: keep-alive header (below) overrides that.
+      bool keepAlive = line.compare(0, 9, "HTTP/1.0 ") != 0;
 
-    const unsigned long headerDeadline = millis() + _timeoutMs;
-    std::string line;
-    if (!readLine(*client, line, headerDeadline, shouldAbort)) {
-      client->stop();
-      return -1;
-    }
-    // "HTTP/1.1 200 OK" — the status code starts at offset 9.
-    _status = line.size() >= 12 ? atoi(line.c_str() + 9) : 0;
-
-    std::string transferEncoding;
-    while (readLine(*client, line, headerDeadline, shouldAbort)) {
-      if (line.empty()) break;  // end of headers
-      const size_t colon = line.find(':');
-      if (colon == std::string::npos) continue;
-      std::string name = line.substr(0, colon);
-      std::string value = line.substr(colon + 1);
-      while (!value.empty() && value.front() == ' ') value.erase(value.begin());
-      std::transform(name.begin(), name.end(), name.begin(),
-                     [](unsigned char c) { return static_cast<char>(tolower(c)); });
-      _responseHeaders.push_back(Header{name, value});
-      if (name == "content-length") {
-        _contentLength = static_cast<size_t>(strtoul(value.c_str(), nullptr, 10));
-        _haveContentLength = true;
-      } else if (name == "transfer-encoding") {
-        std::transform(value.begin(), value.end(), value.begin(),
+      std::string transferEncoding;
+      while (readLine(*_conn, line, headerDeadline, shouldAbort)) {
+        if (line.empty()) break;  // end of headers
+        const size_t colon = line.find(':');
+        if (colon == std::string::npos) continue;
+        std::string name = line.substr(0, colon);
+        std::string value = line.substr(colon + 1);
+        while (!value.empty() && value.front() == ' ') value.erase(value.begin());
+        std::transform(name.begin(), name.end(), name.begin(),
                        [](unsigned char c) { return static_cast<char>(tolower(c)); });
-        transferEncoding = value;
+        _responseHeaders.push_back(Header{name, value});
+        if (name == "content-length") {
+          _contentLength = static_cast<size_t>(strtoul(value.c_str(), nullptr, 10));
+          _haveContentLength = true;
+        } else if (name == "transfer-encoding") {
+          std::transform(value.begin(), value.end(), value.begin(),
+                         [](unsigned char c) { return static_cast<char>(tolower(c)); });
+          transferEncoding = value;
+        } else if (name == "connection") {
+          std::string v = value;
+          std::transform(v.begin(), v.end(), v.begin(), [](unsigned char c) { return static_cast<char>(tolower(c)); });
+          if (v.find("close") != std::string::npos) keepAlive = false;
+          else if (v.find("keep-alive") != std::string::npos) keepAlive = true;
+        }
       }
-    }
-    if (_aborted) {
-      client->stop();
-      return -1;
-    }
+      if (_aborted) {
+        closeConnection();
+        return -1;
+      }
 
-    if (transferEncoding.find("chunked") != std::string::npos) {
-      _bodyComplete = readChunked(*client, onData, shouldAbort);
-    } else if (transferEncoding.empty() || transferEncoding == "identity") {
-      if (_haveContentLength) {
-        _bodyComplete = readFixed(*client, _contentLength, onData, shouldAbort);
+      // A close-delimited body (no framing) ends WITH the connection, so it can
+      // never leave a reusable socket behind.
+      bool reusableFraming = true;
+      if (transferEncoding.find("chunked") != std::string::npos) {
+        _bodyComplete = readChunked(*_conn, onData, shouldAbort);
+      } else if (transferEncoding.empty() || transferEncoding == "identity") {
+        if (_haveContentLength) {
+          _bodyComplete = readFixed(*_conn, _contentLength, onData, shouldAbort);
+        } else {
+          _bodyComplete = readUntilClose(*_conn, onData, shouldAbort);
+          reusableFraming = false;
+        }
       } else {
-        _bodyComplete = readUntilClose(*client, onData, shouldAbort);
+        _bodyComplete = false;
       }
-    } else {
-      _bodyComplete = false;
+
+      // Reuse only a provably clean connection. An aborted/truncated body
+      // leaves undrained bytes on the socket, and the next request would parse
+      // leftover body data as its status line.
+      if (!_reuse || !keepAlive || !_bodyComplete || !reusableFraming) closeConnection();
+      return _status;
     }
-    client->stop();
-    return _status;
+    return -1;
   }
 
   const std::string& getString() const { return _body; }
@@ -266,6 +291,62 @@ class SecureHttpClient {
     const uint16_t defaultPort = scheme == "https" ? 443 : 80;
     if (port == 0 || port == defaultPort) return host;
     return host + ":" + std::to_string(port);
+  }
+
+  // True when the kept-alive connection matches the target of the next request
+  // and still looks alive. "Looks" is best-effort: the server may have closed
+  // it already, which the send path handles with its one-shot retry.
+  bool connectionMatches() const {
+    return _conn && _conn->connected() && _connHttps == (_scheme == "https") && _connHost == _host &&
+           _connPort == _port;
+  }
+
+  // Reuse the kept-alive connection when it matches, else (re)connect.
+  bool ensureConnected() {
+    if (connectionMatches()) return true;
+    closeConnection();
+    if (_scheme == "https") {
+      if (_insecure) {
+        _secure.setInsecure();
+      } else if (_rootCA) {
+        _secure.setCACert(_rootCA);
+      }
+      _secure.setTimeout(_timeoutMs / 1000);
+      if (!_secure.connect(_host.c_str(), _port)) return false;
+      _conn = &_secure;
+      _connHttps = true;
+    } else {
+      _plain.setTimeout(_timeoutMs / 1000);
+      if (!_plain.connect(_host.c_str(), _port)) return false;
+      _conn = &_plain;
+      _connHttps = false;
+    }
+    _connHost = _host;
+    _connPort = _port;
+    return true;
+  }
+
+  void closeConnection() {
+    if (_conn) {
+      _conn->stop();
+      _conn = nullptr;
+    }
+    _connHost.clear();
+    _connPort = 0;
+    _connHttps = false;
+  }
+
+  // Request line + headers (+ body). Write results are checked: a stale
+  // keep-alive socket often surfaces first as a failed write.
+  bool writeRequest(const char* method, const uint8_t* payload, size_t payloadLen) {
+    std::string req = std::string(method) + " " + _path + " HTTP/1.1\r\nHost: " + hostHeader() + "\r\n";
+    req += _reuse ? "Connection: keep-alive\r\n" : "Connection: close\r\n";
+    for (const std::string& h : _headers) req += h;
+    if (payload && payloadLen) req += "Content-Length: " + std::to_string(payloadLen) + "\r\n";
+    req += "\r\n";
+    if (_conn->write(reinterpret_cast<const uint8_t*>(req.data()), req.size()) != req.size()) return false;
+    if (payload && payloadLen && _conn->write(payload, payloadLen) != payloadLen) return false;
+    return true;
   }
 
   bool isAborted(const AbortCallback& shouldAbort) {
@@ -369,6 +450,16 @@ class SecureHttpClient {
 
   static constexpr size_t READ_CHUNK = 1024;  // body read buffer; keep TLS downloads moving
   static constexpr size_t MAX_LINE = 4096;    // header / chunk-size line cap
+
+  // Kept-alive connection state. _conn points at _secure or _plain while a
+  // connection is held open, and null otherwise.
+  WiFiClient _plain;
+  SecureClient _secure;
+  Client* _conn = nullptr;
+  std::string _connHost;
+  uint16_t _connPort = 0;
+  bool _connHttps = false;
+  bool _reuse = true;
 
   std::string _scheme;
   std::string _host;

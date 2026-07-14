@@ -237,7 +237,11 @@ class SecureHttpClient {
                        uint16_t& port) {
     const size_t schemeEnd = url.find("://");
     if (schemeEnd == std::string::npos) return false;
+    // URL schemes are case-insensitive (RFC 3986 §3.1): "HTTPS://..." from a
+    // server's Location header or user input must parse like "https://...".
     scheme = url.substr(0, schemeEnd);
+    std::transform(scheme.begin(), scheme.end(), scheme.begin(),
+                   [](unsigned char c) { return static_cast<char>(tolower(c)); });
     const size_t hostStart = schemeEnd + 3;
     const size_t pathStart = url.find('/', hostStart);
     const std::string hostPort =

@@ -29,7 +29,12 @@ namespace {
 int wcSend(WOLFSSL* /*ssl*/, char* buf, int sz, void* ctx) {
   auto* t = static_cast<WiFiClient*>(ctx);
   const int n = t->write(reinterpret_cast<const uint8_t*>(buf), sz);
-  if (n <= 0) return WOLFSSL_CBIO_ERR_WANT_WRITE;
+  if (n <= 0) {
+    // A dead transport must surface as CONN_CLOSE: mapping it to WANT_WRITE
+    // makes the handshake spin until the deadline instead of failing fast.
+    if (!t->connected()) return WOLFSSL_CBIO_ERR_CONN_CLOSE;
+    return WOLFSSL_CBIO_ERR_WANT_WRITE;
+  }
   return n;
 }
 int wcRecv(WOLFSSL* /*ssl*/, char* buf, int sz, void* ctx) {
@@ -40,14 +45,36 @@ int wcRecv(WOLFSSL* /*ssl*/, char* buf, int sz, void* ctx) {
   if (n <= 0) return WOLFSSL_CBIO_ERR_WANT_READ;
   return n;
 }
+
+bool isWantIo(const int err) {
+  return err == WOLFSSL_ERROR_WANT_READ || err == WOLFSSL_ERROR_WANT_WRITE || err == WOLFSSL_CBIO_ERR_WANT_READ ||
+         err == WOLFSSL_CBIO_ERR_WANT_WRITE;
+}
 }  // namespace
 
 int SecureClient::connectWithMethod(const char* host, uint16_t port, void* method, const char* label) {
+#if defined(FREEINK_WOLFSSL_DEBUG)
+  // Routes wolfSSL's internal trace through wolfSSL_Arduino_Serial_Print (the
+  // application provides that hook). Shows exactly where a handshake stalls.
+  static bool debugEnabled = false;
+  if (!debugEnabled) {
+    wolfSSL_Debugging_ON();
+    debugEnabled = true;
+  }
+#endif
+  const uint32_t started = millis();
   stop();
-  if (!_transport.connect(host, port)) return 0;
+  if (!_transport.connect(host, port)) {
+    if (Serial) Serial.printf("[SecureClient] TCP connect failed (%s): %s:%u\n", label, host, port);
+    return 0;
+  }
 
   auto* ctx = wolfSSL_CTX_new(static_cast<WOLFSSL_METHOD*>(method));
-  if (!ctx) { _transport.stop(); return 0; }
+  if (!ctx) {
+    if (Serial) Serial.printf("[SecureClient] CTX alloc failed (%s), free heap %u\n", label, (unsigned)ESP.getFreeHeap());
+    _transport.stop();
+    return 0;
+  }
   _ctx = ctx;
 
   if (_insecure) {
@@ -60,7 +87,11 @@ int SecureClient::connectWithMethod(const char* host, uint16_t port, void* metho
   wolfSSL_SetIOSend(ctx, wcSend);
 
   auto* ssl = wolfSSL_new(ctx);
-  if (!ssl) { stop(); return 0; }
+  if (!ssl) {
+    if (Serial) Serial.printf("[SecureClient] SSL alloc failed (%s), free heap %u\n", label, (unsigned)ESP.getFreeHeap());
+    stop();
+    return 0;
+  }
   _ssl = ssl;
   wolfSSL_SetIOReadCtx(ssl, &_transport);
   wolfSSL_SetIOWriteCtx(ssl, &_transport);
@@ -73,19 +104,26 @@ int SecureClient::connectWithMethod(const char* host, uint16_t port, void* metho
   int ret;
   while ((ret = wolfSSL_connect(ssl)) != WOLFSSL_SUCCESS) {
     const int err = wolfSSL_get_error(ssl, ret);
-    if (err != WOLFSSL_ERROR_WANT_READ && err != WOLFSSL_ERROR_WANT_WRITE) {
+    if (!isWantIo(err)) {
       if (Serial) Serial.printf("[SecureClient] wolfSSL_connect failed (%s): %d\n", label, err);
       stop();
       return 0;
     }
     if (static_cast<int32_t>(millis() - deadline) >= 0) {
-      if (Serial) Serial.printf("[SecureClient] handshake timeout\n");
+      if (Serial) {
+        Serial.printf("[SecureClient] handshake timeout (%s): last err %d, transport %s, free heap %u\n", label, err,
+                      _transport.connected() ? "up" : "down", (unsigned)ESP.getFreeHeap());
+      }
       stop();
       return 0;
     }
     delay(5);
   }
   _connected = true;
+  if (Serial) {
+    Serial.printf("[SecureClient] handshake ok (%s): %s / %s in %lu ms\n", label, wolfSSL_get_version(ssl),
+                  wolfSSL_get_cipher(ssl), (unsigned long)(millis() - started));
+  }
   return 1;
 }
 
@@ -122,7 +160,7 @@ int SecureClient::read(uint8_t* buf, size_t size) {
   if (n > 0) return n;
 
   const int err = wolfSSL_get_error(ssl, n);
-  if (err == WOLFSSL_ERROR_WANT_READ || err == WOLFSSL_ERROR_WANT_WRITE) return 0;
+  if (isWantIo(err)) return 0;
   if (err == WOLFSSL_ERROR_ZERO_RETURN) {
     _connected = false;
     return 0;

@@ -726,6 +726,11 @@ struct ActionEvent {
   ActionId action = NO_ACTION;
   int16_t value = 0;
   State state = StateNormal;
+  // True when the dispatch came from a long-press touch release (the
+  // interaction matched via InputLongPress). Lets one key offer an alternate
+  // output on hold — e.g. a keyboard digit key emitting its shift symbol —
+  // without registering a second ActionId.
+  bool longPress = false;
 
   explicit operator bool() const { return action != NO_ACTION; }
 };
@@ -803,7 +808,11 @@ class InteractionBuffer final : public InteractionSink {
     if (input.touchReleased) {
       const int16_t idx = findTouch(input.touchX, input.touchY, input.longPress ? InputLongPress : InputTouch);
       active_ = -1;
-      if (idx >= 0) return eventFor(idx);
+      if (idx >= 0) {
+        ActionEvent released = eventFor(idx);
+        released.longPress = input.longPress;
+        return released;
+      }
     }
 
     if (input.swipeLeft) {

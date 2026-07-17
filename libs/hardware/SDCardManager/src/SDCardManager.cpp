@@ -44,6 +44,13 @@ bool SDCardManager::begin() {
   // Pins/clock come from the runtime-active profile (board-overridable via
   // BoardConfig::ACTIVE.sd.spiHz; 0 = default). Read after device selection.
   const uint8_t SD_CS = BoardConfig::ACTIVE.sd.cs;
+  const int8_t SD_SCLK = BoardConfig::ACTIVE.sd.sclk >= 0 ? BoardConfig::ACTIVE.sd.sclk
+                                                          : (BoardConfig::ACTIVE.sd.separateSpi ? -1
+                                                                                                : BoardConfig::ACTIVE.display.sclk);
+  const int8_t SD_MOSI = BoardConfig::ACTIVE.sd.mosi >= 0 ? BoardConfig::ACTIVE.sd.mosi
+                                                          : (BoardConfig::ACTIVE.sd.separateSpi ? -1
+                                                                                                : BoardConfig::ACTIVE.display.mosi);
+  const int8_t SD_MISO = BoardConfig::ACTIVE.sd.miso;
   const uint32_t SPI_FQ = BoardConfig::ACTIVE.sd.spiHz != 0 ? BoardConfig::ACTIVE.sd.spiHz : 40000000;
 
   if (_powerHook) _powerHook();  // board brings up its SD rail (e.g. PMIC) if needed
@@ -65,20 +72,20 @@ bool SDCardManager::begin() {
   // probing the card. SD init runs before the display driver's begin(), so a
   // powered, never-deselected panel can drive the shared MISO and break
   // detection. Harmless when the display is on a separate bus or has no CS pin.
-  if (BoardConfig::ACTIVE.display.cs >= 0 && BoardConfig::ACTIVE.display.sclk == BoardConfig::ACTIVE.sd.sclk) {
+  if (BoardConfig::ACTIVE.display.cs >= 0 && BoardConfig::ACTIVE.display.sclk == SD_SCLK) {
     pinMode(BoardConfig::ACTIVE.display.cs, OUTPUT);
     digitalWrite(BoardConfig::ACTIVE.display.cs, HIGH);
   }
 
-  if (BoardConfig::ACTIVE.sd.sclk >= 0 && BoardConfig::ACTIVE.sd.mosi >= 0 && BoardConfig::ACTIVE.sd.miso >= 0) {
-    SPI.begin(BoardConfig::ACTIVE.sd.sclk, BoardConfig::ACTIVE.sd.miso, BoardConfig::ACTIVE.sd.mosi, SD_CS);
+  if (SD_SCLK >= 0 && SD_MOSI >= 0 && SD_MISO >= 0) {
+    SPI.begin(SD_SCLK, SD_MISO, SD_MOSI, SD_CS);
   }
 
   if (!sd.begin(SD_CS, SPI_FQ)) {
     if (Serial)
       Serial.printf("[%lu] [SD] SD card not detected (err=0x%02X data=0x%02X cs=%d sclk=%d miso=%d mosi=%d clk=%luHz)\n",
-                    millis(), sd.sdErrorCode(), sd.sdErrorData(), SD_CS, BoardConfig::ACTIVE.sd.sclk,
-                    BoardConfig::ACTIVE.sd.miso, BoardConfig::ACTIVE.sd.mosi, (unsigned long)SPI_FQ);
+                    millis(), sd.sdErrorCode(), sd.sdErrorData(), SD_CS, SD_SCLK,
+                    SD_MISO, SD_MOSI, (unsigned long)SPI_FQ);
     initialized = false;
     cachedTotalBytes = 0;
     cachedUsedBytesValid = false;

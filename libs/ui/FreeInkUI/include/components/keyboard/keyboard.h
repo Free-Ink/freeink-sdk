@@ -51,6 +51,14 @@ struct KeyboardProps {
   ActionId modeAction = NO_ACTION;
   ActionId deleteAction = NO_ACTION;
   ActionId okAction = NO_ACTION;
+  // Optional localized labels for KeyKind::Ok / Shift / Mode keys. Layout
+  // tables are static (built before any locale is loaded), so the app supplies
+  // the translated string per frame; nullptr keeps the table label. The mode
+  // key's label depends on the active layer ("?123" vs "abc"), so the app
+  // passes the one matching the layout it is rendering.
+  const char* okLabel = nullptr;
+  const char* shiftLabel = nullptr;
+  const char* modeLabel = nullptr;
   uint16_t inputMask = InputDefault;
   int16_t selectedIndex = -1;
   TextStyle labelText{};
@@ -330,6 +338,9 @@ void keyboard(Frame<MaxInteractions>& frame, Rect rect, const KeyboardProps& pro
     const ActionId action = actionFor(key.kind);
     ButtonProps bp;
     bp.label = (key.kind == KeyKind::Space || key.kind == KeyKind::Delete) ? nullptr : key.label;
+    if (key.kind == KeyKind::Ok && props.okLabel) bp.label = props.okLabel;
+    if (key.kind == KeyKind::Shift && props.shiftLabel) bp.label = props.shiftLabel;
+    if (key.kind == KeyKind::Mode && props.modeLabel) bp.label = props.modeLabel;
     bp.action = action;
     bp.value = key.value;
     bp.inputMask = props.inputMask;
@@ -345,12 +356,17 @@ void keyboard(Frame<MaxInteractions>& frame, Rect rect, const KeyboardProps& pro
     if (key.kind == KeyKind::Delete) {
       // Size the delete glyph from the label font so it reads at the same
       // weight as neighboring key labels; the 16px source art carries ~3px of
-      // internal margin, so the box runs slightly over the line height.
+      // internal margin, so the box runs slightly over the line height. Snap
+      // to an integer multiple of the 16px source — non-integer nearest-
+      // neighbor scaling doubles some 1px rows of the mask and not others,
+      // which reads as a ragged upscale.
       const Paint ink = styles.resolve(frame.stateFor(action, key.value, state)).foreground;
       const int16_t lh = frame.target().lineHeight(keyText.font);
-      int16_t iconSize = static_cast<int16_t>(lh + lh / 8);
+      const int16_t desired = static_cast<int16_t>(lh + lh / 8);
+      int16_t iconSize = static_cast<int16_t>(((desired + 8) / 16) * 16);
       if (iconSize < 16) iconSize = 16;
       const int16_t maxSize = keyRect.height < keyRect.width ? keyRect.height : keyRect.width;
+      while (iconSize > maxSize && iconSize > 16) iconSize = static_cast<int16_t>(iconSize - 16);
       if (iconSize > maxSize) iconSize = maxSize;
       frame.target().bitmap(centeredRect(keyRect, Size{iconSize, iconSize}), lucideDeleteIcon16(),
                             BitmapMode::Contain, ink);

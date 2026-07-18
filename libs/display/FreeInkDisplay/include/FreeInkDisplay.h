@@ -300,6 +300,23 @@ class FreeInkDisplay {
 
   // Returns true if the secondary buffer is currently allocated.
   bool hasSecondaryBuffer() const;
+
+  // Lend the secondary buffer's memory to the host WITHOUT freeing it: the
+  // display drops to single-buffer mode exactly like releaseSecondaryBuffer()
+  // (same fast-diff/refresh semantics apply), but the block stays owned here
+  // and is handed to the caller for scratch use (e.g. a section-build arena).
+  // Unlike release/realloc, the memory never enters the heap, so nothing can
+  // allocate inside it and returnSecondaryBuffer() CANNOT fail — the
+  // realloc-failure / fragmented-hole class of bugs is impossible by
+  // construction. Returns nullptr if there is no secondary buffer or it is
+  // already lent. *size receives the block size.
+  uint8_t* borrowSecondaryBuffer(size_t* size);
+
+  // Take the lent block back and restore dual-buffer mode. Seeds the buffer
+  // from the live framebuffer and arms the one-shot RED-baseline handling,
+  // identical to reallocSecondaryBuffer() (the build clobbered the contents).
+  // Returns false only if nothing was lent.
+  bool returnSecondaryBuffer();
 #endif  // !EINK_DISPLAY_SINGLE_BUFFER_MODE
 
   // Save the current framebuffer to a PBM file (desktop/test builds only)
@@ -339,6 +356,10 @@ class FreeInkDisplay {
   uint8_t* _asyncShadow = nullptr;
   bool _shadowValid = false;
   bool _buildLent = false;  // framebuffer storage lent to a build (see lendBuildStorage)
+  // Secondary buffer lent to the host (see borrowSecondaryBuffer): the block
+  // this points at is still owned by frameBuffer0/1; frameBufferActive is null
+  // while lent so all released-mode display semantics apply unchanged.
+  uint8_t* _secondaryLent = nullptr;
 
 #ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
   // One-shot, armed by reallocSecondaryBuffer(): the controller's RED RAM still

@@ -328,6 +328,7 @@ bool FreeInkDisplay::releaseSecondaryBuffer() {
 
 bool FreeInkDisplay::reallocSecondaryBuffer() {
   if (frameBufferActive) return true;
+  if (_secondaryLent) return false;  // lent, not freed: returnSecondaryBuffer() is the only way back
   uint8_t** slot = (frameBuffer0 == nullptr) ? &frameBuffer0 : &frameBuffer1;
   *slot = allocFrameBufferStorage();
   if (!*slot) return false;
@@ -370,6 +371,30 @@ const uint8_t* FreeInkDisplay::consumePrevFrameFor(RefreshMode effectiveMode) {
 }
 
 bool FreeInkDisplay::hasSecondaryBuffer() const { return frameBufferActive != nullptr; }
+
+uint8_t* FreeInkDisplay::borrowSecondaryBuffer(size_t* size) {
+  if (!frameBufferActive || _secondaryLent) return nullptr;
+  _secondaryLent = frameBufferActive;
+  frameBufferActive = nullptr;  // single-buffer mode, same as releaseSecondaryBuffer()
+  if (size) *size = bufferSize;
+  return _secondaryLent;
+}
+
+bool FreeInkDisplay::returnSecondaryBuffer() {
+  if (!_secondaryLent) return false;
+  frameBufferActive = _secondaryLent;
+  _secondaryLent = nullptr;
+  // Identical post-restore handling to reallocSecondaryBuffer(): the scratch
+  // user clobbered the contents, so seed from the live framebuffer and arm the
+  // one-shot so the next FAST diffs against the controller's retained RED.
+  if (frameBuffer) {
+    memcpy(frameBufferActive, frameBuffer, bufferSize);
+  } else {
+    memset(frameBufferActive, 0xFF, bufferSize);
+  }
+  _redBaselineAuthoritative = true;
+  return true;
+}
 #endif  // !EINK_DISPLAY_SINGLE_BUFFER_MODE
 
 // ============================================================================

@@ -257,6 +257,11 @@ uint8_t* FreeInkDisplay::allocFrameBufferStorage() const {
 }
 
 void FreeInkDisplay::releaseBuffers() {
+#ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
+  // The secondary block is in the host's hands — freeing it here would be a
+  // use-after-free and would orphan _secondaryLent. returnSecondaryBuffer() first.
+  if (_secondaryLent) return;
+#endif
   syncPendingAsync();  // a refresh in flight was fed from these buffers
   free(frameBuffer0);
   frameBuffer0 = nullptr;
@@ -274,6 +279,11 @@ void FreeInkDisplay::releaseBuffers() {
 }
 
 bool FreeInkDisplay::reallocBuffers() {
+#ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
+  // While lent, frameBuffer0/1 still hold the block, so the slot checks below
+  // would reattach it as frameBufferActive and memset the borrower's scratch.
+  if (_secondaryLent) return false;
+#endif
   if (!frameBuffer0) frameBuffer0 = allocFrameBufferStorage();
   if (!frameBuffer0) return false;
   frameBuffer = frameBuffer0;
@@ -374,6 +384,11 @@ bool FreeInkDisplay::hasSecondaryBuffer() const { return frameBufferActive != nu
 
 uint8_t* FreeInkDisplay::borrowSecondaryBuffer(size_t* size) {
   if (!frameBufferActive || _secondaryLent) return nullptr;
+  // A deferred refresh is still reading these bytes (the last displayStart +
+  // swap parked the displayed frame here; X3's post-waveform DTM1 sync reads
+  // it in displayFinish). Drain before the host scribbles — same reason
+  // lendBuildStorage() syncs before lending the primary.
+  syncPendingAsync();
   _secondaryLent = frameBufferActive;
   frameBufferActive = nullptr;  // single-buffer mode, same as releaseSecondaryBuffer()
   if (size) *size = bufferSize;

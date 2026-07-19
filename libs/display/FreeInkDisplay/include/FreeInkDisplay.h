@@ -356,12 +356,12 @@ class FreeInkDisplay {
   uint8_t* _asyncShadow = nullptr;
   bool _shadowValid = false;
   bool _buildLent = false;  // framebuffer storage lent to a build (see lendBuildStorage)
+
+#ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
   // Secondary buffer lent to the host (see borrowSecondaryBuffer): the block
   // this points at is still owned by frameBuffer0/1; frameBufferActive is null
   // while lent so all released-mode display semantics apply unchanged.
   uint8_t* _secondaryLent = nullptr;
-
-#ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
   // One-shot, armed by reallocSecondaryBuffer(): the controller's RED RAM still
   // holds the on-screen frame (host allocation never touches controller RAM),
   // while the fresh secondary may not — the host may have scribbled or cleared

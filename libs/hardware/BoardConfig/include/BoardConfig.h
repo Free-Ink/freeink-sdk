@@ -766,7 +766,10 @@ constexpr BoardProfile LILYGO_T5S3 = {
     {39, 40, 400000, 0x55, 0x6B},  // BQ27220 gauge (0x55) + BQ25896 charger (0x6B) on SDA39/SCL40
     NO_MIC,
     NO_SENSORS,
-    1.2f};  // uiScale: 4.7" 960x540 touch (~234 PPI) — finger-sized chrome, like Sticky
+    1.2f,  // uiScale: 4.7" 960x540 touch (~234 PPI) — finger-sized chrome, like Sticky
+    // Power latch: main-power MOSFET on GPIO2, driven HIGH first thing in boot
+    // via holdPowerRails() or the board powers off when USB is unplugged.
+    {2}};
 
 // --- M5Paper v1.1 4.7" (ED047TC1 behind an IT8951E controller) — ESP32 --------
 // 540x960 16-gray panel driven through an IT8951E timing controller over SPI
@@ -778,11 +781,12 @@ constexpr BoardProfile LILYGO_T5S3 = {
 // from InputManager. Battery is read on the GPIO35 ADC. The 3-position rotary
 // switch maps push=CONFIRM(38), left(39), right(37).
 //
-// System note (consumer/board init, not the SDK): M5Paper latches its own power
-// through a MOSFET on GPIO2 — it must be driven HIGH at boot or the device powers
-// off the moment USB is unplugged. EXT power (GPIO5) and EPD power (GPIO23) gate
-// the peripheral and panel rails. The IT8951 driver asserts GPIO23 (the EPD rail);
-// the main-power latch is the firmware's responsibility — see platformio.sample.ini.
+// System note: M5Paper latches its own power through a MOSFET on GPIO2 — it must
+// be driven HIGH at boot or the device powers off the moment USB is unplugged.
+// The profile's power.latch0 carries it, asserted by holdPowerRails() (call it
+// first thing in setup(), like the Sticky). EXT power (GPIO5) and EPD power
+// (GPIO23) gate the peripheral and panel rails; the IT8951 driver asserts GPIO23
+// (the EPD rail) itself.
 constexpr BoardProfile M5PAPER_V11 = {
     Board::M5PaperV11,
     "m5paper_v11",
@@ -829,7 +833,10 @@ constexpr BoardProfile M5PAPER_V11 = {
     NO_GAUGE,
     NO_MIC,
     NO_SENSORS,
-    1.2f};  // uiScale: 4.7" 960x540 touch (~234 PPI) — finger-sized chrome, like Sticky
+    1.2f,  // uiScale: 4.7" 960x540 touch (~234 PPI) — finger-sized chrome, like Sticky
+    // Power latch: main-power MOSFET on GPIO2, driven HIGH first thing in boot
+    // via holdPowerRails() or the board powers off when USB is unplugged.
+    {2}};
 
 // --- Sticky (Seeed Sticky) — ESP32-S3R8, SSD1677 + GT911 touch ---------------
 // 3.97" 800x480 B/W e-paper on a 24-pin FPC, controller confirmed SSD1677 by the

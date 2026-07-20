@@ -265,8 +265,12 @@ void LgfxEpdDriver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
   (void)lut;
   (void)factoryMode;
 #if FREEINK_DRIVER_LGFX_EPD
-  fillCanvasGray(fb);             // combine base + LSB/MSB planes -> 4-level gray
-  pushCanvas(lgfx::epd_mode::epd_fastest);
+  fillCanvasGray(fb);  // combine base + LSB/MSB planes -> 4-level gray
+  // Same mode as the B/W base push: Panel_EPD's per-pixel diff keys on the
+  // epd_mode LUT offset, so switching modes here would re-drive every pixel
+  // (full-screen inversion flash). The board's fast LUT carries both the B/W
+  // drive and the AA gray-nudge columns, so one mode serves both pushes.
+  pushCanvas(lgfx::epd_mode::epd_fast);
   if (turnOff) g_dev.sleep();
 #else
   (void)fb;

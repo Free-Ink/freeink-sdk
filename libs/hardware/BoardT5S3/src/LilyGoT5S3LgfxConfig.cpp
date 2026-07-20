@@ -15,10 +15,24 @@ constexpr uint8_t kTpsEnableOutputs = 0x3F;
              (d7 << 14) | (d8 << 16) | (d9 << 18) | (da << 20) | (db << 22) | (dc << 24) | \
              (dd << 26) | (de << 28) | (df << 30))
 
-constexpr uint32_t kAaOverlayLut[] = {
-    // Hold pure black/white; nudge only the 4-bit gray levels produced by AA.
-    LUT_MAKE(3, 1, 1, 1, 1, 1, 1, 3, 3, 2, 2, 2, 2, 2, 2, 3),
-    LUT_MAKE(3, 3, 1, 1, 1, 1, 3, 3, 3, 3, 2, 2, 2, 2, 3, 3),
+// Single waveform for BOTH the B/W base push and the AA gray overlay push.
+// Panel_EPD's per-pixel diff embeds the epd_mode LUT offset in the stored
+// value, so alternating modes between the two pushes of a page turn defeats
+// the diff and re-drives the whole screen — the LovyanGFX default lut_fast
+// then flashes every white pixel black for two frames (the full-screen black
+// "swipe"). Using one LUT under one mode keeps unchanged pixels skipped.
+// Columns 0/15 carry the default lut_fast drive (changed B/W text pixels);
+// columns 1-6 / 9-14 carry the AA nudge for the gray levels AA produces.
+constexpr uint32_t kFastLut[] = {
+    LUT_MAKE(2, 1, 1, 1, 1, 1, 1, 3, 3, 2, 2, 2, 2, 2, 2, 1),
+    LUT_MAKE(2, 3, 1, 1, 1, 1, 3, 3, 3, 3, 2, 2, 2, 2, 3, 1),
+    LUT_MAKE(1, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 2),
+    LUT_MAKE(1, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 2),
+    LUT_MAKE(1, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 2),
+    LUT_MAKE(1, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 2),
+    LUT_MAKE(1, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 2),
+    LUT_MAKE(1, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 2),
+    ~0u,
     0u,
 };
 
@@ -158,10 +172,10 @@ const LgfxEpdConfig& lilygoT5S3LgfxConfig() {
       0,
       nullptr,
       0,
-      nullptr,
-      0,
-      kAaOverlayLut,
-      sizeof(kAaOverlayLut) / sizeof(kAaOverlayLut[0]),
+      kFastLut,
+      sizeof(kFastLut) / sizeof(kFastLut[0]),
+      kFastLut,
+      sizeof(kFastLut) / sizeof(kFastLut[0]),
   };
   return cfg;
 }

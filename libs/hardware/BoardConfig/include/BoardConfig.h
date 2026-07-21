@@ -239,7 +239,22 @@
 #endif
 #endif
 
+// Bidirectional serial transport exposed by the board's physical USB-C port.
+// Most boards route it through Arduino's selected Serial implementation, while
+// Sticky's on-board WCH bridge is wired to UART0 instead of native USB CDC.
+#if FREEINK_DEVICE_STICKY
+#define FREEINK_SERIAL_HAS_TX_TIMEOUT 0
+#else
+#define FREEINK_SERIAL_HAS_TX_TIMEOUT (ARDUINO_USB_CDC_ON_BOOT)
+#endif
+
 namespace BoardConfig {
+
+#if FREEINK_DEVICE_STICKY
+inline HardwareSerial& serialTransport() { return Serial0; }
+#else
+inline auto& serialTransport() { return Serial; }
+#endif
 
 // Physical device family. X3 and X4 are sibling devices on the same ESP32-C3
 // board (identical pinout, different panel/size): both profiles compile into the

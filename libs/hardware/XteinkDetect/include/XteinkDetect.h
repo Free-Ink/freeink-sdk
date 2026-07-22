@@ -23,6 +23,19 @@
 
 namespace freeink {
 
+// Probe outcome. X3Confirmed / X4Confirmed mean both passes agreed (>= 2 hits
+// each, or zero hits each); Inconclusive means the passes disagreed or saw a
+// single stray ACK — treat it as an X4 but don't persist the answer, so a
+// flaky first boot gets re-probed.
+enum class XteinkVerdict : uint8_t { X4Confirmed, X3Confirmed, Inconclusive };
+
+// Run the X3 I2C fingerprint and return the verdict. Optionally reports the
+// per-pass chip-hit scores (0-3) for diagnostics. Leaves the I2C bus released
+// and the probe pins back in INPUT mode. Safe to call before any other
+// hardware bring-up. In builds without an Xteink profile this is a no-op
+// returning Inconclusive with zero scores.
+XteinkVerdict detectXteinkVerdict(uint8_t* score1 = nullptr, uint8_t* score2 = nullptr);
+
 // Run the X3 I2C fingerprint and return true if this board is an Xteink X3.
 // Leaves the I2C bus released and the probe pins back in INPUT mode. Safe to
 // call before any other hardware bring-up.

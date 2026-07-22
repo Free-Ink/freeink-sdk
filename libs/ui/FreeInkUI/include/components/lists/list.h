@@ -52,6 +52,10 @@ struct ListProps {
   int16_t sidePadding = -1;
   int16_t textGap = 10;
   int16_t iconSize = 0;
+  // Extra inset for the right-aligned value slot beyond sidePadding, so a
+  // trailing chevron/value keeps air from the row edge on themes with tight
+  // row padding.
+  int16_t valueInset = 0;
   // Inherit sentinels like rowGap/sidePadding: width -1 = theme (raw list()
   // falls back to 3); side 0xFF = theme (raw falls back to right).
   int16_t scrollIndicatorWidth = -1;
@@ -196,9 +200,9 @@ void list(Frame<MaxInteractions>& frame, Rect rect, const ListProps& props) {
       TextStyle valueStyle = textStyleWithForeground(props.valueText, style.foreground);
       valueStyle.align = TextAlign::Right;
       const int16_t valueW = frame.target().measureText(valueStyle.font, item.value, valueStyle).width;
-      Rect valueRect{static_cast<int16_t>(band.x + availW - valueW), band.y, valueW, band.height};
+      Rect valueRect{static_cast<int16_t>(band.x + availW - valueW - props.valueInset), band.y, valueW, band.height};
       frame.target().text(valueRect, item.value, valueStyle);
-      availW = static_cast<int16_t>(availW - valueW - props.textGap);
+      availW = static_cast<int16_t>(availW - valueW - props.valueInset - props.textGap);
     }
 
     if (item.subtitle) {

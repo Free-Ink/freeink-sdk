@@ -265,11 +265,15 @@ void list(Frame<MaxInteractions>& frame, Rect rect, const ListProps& props) {
       availW = static_cast<int16_t>(availW - valueW - props.valueInset - props.textGap);
     }
 
-    if (labelStyle.maxLines > 1 && (item.toggle || item.value)) {
-      // Wrap-capable labels break to the next line early (60% of the band)
-      // instead of running right up against the trailing slot.
-      const int16_t wrapCap = static_cast<int16_t>((band.width * 3) / 5);
-      if (availW > wrapCap) availW = wrapCap;
+    if (labelStyle.maxLines > 1 && (item.toggle || item.value) && item.label) {
+      // A label that fits stays on one line; one that must wrap breaks early
+      // (60% of the band) for a balanced two-line split instead of running
+      // right up against the trailing slot.
+      const int16_t labelW = frame.target().measureText(labelStyle.font, item.label, labelStyle).width;
+      if (labelW > availW) {
+        const int16_t wrapCap = static_cast<int16_t>((band.width * 3) / 5);
+        if (availW > wrapCap) availW = wrapCap;
+      }
     }
 
     if (item.subtitle) {

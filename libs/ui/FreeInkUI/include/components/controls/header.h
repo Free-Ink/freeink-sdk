@@ -137,8 +137,13 @@ void header(Frame<MaxInteractions>& frame, Rect rect, const HeaderProps& props) 
     Rect titleRect{content.x, titleY, content.width, content.height};
     if (props.rightLabel) {
       const Size rightSize = frame.target().measureText(props.subtitleText.font, props.rightLabel, props.subtitleText);
-      Rect rightRect{static_cast<int16_t>(content.right() - rightSize.width), content.y, rightSize.width,
-                     content.height};
+      // Bottom-aligned to the title's line (including its vertical offset):
+      // a smaller label centered on the band would float above the title.
+      const int16_t titleLh = frame.target().lineHeight(props.titleText.font);
+      const int16_t titleTop =
+          static_cast<int16_t>(content.y + props.titleOffsetY + (content.height - titleLh) / 2);
+      Rect rightRect{static_cast<int16_t>(content.right() - rightSize.width),
+                     static_cast<int16_t>(titleTop + titleLh - rightSize.height), rightSize.width, rightSize.height};
       frame.target().text(rightRect, props.rightLabel, props.subtitleText);
       // Reserve the label's width out of the title rect. A centered title
       // gives up the same width on both sides so it stays centered on the

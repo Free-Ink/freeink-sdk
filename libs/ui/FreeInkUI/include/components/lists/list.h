@@ -172,8 +172,12 @@ void list(Frame<MaxInteractions>& frame, Rect rect, const ListProps& props) {
     if (props.selectedIndex == static_cast<int16_t>(i)) state |= StateSelected;
     if (!item.enabled) state |= StateDisabled;
     if (props.action != NO_ACTION && item.enabled) {
+      // item.enabled controls interactivity; a StateDisabled carried in
+      // item.state is visual-only dimming and must not block touch routing
+      // (findTouch skips disabled interactions).
+      const State hitState = static_cast<State>(static_cast<int>(state) & ~static_cast<int>(StateDisabled));
       frame.hit(ensureMinTouchRect(row, frame.device().minTouchSize, frame.screen()), props.action, item.actionValue,
-                props.inputMask, state);
+                props.inputMask, hitState);
     }
     state = frame.stateFor(props.action, item.actionValue, state);
     StyleSet styles = props.rowStyles.unset() ? defaultListRowStyles() : props.rowStyles;
@@ -202,7 +206,9 @@ void list(Frame<MaxInteractions>& frame, Rect rect, const ListProps& props) {
     const BitmapRef icon = item.icon ? item.icon : resolveBitmap(frame.assets(), item.iconAsset);
     if (icon) {
       const int16_t iconSize = props.iconSize > 0 ? props.iconSize : static_cast<int16_t>(icon.width);
-      Rect iconRect{content.x, static_cast<int16_t>(band.y + (band.height - iconSize) / 2), iconSize, iconSize};
+      // Centered on the full row content, not the title band: with a subtitle
+      // the icon belongs to the label+subtitle block as a whole.
+      Rect iconRect{content.x, static_cast<int16_t>(content.y + (content.height - iconSize) / 2), iconSize, iconSize};
       frame.target().bitmap(iconRect, icon, BitmapMode::Contain, style.foreground);
       content.x = static_cast<int16_t>(content.x + iconSize + props.textGap);
       content.width = static_cast<int16_t>(content.width - iconSize - props.textGap);

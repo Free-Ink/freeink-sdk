@@ -46,6 +46,10 @@ struct TabBarProps {
   int16_t selectedDotSize = 0;
   int16_t selectedDotInsetBottom = 4;
   Paint selectedDotPaint = Paint::solid(Color::Black);
+  // Underline across the selected tab's pill bottom (the Lyra unfocused-tab
+  // treatment); 0 = none.
+  int16_t selectedUnderline = 0;
+  Paint selectedUnderlinePaint = Paint::solid(Color::Black);
   // 1px divider along the bottom edge (RoundedRaff-style settings tabs).
   bool divider = false;
   Paint dividerPaint = Paint::solid(Color::Black);
@@ -100,6 +104,11 @@ void tabBar(Frame<MaxInteractions>& frame, Rect rect, const TabBarProps& props) 
     frame.target().fill(pill, style.background, style.radius, style.corners);
     if (style.border.kind != PaintKind::None && style.borderWidth > 0) {
       frame.target().stroke(pill, style.border, style.borderWidth, style.radius, style.corners);
+    }
+    if (tab.selected && props.selectedUnderline > 0) {
+      frame.target().fill(Rect{pill.x, static_cast<int16_t>(pill.bottom() - props.selectedUnderline), pill.width,
+                               props.selectedUnderline},
+                          props.selectedUnderlinePaint);
     }
     if (tab.selected && props.selectedDotSize > 0) {
       const int16_t dot = props.selectedDotSize;

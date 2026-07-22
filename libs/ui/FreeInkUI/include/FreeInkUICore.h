@@ -387,6 +387,15 @@ struct TextStyle {
   Rotation rotation = Rotation::None;
 };
 
+// True when `s` is entirely default-constructed. Screen's themed substitution
+// uses this instead of `font == 0`: FONT_SLOT_SMALL is 0, so the font alone
+// cannot distinguish "unset" from "explicitly the small slot". Customizing any
+// field (maxLines, align, bold, ...) marks the style as caller-owned.
+inline bool textStyleUnset(const TextStyle& s) {
+  return s.font == 0 && s.align == TextAlign::Left && s.color == Color::Black && s.maxLines == 1 && !s.bold &&
+         !s.inverted && s.rotation == Rotation::None;
+}
+
 // Which corners a radius applies to (RoundedRaff-style cards round only the
 // top band's top corners and the bottom band's bottom corners).
 enum Corners : uint8_t {

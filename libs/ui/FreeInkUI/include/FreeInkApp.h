@@ -112,15 +112,15 @@ class Screen {
 
   void header(const HeaderProps& props, LayoutAnchor anchor = LayoutAnchor::Top) {
     HeaderProps themed = props;
-    if (themed.titleText.font == 0) {
+    if (textStyleUnset(themed.titleText)) {
       themed.titleText = theme_.titleText;
       themed.titleText.align = theme_.headerTitleAlign;
     }
-    if (themed.subtitleText.font == 0) themed.subtitleText = theme_.smallText;
+    if (textStyleUnset(themed.subtitleText)) themed.subtitleText = theme_.smallText;
     if (themed.styles.unset()) themed.styles = theme_.popup;
     if (themed.leadingStyles.unset()) themed.leadingStyles = theme_.button;
     if (themed.trailingStyles.unset()) themed.trailingStyles = plainStyles(Paint::solid(Color::Black));
-    if (themed.trailingText.font == 0) themed.trailingText = theme_.bodyText;
+    if (textStyleUnset(themed.trailingText)) themed.trailingText = theme_.bodyText;
     if (themed.sidePadding < 0) themed.sidePadding = theme_.headerSidePadding;
     // Divider: the theme's headerUnderline sets the rule thickness when the
     // popup style ships without a border of its own (0 = no rule).
@@ -175,7 +175,7 @@ class Screen {
 
   void button(const ButtonProps& props, LayoutAnchor anchor = LayoutAnchor::Top) {
     ButtonProps themed = props;
-    if (themed.text.font == 0) themed.text = theme_.bodyText;
+    if (textStyleUnset(themed.text)) themed.text = theme_.bodyText;
     if (themed.styles.unset()) themed.styles = theme_.button;
     themed.minTouchSize = theme_.minTouchSize;
     ui::button(frame_, take(anchor, theme_.rowHeight, theme_.spaceSm), themed);
@@ -186,7 +186,7 @@ class Screen {
   // space — pair with takeTop/takeBottom when the band should be reserved.
   void button(const ButtonProps& props, Rect rect) {
     ButtonProps themed = props;
-    if (themed.text.font == 0) themed.text = theme_.bodyText;
+    if (textStyleUnset(themed.text)) themed.text = theme_.bodyText;
     if (themed.styles.unset()) themed.styles = theme_.button;
     themed.minTouchSize = theme_.minTouchSize;
     ui::button(frame_, rect, themed);
@@ -205,10 +205,10 @@ class Screen {
 
   void list(const ListProps& props, int16_t height = 0, LayoutAnchor anchor = LayoutAnchor::Top) {
     ListProps themed = props;
-    if (themed.labelText.font == 0) themed.labelText = theme_.bodyText;
-    if (themed.subtitleText.font == 0) themed.subtitleText = theme_.smallText;
-    if (themed.valueText.font == 0) themed.valueText = theme_.smallText;
-    if (themed.headerText.font == 0) themed.headerText = theme_.smallText;
+    if (textStyleUnset(themed.labelText)) themed.labelText = theme_.bodyText;
+    if (textStyleUnset(themed.subtitleText)) themed.subtitleText = theme_.smallText;
+    if (textStyleUnset(themed.valueText)) themed.valueText = theme_.smallText;
+    if (textStyleUnset(themed.headerText)) themed.headerText = theme_.smallText;
     if (themed.rowStyles.unset()) {
       // Expand the theme's selection style over its base row styles; explicit
       // rowStyles or a caller-set marker win.
@@ -298,7 +298,7 @@ class Screen {
   // to reserve a band. Text defaults to the theme body style.
   void textArea(const TextAreaProps& props, int16_t height = 0, LayoutAnchor anchor = LayoutAnchor::Top) {
     TextAreaProps themed = props;
-    if (themed.style.font == 0) themed.style = theme_.bodyText;
+    if (textStyleUnset(themed.style)) themed.style = theme_.bodyText;
     ui::textArea(frame_, height > 0 ? take(anchor, height) : content_, themed);
   }
 
@@ -381,7 +381,7 @@ class Screen {
 
   void popup(const PopupProps& props) {
     PopupProps themed = props;
-    if (themed.text.font == 0) themed.text = theme_.bodyText;
+    if (textStyleUnset(themed.text)) themed.text = theme_.bodyText;
     if (themed.styles.unset()) themed.styles = theme_.popup;
     const Rect bounds = frame_.safeRect();
     const int16_t maxW = themed.maxWidth > 0 ? themed.maxWidth : static_cast<int16_t>(bounds.width * 3 / 4);

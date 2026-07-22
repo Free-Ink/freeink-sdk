@@ -173,7 +173,8 @@
 // ACTIVE.batteryGauge.gaugeAddr != 0) — required because X3 (gauge) and X4 (ADC)
 // share one C3 binary.
 #ifndef FREEINK_BATTERY_I2C_GAUGE
-#define FREEINK_BATTERY_I2C_GAUGE (FREEINK_DEVICE_X3 || FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_STICKY)
+#define FREEINK_BATTERY_I2C_GAUGE \
+  (FREEINK_DEVICE_X3 || FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_STICKY || FREEINK_DEVICE_X4PRO)
 #endif
 #ifndef FREEINK_CAP_COLOR
 #define FREEINK_CAP_COLOR (FREEINK_DEVICE_M5)
@@ -190,7 +191,7 @@
 // On-board I2C sensors. Each lib (Rtc / EnvironmentSensor / Imu) compiles its
 // I2C driver only when its flag is set; otherwise it links stub bodies.
 #ifndef FREEINK_CAP_RTC
-#define FREEINK_CAP_RTC (FREEINK_DEVICE_X3 || FREEINK_DEVICE_STICKY)
+#define FREEINK_CAP_RTC (FREEINK_DEVICE_X3 || FREEINK_DEVICE_STICKY || FREEINK_DEVICE_X4PRO)
 #endif
 #ifndef FREEINK_CAP_TEMP_HUMIDITY
 #define FREEINK_CAP_TEMP_HUMIDITY (FREEINK_DEVICE_STICKY)
@@ -225,11 +226,13 @@
 #define FREEINK_FB_PSRAM (FREEINK_DEVICE_M5PAPER)
 #endif
 
-// SD transport. de-link is wired for 4-bit SDMMC; SdFat can't drive SDIO, so it
-// gets a native esp-idf SDMMC block device behind SDCardManager. Every other
-// board stays on SdFat-over-SPI. Override with -DFREEINK_SD_SDMMC=0/1.
+// SD transport. de-link (4-bit) and X4 Pro (1-bit) are wired for SDMMC; SdFat
+// can't drive SDIO, so they get a native esp-idf SDMMC block device behind
+// SDCardManager. Every other board stays on SdFat-over-SPI. The consumer's build
+// must define USE_BLOCK_DEVICE_INTERFACE=1 for the SdFat FsVolume these mount on.
+// Override with -DFREEINK_SD_SDMMC=0/1.
 #ifndef FREEINK_SD_SDMMC
-#define FREEINK_SD_SDMMC (FREEINK_DEVICE_DELINK)
+#define FREEINK_SD_SDMMC (FREEINK_DEVICE_DELINK || FREEINK_DEVICE_X4PRO)
 #endif
 
 // Serial log transport hint for consumer firmware. Boards can share the same MCU
@@ -342,6 +345,12 @@ struct SdmmcPins {
   uint8_t busWidth;  // 0 = not an SDMMC board (use SdPins/SPI), 1 or 4 = SDMMC
 };
 
+// The I2C fuel-gauge silicon a board carries. Each type has its own register map and
+// init, so BatteryMonitor dispatches on it. Bq27220: TI command registers, no profile
+// upload (LilyGo/X3). Cw2017: CellWise gauge that needs an 80-byte BATINFO battery
+// profile loaded before it reports a valid SoC (Xteink X4 Pro).
+enum class GaugeType : uint8_t { Bq27220, Cw2017 };
+
 // I2C fuel-gauge / charger wiring (e.g. BQ27220 + BQ25896 on LilyGo T5 S3). When
 // gaugeAddr != 0 (and FREEINK_BATTERY_I2C_GAUGE is set), BatteryMonitor reads the
 // gauge over I2C instead of an ADC pin. chargerAddr is optional (0 = none) and
@@ -350,7 +359,7 @@ struct BatteryGaugeConfig {
   int8_t i2cSda;
   int8_t i2cScl;
   uint32_t i2cHz;
-  uint8_t gaugeAddr;    // BQ27220 = 0x55; 0 = no I2C gauge (use ADC)
+  uint8_t gaugeAddr;    // BQ27220 = 0x55; CW2017 = 0x63; 0 = no I2C gauge (use ADC)
   uint8_t chargerAddr;  // BQ25896 = 0x6B; 0 = none
   // Arduino I2C controller index: 0 = Wire, 1 = Wire1. Default 0. Set to 1 on
   // boards where the gauge sits on a different physical bus than another I2C
@@ -358,6 +367,7 @@ struct BatteryGaugeConfig {
   // Wire1/SDA1-SCL0) so they don't fight over one controller. Only honored on
   // multi-bus SoCs (SOC_I2C_NUM > 1); single-bus parts (ESP32-C3) ignore it.
   uint8_t i2cBus = 0;
+  GaugeType gaugeType = GaugeType::Bq27220;  // register map / init to use
 };
 
 struct InputPins {
@@ -953,40 +963,60 @@ constexpr BoardProfile STICKY = {
 //
 // Confidence summary:
 //   CONFIRMED : display SPI + panel pins, GT911 controller/address, ADC-ladder input style.
-//   HIGH      : GT911 I2C/INT/RST pins (from the board pin-init table at IROM 0x420a2248).
-//   PENDING hardware validation: panel orientation (ships NO_FLIP), touch swap/flip, the
-//     exact frontlight GPIO(s)/freq (warm+cold; the SDK models one channel — primary
-//     brightness here), SD CS + battery/VBUS pins, and which GPIOs carry the ADC ladder
-//     (InputManager hardcodes GPIO1/GPIO2; the OEM touches those but the mapping is
-//     unconfirmed). See the findings doc before trusting any PENDING value on real hardware.
+//   HIGH      : GT911 I2C/INT/RST pins, SD SPI bus + CS (m_csPin=GPIO45) + enable GPIO5 (driven
+//     HIGH), the BM8563 RTC (0x51 on the shared touch bus), and the GPIO1 master rail (driven
+//     HIGH first in board init) — all from the board pin-init table at IROM 0x420a2240.
+//   PENDING hardware validation: panel orientation (ships NO_FLIP), touch swap/flip, the exact
+//     frontlight GPIO(s)/freq (warm+cold; the SDK models one channel — primary brightness here),
+//     the GPIO5 SD-enable role and GPIO2 (a board-init output driven LOW, role unknown), and
+//     battery/VBUS pins. The ADC-ladder pins are UNKNOWN — GPIO1/GPIO2 (the old guess) are power
+//     outputs, not ladder inputs. See the findings doc before trusting any PENDING value.
 constexpr BoardProfile XTEINK_X4_PRO = {
     Board::XteinkX4Pro,
     "xteink_x4_pro",
-    InputStyle::XteinkAdcLadder,
+    InputStyle::DigitalButtons,  // confirmed on hardware: plain active-low GPIO buttons, not the OEM ADC ladder
     DisplayController::SSD1677,
     800,
     480,
-    // SSD1677 SPI: SCLK12 MOSI11 (write-only, no MISO) CS18 DC13 RST14 BUSY6. No panel
-    // power-enable was passed to the driver (GPIO7 is a muxed candidate — see doc).
-    {12, 11, 18, 13, 14, 6, PIN_UNASSIGNED},
+    // SSD1677 SPI — CONFIRMED ON HARDWARE via a raw bit-banged pin sweep (the panel
+    // painted with these and only these): SCLK=12 MOSI=11 (write-only, no MISO)
+    // CS=13 DC=18 RST=14 BUSY=6. Note vs the RE guesses: SCLK/MOSI are app0's order
+    // (the app1 RE's 11/12 was backwards) and CS/DC are swapped from app0's 18/13.
+    // The plain X4 OTP waveform develops the image — no custom LUT/voltages/PMIC
+    // needed. GPIO1 also triggers a refresh when toggled (likely a panel power
+    // enable), but the panel works without driving it, so powerEnable stays unset.
+    {12, 11, 13, 18, 14, 6, PIN_UNASSIGNED},
     5000000,  // displaySpiHz: the OEM clocks the panel at 5 MHz (SPISettings 0x4C4B40). Conservative
-              // vs the SSD1677 20 MHz datasheet write max; raise once validated for faster refresh.
-    // MicroSD over a SECOND SPI bus (distinct from the display bus): SCLK41 MISO40 MOSI42
-    // (HIGH). CS + power-enable not isolated in the dump — left unassigned so SD stays
-    // dormant (no bus clash) until the CS pin is confirmed on hardware.
-    {41, 40, 42, PIN_UNASSIGNED, PIN_UNASSIGNED, true, 0},
-    // ADC resistor-ladder buttons (NVS keys adcOK/adcBACK/adcUP/adcDOWN). First six are the
-    // logical button indices; power = GPIO3 (INPUT_PULLUP → active-LOW, like the C3 X4).
-    {0, 1, 2, 3, 4, 5, 3, false},
+              // vs the SSD1677 datasheet write max; raise once validated for faster refresh on hardware.
+    // SD is native SDMMC (see the sdmmc field below) — the card is silent to SPI-mode CMD0 on
+    // hardware. This SPI SdPins entry is retained only for its powerEnable=GPIO5, the SD enable
+    // used by the SDMMC mount path. GPIO5 is ACTIVE-LOW: SdmmcBlockDevice pulses it HIGH→LOW
+    // before each mount attempt and runs the card with it held LOW (matching the OEM mountSD;
+    // holding it HIGH breaks every block read with 0x107). The bus pins (SCLK41 MISO40 MOSI42
+    // CS45) are the SPI view of the same slot and are unused now that busWidth!=0 routes through
+    // the SDMMC block device.
+    {41, 40, 42, 45, 5, true, 0},
+    // Digital buttons, confirmed on hardware (watch-up edge test): two physical nav keys —
+    // Left=GPIO0, Right=GPIO7 — plus Power=GPIO3, all active-LOW (INPUT_PULLUP, no rail needed).
+    // The two keys map to the reader's page pair (Up=prev / Down=next), so Left→up, Right→down;
+    // back/confirm come from the GT911 (touch + the capacitive Home key). NOTE: GPIO0 is a boot
+    // strap — fine as a button as long as it isn't held during reset.
+    // {back, confirm, left, right, up, down, power, powerActiveHigh}
+    {PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, 0, 7, 3, false},
     PIN_UNASSIGNED,  // batteryAdc: monitoring exists ("Battery Meter"/"Low battery") but pin not isolated
     PIN_UNASSIGNED,  // batteryChargeStatus
     2.0f,
     PIN_UNASSIGNED,  // usbDetect: USB-MSC/VBUS-detect present; GPIO10 is a candidate (unconfirmed)
-    // GT911 touch on its own I2C bus: SDA39 SCL38 INT21 RST4, addr 0x5D (alt 0x14), 400 kHz.
-    // Reports pixel coords (raw range == panel 800x480); standard datasheet 8-byte frame with
-    // track-id in byte 0 (gt911CoordsAtByte0=false). Mount swap/flip pending a unit.
-    {TouchController::Gt911, 39, 38, 21, 4, 0x5D, 0, 799, 0, 479, false, 0x14, false, false, PIN_UNASSIGNED,
-     false, false, false, true},  // hasHomeKey: capacitive home pad under the bezel (GT911 key bit)
+    // GT911 touch on the SHARED I2C bus SDA39/SCL38 (with RTC 0x51 + CW2017 gauge 0x63),
+    // INT=GPIO4 RST=GPIO10, addr 0x5D (INT held LOW at reset; alt 0x14), 400 kHz — INT/RST/addr
+    // and the coord layout confirmed from app1's XTEink::GT911Driver ctor + reset routine via
+    // Ghidra. The GT911 is mounted PORTRAIT (reports X:0..480, Y:0..800) on the 800x480 landscape
+    // panel, so swapXY=true rotates the digitizer to the panel frame; rawMax describe the
+    // post-swap 800x480 panel axes. Coords start at byte 0 of the 0x8150 read (X-lo at 0x8150,
+    // track-id is at 0x814F, before the window) → gt911CoordsAtByte0=true. flipX/flipY pending a
+    // hardware tap test (firmware applies none). {ctrl,sda,scl,irq,rst,addr,rawMinX,rawMaxX,...}
+    {TouchController::Gt911, 39, 38, 4, 10, 0x5D, 0, 799, 0, 479, false, 0x14, false, true, PIN_UNASSIGNED,
+     true, false, false, true},  // hasHomeKey: capacitive home pad under the bezel (GT911 key bit)
     // Frontlight: dual warm/cold LEDC PWM with color temperature (NVS lightWarmValue/
     // lightColdValue/lightCT/lightBri/lightOn). Recovered from the OEM LEDC init (IROM
     // 0x420a2130 → helper 0x420a20c0): two channels — GPIO8 on LEDC ch4 and GPIO9 on ch5 —
@@ -999,11 +1029,32 @@ constexpr BoardProfile XTEINK_X4_PRO = {
     NO_AUDIO,
     NO_LEDS,
     NO_FLIP,  // panel mount transform pending hardware; native SSD1677 scan is 800x480 landscape
-    NO_SDMMC,
-    NO_GAUGE,
+    // SD is native SDMMC, NOT SPI: the card the OEM reads is silent to SPI-mode CMD0.
+    // CONFIRMED on hardware: 1-bit, slot 1, CLK=41 CMD=42 DAT0=40, internal pull-ups, 40 MHz.
+    // D1/D2/D3 are UNUSED in 1-bit. Mounts reliably via SdmmcBlockDevice, which power-cycles
+    // the GPIO5 enable (see the SPI SdPins powerEnable above) and validates a real sector-0
+    // read per attempt. {clk,cmd,d0,d1,d2,d3,busWidth}
+    {41, 42, 40, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, 1},
+    // CW2017 fuel gauge at I2C 0x63 on the SHARED touch/RTC bus SDA39/SCL38, 400 kHz, Wire.
+    // BatteryMonitor uploads the 80-byte BATINFO battery profile (recovered from app1's
+    // XTEink Cw2017PowerHal via Ghidra) if the gauge hasn't got one, then reads SoC from
+    // reg 0x04. No charger IC on the gauge bus. {sda,scl,hz,gaugeAddr,chargerAddr,bus,type}
+    {39, 38, 400000, 0x63, 0, 0, GaugeType::Cw2017},
     NO_MIC,
-    NO_SENSORS,
-    1.2f};  // uiScale: 800x480 touch device — finger-sized chrome, like the other touch boards
+    // BM8563 RTC (PCF8563 register-compatible, class XTEink::BM8563Driver in the dump) at I2C
+    // 0x51, sharing the GT911 touch bus SDA39/SCL38 at 400 kHz (recovered: driver init at IROM
+    // 0x420a2834 adds device 0x51; the bus object is configured with {39,38,400000}). Bus 0
+    // (Wire), matching the touch driver so both drive the same peripheral on the shared pins.
+    {39, 38, 400000, 0x51, 0, 0, 0, RtcType::Pcf8563, ImuType::None},  // temp/hum + IMU: none
+    1.2f,  // uiScale: 800x480 touch device — finger-sized chrome, like the other touch boards
+    // Master peripheral-rail enable on GPIO1: the OEM board-init drives it HIGH first, before
+    // any SPI/display/SD bring-up (recovered: standalone OUTPUT, level=1, acted on first in
+    // board_begin at IROM 0x420a23dc). Carried as power.latch0 so holdPowerRails() asserts it
+    // early — without it the panel rail and the SD slot both stay unpowered (the bring-up
+    // symptom: EPD BUSY never asserts, SD returns 0xFF). GPIO2 is a second board-init output
+    // driven LOW (role unknown); not modeled here. NOTE: GPIO1/GPIO2 are therefore NOT the ADC
+    // button ladder — that earlier assumption was wrong; the ladder pins remain unconfirmed.
+    {1}};
 
 // Largest framebuffer (bytes) over the devices compiled into this build, derived
 // from the profiles above. The display facade sizes its static framebuffer to

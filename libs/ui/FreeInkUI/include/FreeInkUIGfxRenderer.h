@@ -231,13 +231,17 @@ class GfxRendererFrame {
  public:
   explicit GfxRendererFrame(const GfxRenderer& renderer, const int smallFontId = 0, const int bodyFontId = 0,
                             const int titleFontId = 0)
-      : target(renderer), frame(target, target.deviceContext(), input, interactions) {
+      // Frame stores a const DeviceContext&; keep the context as a member so
+      // it outlives the frame (a deviceContext() temporary would dangle and
+      // corrupt every registered hit rect).
+      : target(renderer), device(target.deviceContext()), frame(target, device, input, interactions) {
     target.setFont(GfxRendererTarget::FONT_SMALL, smallFontId);
     target.setFont(GfxRendererTarget::FONT_BODY, bodyFontId);
     target.setFont(GfxRendererTarget::FONT_TITLE, titleFontId);
   }
 
   GfxRendererTarget target;
+  DeviceContext device;
   InputSnapshot input{};
   InteractionBuffer<MaxInteractions> interactions;
   Frame<MaxInteractions> frame;

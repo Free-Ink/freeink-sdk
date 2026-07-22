@@ -6,6 +6,22 @@
 
 namespace freeink {
 
+#if !(FREEINK_DEVICE_X4 || FREEINK_DEVICE_X3)
+
+// Neither Xteink profile is in this build, so there is nothing to fingerprint.
+// Probing would also be unsafe here: SDA=20 / SCL=0 are only free pins on the
+// Xteink C3 pinout — on an ESP32-S3, GPIO20 is native USB D+ and GPIO0 is the
+// boot strap.
+XteinkVerdict detectXteinkVerdict(uint8_t* score1, uint8_t* score2) {
+  if (score1) *score1 = 0;
+  if (score2) *score2 = 0;
+  return XteinkVerdict::Inconclusive;
+}
+bool detectXteinkIsX3() { return false; }
+bool selectXteinkDevice() { return false; }
+
+#else
+
 namespace {
 
 // X3-only peripherals on the secondary I2C bus (SDA=20, SCL=0).
@@ -85,19 +101,28 @@ uint8_t runProbePass() {
 
 }  // namespace
 
-bool detectXteinkIsX3() {
+XteinkVerdict detectXteinkVerdict(uint8_t* score1, uint8_t* score2) {
   const uint8_t pass1 = runProbePass();
   delay(2);
   const uint8_t pass2 = runProbePass();
+  if (score1) *score1 = pass1;
+  if (score2) *score2 = pass2;
   // X3 confirmed only when both passes see at least two of the three chips; the
-  // X4 sees zero, so a single stray ACK never flips the result.
-  return pass1 >= 2 && pass2 >= 2;
+  // X4 sees zero, so a single stray ACK never flips the result. Anything in
+  // between is Inconclusive: callers should run as X4 but may re-probe later.
+  if (pass1 >= 2 && pass2 >= 2) return XteinkVerdict::X3Confirmed;
+  if (pass1 == 0 && pass2 == 0) return XteinkVerdict::X4Confirmed;
+  return XteinkVerdict::Inconclusive;
 }
+
+bool detectXteinkIsX3() { return detectXteinkVerdict() == XteinkVerdict::X3Confirmed; }
 
 bool selectXteinkDevice() {
   const bool isX3 = detectXteinkIsX3();
   BoardConfig::selectDevice(isX3 ? BoardConfig::Board::XteinkX3 : BoardConfig::Board::XteinkX4);
   return isX3;
 }
+
+#endif  // FREEINK_DEVICE_X4 || FREEINK_DEVICE_X3
 
 }  // namespace freeink

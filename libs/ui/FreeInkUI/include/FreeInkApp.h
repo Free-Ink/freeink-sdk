@@ -39,6 +39,10 @@ struct FooterProps {
   int16_t sidePadding = 8;
   int16_t gap = 4;
   uint8_t buttonBorderEdges = EdgesNone;
+  // Style for passive slots: a FooterAction with NO_ACTION renders as plain
+  // text in its slot instead of a button — version lines, status notes.
+  // font 0 = the theme's small text; align is honored either way.
+  TextStyle passiveText{};
 };
 
 template <size_t MaxInteractions>
@@ -108,17 +112,21 @@ class Screen {
 
   void header(const HeaderProps& props, LayoutAnchor anchor = LayoutAnchor::Top) {
     HeaderProps themed = props;
-    if (themed.titleText.font == 0) themed.titleText = theme_.titleText;
-    if (themed.subtitleText.font == 0) themed.subtitleText = theme_.smallText;
+    if (textStyleUnset(themed.titleText)) {
+      themed.titleText = theme_.titleText;
+      themed.titleText.align = theme_.headerTitleAlign;
+    }
+    if (textStyleUnset(themed.subtitleText)) themed.subtitleText = theme_.smallText;
     if (themed.styles.unset()) themed.styles = theme_.popup;
     if (themed.leadingStyles.unset()) themed.leadingStyles = theme_.button;
     if (themed.trailingStyles.unset()) themed.trailingStyles = plainStyles(Paint::solid(Color::Black));
-    if (themed.trailingText.font == 0) themed.trailingText = theme_.bodyText;
-    // Headers document a divider by default; give the themed style a border
-    // when the theme's popup style ships without one (the built-in default).
-    if (themed.styles.normal.border.kind == PaintKind::None) {
+    if (textStyleUnset(themed.trailingText)) themed.trailingText = theme_.bodyText;
+    if (themed.sidePadding < 0) themed.sidePadding = theme_.headerSidePadding;
+    // Divider: the theme's headerUnderline sets the rule thickness when the
+    // popup style ships without a border of its own (0 = no rule).
+    if (themed.styles.normal.border.kind == PaintKind::None && theme_.headerUnderline > 0) {
       themed.styles.normal.border = Paint::solid(Color::Black);
-      themed.styles.normal.borderWidth = 1;
+      themed.styles.normal.borderWidth = theme_.headerUnderline;
     }
     themed.minTouchSize = theme_.minTouchSize;
     ui::header(frame_, take(anchor, theme_.headerHeight), themed);
@@ -167,7 +175,7 @@ class Screen {
 
   void button(const ButtonProps& props, LayoutAnchor anchor = LayoutAnchor::Top) {
     ButtonProps themed = props;
-    if (themed.text.font == 0) themed.text = theme_.bodyText;
+    if (textStyleUnset(themed.text)) themed.text = theme_.bodyText;
     if (themed.styles.unset()) themed.styles = theme_.button;
     themed.minTouchSize = theme_.minTouchSize;
     ui::button(frame_, take(anchor, theme_.rowHeight, theme_.spaceSm), themed);
@@ -178,7 +186,7 @@ class Screen {
   // space — pair with takeTop/takeBottom when the band should be reserved.
   void button(const ButtonProps& props, Rect rect) {
     ButtonProps themed = props;
-    if (themed.text.font == 0) themed.text = theme_.bodyText;
+    if (textStyleUnset(themed.text)) themed.text = theme_.bodyText;
     if (themed.styles.unset()) themed.styles = theme_.button;
     themed.minTouchSize = theme_.minTouchSize;
     ui::button(frame_, rect, themed);
@@ -192,23 +200,49 @@ class Screen {
     props.selectedIndex = selectedIndex;
     props.topIndex = topIndex;
     props.action = action;
-    props.labelText = theme_.bodyText;
-    props.subtitleText = theme_.smallText;
-    props.valueText = theme_.smallText;
-    props.headerText = theme_.smallText;
-    props.rowStyles = theme_.listRow;
-    props.rowHeight = theme_.rowHeight;
-    ui::list(frame_, height > 0 ? take(anchor, height) : content_, props);
+    list(props, height, anchor);
   }
 
   void list(const ListProps& props, int16_t height = 0, LayoutAnchor anchor = LayoutAnchor::Top) {
     ListProps themed = props;
-    if (themed.labelText.font == 0) themed.labelText = theme_.bodyText;
-    if (themed.subtitleText.font == 0) themed.subtitleText = theme_.smallText;
-    if (themed.valueText.font == 0) themed.valueText = theme_.smallText;
-    if (themed.headerText.font == 0) themed.headerText = theme_.smallText;
-    if (themed.rowStyles.unset()) themed.rowStyles = theme_.listRow;
+    if (textStyleUnset(themed.labelText)) themed.labelText = theme_.bodyText;
+    if (textStyleUnset(themed.subtitleText)) themed.subtitleText = theme_.smallText;
+    if (textStyleUnset(themed.valueText)) themed.valueText = theme_.smallText;
+    if (textStyleUnset(themed.headerText)) themed.headerText = theme_.smallText;
+    if (themed.rowStyles.unset()) {
+      // Expand the theme's selection style over its base row styles; explicit
+      // rowStyles or a caller-set marker win.
+      StyleSet styles = theme_.listRow.unset() ? defaultListRowStyles() : theme_.listRow;
+      switch (theme_.listSelectionStyle) {
+        case SelectionStyle::LightPill:
+          styles.selected.background = Paint::dither(Color::LightGray);
+          styles.selected.foreground = Paint::solid(Color::Black);
+          styles.active = styles.selected;
+          break;
+        case SelectionStyle::Underline:
+        case SelectionStyle::Triangle:
+          styles.selected = styles.normal;  // the marker shows the selection
+          if (themed.selectionMarker == SelectionMarker::None) {
+            themed.selectionMarker = theme_.listSelectionStyle == SelectionStyle::Underline
+                                         ? SelectionMarker::Underline
+                                         : SelectionMarker::Triangle;
+          }
+          break;
+        case SelectionStyle::InvertFill:
+        default:
+          break;
+      }
+      themed.rowStyles = styles;
+    }
     if (themed.rowHeight <= 0) themed.rowHeight = theme_.rowHeight;
+    if (themed.rowGap < 0) themed.rowGap = theme_.listRowGap;
+    if (themed.rowRadius == 0) themed.rowRadius = theme_.listRowRadius;
+    if (themed.sidePadding < 0) themed.sidePadding = theme_.listSidePadding;
+    if (themed.scrollIndicatorWidth < 0) themed.scrollIndicatorWidth = theme_.listScrollWidth;
+    if (themed.scrollIndicatorSide == 0xFF) themed.scrollIndicatorSide = theme_.listScrollSide;
+    // Rows inset within the band (Lyra pill); the scroll indicator stays at
+    // the band's true edge.
+    if (themed.rowInset < 0) themed.rowInset = theme_.listInset;
     ui::list(frame_, height > 0 ? take(anchor, height) : content_, themed);
   }
 
@@ -264,7 +298,7 @@ class Screen {
   // to reserve a band. Text defaults to the theme body style.
   void textArea(const TextAreaProps& props, int16_t height = 0, LayoutAnchor anchor = LayoutAnchor::Top) {
     TextAreaProps themed = props;
-    if (themed.style.font == 0) themed.style = theme_.bodyText;
+    if (textStyleUnset(themed.style)) themed.style = theme_.bodyText;
     ui::textArea(frame_, height > 0 ? take(anchor, height) : content_, themed);
   }
 
@@ -298,6 +332,18 @@ class Screen {
     for (uint8_t i = 0; i < footer.count; ++i) {
       Rect slot{x, content.y, i == footer.count - 1 ? static_cast<int16_t>(content.right() - x) : slotW,
                 content.height};
+      if (footer.actions[i].action == NO_ACTION) {
+        // Passive slot: plain text, no button chrome, no hit rect.
+        TextStyle style = footer.passiveText;
+        if (style.font == 0) {
+          const TextAlign align = style.align;
+          style = theme_.smallText;
+          style.align = align;
+        }
+        if (footer.actions[i].label) frame_.target().text(slot, footer.actions[i].label, style);
+        x = static_cast<int16_t>(x + slot.width + gap);
+        continue;
+      }
       ButtonProps props;
       props.label = footer.actions[i].label;
       props.action = footer.actions[i].action;
@@ -335,7 +381,7 @@ class Screen {
 
   void popup(const PopupProps& props) {
     PopupProps themed = props;
-    if (themed.text.font == 0) themed.text = theme_.bodyText;
+    if (textStyleUnset(themed.text)) themed.text = theme_.bodyText;
     if (themed.styles.unset()) themed.styles = theme_.popup;
     const Rect bounds = frame_.safeRect();
     const int16_t maxW = themed.maxWidth > 0 ? themed.maxWidth : static_cast<int16_t>(bounds.width * 3 / 4);

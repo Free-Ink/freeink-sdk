@@ -17,12 +17,17 @@ struct ListItem {
   // Section header row: shorter, non-interactive, drawn with headerText and
   // an underline; never selected or focused.
   bool isHeader = false;
+  // On/off row: a switch (toggle-row visuals) replaces the value slot; the
+  // value string is ignored when set. Activation stays row-level via action.
+  bool toggle = false;
+  bool toggleChecked = false;
 };
 
 enum class SelectionMarker : uint8_t {
   None,       // selection shown by the row's selected BoxStyle
   Underline,  // thin line under the selected row's content
   Triangle,   // right-pointing triangle at the selected row's left edge
+  Bitmap,     // caller-supplied glyph (markerBitmap/markerAsset) at the left edge
 };
 
 struct ListProps {
@@ -40,13 +45,38 @@ struct ListProps {
   TextStyle subtitleText{};
   TextStyle valueText{};
   StyleSet rowStyles{};
-  int16_t rowHeight = 36;
-  int16_t rowGap = 0;
+  // Inherit sentinels: Screen::list() substitutes the theme value for
+  // rowHeight <= 0, rowGap < 0, sidePadding < 0, and rowRadius == 0; raw
+  // list() falls back to 36 / 0 / 8. Literal defaults here would silently
+  // override the theme for every Screen::list() caller that leaves them
+  // unset.
+  int16_t rowHeight = 0;
+  int16_t rowGap = -1;
   uint8_t rowRadius = 0;
-  int16_t sidePadding = 8;
+  int16_t sidePadding = -1;
   int16_t textGap = 10;
   int16_t iconSize = 0;
-  int16_t scrollIndicatorWidth = 3;
+  // Extra inset for the right-aligned value slot beyond sidePadding, so a
+  // trailing chevron/value keeps air from the row edge on themes with tight
+  // row padding.
+  int16_t valueInset = 0;
+  // Switch geometry for ListItem::toggle rows (mirrors ToggleRowProps).
+  // Colors derive from the row style's foreground so the switch stays legible
+  // on inverted (selected) rows.
+  int16_t toggleWidth = 38;
+  int16_t toggleHeight = 18;
+  uint8_t toggleRadius = 0;
+  uint8_t toggleKnobRadius = 0;
+  int16_t toggleKnobInset = 3;
+  uint8_t toggleBorderWidth = 1;
+  // Horizontal inset of the ROWS within the rect (the Lyra pill band). The
+  // scroll indicator stays at the rect's edge, in the inset margin.
+  // -1 = inherit: Screen::list() substitutes the theme's listInset.
+  int16_t rowInset = -1;
+  // Inherit sentinels like rowGap/sidePadding: width -1 = theme (raw list()
+  // falls back to 3); side 0xFF = theme (raw falls back to right).
+  int16_t scrollIndicatorWidth = -1;
+  uint8_t scrollIndicatorSide = 0xFF;  // 0 = right edge, 1 = left edge
   bool centerSingleLine = false;
   // Shrink each row's background/hit area to its label width plus side
   // padding instead of the full rect width (hug-content menu rows).
@@ -63,8 +93,13 @@ struct ListProps {
   // Triangle selection styles).
   SelectionMarker selectionMarker = SelectionMarker::None;
   Paint markerPaint = Paint::solid(Color::Black);
-  int16_t markerInset = 0;       // x offset of the triangle / underline start
-  int16_t markerThickness = 2;   // underline thickness
+  int16_t markerInset = 0;      // x offset of the marker / underline start
+  int16_t markerThickness = 2;  // underline thickness
+  // Glyph for SelectionMarker::Bitmap, drawn vertically centered at the
+  // selected row's left edge (markerInset offset). Direct bitmap wins;
+  // otherwise the asset resolves through the frame's AssetResolver.
+  BitmapRef markerBitmap{};
+  AssetRef markerAsset{};
   // Section header rows (ListItem::isHeader).
   TextStyle headerText{};
   int16_t headerRowHeight = 0;  // 0 = headerText line height + underline gap
@@ -76,7 +111,12 @@ template <size_t MaxInteractions>
 void list(Frame<MaxInteractions>& frame, Rect rect, const ListProps& props) {
   if (!props.items || props.count == 0) return;
   const int16_t rowH = props.rowHeight > 0 ? props.rowHeight : 36;
-  const uint16_t visible = listVisibleRows(rect, rowH, props.rowGap);
+  const int16_t rowGap = props.rowGap < 0 ? 0 : props.rowGap;
+  const int16_t sidePad = props.sidePadding < 0 ? 8 : props.sidePadding;
+  const int16_t scrollW = props.scrollIndicatorWidth < 0 ? 3 : props.scrollIndicatorWidth;
+  const bool scrollLeft = props.scrollIndicatorSide == 1;
+  const int16_t rowInset = props.rowInset < 0 ? 0 : props.rowInset;
+  const uint16_t visible = listVisibleRows(rect, rowH, rowGap);
   const bool overflows = props.count > visible;
   uint16_t top = props.topIndex;
   if (top > props.count - 1) top = props.count - 1;
@@ -85,10 +125,20 @@ void list(Frame<MaxInteractions>& frame, Rect rect, const ListProps& props) {
   const uint16_t end = overflows ? static_cast<uint16_t>(top + visible) : props.count;
 
   Rect rowArea = rect;
-  if (props.scrollIndicator && overflows && props.scrollIndicatorWidth > 0) {
-    rowArea.width = static_cast<int16_t>(rowArea.width - props.scrollIndicatorWidth - 2);
-    Rect track{static_cast<int16_t>(rect.right() - props.scrollIndicatorWidth), rect.y, props.scrollIndicatorWidth,
-               rect.height};
+  if (rowInset > 0) {
+    rowArea.x = static_cast<int16_t>(rowArea.x + rowInset);
+    rowArea.width = static_cast<int16_t>(rowArea.width - rowInset * 2);
+  }
+  if (props.scrollIndicator && overflows && scrollW > 0) {
+    // Rows only give up width when the row inset margin doesn't already
+    // clear the track plus 2px of air.
+    const int16_t needed = static_cast<int16_t>(scrollW + 2);
+    if (rowInset < needed) {
+      const int16_t cut = static_cast<int16_t>(needed - rowInset);
+      rowArea.width = static_cast<int16_t>(rowArea.width - cut);
+      if (scrollLeft) rowArea.x = static_cast<int16_t>(rowArea.x + cut);
+    }
+    Rect track{scrollLeft ? rect.x : static_cast<int16_t>(rect.right() - scrollW), rect.y, scrollW, rect.height};
     frame.target().fill(track, Paint::dither(Color::LightGray));
     int16_t thumbH = static_cast<int16_t>((static_cast<int32_t>(rect.height) * visible) / props.count);
     if (thumbH < 12) thumbH = 12;
@@ -110,33 +160,37 @@ void list(Frame<MaxInteractions>& frame, Rect rect, const ListProps& props) {
       const int16_t pad = i != top ? props.sectionGap : 0;
       if (static_cast<int16_t>(cursorY + pad + headerH) > rowArea.bottom()) break;
       cursorY = static_cast<int16_t>(cursorY + pad);
-      Rect headerRow{static_cast<int16_t>(rowArea.x + props.sidePadding), cursorY,
-                     static_cast<int16_t>(rowArea.width - props.sidePadding * 2), headerLh};
+      Rect headerRow{static_cast<int16_t>(rowArea.x + sidePad), cursorY,
+                     static_cast<int16_t>(rowArea.width - sidePad * 2), headerLh};
       frame.target().text(headerRow, item.label, props.headerText);
       if (props.headerUnderline) {
         frame.target().fill(Rect{headerRow.x, static_cast<int16_t>(cursorY + headerLh + 2), headerRow.width, 1},
                             Paint::solid(props.headerText.color));
       }
-      cursorY = static_cast<int16_t>(cursorY + headerH + props.rowGap);
+      cursorY = static_cast<int16_t>(cursorY + headerH + rowGap);
       continue;
     }
     if (static_cast<int16_t>(cursorY + rowH) > rowArea.bottom() || drawnRows >= visible || i >= end) break;
     ++drawnRows;
     Rect row{rowArea.x, cursorY, rowArea.width, rowH};
-    cursorY = static_cast<int16_t>(cursorY + rowH + props.rowGap);
+    cursorY = static_cast<int16_t>(cursorY + rowH + rowGap);
     if (props.hugContents && item.label) {
       // Hug-content rows shrink to the label width plus padding so the
       // selection pill wraps the text instead of spanning the rect.
       const int16_t labelW = frame.target().measureText(props.labelText.font, item.label, props.labelText).width;
-      const int16_t hugW = static_cast<int16_t>(labelW + props.sidePadding * 2);
+      const int16_t hugW = static_cast<int16_t>(labelW + sidePad * 2);
       if (hugW < row.width) row.width = hugW;
     }
     State state = item.state;
     if (props.selectedIndex == static_cast<int16_t>(i)) state |= StateSelected;
     if (!item.enabled) state |= StateDisabled;
     if (props.action != NO_ACTION && item.enabled) {
+      // item.enabled controls interactivity; a StateDisabled carried in
+      // item.state is visual-only dimming and must not block touch routing
+      // (findTouch skips disabled interactions).
+      const State hitState = static_cast<State>(static_cast<int>(state) & ~static_cast<int>(StateDisabled));
       frame.hit(ensureMinTouchRect(row, frame.device().minTouchSize, frame.screen()), props.action, item.actionValue,
-                props.inputMask, state);
+                props.inputMask, hitState);
     }
     state = frame.stateFor(props.action, item.actionValue, state);
     StyleSet styles = props.rowStyles.unset() ? defaultListRowStyles() : props.rowStyles;
@@ -147,7 +201,7 @@ void list(Frame<MaxInteractions>& frame, Rect rect, const ListProps& props) {
       frame.target().stroke(row, style.border, style.borderWidth, style.radius, style.corners);
     }
 
-    Rect content = row.inset(Insets{0, props.sidePadding, 0, props.sidePadding});
+    Rect content = row.inset(Insets{0, sidePad, 0, sidePad});
 
     // Slot layout (mirrors settingRow): the label owns a "title band" and the
     // icon and value align to it; the subtitle spans the full content width
@@ -165,7 +219,9 @@ void list(Frame<MaxInteractions>& frame, Rect rect, const ListProps& props) {
     const BitmapRef icon = item.icon ? item.icon : resolveBitmap(frame.assets(), item.iconAsset);
     if (icon) {
       const int16_t iconSize = props.iconSize > 0 ? props.iconSize : static_cast<int16_t>(icon.width);
-      Rect iconRect{content.x, static_cast<int16_t>(band.y + (band.height - iconSize) / 2), iconSize, iconSize};
+      // Centered on the full row content, not the title band: with a subtitle
+      // the icon belongs to the label+subtitle block as a whole.
+      Rect iconRect{content.x, static_cast<int16_t>(content.y + (content.height - iconSize) / 2), iconSize, iconSize};
       frame.target().bitmap(iconRect, icon, BitmapMode::Contain, style.foreground);
       content.x = static_cast<int16_t>(content.x + iconSize + props.textGap);
       content.width = static_cast<int16_t>(content.width - iconSize - props.textGap);
@@ -174,13 +230,50 @@ void list(Frame<MaxInteractions>& frame, Rect rect, const ListProps& props) {
     }
 
     int16_t availW = band.width;
-    if (item.value) {
+    if (item.toggle) {
+      const int16_t togW = props.toggleWidth < 18 ? 18 : props.toggleWidth;
+      const int16_t togH = props.toggleHeight < 12 ? 12 : props.toggleHeight;
+      Rect toggleRect{static_cast<int16_t>(band.x + band.width - togW - props.valueInset),
+                      static_cast<int16_t>(band.y + (band.height - togH) / 2), togW, togH};
+      // The switch draws in row-foreground ink with the foreground's opposite
+      // as "paper", so it inverts along with the row when selected.
+      const Paint fg = style.foreground;
+      const bool fgWhite = fg.kind == PaintKind::Solid && fg.color == Color::White;
+      const Paint paper = Paint::solid(fgWhite ? Color::Black : Color::White);
+      const uint8_t trackRadius = static_cast<uint8_t>(props.toggleRadius > togH / 2 ? togH / 2 : props.toggleRadius);
+      frame.target().fill(toggleRect, item.toggleChecked ? fg : paper, trackRadius);
+      if (props.toggleBorderWidth > 0) {
+        frame.target().stroke(toggleRect, fg, props.toggleBorderWidth, trackRadius);
+      }
+      const int16_t knobInset = props.toggleKnobInset < 0 ? 0 : props.toggleKnobInset;
+      const int16_t knobH = static_cast<int16_t>(togH - knobInset * 2);
+      if (knobH > 0) {
+        Rect knob{static_cast<int16_t>(item.toggleChecked ? toggleRect.right() - knobInset - knobH
+                                                          : toggleRect.x + knobInset),
+                  static_cast<int16_t>(toggleRect.y + knobInset), knobH, knobH};
+        const uint8_t knobRadius =
+            static_cast<uint8_t>(props.toggleKnobRadius > knobH / 2 ? knobH / 2 : props.toggleKnobRadius);
+        frame.target().fill(knob, item.toggleChecked ? paper : fg, knobRadius);
+      }
+      availW = static_cast<int16_t>(availW - togW - props.valueInset - props.textGap);
+    } else if (item.value) {
       TextStyle valueStyle = textStyleWithForeground(props.valueText, style.foreground);
       valueStyle.align = TextAlign::Right;
       const int16_t valueW = frame.target().measureText(valueStyle.font, item.value, valueStyle).width;
-      Rect valueRect{static_cast<int16_t>(band.x + availW - valueW), band.y, valueW, band.height};
+      Rect valueRect{static_cast<int16_t>(band.x + availW - valueW - props.valueInset), band.y, valueW, band.height};
       frame.target().text(valueRect, item.value, valueStyle);
-      availW = static_cast<int16_t>(availW - valueW - props.textGap);
+      availW = static_cast<int16_t>(availW - valueW - props.valueInset - props.textGap);
+    }
+
+    if (labelStyle.maxLines > 1 && (item.toggle || item.value) && item.label) {
+      // A label that fits stays on one line; one that must wrap breaks early
+      // (60% of the band) for a balanced two-line split instead of running
+      // right up against the trailing slot.
+      const int16_t labelW = frame.target().measureText(labelStyle.font, item.label, labelStyle).width;
+      if (labelW > availW) {
+        const int16_t wrapCap = static_cast<int16_t>((band.width * 3) / 5);
+        if (availW > wrapCap) availW = wrapCap;
+      }
     }
 
     if (item.subtitle) {
@@ -194,11 +287,20 @@ void list(Frame<MaxInteractions>& frame, Rect rect, const ListProps& props) {
 
     if (props.selectedIndex == static_cast<int16_t>(i) && props.selectionMarker != SelectionMarker::None) {
       if (props.selectionMarker == SelectionMarker::Underline) {
-        frame.target().fill(Rect{static_cast<int16_t>(row.x + props.sidePadding + props.markerInset),
+        frame.target().fill(Rect{static_cast<int16_t>(row.x + sidePad + props.markerInset),
                                  static_cast<int16_t>(row.bottom() - props.markerThickness),
-                                 static_cast<int16_t>(row.width - props.sidePadding * 2 - props.markerInset),
+                                 static_cast<int16_t>(row.width - sidePad * 2 - props.markerInset),
                                  props.markerThickness},
                             props.markerPaint);
+      } else if (props.selectionMarker == SelectionMarker::Bitmap) {
+        const BitmapRef marker =
+            props.markerBitmap ? props.markerBitmap : resolveBitmap(frame.assets(), props.markerAsset);
+        if (marker) {
+          frame.target().bitmap(Rect{static_cast<int16_t>(row.x + props.markerInset),
+                                     static_cast<int16_t>(row.y + (row.height - marker.height) / 2),
+                                     static_cast<int16_t>(marker.width), static_cast<int16_t>(marker.height)},
+                                marker, BitmapMode::Contain, props.markerPaint);
+        }
       } else {
         // 12x18 right-pointing triangle, vertically centered — the v1 theme
         // Triangle selection marker geometry.
@@ -225,7 +327,7 @@ void list(Frame<MaxInteractions>& frame, Rect rect, const ListProps& props) {
           frame.target().stroke(row, style.border, style.borderWidth, style.radius, style.corners);
         }
 
-        Rect content = row.inset(Insets{0, props.sidePadding, 0, props.sidePadding});
+        Rect content = row.inset(Insets{0, sidePad, 0, sidePad});
         TextStyle labelStyle = textStyleWithForeground(props.labelText, style.foreground);
         labelStyle.maxLines = 1;
         TextStyle subtitleStyle = textStyleWithForeground(props.subtitleText, style.foreground);

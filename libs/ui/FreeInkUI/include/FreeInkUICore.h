@@ -387,6 +387,15 @@ struct TextStyle {
   Rotation rotation = Rotation::None;
 };
 
+// True when `s` is entirely default-constructed. Screen's themed substitution
+// uses this instead of `font == 0`: FONT_SLOT_SMALL is 0, so the font alone
+// cannot distinguish "unset" from "explicitly the small slot". Customizing any
+// field (maxLines, align, bold, ...) marks the style as caller-owned.
+inline bool textStyleUnset(const TextStyle& s) {
+  return s.font == 0 && s.align == TextAlign::Left && s.color == Color::Black && s.maxLines == 1 && !s.bold &&
+         !s.inverted && s.rotation == Rotation::None;
+}
+
 // Which corners a radius applies to (RoundedRaff-style cards round only the
 // top band's top corners and the bottom band's bottom corners).
 enum Corners : uint8_t {
@@ -444,6 +453,16 @@ struct StyleSet {
   }
 };
 
+// How a list marks its selected row. Screen::list() expands this into the
+// row StyleSet / SelectionMarker it implies; explicit rowStyles or a marker
+// set by the caller win.
+enum class SelectionStyle : uint8_t {
+  InvertFill,  // selected row fills black, text inverts
+  LightPill,   // LightGray dither fill, text stays black
+  Underline,   // rows keep their normal style; underline marker
+  Triangle,    // rows keep their normal style; triangle marker
+};
+
 struct ThemeTokens {
   FontId fontSmall = 0;
   FontId fontBody = 0;
@@ -457,6 +476,20 @@ struct ThemeTokens {
   int16_t headerHeight = 44;
   int16_t footerHeight = 40;
   int16_t progressHeight = 4;
+  // List shape tokens: the theme supplies geometry (gaps, radii, insets)
+  // while rowHeight and text sizes derive from the bound fonts. Screen::list()
+  // forwards these into any ListProps field left at its inherit sentinel.
+  int16_t listRowGap = 0;
+  uint8_t listRowRadius = 0;
+  int16_t listSidePadding = 8;  // text inset within a row
+  int16_t listInset = 0;        // horizontal inset of the rows (scroll indicator stays at the band edge)
+  SelectionStyle listSelectionStyle = SelectionStyle::InvertFill;
+  int16_t listScrollWidth = 3;  // scroll indicator thickness
+  uint8_t listScrollSide = 0;   // 0 = right edge, 1 = left edge
+  // Header shape tokens, forwarded by Screen::header() the same way.
+  int16_t headerSidePadding = 6;
+  uint8_t headerUnderline = 1;  // bottom rule thickness; 0 = none
+  TextAlign headerTitleAlign = TextAlign::Left;
   TextStyle smallText{};
   TextStyle bodyText{};
   TextStyle titleText{};
@@ -1046,14 +1079,23 @@ StyleSet defaultListRowStyles();
 StyleSet defaultKeyStyles();
 StyleSet defaultPopupStyles();
 StyleSet plainStyles(Paint foreground = Paint::solid(Color::Black));
-ThemeTokens defaultThemeTokens(FontId smallFont = 0, FontId bodyFont = 0, FontId titleFont = 0);
+// Canonical font-slot convention: the bundled targets (DisplayTarget,
+// GfxRendererTarget) both expose setFont() slots 0/1/2 as SMALL/BODY/TITLE.
+// The theme-token defaults follow it so an app that binds its target's slots
+// gets correctly-keyed text roles without spelling the mapping out again.
+constexpr FontId FONT_SLOT_SMALL = 0;
+constexpr FontId FONT_SLOT_BODY = 1;
+constexpr FontId FONT_SLOT_TITLE = 2;
+
+ThemeTokens defaultThemeTokens(FontId smallFont = FONT_SLOT_SMALL, FontId bodyFont = FONT_SLOT_BODY,
+                               FontId titleFont = FONT_SLOT_TITLE);
 // defaultThemeTokens with the metric tokens (rowHeight, header/footer heights,
 // touch size, small gap) derived from a font line height, so rows fit a
 // label+subtitle pair with whatever font the target binds. The static 44px
 // defaults assume ~18px UI fonts; the bundled Noto Sans is 34px/line.
 // FreeInkApp calls this with its target's body-font line height.
-ThemeTokens themeTokensForLineHeight(int16_t lineHeight, FontId smallFont = 0, FontId bodyFont = 0,
-                                     FontId titleFont = 0);
+ThemeTokens themeTokensForLineHeight(int16_t lineHeight, FontId smallFont = FONT_SLOT_SMALL,
+                                     FontId bodyFont = FONT_SLOT_BODY, FontId titleFont = FONT_SLOT_TITLE);
 inline int16_t clampI16(const int value, const int minValue = 0, const int maxValue = 32767) {
   if (value < minValue) return static_cast<int16_t>(minValue);
   if (value > maxValue) return static_cast<int16_t>(maxValue);
@@ -1205,19 +1247,23 @@ inline void drawBorderEdges(DrawTarget& target, Rect rect, Paint paint, uint8_t 
     target.stroke(rect, paint, width, radius, corners);
     return;
   }
+  // Axis-aligned edges draw as exact fill bands INSIDE the rect: a thick
+  // line() centers its stroke on the segment, which would leak half the
+  // width outside the rect (e.g. a 3px header rule jutting into the content
+  // below the band).
   if (edges & EdgeTop) {
-    target.line(Point{rect.x, rect.y}, Point{static_cast<int16_t>(rect.right() - 1), rect.y}, width, paint);
+    target.fill(Rect{rect.x, rect.y, rect.width, static_cast<int16_t>(width)}, paint);
   }
   if (edges & EdgeRight) {
-    const int16_t x = static_cast<int16_t>(rect.right() - 1);
-    target.line(Point{x, rect.y}, Point{x, static_cast<int16_t>(rect.bottom() - 1)}, width, paint);
+    target.fill(Rect{static_cast<int16_t>(rect.right() - width), rect.y, static_cast<int16_t>(width), rect.height},
+                paint);
   }
   if (edges & EdgeBottom) {
-    const int16_t y = static_cast<int16_t>(rect.bottom() - 1);
-    target.line(Point{rect.x, y}, Point{static_cast<int16_t>(rect.right() - 1), y}, width, paint);
+    target.fill(Rect{rect.x, static_cast<int16_t>(rect.bottom() - width), rect.width, static_cast<int16_t>(width)},
+                paint);
   }
   if (edges & EdgeLeft) {
-    target.line(Point{rect.x, rect.y}, Point{rect.x, static_cast<int16_t>(rect.bottom() - 1)}, width, paint);
+    target.fill(Rect{rect.x, rect.y, static_cast<int16_t>(width), rect.height}, paint);
   }
 }
 

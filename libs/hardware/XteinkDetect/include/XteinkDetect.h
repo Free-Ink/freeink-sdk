@@ -13,10 +13,28 @@
 // fuel gauge (0x55), DS3231 RTC (0x68) and QMI8658 IMU (0x6B/0x6A). The X4 has
 // none of them, so two passes scoring >= 2 hits each confirm an X3; anything
 // else is treated as an X4 (the conservative default).
+//
+// In builds without an Xteink profile (neither FREEINK_DEVICE_X4 nor
+// FREEINK_DEVICE_X3) both functions compile to no-ops returning false and never
+// touch a pin: the probe bus (SDA=20 / SCL=0) is only safe on the Xteink C3
+// pinout — on an ESP32-S3 those are native USB D+ and the boot strap.
 
 #include <stdint.h>
 
 namespace freeink {
+
+// Probe outcome. X3Confirmed / X4Confirmed mean both passes agreed (>= 2 hits
+// each, or zero hits each); Inconclusive means the passes disagreed or saw a
+// single stray ACK — treat it as an X4 but don't persist the answer, so a
+// flaky first boot gets re-probed.
+enum class XteinkVerdict : uint8_t { X4Confirmed, X3Confirmed, Inconclusive };
+
+// Run the X3 I2C fingerprint and return the verdict. Optionally reports the
+// per-pass chip-hit scores (0-3) for diagnostics. Leaves the I2C bus released
+// and the probe pins back in INPUT mode. Safe to call before any other
+// hardware bring-up. In builds without an Xteink profile this is a no-op
+// returning Inconclusive with zero scores.
+XteinkVerdict detectXteinkVerdict(uint8_t* score1 = nullptr, uint8_t* score2 = nullptr);
 
 // Run the X3 I2C fingerprint and return true if this board is an Xteink X3.
 // Leaves the I2C bus released and the probe pins back in INPUT mode. Safe to

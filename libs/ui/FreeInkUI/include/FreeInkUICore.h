@@ -444,6 +444,16 @@ struct StyleSet {
   }
 };
 
+// How a list marks its selected row. Screen::list() expands this into the
+// row StyleSet / SelectionMarker it implies; explicit rowStyles or a marker
+// set by the caller win.
+enum class SelectionStyle : uint8_t {
+  InvertFill,  // selected row fills black, text inverts
+  LightPill,   // LightGray dither fill, text stays black
+  Underline,   // rows keep their normal style; underline marker
+  Triangle,    // rows keep their normal style; triangle marker
+};
+
 struct ThemeTokens {
   FontId fontSmall = 0;
   FontId fontBody = 0;
@@ -464,10 +474,13 @@ struct ThemeTokens {
   uint8_t listRowRadius = 0;
   int16_t listSidePadding = 8;  // text inset within a row
   int16_t listInset = 0;        // horizontal inset of the whole list band
+  SelectionStyle listSelectionStyle = SelectionStyle::InvertFill;
+  int16_t listScrollWidth = 3;  // scroll indicator thickness
+  uint8_t listScrollSide = 0;   // 0 = right edge, 1 = left edge
   // Header shape tokens, forwarded by Screen::header() the same way.
   int16_t headerSidePadding = 6;
   uint8_t headerUnderline = 1;  // bottom rule thickness; 0 = none
-  bool headerCentered = false;
+  TextAlign headerTitleAlign = TextAlign::Left;
   TextStyle smallText{};
   TextStyle bodyText{};
   TextStyle titleText{};
@@ -1225,19 +1238,23 @@ inline void drawBorderEdges(DrawTarget& target, Rect rect, Paint paint, uint8_t 
     target.stroke(rect, paint, width, radius, corners);
     return;
   }
+  // Axis-aligned edges draw as exact fill bands INSIDE the rect: a thick
+  // line() centers its stroke on the segment, which would leak half the
+  // width outside the rect (e.g. a 3px header rule jutting into the content
+  // below the band).
   if (edges & EdgeTop) {
-    target.line(Point{rect.x, rect.y}, Point{static_cast<int16_t>(rect.right() - 1), rect.y}, width, paint);
+    target.fill(Rect{rect.x, rect.y, rect.width, static_cast<int16_t>(width)}, paint);
   }
   if (edges & EdgeRight) {
-    const int16_t x = static_cast<int16_t>(rect.right() - 1);
-    target.line(Point{x, rect.y}, Point{x, static_cast<int16_t>(rect.bottom() - 1)}, width, paint);
+    target.fill(Rect{static_cast<int16_t>(rect.right() - width), rect.y, static_cast<int16_t>(width), rect.height},
+                paint);
   }
   if (edges & EdgeBottom) {
-    const int16_t y = static_cast<int16_t>(rect.bottom() - 1);
-    target.line(Point{rect.x, y}, Point{static_cast<int16_t>(rect.right() - 1), y}, width, paint);
+    target.fill(Rect{rect.x, static_cast<int16_t>(rect.bottom() - width), rect.width, static_cast<int16_t>(width)},
+                paint);
   }
   if (edges & EdgeLeft) {
-    target.line(Point{rect.x, rect.y}, Point{rect.x, static_cast<int16_t>(rect.bottom() - 1)}, width, paint);
+    target.fill(Rect{rect.x, rect.y, static_cast<int16_t>(width), rect.height}, paint);
   }
 }
 

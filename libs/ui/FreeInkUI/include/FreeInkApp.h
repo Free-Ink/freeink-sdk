@@ -112,14 +112,16 @@ class Screen {
 
   void header(const HeaderProps& props, LayoutAnchor anchor = LayoutAnchor::Top) {
     HeaderProps themed = props;
-    if (themed.titleText.font == 0) themed.titleText = theme_.titleText;
+    if (themed.titleText.font == 0) {
+      themed.titleText = theme_.titleText;
+      themed.titleText.align = theme_.headerTitleAlign;
+    }
     if (themed.subtitleText.font == 0) themed.subtitleText = theme_.smallText;
     if (themed.styles.unset()) themed.styles = theme_.popup;
     if (themed.leadingStyles.unset()) themed.leadingStyles = theme_.button;
     if (themed.trailingStyles.unset()) themed.trailingStyles = plainStyles(Paint::solid(Color::Black));
     if (themed.trailingText.font == 0) themed.trailingText = theme_.bodyText;
     if (themed.sidePadding < 0) themed.sidePadding = theme_.headerSidePadding;
-    themed.centered = themed.centered || theme_.headerCentered;
     // Divider: the theme's headerUnderline sets the rule thickness when the
     // popup style ships without a border of its own (0 = no rule).
     if (themed.styles.normal.border.kind == PaintKind::None && theme_.headerUnderline > 0) {
@@ -207,11 +209,37 @@ class Screen {
     if (themed.subtitleText.font == 0) themed.subtitleText = theme_.smallText;
     if (themed.valueText.font == 0) themed.valueText = theme_.smallText;
     if (themed.headerText.font == 0) themed.headerText = theme_.smallText;
-    if (themed.rowStyles.unset()) themed.rowStyles = theme_.listRow;
+    if (themed.rowStyles.unset()) {
+      // Expand the theme's selection style over its base row styles; explicit
+      // rowStyles or a caller-set marker win.
+      StyleSet styles = theme_.listRow.unset() ? defaultListRowStyles() : theme_.listRow;
+      switch (theme_.listSelectionStyle) {
+        case SelectionStyle::LightPill:
+          styles.selected.background = Paint::dither(Color::LightGray);
+          styles.selected.foreground = Paint::solid(Color::Black);
+          styles.active = styles.selected;
+          break;
+        case SelectionStyle::Underline:
+        case SelectionStyle::Triangle:
+          styles.selected = styles.normal;  // the marker shows the selection
+          if (themed.selectionMarker == SelectionMarker::None) {
+            themed.selectionMarker = theme_.listSelectionStyle == SelectionStyle::Underline
+                                         ? SelectionMarker::Underline
+                                         : SelectionMarker::Triangle;
+          }
+          break;
+        case SelectionStyle::InvertFill:
+        default:
+          break;
+      }
+      themed.rowStyles = styles;
+    }
     if (themed.rowHeight <= 0) themed.rowHeight = theme_.rowHeight;
     if (themed.rowGap < 0) themed.rowGap = theme_.listRowGap;
     if (themed.rowRadius == 0) themed.rowRadius = theme_.listRowRadius;
     if (themed.sidePadding < 0) themed.sidePadding = theme_.listSidePadding;
+    if (themed.scrollIndicatorWidth < 0) themed.scrollIndicatorWidth = theme_.listScrollWidth;
+    if (themed.scrollIndicatorSide == 0xFF) themed.scrollIndicatorSide = theme_.listScrollSide;
     Rect rect = height > 0 ? take(anchor, height) : content_;
     if (theme_.listInset > 0) rect = rect.inset(Insets{0, theme_.listInset, 0, theme_.listInset});
     ui::list(frame_, rect, themed);

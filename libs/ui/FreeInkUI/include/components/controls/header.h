@@ -45,10 +45,11 @@ struct HeaderProps {
   // edges regardless. -1 = inherit: Screen::header() substitutes the theme's
   // headerSidePadding; raw header() falls back to 6.
   int16_t sidePadding = -1;
-  // Extra width reserved at the content's right edge for app-drawn extras
-  // (e.g. a battery indicator): text truncates before it, but the band's
-  // background and border still span the full rect. Not meant to combine
-  // with a trailing action button, which anchors to the same edge.
+  // Extra width reserved at the content's left/right edge for app-drawn
+  // extras (e.g. a battery indicator): text truncates before it, but the
+  // band's background and border still span the full rect. Not meant to
+  // combine with a leading/trailing action button on the same edge.
+  int16_t leftReserve = 0;
   int16_t rightReserve = 0;
 };
 
@@ -64,6 +65,10 @@ void header(Frame<MaxInteractions>& frame, Rect rect, const HeaderProps& props) 
 
   const int16_t sidePad = props.sidePadding < 0 ? 6 : props.sidePadding;
   Rect content = rect.inset(Insets{0, sidePad, 0, sidePad});
+  if (props.leftReserve > 0) {
+    content.x = static_cast<int16_t>(content.x + props.leftReserve);
+    content.width = static_cast<int16_t>(content.width - props.leftReserve);
+  }
   if (props.rightReserve > 0) content.width = static_cast<int16_t>(content.width - props.rightReserve);
 
   const BitmapRef leading = props.leadingIcon ? props.leadingIcon : resolveBitmap(frame.assets(), props.leadingIconAsset);
@@ -113,8 +118,10 @@ void header(Frame<MaxInteractions>& frame, Rect rect, const HeaderProps& props) 
     }
   }
 
+  // Alignment comes from the title style (themes can left/center/right
+  // align); `centered` remains the navHeader convenience override.
   TextStyle titleStyle = props.titleText;
-  titleStyle.align = props.centered ? TextAlign::Center : TextAlign::Left;
+  if (props.centered) titleStyle.align = TextAlign::Center;
   if (props.title) {
     int16_t titleY = static_cast<int16_t>(content.y + props.titleOffsetY);
     Rect titleRect{content.x, titleY, content.width, content.height};

@@ -23,6 +23,7 @@ enum class SelectionMarker : uint8_t {
   None,       // selection shown by the row's selected BoxStyle
   Underline,  // thin line under the selected row's content
   Triangle,   // right-pointing triangle at the selected row's left edge
+  Bitmap,     // caller-supplied glyph (markerBitmap/markerAsset) at the left edge
 };
 
 struct ListProps {
@@ -51,7 +52,10 @@ struct ListProps {
   int16_t sidePadding = -1;
   int16_t textGap = 10;
   int16_t iconSize = 0;
-  int16_t scrollIndicatorWidth = 3;
+  // Inherit sentinels like rowGap/sidePadding: width -1 = theme (raw list()
+  // falls back to 3); side 0xFF = theme (raw falls back to right).
+  int16_t scrollIndicatorWidth = -1;
+  uint8_t scrollIndicatorSide = 0xFF;  // 0 = right edge, 1 = left edge
   bool centerSingleLine = false;
   // Shrink each row's background/hit area to its label width plus side
   // padding instead of the full rect width (hug-content menu rows).
@@ -68,8 +72,13 @@ struct ListProps {
   // Triangle selection styles).
   SelectionMarker selectionMarker = SelectionMarker::None;
   Paint markerPaint = Paint::solid(Color::Black);
-  int16_t markerInset = 0;       // x offset of the triangle / underline start
-  int16_t markerThickness = 2;   // underline thickness
+  int16_t markerInset = 0;      // x offset of the marker / underline start
+  int16_t markerThickness = 2;  // underline thickness
+  // Glyph for SelectionMarker::Bitmap, drawn vertically centered at the
+  // selected row's left edge (markerInset offset). Direct bitmap wins;
+  // otherwise the asset resolves through the frame's AssetResolver.
+  BitmapRef markerBitmap{};
+  AssetRef markerAsset{};
   // Section header rows (ListItem::isHeader).
   TextStyle headerText{};
   int16_t headerRowHeight = 0;  // 0 = headerText line height + underline gap
@@ -83,6 +92,8 @@ void list(Frame<MaxInteractions>& frame, Rect rect, const ListProps& props) {
   const int16_t rowH = props.rowHeight > 0 ? props.rowHeight : 36;
   const int16_t rowGap = props.rowGap < 0 ? 0 : props.rowGap;
   const int16_t sidePad = props.sidePadding < 0 ? 8 : props.sidePadding;
+  const int16_t scrollW = props.scrollIndicatorWidth < 0 ? 3 : props.scrollIndicatorWidth;
+  const bool scrollLeft = props.scrollIndicatorSide == 1;
   const uint16_t visible = listVisibleRows(rect, rowH, rowGap);
   const bool overflows = props.count > visible;
   uint16_t top = props.topIndex;
@@ -92,10 +103,10 @@ void list(Frame<MaxInteractions>& frame, Rect rect, const ListProps& props) {
   const uint16_t end = overflows ? static_cast<uint16_t>(top + visible) : props.count;
 
   Rect rowArea = rect;
-  if (props.scrollIndicator && overflows && props.scrollIndicatorWidth > 0) {
-    rowArea.width = static_cast<int16_t>(rowArea.width - props.scrollIndicatorWidth - 2);
-    Rect track{static_cast<int16_t>(rect.right() - props.scrollIndicatorWidth), rect.y, props.scrollIndicatorWidth,
-               rect.height};
+  if (props.scrollIndicator && overflows && scrollW > 0) {
+    rowArea.width = static_cast<int16_t>(rowArea.width - scrollW - 2);
+    if (scrollLeft) rowArea.x = static_cast<int16_t>(rowArea.x + scrollW + 2);
+    Rect track{scrollLeft ? rect.x : static_cast<int16_t>(rect.right() - scrollW), rect.y, scrollW, rect.height};
     frame.target().fill(track, Paint::dither(Color::LightGray));
     int16_t thumbH = static_cast<int16_t>((static_cast<int32_t>(rect.height) * visible) / props.count);
     if (thumbH < 12) thumbH = 12;
@@ -206,6 +217,15 @@ void list(Frame<MaxInteractions>& frame, Rect rect, const ListProps& props) {
                                  static_cast<int16_t>(row.width - sidePad * 2 - props.markerInset),
                                  props.markerThickness},
                             props.markerPaint);
+      } else if (props.selectionMarker == SelectionMarker::Bitmap) {
+        const BitmapRef marker =
+            props.markerBitmap ? props.markerBitmap : resolveBitmap(frame.assets(), props.markerAsset);
+        if (marker) {
+          frame.target().bitmap(Rect{static_cast<int16_t>(row.x + props.markerInset),
+                                     static_cast<int16_t>(row.y + (row.height - marker.height) / 2),
+                                     static_cast<int16_t>(marker.width), static_cast<int16_t>(marker.height)},
+                                marker, BitmapMode::Contain, props.markerPaint);
+        }
       } else {
         // 12x18 right-pointing triangle, vertically centered — the v1 theme
         // Triangle selection marker geometry.

@@ -39,6 +39,10 @@ struct FooterProps {
   int16_t sidePadding = 8;
   int16_t gap = 4;
   uint8_t buttonBorderEdges = EdgesNone;
+  // Style for passive slots: a FooterAction with NO_ACTION renders as plain
+  // text in its slot instead of a button — version lines, status notes.
+  // font 0 = the theme's small text; align is honored either way.
+  TextStyle passiveText{};
 };
 
 template <size_t MaxInteractions>
@@ -114,11 +118,13 @@ class Screen {
     if (themed.leadingStyles.unset()) themed.leadingStyles = theme_.button;
     if (themed.trailingStyles.unset()) themed.trailingStyles = plainStyles(Paint::solid(Color::Black));
     if (themed.trailingText.font == 0) themed.trailingText = theme_.bodyText;
-    // Headers document a divider by default; give the themed style a border
-    // when the theme's popup style ships without one (the built-in default).
-    if (themed.styles.normal.border.kind == PaintKind::None) {
+    if (themed.sidePadding < 0) themed.sidePadding = theme_.headerSidePadding;
+    themed.centered = themed.centered || theme_.headerCentered;
+    // Divider: the theme's headerUnderline sets the rule thickness when the
+    // popup style ships without a border of its own (0 = no rule).
+    if (themed.styles.normal.border.kind == PaintKind::None && theme_.headerUnderline > 0) {
       themed.styles.normal.border = Paint::solid(Color::Black);
-      themed.styles.normal.borderWidth = 1;
+      themed.styles.normal.borderWidth = theme_.headerUnderline;
     }
     themed.minTouchSize = theme_.minTouchSize;
     ui::header(frame_, take(anchor, theme_.headerHeight), themed);
@@ -192,13 +198,7 @@ class Screen {
     props.selectedIndex = selectedIndex;
     props.topIndex = topIndex;
     props.action = action;
-    props.labelText = theme_.bodyText;
-    props.subtitleText = theme_.smallText;
-    props.valueText = theme_.smallText;
-    props.headerText = theme_.smallText;
-    props.rowStyles = theme_.listRow;
-    props.rowHeight = theme_.rowHeight;
-    ui::list(frame_, height > 0 ? take(anchor, height) : content_, props);
+    list(props, height, anchor);
   }
 
   void list(const ListProps& props, int16_t height = 0, LayoutAnchor anchor = LayoutAnchor::Top) {
@@ -209,7 +209,12 @@ class Screen {
     if (themed.headerText.font == 0) themed.headerText = theme_.smallText;
     if (themed.rowStyles.unset()) themed.rowStyles = theme_.listRow;
     if (themed.rowHeight <= 0) themed.rowHeight = theme_.rowHeight;
-    ui::list(frame_, height > 0 ? take(anchor, height) : content_, themed);
+    if (themed.rowGap < 0) themed.rowGap = theme_.listRowGap;
+    if (themed.rowRadius == 0) themed.rowRadius = theme_.listRowRadius;
+    if (themed.sidePadding < 0) themed.sidePadding = theme_.listSidePadding;
+    Rect rect = height > 0 ? take(anchor, height) : content_;
+    if (theme_.listInset > 0) rect = rect.inset(Insets{0, theme_.listInset, 0, theme_.listInset});
+    ui::list(frame_, rect, themed);
   }
 
   void checkbox(const CheckboxProps& props, LayoutAnchor anchor = LayoutAnchor::Top) {
@@ -298,6 +303,18 @@ class Screen {
     for (uint8_t i = 0; i < footer.count; ++i) {
       Rect slot{x, content.y, i == footer.count - 1 ? static_cast<int16_t>(content.right() - x) : slotW,
                 content.height};
+      if (footer.actions[i].action == NO_ACTION) {
+        // Passive slot: plain text, no button chrome, no hit rect.
+        TextStyle style = footer.passiveText;
+        if (style.font == 0) {
+          const TextAlign align = style.align;
+          style = theme_.smallText;
+          style.align = align;
+        }
+        if (footer.actions[i].label) frame_.target().text(slot, footer.actions[i].label, style);
+        x = static_cast<int16_t>(x + slot.width + gap);
+        continue;
+      }
       ButtonProps props;
       props.label = footer.actions[i].label;
       props.action = footer.actions[i].action;

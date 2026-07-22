@@ -40,13 +40,15 @@ struct ListProps {
   TextStyle subtitleText{};
   TextStyle valueText{};
   StyleSet rowStyles{};
-  // 0 = inherit: Screen::list() substitutes the theme's rowHeight, raw
-  // list() falls back to 36. A literal default here would silently override
-  // the theme for every Screen::list() caller that leaves it unset.
+  // Inherit sentinels: Screen::list() substitutes the theme value for
+  // rowHeight <= 0, rowGap < 0, sidePadding < 0, and rowRadius == 0; raw
+  // list() falls back to 36 / 0 / 8. Literal defaults here would silently
+  // override the theme for every Screen::list() caller that leaves them
+  // unset.
   int16_t rowHeight = 0;
-  int16_t rowGap = 0;
+  int16_t rowGap = -1;
   uint8_t rowRadius = 0;
-  int16_t sidePadding = 8;
+  int16_t sidePadding = -1;
   int16_t textGap = 10;
   int16_t iconSize = 0;
   int16_t scrollIndicatorWidth = 3;
@@ -79,7 +81,9 @@ template <size_t MaxInteractions>
 void list(Frame<MaxInteractions>& frame, Rect rect, const ListProps& props) {
   if (!props.items || props.count == 0) return;
   const int16_t rowH = props.rowHeight > 0 ? props.rowHeight : 36;
-  const uint16_t visible = listVisibleRows(rect, rowH, props.rowGap);
+  const int16_t rowGap = props.rowGap < 0 ? 0 : props.rowGap;
+  const int16_t sidePad = props.sidePadding < 0 ? 8 : props.sidePadding;
+  const uint16_t visible = listVisibleRows(rect, rowH, rowGap);
   const bool overflows = props.count > visible;
   uint16_t top = props.topIndex;
   if (top > props.count - 1) top = props.count - 1;
@@ -113,25 +117,25 @@ void list(Frame<MaxInteractions>& frame, Rect rect, const ListProps& props) {
       const int16_t pad = i != top ? props.sectionGap : 0;
       if (static_cast<int16_t>(cursorY + pad + headerH) > rowArea.bottom()) break;
       cursorY = static_cast<int16_t>(cursorY + pad);
-      Rect headerRow{static_cast<int16_t>(rowArea.x + props.sidePadding), cursorY,
-                     static_cast<int16_t>(rowArea.width - props.sidePadding * 2), headerLh};
+      Rect headerRow{static_cast<int16_t>(rowArea.x + sidePad), cursorY,
+                     static_cast<int16_t>(rowArea.width - sidePad * 2), headerLh};
       frame.target().text(headerRow, item.label, props.headerText);
       if (props.headerUnderline) {
         frame.target().fill(Rect{headerRow.x, static_cast<int16_t>(cursorY + headerLh + 2), headerRow.width, 1},
                             Paint::solid(props.headerText.color));
       }
-      cursorY = static_cast<int16_t>(cursorY + headerH + props.rowGap);
+      cursorY = static_cast<int16_t>(cursorY + headerH + rowGap);
       continue;
     }
     if (static_cast<int16_t>(cursorY + rowH) > rowArea.bottom() || drawnRows >= visible || i >= end) break;
     ++drawnRows;
     Rect row{rowArea.x, cursorY, rowArea.width, rowH};
-    cursorY = static_cast<int16_t>(cursorY + rowH + props.rowGap);
+    cursorY = static_cast<int16_t>(cursorY + rowH + rowGap);
     if (props.hugContents && item.label) {
       // Hug-content rows shrink to the label width plus padding so the
       // selection pill wraps the text instead of spanning the rect.
       const int16_t labelW = frame.target().measureText(props.labelText.font, item.label, props.labelText).width;
-      const int16_t hugW = static_cast<int16_t>(labelW + props.sidePadding * 2);
+      const int16_t hugW = static_cast<int16_t>(labelW + sidePad * 2);
       if (hugW < row.width) row.width = hugW;
     }
     State state = item.state;
@@ -150,7 +154,7 @@ void list(Frame<MaxInteractions>& frame, Rect rect, const ListProps& props) {
       frame.target().stroke(row, style.border, style.borderWidth, style.radius, style.corners);
     }
 
-    Rect content = row.inset(Insets{0, props.sidePadding, 0, props.sidePadding});
+    Rect content = row.inset(Insets{0, sidePad, 0, sidePad});
 
     // Slot layout (mirrors settingRow): the label owns a "title band" and the
     // icon and value align to it; the subtitle spans the full content width
@@ -197,9 +201,9 @@ void list(Frame<MaxInteractions>& frame, Rect rect, const ListProps& props) {
 
     if (props.selectedIndex == static_cast<int16_t>(i) && props.selectionMarker != SelectionMarker::None) {
       if (props.selectionMarker == SelectionMarker::Underline) {
-        frame.target().fill(Rect{static_cast<int16_t>(row.x + props.sidePadding + props.markerInset),
+        frame.target().fill(Rect{static_cast<int16_t>(row.x + sidePad + props.markerInset),
                                  static_cast<int16_t>(row.bottom() - props.markerThickness),
-                                 static_cast<int16_t>(row.width - props.sidePadding * 2 - props.markerInset),
+                                 static_cast<int16_t>(row.width - sidePad * 2 - props.markerInset),
                                  props.markerThickness},
                             props.markerPaint);
       } else {
@@ -228,7 +232,7 @@ void list(Frame<MaxInteractions>& frame, Rect rect, const ListProps& props) {
           frame.target().stroke(row, style.border, style.borderWidth, style.radius, style.corners);
         }
 
-        Rect content = row.inset(Insets{0, props.sidePadding, 0, props.sidePadding});
+        Rect content = row.inset(Insets{0, sidePad, 0, sidePad});
         TextStyle labelStyle = textStyleWithForeground(props.labelText, style.foreground);
         labelStyle.maxLines = 1;
         TextStyle subtitleStyle = textStyleWithForeground(props.subtitleText, style.foreground);

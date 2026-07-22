@@ -6,6 +6,17 @@
 
 namespace freeink {
 
+#if !(FREEINK_DEVICE_X4 || FREEINK_DEVICE_X3)
+
+// Neither Xteink profile is in this build, so there is nothing to fingerprint.
+// Probing would also be unsafe here: SDA=20 / SCL=0 are only free pins on the
+// Xteink C3 pinout — on an ESP32-S3, GPIO20 is native USB D+ and GPIO0 is the
+// boot strap.
+bool detectXteinkIsX3() { return false; }
+bool selectXteinkDevice() { return false; }
+
+#else
+
 namespace {
 
 // X3-only peripherals on the secondary I2C bus (SDA=20, SCL=0).
@@ -99,5 +110,7 @@ bool selectXteinkDevice() {
   BoardConfig::selectDevice(isX3 ? BoardConfig::Board::XteinkX3 : BoardConfig::Board::XteinkX4);
   return isX3;
 }
+
+#endif  // FREEINK_DEVICE_X4 || FREEINK_DEVICE_X3
 
 }  // namespace freeink

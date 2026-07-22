@@ -42,8 +42,14 @@ struct HeaderProps {
   // Left/right inset of the text content (title, subtitle, rightLabel). Set
   // it to the screen's list/content padding so the title's left edge lines up
   // with the rows below. Leading/trailing buttons stay anchored to the band
-  // edges regardless.
-  int16_t sidePadding = 6;
+  // edges regardless. -1 = inherit: Screen::header() substitutes the theme's
+  // headerSidePadding; raw header() falls back to 6.
+  int16_t sidePadding = -1;
+  // Extra width reserved at the content's right edge for app-drawn extras
+  // (e.g. a battery indicator): text truncates before it, but the band's
+  // background and border still span the full rect. Not meant to combine
+  // with a trailing action button, which anchors to the same edge.
+  int16_t rightReserve = 0;
 };
 
 template <size_t MaxInteractions>
@@ -56,7 +62,9 @@ void header(Frame<MaxInteractions>& frame, Rect rect, const HeaderProps& props) 
                     props.borderEdges);
   }
 
-  Rect content = rect.inset(Insets{0, props.sidePadding, 0, props.sidePadding});
+  const int16_t sidePad = props.sidePadding < 0 ? 6 : props.sidePadding;
+  Rect content = rect.inset(Insets{0, sidePad, 0, sidePad});
+  if (props.rightReserve > 0) content.width = static_cast<int16_t>(content.width - props.rightReserve);
 
   const BitmapRef leading = props.leadingIcon ? props.leadingIcon : resolveBitmap(frame.assets(), props.leadingIconAsset);
   if (leading && props.leadingAction != NO_ACTION) {

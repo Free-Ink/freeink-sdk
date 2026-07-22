@@ -13,6 +13,11 @@
 // fuel gauge (0x55), DS3231 RTC (0x68) and QMI8658 IMU (0x6B/0x6A). The X4 has
 // none of them, so two passes scoring >= 2 hits each confirm an X3; anything
 // else is treated as an X4 (the conservative default).
+//
+// In builds without an Xteink profile (neither FREEINK_DEVICE_X4 nor
+// FREEINK_DEVICE_X3) both functions compile to no-ops returning false and never
+// touch a pin: the probe bus (SDA=20 / SCL=0) is only safe on the Xteink C3
+// pinout — on an ESP32-S3 those are native USB D+ and the boot strap.
 
 #include <stdint.h>
 

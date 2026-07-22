@@ -135,7 +135,9 @@ X3-only peripherals (BQ27220 gauge, DS3231 RTC, QMI8658 IMU on SDA20/SCL0),
 calls `BoardConfig::selectDevice()` for the match, and returns whether an X3 was
 found so the caller can `display.setDisplayX3()`. Call it before
 `SDCardManager::begin()` and `FreeInkDisplay::begin()` so both read the right
-profile. Devices on a different MCU build their own binary, selected with a
+profile. In builds without an Xteink profile the helpers compile to no-ops that
+return false without touching any pins, so an unconditional call is safe on
+every device. Devices on a different MCU build their own binary, selected with a
 `-DFREEINK_DEVICE_*` flag. A build targets exactly one of the three MCU families — ESP32-C3 (X3/X4),
 ESP32-S3 (de-link/PaperColor/Murphy/LilyGo/Sticky), or classic ESP32 (M5Paper);
 `BoardConfig` rejects mixing families at compile time.

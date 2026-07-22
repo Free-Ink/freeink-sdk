@@ -457,6 +457,17 @@ struct ThemeTokens {
   int16_t headerHeight = 44;
   int16_t footerHeight = 40;
   int16_t progressHeight = 4;
+  // List shape tokens: the theme supplies geometry (gaps, radii, insets)
+  // while rowHeight and text sizes derive from the bound fonts. Screen::list()
+  // forwards these into any ListProps field left at its inherit sentinel.
+  int16_t listRowGap = 0;
+  uint8_t listRowRadius = 0;
+  int16_t listSidePadding = 8;  // text inset within a row
+  int16_t listInset = 0;        // horizontal inset of the whole list band
+  // Header shape tokens, forwarded by Screen::header() the same way.
+  int16_t headerSidePadding = 6;
+  uint8_t headerUnderline = 1;  // bottom rule thickness; 0 = none
+  bool headerCentered = false;
   TextStyle smallText{};
   TextStyle bodyText{};
   TextStyle titleText{};

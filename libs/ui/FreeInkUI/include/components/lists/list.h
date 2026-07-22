@@ -40,7 +40,10 @@ struct ListProps {
   TextStyle subtitleText{};
   TextStyle valueText{};
   StyleSet rowStyles{};
-  int16_t rowHeight = 36;
+  // 0 = inherit: Screen::list() substitutes the theme's rowHeight, raw
+  // list() falls back to 36. A literal default here would silently override
+  // the theme for every Screen::list() caller that leaves it unset.
+  int16_t rowHeight = 0;
   int16_t rowGap = 0;
   uint8_t rowRadius = 0;
   int16_t sidePadding = 8;

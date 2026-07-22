@@ -39,6 +39,11 @@ struct HeaderProps {
   TextStyle trailingText{};
   bool trailingEnabled = true;
   int16_t minTouchSize = 44;
+  // Left/right inset of the text content (title, subtitle, rightLabel). Set
+  // it to the screen's list/content padding so the title's left edge lines up
+  // with the rows below. Leading/trailing buttons stay anchored to the band
+  // edges regardless.
+  int16_t sidePadding = 6;
 };
 
 template <size_t MaxInteractions>
@@ -51,7 +56,7 @@ void header(Frame<MaxInteractions>& frame, Rect rect, const HeaderProps& props) 
                     props.borderEdges);
   }
 
-  Rect content = rect.inset(Insets{0, 6, 0, 6});
+  Rect content = rect.inset(Insets{0, props.sidePadding, 0, props.sidePadding});
 
   const BitmapRef leading = props.leadingIcon ? props.leadingIcon : resolveBitmap(frame.assets(), props.leadingIconAsset);
   if (leading && props.leadingAction != NO_ACTION) {

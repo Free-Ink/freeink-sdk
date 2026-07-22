@@ -1046,14 +1046,23 @@ StyleSet defaultListRowStyles();
 StyleSet defaultKeyStyles();
 StyleSet defaultPopupStyles();
 StyleSet plainStyles(Paint foreground = Paint::solid(Color::Black));
-ThemeTokens defaultThemeTokens(FontId smallFont = 0, FontId bodyFont = 0, FontId titleFont = 0);
+// Canonical font-slot convention: the bundled targets (DisplayTarget,
+// GfxRendererTarget) both expose setFont() slots 0/1/2 as SMALL/BODY/TITLE.
+// The theme-token defaults follow it so an app that binds its target's slots
+// gets correctly-keyed text roles without spelling the mapping out again.
+constexpr FontId FONT_SLOT_SMALL = 0;
+constexpr FontId FONT_SLOT_BODY = 1;
+constexpr FontId FONT_SLOT_TITLE = 2;
+
+ThemeTokens defaultThemeTokens(FontId smallFont = FONT_SLOT_SMALL, FontId bodyFont = FONT_SLOT_BODY,
+                               FontId titleFont = FONT_SLOT_TITLE);
 // defaultThemeTokens with the metric tokens (rowHeight, header/footer heights,
 // touch size, small gap) derived from a font line height, so rows fit a
 // label+subtitle pair with whatever font the target binds. The static 44px
 // defaults assume ~18px UI fonts; the bundled Noto Sans is 34px/line.
 // FreeInkApp calls this with its target's body-font line height.
-ThemeTokens themeTokensForLineHeight(int16_t lineHeight, FontId smallFont = 0, FontId bodyFont = 0,
-                                     FontId titleFont = 0);
+ThemeTokens themeTokensForLineHeight(int16_t lineHeight, FontId smallFont = FONT_SLOT_SMALL,
+                                     FontId bodyFont = FONT_SLOT_BODY, FontId titleFont = FONT_SLOT_TITLE);
 inline int16_t clampI16(const int value, const int minValue = 0, const int maxValue = 32767) {
   if (value < minValue) return static_cast<int16_t>(minValue);
   if (value > maxValue) return static_cast<int16_t>(maxValue);

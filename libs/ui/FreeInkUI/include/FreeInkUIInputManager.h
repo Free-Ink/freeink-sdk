@@ -79,6 +79,16 @@ inline InputSnapshot snapshotFrom(const InputManager& input, const DeviceContext
     snapshot.touchX = p.x;
     snapshot.touchY = p.y;
   }
+  // Raw release the tap classifier didn't report (swipe end, drag-off).
+  // Deliver it off-target: routing dispatches nothing, but the interaction
+  // buffer drops its pressed-element state — otherwise that state survives
+  // the next frame's rebuild and paints a phantom active highlight on
+  // whatever lands in the same slot (e.g. after a swipe pages a list).
+  if (input.hasTouch() && !snapshot.touchReleased && input.wasTouchReleased()) {
+    snapshot.touchReleased = true;
+    snapshot.touchX = -1;
+    snapshot.touchY = -1;
+  }
   return snapshot;
 }
 

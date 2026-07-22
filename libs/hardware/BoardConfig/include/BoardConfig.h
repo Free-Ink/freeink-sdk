@@ -401,6 +401,10 @@ struct TouchConfig {
   bool swapXY = false;
   bool flipX = false;
   bool flipY = false;
+  // Capacitive home key below the panel, reported by the touch controller itself
+  // (GT911 "have key" status bit 0x10, surfaced as InputManager::wasHomeKeyPressed()).
+  // Lets firmware move "exit to home" off a swipe gesture on boards that have one.
+  bool hasHomeKey = false;
 };
 
 // PWM frontlight description (gpio == PIN_UNASSIGNED disables it).
@@ -982,7 +986,7 @@ constexpr BoardProfile XTEINK_X4_PRO = {
     // Reports pixel coords (raw range == panel 800x480); standard datasheet 8-byte frame with
     // track-id in byte 0 (gt911CoordsAtByte0=false). Mount swap/flip pending a unit.
     {TouchController::Gt911, 39, 38, 21, 4, 0x5D, 0, 799, 0, 479, false, 0x14, false, false, PIN_UNASSIGNED,
-     false, false, false},
+     false, false, false, true},  // hasHomeKey: capacitive home pad under the bezel (GT911 key bit)
     // Frontlight: dual warm/cold LEDC PWM with color temperature (NVS lightWarmValue/
     // lightColdValue/lightCT/lightBri/lightOn). Recovered from the OEM LEDC init (IROM
     // 0x420a2130 → helper 0x420a20c0): two channels — GPIO8 on LEDC ch4 and GPIO9 on ch5 —
@@ -1112,6 +1116,7 @@ inline bool isM5PaperV11() { return ACTIVE.board == Board::M5PaperV11; }
 inline bool isSticky() { return ACTIVE.board == Board::Sticky; }
 inline bool isX4Pro() { return ACTIVE.board == Board::XteinkX4Pro; }
 inline bool hasTouch() { return ACTIVE.touch.controller != TouchController::None; }
+inline bool hasHomeKey() { return ACTIVE.touch.hasHomeKey; }
 inline bool hasPwmFrontlight() { return ACTIVE.frontlight.gpio != PIN_UNASSIGNED; }
 inline bool hasAudio() { return ACTIVE.audio.output != AudioOutput::None; }
 

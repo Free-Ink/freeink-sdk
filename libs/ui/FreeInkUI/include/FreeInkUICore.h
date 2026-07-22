@@ -174,6 +174,10 @@ enum InputMask : uint16_t {
   InputSwipeLeft = 1 << 6,
   InputSwipeRight = 1 << 7,
   InputLongPress = 1 << 8,
+  // Continuous positional touch: while a finger that landed on this element is
+  // held, routing dispatches every frame with ActionEvent::dragPermille set to
+  // the horizontal position within the element's rect (sliders, scrubbers).
+  InputDrag = 1 << 9,
   InputDefault = InputTouch | InputFocus | InputConfirm,
 };
 
@@ -741,6 +745,9 @@ class InvertedDrawTarget final : public DrawTarget {
 struct InputSnapshot {
   bool touchReleased = false;
   bool touchPressed = false;
+  // Finger currently down (touchX/Y = its position). Only InputDrag-masked
+  // interactions react; everything else ignores held frames.
+  bool touchHeld = false;
   bool longPress = false;
   bool swipeLeft = false;
   bool swipeRight = false;
@@ -764,6 +771,9 @@ struct ActionEvent {
   // output on hold — e.g. a keyboard digit key emitting its shift symbol —
   // without registering a second ActionId.
   bool longPress = false;
+  // For InputDrag interactions: horizontal touch position within the
+  // element's hit rect, 0..1000 (clamped). -1 for non-positional events.
+  int16_t dragPermille = -1;
 
   explicit operator bool() const { return action != NO_ACTION; }
 };
@@ -838,12 +848,27 @@ class InteractionBuffer final : public InteractionSink {
       active_ = findTouch(input.touchX, input.touchY, InputTouch);
     }
 
+    // Grab semantics: a drag stays bound to the element the finger landed on
+    // even when it wanders off the rect, and follows the x position live.
+    if (input.touchHeld && active_ >= 0 && active_ < static_cast<int16_t>(count_)) {
+      const Interaction& held = interactions_[active_];
+      if (!hasState(held.state, StateDisabled) && acceptsInput(held.inputMask, InputDrag)) {
+        ActionEvent dragged = eventFor(active_);
+        dragged.dragPermille = dragPermilleFor(held.rect, input.touchX);
+        return dragged;
+      }
+    }
+
     if (input.touchReleased) {
       const int16_t idx = findTouch(input.touchX, input.touchY, input.longPress ? InputLongPress : InputTouch);
       active_ = -1;
       if (idx >= 0) {
         ActionEvent released = eventFor(idx);
         released.longPress = input.longPress;
+        // A tap on a draggable element is a jump-to-position: carry the spot.
+        if (acceptsInput(interactions_[idx].inputMask, InputDrag)) {
+          released.dragPermille = dragPermilleFor(interactions_[idx].rect, input.touchX);
+        }
         return released;
       }
     }
@@ -908,6 +933,14 @@ class InteractionBuffer final : public InteractionSink {
   ActionId flashAction_ = NO_ACTION;  // tap-flash target (see setFlash)
   int16_t flashValue_ = 0;
   bool overflowed_ = false;
+
+  static int16_t dragPermilleFor(const Rect& rect, const int16_t x) {
+    if (rect.width <= 1) return 0;
+    int32_t p = (static_cast<int32_t>(x - rect.x) * 1000) / (rect.width - 1);
+    if (p < 0) p = 0;
+    if (p > 1000) p = 1000;
+    return static_cast<int16_t>(p);
+  }
 
   bool focusable(const Interaction& interaction) const {
     return !hasState(interaction.state, StateDisabled) && acceptsInput(interaction.inputMask, InputFocus);

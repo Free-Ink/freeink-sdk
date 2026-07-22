@@ -559,7 +559,9 @@ class FreeInkApp {
       flashSuppressed_ = false;
       dispatch(lastEvent_);
       invalidate(RefreshHint::Fast);
-      if (!flashSuppressed_) {
+      // Positional (drag/scrub) events repaint continuously; a gray tap flash
+      // on top of that is pure noise, so only discrete taps arm it.
+      if (!flashSuppressed_ && lastEvent_.dragPermille < 0) {
         interactions_.setFlash(lastEvent_.action, lastEvent_.value);
         flashTicks_ = 2;
       }

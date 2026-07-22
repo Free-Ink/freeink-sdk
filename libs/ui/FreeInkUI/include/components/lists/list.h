@@ -17,6 +17,10 @@ struct ListItem {
   // Section header row: shorter, non-interactive, drawn with headerText and
   // an underline; never selected or focused.
   bool isHeader = false;
+  // On/off row: a switch (toggle-row visuals) replaces the value slot; the
+  // value string is ignored when set. Activation stays row-level via action.
+  bool toggle = false;
+  bool toggleChecked = false;
 };
 
 enum class SelectionMarker : uint8_t {
@@ -56,6 +60,15 @@ struct ListProps {
   // trailing chevron/value keeps air from the row edge on themes with tight
   // row padding.
   int16_t valueInset = 0;
+  // Switch geometry for ListItem::toggle rows (mirrors ToggleRowProps).
+  // Colors derive from the row style's foreground so the switch stays legible
+  // on inverted (selected) rows.
+  int16_t toggleWidth = 38;
+  int16_t toggleHeight = 18;
+  uint8_t toggleRadius = 0;
+  uint8_t toggleKnobRadius = 0;
+  int16_t toggleKnobInset = 3;
+  uint8_t toggleBorderWidth = 1;
   // Horizontal inset of the ROWS within the rect (the Lyra pill band). The
   // scroll indicator stays at the rect's edge, in the inset margin.
   // -1 = inherit: Screen::list() substitutes the theme's listInset.
@@ -217,13 +230,46 @@ void list(Frame<MaxInteractions>& frame, Rect rect, const ListProps& props) {
     }
 
     int16_t availW = band.width;
-    if (item.value) {
+    if (item.toggle) {
+      const int16_t togW = props.toggleWidth < 18 ? 18 : props.toggleWidth;
+      const int16_t togH = props.toggleHeight < 12 ? 12 : props.toggleHeight;
+      Rect toggleRect{static_cast<int16_t>(band.x + band.width - togW - props.valueInset),
+                      static_cast<int16_t>(band.y + (band.height - togH) / 2), togW, togH};
+      // The switch draws in row-foreground ink with the foreground's opposite
+      // as "paper", so it inverts along with the row when selected.
+      const Paint fg = style.foreground;
+      const bool fgWhite = fg.kind == PaintKind::Solid && fg.color == Color::White;
+      const Paint paper = Paint::solid(fgWhite ? Color::Black : Color::White);
+      const uint8_t trackRadius = static_cast<uint8_t>(props.toggleRadius > togH / 2 ? togH / 2 : props.toggleRadius);
+      frame.target().fill(toggleRect, item.toggleChecked ? fg : paper, trackRadius);
+      if (props.toggleBorderWidth > 0) {
+        frame.target().stroke(toggleRect, fg, props.toggleBorderWidth, trackRadius);
+      }
+      const int16_t knobInset = props.toggleKnobInset < 0 ? 0 : props.toggleKnobInset;
+      const int16_t knobH = static_cast<int16_t>(togH - knobInset * 2);
+      if (knobH > 0) {
+        Rect knob{static_cast<int16_t>(item.toggleChecked ? toggleRect.right() - knobInset - knobH
+                                                          : toggleRect.x + knobInset),
+                  static_cast<int16_t>(toggleRect.y + knobInset), knobH, knobH};
+        const uint8_t knobRadius =
+            static_cast<uint8_t>(props.toggleKnobRadius > knobH / 2 ? knobH / 2 : props.toggleKnobRadius);
+        frame.target().fill(knob, item.toggleChecked ? paper : fg, knobRadius);
+      }
+      availW = static_cast<int16_t>(availW - togW - props.valueInset - props.textGap);
+    } else if (item.value) {
       TextStyle valueStyle = textStyleWithForeground(props.valueText, style.foreground);
       valueStyle.align = TextAlign::Right;
       const int16_t valueW = frame.target().measureText(valueStyle.font, item.value, valueStyle).width;
       Rect valueRect{static_cast<int16_t>(band.x + availW - valueW - props.valueInset), band.y, valueW, band.height};
       frame.target().text(valueRect, item.value, valueStyle);
       availW = static_cast<int16_t>(availW - valueW - props.valueInset - props.textGap);
+    }
+
+    if (labelStyle.maxLines > 1 && (item.toggle || item.value)) {
+      // Wrap-capable labels break to the next line early (60% of the band)
+      // instead of running right up against the trailing slot.
+      const int16_t wrapCap = static_cast<int16_t>((band.width * 3) / 5);
+      if (availW > wrapCap) availW = wrapCap;
     }
 
     if (item.subtitle) {

@@ -45,6 +45,12 @@ struct HeaderProps {
   // edges regardless. -1 = inherit: Screen::header() substitutes the theme's
   // headerSidePadding; raw header() falls back to 6.
   int16_t sidePadding = -1;
+  // Vertical nudge for the leading/trailing action buttons. Text centers on
+  // its font's line cell and the glyphs sit below the cell's geometric
+  // center by the font's internal leading; icons center on their exact pixel
+  // box. Apps can pass ~(lineHeight - ascender) / 2 of the title font so
+  // icon buttons optically align with the title glyphs.
+  int16_t actionOffsetY = 0;
   // Extra width reserved at the content's left/right edge for app-drawn
   // extras (e.g. a battery indicator): text truncates before it, but the
   // band's background and border still span the full rect. Not meant to
@@ -81,7 +87,9 @@ void header(Frame<MaxInteractions>& frame, Rect rect, const HeaderProps& props) 
     back.styles = props.leadingStyles;
     back.radius = props.leadingRadius;
     back.minTouchSize = props.minTouchSize;
-    button(frame, Rect{static_cast<int16_t>(rect.x + 4), static_cast<int16_t>(rect.y + 4), btn, btn}, back);
+    button(frame,
+           Rect{static_cast<int16_t>(rect.x + 4), static_cast<int16_t>(rect.y + 4 + props.actionOffsetY), btn, btn},
+           back);
     // A non-centered title starts after the button; a centered one keeps the
     // full band so it lines up across screens with and without a back button.
     if (!props.centered) {
@@ -111,7 +119,9 @@ void header(Frame<MaxInteractions>& frame, Rect rect, const HeaderProps& props) 
     action.text = props.trailingText;
     action.enabled = props.trailingEnabled;
     action.minTouchSize = props.minTouchSize;
-    button(frame, Rect{static_cast<int16_t>(rect.right() - 4 - btnW), static_cast<int16_t>(rect.y + 4), btnW, btnH},
+    button(frame,
+           Rect{static_cast<int16_t>(rect.right() - 4 - btnW), static_cast<int16_t>(rect.y + 4 + props.actionOffsetY),
+                btnW, btnH},
            action);
     if (!props.centered) {
       content.width = static_cast<int16_t>(content.width - btnW - 8);

@@ -240,9 +240,10 @@ class Screen {
     if (themed.sidePadding < 0) themed.sidePadding = theme_.listSidePadding;
     if (themed.scrollIndicatorWidth < 0) themed.scrollIndicatorWidth = theme_.listScrollWidth;
     if (themed.scrollIndicatorSide == 0xFF) themed.scrollIndicatorSide = theme_.listScrollSide;
-    Rect rect = height > 0 ? take(anchor, height) : content_;
-    if (theme_.listInset > 0) rect = rect.inset(Insets{0, theme_.listInset, 0, theme_.listInset});
-    ui::list(frame_, rect, themed);
+    // Rows inset within the band (Lyra pill); the scroll indicator stays at
+    // the band's true edge.
+    if (themed.rowInset < 0) themed.rowInset = theme_.listInset;
+    ui::list(frame_, height > 0 ? take(anchor, height) : content_, themed);
   }
 
   void checkbox(const CheckboxProps& props, LayoutAnchor anchor = LayoutAnchor::Top) {

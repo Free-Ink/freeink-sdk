@@ -473,7 +473,7 @@ struct ThemeTokens {
   int16_t listRowGap = 0;
   uint8_t listRowRadius = 0;
   int16_t listSidePadding = 8;  // text inset within a row
-  int16_t listInset = 0;        // horizontal inset of the whole list band
+  int16_t listInset = 0;        // horizontal inset of the rows (scroll indicator stays at the band edge)
   SelectionStyle listSelectionStyle = SelectionStyle::InvertFill;
   int16_t listScrollWidth = 3;  // scroll indicator thickness
   uint8_t listScrollSide = 0;   // 0 = right edge, 1 = left edge

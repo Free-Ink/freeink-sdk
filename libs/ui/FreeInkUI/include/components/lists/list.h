@@ -56,6 +56,10 @@ struct ListProps {
   // trailing chevron/value keeps air from the row edge on themes with tight
   // row padding.
   int16_t valueInset = 0;
+  // Horizontal inset of the ROWS within the rect (the Lyra pill band). The
+  // scroll indicator stays at the rect's edge, in the inset margin.
+  // -1 = inherit: Screen::list() substitutes the theme's listInset.
+  int16_t rowInset = -1;
   // Inherit sentinels like rowGap/sidePadding: width -1 = theme (raw list()
   // falls back to 3); side 0xFF = theme (raw falls back to right).
   int16_t scrollIndicatorWidth = -1;
@@ -98,6 +102,7 @@ void list(Frame<MaxInteractions>& frame, Rect rect, const ListProps& props) {
   const int16_t sidePad = props.sidePadding < 0 ? 8 : props.sidePadding;
   const int16_t scrollW = props.scrollIndicatorWidth < 0 ? 3 : props.scrollIndicatorWidth;
   const bool scrollLeft = props.scrollIndicatorSide == 1;
+  const int16_t rowInset = props.rowInset < 0 ? 0 : props.rowInset;
   const uint16_t visible = listVisibleRows(rect, rowH, rowGap);
   const bool overflows = props.count > visible;
   uint16_t top = props.topIndex;
@@ -107,9 +112,19 @@ void list(Frame<MaxInteractions>& frame, Rect rect, const ListProps& props) {
   const uint16_t end = overflows ? static_cast<uint16_t>(top + visible) : props.count;
 
   Rect rowArea = rect;
+  if (rowInset > 0) {
+    rowArea.x = static_cast<int16_t>(rowArea.x + rowInset);
+    rowArea.width = static_cast<int16_t>(rowArea.width - rowInset * 2);
+  }
   if (props.scrollIndicator && overflows && scrollW > 0) {
-    rowArea.width = static_cast<int16_t>(rowArea.width - scrollW - 2);
-    if (scrollLeft) rowArea.x = static_cast<int16_t>(rowArea.x + scrollW + 2);
+    // Rows only give up width when the row inset margin doesn't already
+    // clear the track plus 2px of air.
+    const int16_t needed = static_cast<int16_t>(scrollW + 2);
+    if (rowInset < needed) {
+      const int16_t cut = static_cast<int16_t>(needed - rowInset);
+      rowArea.width = static_cast<int16_t>(rowArea.width - cut);
+      if (scrollLeft) rowArea.x = static_cast<int16_t>(rowArea.x + cut);
+    }
     Rect track{scrollLeft ? rect.x : static_cast<int16_t>(rect.right() - scrollW), rect.y, scrollW, rect.height};
     frame.target().fill(track, Paint::dither(Color::LightGray));
     int16_t thumbH = static_cast<int16_t>((static_cast<int32_t>(rect.height) * visible) / props.count);

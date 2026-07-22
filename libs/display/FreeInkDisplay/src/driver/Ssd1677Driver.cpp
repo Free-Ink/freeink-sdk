@@ -96,44 +96,6 @@ static const Ssd1677Config& ssd1677StickyConfig() {
   return cfg;
 }
 
-// Xteink X4 Pro. Same SSD1677 controller/resolution/RAM polarity as the X4, but
-// its GDEQ0426T82-class panel needs a different fast waveform: the X4 default's
-// fast 0x22=0xFC does not select this panel's built-in waveform, so the screen
-// stays blank. Values below are recovered from the OEM firmware; full/fast run
-// the panel's OTP waveform (no custom LUT, so grayLut reuses the X4 grayscale
-// LUT like the default). The key value is fast=0xC7 — note it differs from the
-// X4 default's 0xFC and the Sticky's 0xFF. The OEM has only full/fast/partial
-// (halfSeqOverride 0 falls back to full) and does not re-issue the border for
-// full/fast (borderWaveform* left 0 = keep the 0x80 init). Tune here, never in
-// the driver body.
-static const Ssd1677Config& ssd1677X4ProConfig() {
-  static const Ssd1677Config cfg = {
-      {0xAE, 0xC7, 0xC3, 0xC0, 0x80},  // booster soft-start (OEM, same as default)
-      DRIVER_OUTPUT_SCAN,
-      0x80,  // borderWaveformInit: OEM init border
-      0x5A,  // halfRefreshTemp (same as default)
-      lut_grayscale,  // full/fast use the OTP waveform; reuse the X4 grayscale LUT
-      // Both full and fast display with the loaded custom LUT (0xC7, no OTP-reload
-      // bit 0x10). 0xF7 would reload the OTP waveform — which doesn't develop this
-      // module and would clobber the loaded LUT — so full uses 0xC7 too.
-      0xC7,  // fullSeqOverride: display with the loaded bwLut
-      0xC7,  // fastSeqOverride: display with the loaded bwLut
-      0x00,  // halfSeqOverride: use fullSeqOverride (OEM has only full/fast/partial)
-      0x00,  // borderWaveformFull: keep the 0x80 init (OEM does not re-issue)
-      0x00,  // borderWaveformFast: keep the 0x80 init (OEM does not re-issue)
-      0x00,  // borderWaveformHalf: use borderWaveformFull
-      0x00,  // borderWaveformGray: leave the register untouched
-      false,  // grayPowerUpFirst: X4-family keeps the panel powered between fast refreshes
-      // Drive voltages (OEM LUT-path values): without these the OTP waveform runs
-      // but no pixels switch (a 403 ms full refresh developed nothing on the bench).
-      0x17,                  // gateVoltage (0x03 VGH)
-      {0x41, 0xA8, 0x32},    // sourceVoltage (0x04 VSH1/VSH2/VSL)
-      0x30,                  // vcom (0x2C)
-      lut_x4pro,             // bwLut: OEM 105-byte B/W waveform (this panel has no usable OTP)
-  };
-  return cfg;
-}
-
 // ── Reusable per-board waveform shortcuts ────────────────────────────────────
 // Opt-in optimizations a board can layer onto a base Ssd1677Config when its
 // specific panel is known to tolerate them. Each is a pure copy-and-tweak so a
@@ -217,35 +179,6 @@ void Ssd1677Driver::initController(EpdBus& bus) {
 
   bus.cmd(CMD_BORDER_WAVEFORM);
   bus.data(_cfg.borderWaveformInit);
-
-  // Custom B/W waveform LUT (CMD 0x32) for panels whose built-in OTP waveform
-  // doesn't develop an image (e.g. X4 Pro). Loaded once; refreshes then display
-  // with it via 0x22=0xC7 (no OTP reload). The voltage block below follows the LUT,
-  // matching the OEM order. nullptr on OTP-capable panels (X4/Sticky) = skip.
-  if (_cfg.bwLut != nullptr) {
-    bus.cmd(CMD_WRITE_LUT);
-    for (uint16_t i = 0; i < 105; i++) {
-      bus.data(pgm_read_byte(&_cfg.bwLut[i]));
-    }
-  }
-
-  // Explicit drive voltages for the B/W OTP-waveform path. Panels whose OTP
-  // defaults don't develop an image (e.g. X4 Pro) supply their module voltages
-  // here; the controller retains them across refreshes. All-zero = keep OTP.
-  if (_cfg.gateVoltage != 0) {
-    bus.cmd(CMD_GATE_VOLTAGE);
-    bus.data(_cfg.gateVoltage);
-  }
-  if (_cfg.sourceVoltage[0] != 0 || _cfg.sourceVoltage[1] != 0 || _cfg.sourceVoltage[2] != 0) {
-    bus.cmd(CMD_SOURCE_VOLTAGE);
-    bus.data(_cfg.sourceVoltage[0]);
-    bus.data(_cfg.sourceVoltage[1]);
-    bus.data(_cfg.sourceVoltage[2]);
-  }
-  if (_cfg.vcom != 0) {
-    bus.cmd(CMD_WRITE_VCOM);
-    bus.data(_cfg.vcom);
-  }
 
   setRamArea(bus, 0, 0, _w, _h);
 
@@ -684,10 +617,8 @@ static const Ssd1677Config& ssd1677ActiveConfig() { return FREEINK_SSD1677_CONFI
 static const Ssd1677Config& ssd1677ActiveConfig() {
   switch (BoardConfig::ACTIVE.board) {
     case BoardConfig::Board::Sticky: return ssd1677StickyConfig();
-    // EXPERIMENT: run X4 Pro on the exact known-good X4 config (OTP 0xF7/0xFC,
-    // 0xC0 borders, 0xD7 half) instead of the RE-derived tweaks — same controller,
-    // same panel class; the tweaks may be what's blanking it. Revert to
-    // ssd1677X4ProConfig() if this doesn't paint.
+    // X4 Pro runs on the stock X4/GDEQ0426T82 config — same controller and panel
+    // class, confirmed painting on hardware. No custom LUT or drive voltages needed.
     case BoardConfig::Board::XteinkX4Pro: return ssd1677DefaultConfig();
     // X4 layers the fast-DU shortcut on the default only when the build has
     // opted in (see ssd1677X4Config); stock 0xFC parity otherwise.

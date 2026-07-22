@@ -53,21 +53,6 @@ struct Ssd1677Config {
   // collapsing toward B/W). The X4 keeps the panel powered between fast
   // refreshes, so it never needs this and keeps stock behavior.
   bool grayPowerUpFirst = false;
-  // Explicit drive voltages for the B/W (OTP-waveform) path. Some panel modules
-  // (e.g. the X4 Pro) don't develop an image on the OTP waveform with the
-  // controller's default voltages — a full refresh runs the waveform but no
-  // pixels switch. Set these to the module's values (recovered from the OEM's LUT
-  // path) and initController writes them once; they persist across refreshes.
-  // 0 / all-zero = skip (keep the controller/OTP default). The custom grayscale
-  // LUT path sets its own voltages from the LUT tail and ignores these.
-  uint8_t gateVoltage = 0;               // CMD 0x03 (VGH)
-  uint8_t sourceVoltage[3] = {0, 0, 0};  // CMD 0x04 (VSH1, VSH2, VSL)
-  uint8_t vcom = 0;                      // CMD 0x2C (VCOM)
-  // 105-byte B/W waveform LUT (CMD 0x32) for panels whose built-in OTP waveform
-  // doesn't develop an image (e.g. X4 Pro). When set, initController loads it once
-  // and the seqOverride 0x22 values must NOT include the OTP-reload bit (0x10) —
-  // use 0xC7 ("display with the loaded LUT"). nullptr = use the panel's OTP waveform.
-  const unsigned char* bwLut = nullptr;
 };
 
 // Standard config (Xteink X4 / GDEQ0426T82). Panel mounting (mirror/180°) is NOT

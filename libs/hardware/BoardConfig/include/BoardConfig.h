@@ -1029,7 +1029,7 @@ constexpr BoardProfile XTEINK_X4_PRO = {
     // flipX/flipY pending a corner-tap test. {ctrl,sda,scl,irq,rst,addr,rawMinX,rawMaxX,rawMinY,rawMaxY,
     //  synthConfirm,altAddr,irqActiveLow,coordsAtByte0,powerEnable,swapXY,flipX,flipY,hasHomeKey,pwrActiveHigh}
     {TouchController::Gt911, 39, 38, 10, 4, 0x5D, 0, 799, 0, 479, false, 0x14, false, true, 2,
-     true, false, false, true, false},  // powerEnable=GPIO2 active-LOW; hasHomeKey (GT911 key bit, works)
+     true, false, true, true, false},  // swapXY + flipY (confirmed by corner-tap); powerEnable=GPIO2 active-LOW; hasHomeKey
     // Frontlight: dual warm/cold LEDC PWM with color temperature (NVS lightWarmValue/
     // lightColdValue/lightCT/lightBri/lightOn). Recovered from the OEM LEDC init (IROM
     // 0x420a2130 → helper 0x420a20c0): two channels — GPIO8 on LEDC ch4 and GPIO9 on ch5 —

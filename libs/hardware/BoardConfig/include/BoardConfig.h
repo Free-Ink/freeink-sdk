@@ -331,6 +331,11 @@ struct SdPins {
   int8_t powerEnable;
   bool separateSpi;
   uint32_t spiHz;  // 0 = use the SD manager default (40 MHz)
+  // Polarity of powerEnable. true (default) = active-high (drive HIGH to power the
+  // card, LOW to cut it) as on most boards. false = active-LOW enable (e.g. X4 Pro's
+  // GPIO5, which gates the card while held LOW); the sleep path must then drive it
+  // HIGH to power the card down. Defaulted so existing initializers stay valid.
+  bool powerActiveHigh = true;
 };
 
 // 4-bit SDMMC/SDIO wiring (e.g. de-link). SdFat can't drive SDIO, so a board with
@@ -994,8 +999,9 @@ constexpr BoardProfile XTEINK_X4_PRO = {
     // before each mount attempt and runs the card with it held LOW (matching the OEM mountSD;
     // holding it HIGH breaks every block read with 0x107). The bus pins (SCLK41 MISO40 MOSI42
     // CS45) are the SPI view of the same slot and are unused now that busWidth!=0 routes through
-    // the SDMMC block device.
-    {41, 40, 42, 45, 5, true, 0},
+    // the SDMMC block device. Trailing false = powerEnable is active-LOW, so the sleep path drives
+    // GPIO5 HIGH to power the card down.
+    {41, 40, 42, 45, 5, true, 0, false},
     // Digital buttons, confirmed on hardware (watch-up edge test): two physical nav keys —
     // Left=GPIO0, Right=GPIO7 — plus Power=GPIO3, all active-LOW (INPUT_PULLUP, no rail needed).
     // The two keys map to the reader's page pair (Up=prev / Down=next), so Left→up, Right→down;
@@ -1195,7 +1201,9 @@ inline void releaseSdRail() {
   if (ACTIVE.sd.powerEnable >= 0) {
     gpio_hold_dis(static_cast<gpio_num_t>(ACTIVE.sd.powerEnable));
     pinMode(ACTIVE.sd.powerEnable, OUTPUT);
-    digitalWrite(ACTIVE.sd.powerEnable, HIGH);
+    // Drive the enable to its ON level: HIGH for active-high rails, LOW for the
+    // active-low ones (X4 Pro's GPIO5 powers the card while held LOW).
+    digitalWrite(ACTIVE.sd.powerEnable, ACTIVE.sd.powerActiveHigh ? HIGH : LOW);
   }
   if (ACTIVE.sd.cs >= 0) {
     pinMode(ACTIVE.sd.cs, OUTPUT);

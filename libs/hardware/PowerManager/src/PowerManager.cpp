@@ -73,9 +73,11 @@ void holdRailOff(int8_t pin, uint8_t offLevel) {
 void PowerManager::powerDownRailsForSleep() {
   const auto& b = BoardConfig::ACTIVE;
   holdRailOff(b.display.powerEnable, LOW);
-  holdRailOff(b.sd.powerEnable, LOW);
+  // SD enable OFF = the inactive level: LOW for active-high enables, HIGH for the
+  // active-low ones (e.g. X4 Pro's GPIO5, which powers the card while held LOW).
+  holdRailOff(b.sd.powerEnable, b.sd.powerActiveHigh ? LOW : HIGH);
   holdRailOff(b.touch.powerEnable, LOW);
-  // The mic enable is the only rail with a polarity flag; OFF is the inactive level.
+  // The mic enable also carries a polarity flag; OFF is the inactive level.
   holdRailOff(b.mic.enable, b.mic.enableActiveHigh ? LOW : HIGH);
 }
 

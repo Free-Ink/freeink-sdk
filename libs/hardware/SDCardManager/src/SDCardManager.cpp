@@ -77,7 +77,8 @@ bool SDCardManager::begin() {
   if (BoardConfig::ACTIVE.sd.powerEnable >= 0) {
     gpio_hold_dis(static_cast<gpio_num_t>(BoardConfig::ACTIVE.sd.powerEnable));
     pinMode(BoardConfig::ACTIVE.sd.powerEnable, OUTPUT);
-    digitalWrite(BoardConfig::ACTIVE.sd.powerEnable, HIGH);
+    // ON level: HIGH for active-high enables, LOW for active-low ones.
+    digitalWrite(BoardConfig::ACTIVE.sd.powerEnable, BoardConfig::ACTIVE.sd.powerActiveHigh ? HIGH : LOW);
     delay(10);
   }
 

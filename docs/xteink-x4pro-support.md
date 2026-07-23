@@ -103,28 +103,46 @@ live controller:
 |---|---|
 | I²C SDA | 39 |
 | I²C SCL | 38 |
-| INT | 4 |
-| RST | 10 |
+| INT | **10** |
+| RST | **4** |
+| Power enable | **GPIO2 (active-LOW)** |
 
-Address 0x5D (alt 0x14), 400 kHz. **INT/RST/address, the reset dance, and the
-coordinate layout were recovered from app1's `XTEink::GT911Driver` via Ghidra** (the
-GT911 only appears on the bus *after* its INT/RST reset sequence, which is why an
-idle i2c scan didn't see it):
+Address 0x5D (alt 0x14), 400 kHz, on the shared bus with the RTC (0x51) and gauge
+(0x63). Recovered from app1's `XTEink::GT911Driver` via Ghidra and confirmed on
+hardware with an interactive probe. **Bringing this panel up took three non-obvious
+pieces, each of which had the touch controller completely silent until fixed:**
 
-- **Reset dance:** INT out LOW, RST out LOW → 2 ms → INT HIGH → 8 ms → release RST
-  (INPUT, pulled) → 60 ms. INT level as RST rises selects the address (LOW → 0x5D).
+- **Power rail — GPIO2 driven LOW.** The GT911 sits on a rail gated by GPIO2, and
+  the OEM drives **GPIO2 LOW** (with GPIO1 HIGH) at boot. Until GPIO2 is pulled low
+  the controller is unpowered and never ACKs — an idle i2c scan shows only the RTC
+  and gauge. Modeled as an **active-low touch power-enable** (`powerEnableActiveHigh
+  = false`). Driving GPIO2 *high* (the naive "enable") keeps it dark.
+- **Pins — RST=GPIO4, INT=GPIO10.** The reset line that is level-toggled low→high is
+  GPIO4; the address-select line (driven, then floated to input) is GPIO10. (An
+  earlier RE had these two reversed, which is why the first hardware attempt failed.)
+- **Config — self-loaded, no host upload.** Like the Sticky board (same controller),
+  the GT911 loads its own internal config on the standard reset dance; the SDK never
+  uploads a config table. Earlier the config registers read back all-zero and the
+  panel didn't scan — that was purely a **too-short reset** not triggering the
+  internal config load. The SDK's reset (10 ms / 10 ms / 50 ms / 50 ms, INT→INPUT)
+  makes it self-load and scan. (Confirmed there is no GT911 config table anywhere in
+  the OEM dump — app0, app1, spiffs, or nvs — so the OEM relies on self-load too.)
+
+Once powered and reset:
+
+- **Reset dance:** RST LOW, INT = select-level, 2 ms → RST HIGH, 8 ms → INT to
+  INPUT+pull, 60 ms, then probe. INT level as RST rises selects the address (LOW → 0x5D).
 - **Coordinates:** status at `0x814E` (bit7 ready, low nibble count); points read
-  from `0x8150`, 8 bytes each, **X-lo at byte 0** → `gt911CoordsAtByte0 = true`
-  (track-id sits at `0x814F`, before the read window). X-lo/X-hi/Y-lo/Y-hi little-endian.
-- **Orientation:** the GT911 is mounted **portrait** — it reports **X: 0–480,
-  Y: 0–800** on the 800×480 landscape panel — so the profile sets **`swapXY = true`**
-  to rotate the digitizer into the panel frame. `flipX`/`flipY` are left off (firmware
-  applies none) pending a hardware corner-tap test.
+  from `0x8150`, 8 bytes each, **X-lo at byte 0** → `gt911CoordsAtByte0 = true`.
+- **Orientation:** the GT911 is mounted **portrait** — reports **X: 0–480, Y: 0–800**
+  on the 800×480 landscape panel — so the profile sets **`swapXY = true`**.
+  `flipX`/`flipY` pending a corner-tap test.
 
-The **Home pad** is a GT911 capacitive key bit (status `0x10`), not a GPIO.
+The **Home pad** is a GT911 capacitive key bit (status `0x10`), not a GPIO —
+RE-confirmed the OEM keys off exactly `0x814E & 0x10`, so our handling matches.
 
-Prior notes had INT=21 (app0, the wrong variant) then INT=10/RST=4 with
-`gt911CoordsAtByte0 = false` — all corrected above.
+Prior notes had INT=21 (app0), then INT=4/RST=10 — both wrong; the confirmed wiring
+is **INT=10, RST=4, power=GPIO2-low** above.
 
 ## Input — digital buttons + capacitive Home
 
@@ -167,16 +185,16 @@ The board-init function fills a per-pin config table (mode + intended level)
 consumed by an `applyPinConfig` helper, which only issues `digitalWrite` for
 OUTPUT pins.
 
-- **GPIO1 (Corrected — role unconfirmed).** Earlier RE claimed GPIO1 was the
-  **master peripheral-rail enable**, driven HIGH first in board-init. On the
-  bench, **driving GPIO1 high did not affect the display or SD**, so this strong
-  claim is softened — its exact role is **unconfirmed**. It is still carried in
-  the profile as `power.latch0` and asserted early to match the OEM, but it is
-  *not* demonstrably a master rail.
-- **GPIO2 (Corrected — role unconfirmed).** The dump drives it OUTPUT LOW then
-  HIGH during the power-up/wake routine (@ ~`0x4201029d` inside fn
-  `0x42010258`), but **driving it high on the bench did not affect display or
-  SD**. Role unconfirmed; not modeled.
+- **GPIO1 (peripheral rail — held HIGH).** Driven OUTPUT HIGH first in board-init
+  and held. It does not visibly affect display or SD on the bench, but it **is**
+  required (with GPIO2 low) for the **touch** rail: the GT911 only powers up with
+  GPIO1 HIGH. Carried as `power.latch0` and asserted early to match the OEM.
+- **GPIO2 (Confirmed — touch power-enable, ACTIVE-LOW).** The OEM drives it OUTPUT
+  **LOW** at boot, and that is what powers the **GT911 touch controller**: with GPIO2
+  high (or floating) the GT911 is unpowered and silent on the i2c bus; pulling it low
+  brings it up at 0x5D. Modeled as the touch power-enable (active-low). See
+  [Touch](#touch--gt911). (Earlier notes had its role unconfirmed and mistakenly
+  drove it high.)
 - **GPIO5 (Confirmed — SD power-enable, ACTIVE-LOW).** It gates the SD card's data
   path. The OEM `mountSD` pulses it HIGH→LOW before each mount attempt and runs the
   card with it held **LOW**; holding it HIGH breaks every block read (`0x107`). See
@@ -296,11 +314,18 @@ wrong order). The corrected, hardware-confirmed **display pinout `SCLK=12 / MOSI
 [Display](#display--ssd1677-800480)). Display, buttons (0/7/3), frontlight (8/9),
 RTC (0x51), and SDMMC (41/42/40 + GPIO5) are all confirmed working on hardware.
 
-## Pending — confirm on hardware
+## Status — working on hardware
 
-- **Touch orientation** — INT/RST/addr/coords are RE'd and implemented (`swapXY`);
-  a corner-tap test still needs to confirm whether `flipX`/`flipY` are required.
-- **Battery** — CW2017 gauge is wired in (`GaugeType::Cw2017`, BATINFO upload +
-  reg 0x04 SoC); confirm it reports a live percentage on hardware. The VBUS /
-  USB-detect pin is not conclusively identified.
+**All peripherals are up:** display, buttons, frontlight, RTC, SDMMC, **GT911 touch +
+capacitive Home key**, and the **CW2017 battery percentage**. Touch wiring in the SDK
+profile: `touch.powerEnable = GPIO2` (active-low, `powerEnableActiveHigh = false`),
+INT=10/RST=4, `swapXY = true`, `gt911CoordsAtByte0 = true`, no config upload.
+
+## Pending — minor / optional
+
+- **Touch flip** — `flipX`/`flipY` still to confirm with a corner-tap test (taps
+  register and navigate; only the axis mirroring may need a tweak).
+- **Deep-sleep power** — SD/touch enables are active-low on this board; the sleep path
+  drives them to their off level by polarity (implemented) — worth a power-draw check.
+- **USB-MSC** ("USB Transfer" — SD over USB) is present in stock firmware but not ported.
 - **Panel orientation** (ships `NO_FLIP`; native SSD1677 scan is 800×480 landscape).

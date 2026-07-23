@@ -740,7 +740,8 @@ void InputManager::beginGt911() {
   if (t.powerEnable >= 0) {
     gpio_hold_dis(static_cast<gpio_num_t>(t.powerEnable));
     pinMode(t.powerEnable, OUTPUT);
-    digitalWrite(t.powerEnable, HIGH);
+    // ON level: HIGH for active-high enables (Sticky), LOW for active-low (X4 Pro GPIO2).
+    digitalWrite(t.powerEnable, t.powerEnableActiveHigh ? HIGH : LOW);
     delay(50);
   }
 

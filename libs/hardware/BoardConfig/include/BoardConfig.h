@@ -403,9 +403,10 @@ struct TouchConfig {
   // coords start at byte 1); true = coords start at byte 0 (no track-id), as seen
   // on M5Paper's GT911 which boots without a reset/config dance. Ignored (CHSC6x).
   bool gt911CoordsAtByte0;
-  // Touch power-rail enable (active-high). PIN_UNASSIGNED on boards whose touch
-  // controller is always powered; driven HIGH before the reset/probe on boards
-  // that gate it (e.g. Sticky's TOUCH_EN). Default keeps existing initializers valid.
+  // Touch power-rail enable. PIN_UNASSIGNED on boards whose touch controller is always
+  // powered; otherwise driven to its ON level before the reset/probe on boards that
+  // gate it (e.g. Sticky's active-high TOUCH_EN, or the X4 Pro's active-low GPIO2).
+  // Default keeps existing initializers valid.
   int8_t powerEnable = PIN_UNASSIGNED;
   // Touch-to-panel mounting correction, applied to the raw coords so the touch
   // frame aligns with the display's NATIVE (panel) frame before orientation
@@ -420,6 +421,10 @@ struct TouchConfig {
   // (GT911 "have key" status bit 0x10, surfaced as InputManager::wasHomeKeyPressed()).
   // Lets firmware move "exit to home" off a swipe gesture on boards that have one.
   bool hasHomeKey = false;
+  // Polarity of powerEnable. true (default) = active-high (drive HIGH to power the
+  // controller). false = active-LOW (drive LOW to power it, e.g. X4 Pro's GPIO2). The
+  // reset path drives the ON level; the sleep path drives the OFF level.
+  bool powerEnableActiveHigh = true;
 };
 
 // PWM frontlight description (gpio == PIN_UNASSIGNED disables it).
@@ -1013,16 +1018,18 @@ constexpr BoardProfile XTEINK_X4_PRO = {
     PIN_UNASSIGNED,  // batteryChargeStatus
     2.0f,
     PIN_UNASSIGNED,  // usbDetect: USB-MSC/VBUS-detect present; GPIO10 is a candidate (unconfirmed)
-    // GT911 touch on the SHARED I2C bus SDA39/SCL38 (with RTC 0x51 + CW2017 gauge 0x63),
-    // INT=GPIO4 RST=GPIO10, addr 0x5D (INT held LOW at reset; alt 0x14), 400 kHz — INT/RST/addr
-    // and the coord layout confirmed from app1's XTEink::GT911Driver ctor + reset routine via
-    // Ghidra. The GT911 is mounted PORTRAIT (reports X:0..480, Y:0..800) on the 800x480 landscape
-    // panel, so swapXY=true rotates the digitizer to the panel frame; rawMax describe the
-    // post-swap 800x480 panel axes. Coords start at byte 0 of the 0x8150 read (X-lo at 0x8150,
-    // track-id is at 0x814F, before the window) → gt911CoordsAtByte0=true. flipX/flipY pending a
-    // hardware tap test (firmware applies none). {ctrl,sda,scl,irq,rst,addr,rawMinX,rawMaxX,...}
-    {TouchController::Gt911, 39, 38, 4, 10, 0x5D, 0, 799, 0, 479, false, 0x14, false, true, PIN_UNASSIGNED,
-     true, false, false, true},  // hasHomeKey: capacitive home pad under the bezel (GT911 key bit)
+    // GT911 touch on the SHARED I2C bus SDA39/SCL38 (with RTC 0x51 + CW2017 gauge 0x63), addr 0x5D
+    // (alt 0x14), 400 kHz. CONFIRMED ON HARDWARE: **INT=GPIO10, RST=GPIO4** (a first RE had these
+    // reversed), and the controller is on an **active-LOW power rail: GPIO2** (powerEnable=2,
+    // powerEnableActiveHigh=false) — the GT911 stays unpowered/silent until GPIO2 is driven LOW
+    // (GPIO1, power.latch0, must also be HIGH). Like the Sticky panel, the GT911 SELF-LOADS its
+    // internal config on the standard reset dance — no host config upload needed. Mounted PORTRAIT
+    // (reports X:0..480, Y:0..800) on the 800x480 landscape panel → swapXY=true; rawMax describe the
+    // post-swap panel axes. Coords start at byte 0 of the 0x8150 read → gt911CoordsAtByte0=true.
+    // flipX/flipY pending a corner-tap test. {ctrl,sda,scl,irq,rst,addr,rawMinX,rawMaxX,rawMinY,rawMaxY,
+    //  synthConfirm,altAddr,irqActiveLow,coordsAtByte0,powerEnable,swapXY,flipX,flipY,hasHomeKey,pwrActiveHigh}
+    {TouchController::Gt911, 39, 38, 10, 4, 0x5D, 0, 799, 0, 479, false, 0x14, false, true, 2,
+     true, false, false, true, false},  // powerEnable=GPIO2 active-LOW; hasHomeKey (GT911 key bit, works)
     // Frontlight: dual warm/cold LEDC PWM with color temperature (NVS lightWarmValue/
     // lightColdValue/lightCT/lightBri/lightOn). Recovered from the OEM LEDC init (IROM
     // 0x420a2130 → helper 0x420a20c0): two channels — GPIO8 on LEDC ch4 and GPIO9 on ch5 —

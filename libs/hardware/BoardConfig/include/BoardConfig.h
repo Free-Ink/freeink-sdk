@@ -996,8 +996,9 @@ constexpr BoardProfile XTEINK_X4_PRO = {
     // needed. GPIO1 also triggers a refresh when toggled (likely a panel power
     // enable), but the panel works without driving it, so powerEnable stays unset.
     {12, 11, 13, 18, 14, 6, PIN_UNASSIGNED},
-    5000000,  // displaySpiHz: the OEM clocks the panel at 5 MHz (SPISettings 0x4C4B40). Conservative
-              // vs the SSD1677 datasheet write max; raise once validated for faster refresh on hardware.
+    20000000,  // displaySpiHz: 20 MHz, matching the X4's default. The OEM clocks the panel at only 5 MHz
+               // (SPISettings 0x4C4B40), but the SSD1677 handles far more (X4 runs 20, de-link 40), so 20 MHz
+               // is well in spec and gives noticeably faster RAM writes. Drop back to 5 MHz if artifacts appear.
     // SD is native SDMMC (see the sdmmc field below) — the card is silent to SPI-mode CMD0 on
     // hardware. This SPI SdPins entry is retained only for its powerEnable=GPIO5, the SD enable
     // used by the SDMMC mount path. GPIO5 is ACTIVE-LOW: SdmmcBlockDevice pulses it HIGH→LOW

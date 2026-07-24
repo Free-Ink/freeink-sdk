@@ -12,10 +12,13 @@ SDCardManager SDCardManager::instance;
 SDCardManager::SDCardManager() {}
 
 bool SDCardManager::begin() {
-  // Native 4-bit SDMMC: SdFat can't drive SDIO, so mount a plain FsVolume on the
-  // esp-idf SDMMC block device. FsFile from this volume is the same type the SPI
-  // path returns, so the public API and consumers are unchanged.
+  // Native SDMMC: SdFat can't drive SDIO, so mount a plain FsVolume on the esp-idf
+  // SDMMC block device. FsFile from this volume is the same type the SPI path
+  // returns, so the public API and consumers are unchanged.
   if (_powerHook) _powerHook();  // board brings up its SD rail (e.g. PMIC) if needed
+  // The SD power-enable (sd.powerEnable) is driven by SdmmcBlockDevice itself, which
+  // reproduces the OEM's timed HIGH->LOW power-cycle around each mount attempt — do
+  // NOT assert it here (holding it HIGH going in breaks that reset sequence).
   if (!_dev) _dev = new freeink::SdmmcBlockDevice();
   if (!_dev->begin(BoardConfig::ACTIVE.sdmmc)) {
     if (Serial) Serial.printf("[%lu] [SD] SDMMC init failed\n", millis());
@@ -41,6 +44,17 @@ bool SDCardManager::begin() {
 SDCardManager::SDCardManager() : sd() {}
 
 bool SDCardManager::begin() {
+  // Profiles whose SD CS is not yet known leave it unassigned so the card stays
+  // dormant — bail out before any pin is touched, or SdFat drives "pin 255" and
+  // floods the log. (Native-SDMMC boards like the X4 Pro take the #if branch above.)
+  if (BoardConfig::ACTIVE.sd.cs < 0) {
+    if (Serial) Serial.printf("[%lu] [SD] SD disabled: CS unassigned in the %s profile\n", millis(), BoardConfig::ACTIVE.name);
+    initialized = false;
+    cachedTotalBytes = 0;
+    cachedUsedBytesValid = false;
+    return false;
+  }
+
   // Pins/clock come from the runtime-active profile (board-overridable via
   // BoardConfig::ACTIVE.sd.spiHz; 0 = default). Read after device selection.
   const uint8_t SD_CS = BoardConfig::ACTIVE.sd.cs;
@@ -63,7 +77,8 @@ bool SDCardManager::begin() {
   if (BoardConfig::ACTIVE.sd.powerEnable >= 0) {
     gpio_hold_dis(static_cast<gpio_num_t>(BoardConfig::ACTIVE.sd.powerEnable));
     pinMode(BoardConfig::ACTIVE.sd.powerEnable, OUTPUT);
-    digitalWrite(BoardConfig::ACTIVE.sd.powerEnable, HIGH);
+    // ON level: HIGH for active-high enables, LOW for active-low ones.
+    digitalWrite(BoardConfig::ACTIVE.sd.powerEnable, BoardConfig::ACTIVE.sd.powerActiveHigh ? HIGH : LOW);
     delay(10);
   }
 

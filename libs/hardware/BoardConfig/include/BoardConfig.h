@@ -35,6 +35,9 @@
 #ifndef FREEINK_DEVICE_X3
 #define FREEINK_DEVICE_X3 0
 #endif
+#ifndef FREEINK_DEVICE_X4PRO
+#define FREEINK_DEVICE_X4PRO 0
+#endif
 #ifndef FREEINK_DEVICE_M5
 #define FREEINK_DEVICE_M5 0
 #endif
@@ -55,29 +58,33 @@
 #endif
 
 // --- 2) Coherence: exactly one MCU family, at least one device ---------------
-#if !(FREEINK_DEVICE_X4 || FREEINK_DEVICE_X3 || FREEINK_DEVICE_M5 || FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_DELINK || \
-      FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_M5PAPER || FREEINK_DEVICE_STICKY)
+#if !(FREEINK_DEVICE_X4 || FREEINK_DEVICE_X3 || FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_M5 || FREEINK_DEVICE_MURPHY || \
+      FREEINK_DEVICE_DELINK || FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_M5PAPER || FREEINK_DEVICE_STICKY)
 #error \
-    "FreeInk: no device selected. Pass at least one -DFREEINK_DEVICE_<NAME> (X4, X3, M5, MURPHY, DELINK, LILYGO, M5PAPER, STICKY) in your build env — see platformio.sample.ini."
+    "FreeInk: no device selected. Pass at least one -DFREEINK_DEVICE_<NAME> (X4, X3, X4PRO, M5, MURPHY, DELINK, LILYGO, M5PAPER, STICKY) in your build env — see platformio.sample.ini."
 #endif
 // Each device belongs to one MCU family; a binary targets exactly one. X3/X4 are
 // ESP32-C3; M5 PaperColor/Murphy/de-link/LilyGo are ESP32-S3; M5Paper v1.1 is the
 // classic ESP32 (ESP32-D0WDQ6). The three families differ in deep-sleep wakeup,
 // SPI peripheral count, and toolchain, so they never share a binary.
 #define FREEINK_MCU_C3 (FREEINK_DEVICE_X3 || FREEINK_DEVICE_X4)
-#define FREEINK_MCU_S3 \
-  (FREEINK_DEVICE_M5 || FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_DELINK || FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_STICKY)
+#define FREEINK_MCU_S3                                                                                    \
+  (FREEINK_DEVICE_M5 || FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_DELINK || FREEINK_DEVICE_LILYGO ||        \
+   FREEINK_DEVICE_STICKY || FREEINK_DEVICE_X4PRO)
 #define FREEINK_MCU_ESP32 (FREEINK_DEVICE_M5PAPER)
 #if (FREEINK_MCU_C3 + FREEINK_MCU_S3 + FREEINK_MCU_ESP32) != 1
 #error \
-    "FreeInk: all selected devices must share one MCU family — ESP32-C3 (X3/X4), ESP32-S3 (M5/Murphy/de-link/LilyGo/Sticky), or ESP32 (M5Paper). Build one binary per family."
+    "FreeInk: all selected devices must share one MCU family — ESP32-C3 (X3/X4), ESP32-S3 (M5/Murphy/de-link/LilyGo/Sticky/X4Pro), or ESP32 (M5Paper). Build one binary per family."
 #endif
 
 // --- 3) Derive panel drivers from the device set -----------------------------
 // Sticky reuses SSD1677: its 800x480 panel rides a 24-pin FPC whose GDR/RESE/BS1
 // + dual VSH1/VSH2 + external VGH/VGL/VSL/VCOM charge pump is the SSD1677
 // application circuit (same controller + resolution as X4 / de-link).
-#if FREEINK_DEVICE_X4 || FREEINK_DEVICE_DELINK || FREEINK_DEVICE_STICKY
+// X4 Pro is a distinct ESP32-S3 device (NOT the C3 X4): same SSD1677 controller and
+// 800x480 panel as X4/de-link/Sticky, recovered from its OEM firmware dump — see
+// docs/xteink-x4pro-support.md.
+#if FREEINK_DEVICE_X4 || FREEINK_DEVICE_DELINK || FREEINK_DEVICE_STICKY || FREEINK_DEVICE_X4PRO
 #define FREEINK_DRIVER_SSD1677 1
 #else
 #define FREEINK_DRIVER_SSD1677 0
@@ -121,11 +128,24 @@
 
 // --- 4) Derive default capabilities (override with -DFREEINK_CAP_*=0/1) -------
 #ifndef FREEINK_CAP_TOUCH
-#define FREEINK_CAP_TOUCH \
-  (FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_M5PAPER || FREEINK_DEVICE_STICKY)
+#define FREEINK_CAP_TOUCH                                                                         \
+  (FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_M5PAPER || FREEINK_DEVICE_STICKY || \
+   FREEINK_DEVICE_X4PRO)
 #endif
 #ifndef FREEINK_CAP_FRONTLIGHT
-#define FREEINK_CAP_FRONTLIGHT (FREEINK_DEVICE_DELINK || FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_LILYGO)
+#define FREEINK_CAP_FRONTLIGHT \
+  (FREEINK_DEVICE_DELINK || FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_X4PRO)
+#endif
+// USB Mass Storage ("USB Transfer" mode): exposes the SD card to a host over
+// USB-MSC. OPT-IN (default off), NOT board-derived: it forces the build into
+// USB-OTG mode (ARDUINO_USB_MODE=0 + CONFIG_TINYUSB_MSC_ENABLED), which changes
+// how the USB serial console works — so a board enables it in its OWN env
+// alongside those flags (e.g. X4 Pro adds -DFREEINK_CAP_USB_MSC=1
+// -DARDUINO_USB_MODE=0 -DARDUINO_USB_CDC_ON_BOOT=1). Native-USB (ESP32-S3/C3
+// OTG) targets only. When 0, UsbMassStorage links stub bodies and pulls in no
+// TinyUSB/MSC code. Requires SDMMC/SPI storage exposing a block device.
+#ifndef FREEINK_CAP_USB_MSC
+#define FREEINK_CAP_USB_MSC 0
 #endif
 // BLE HID host. The BleKeyboardHost lib pairs/connects to Bluetooth Low Energy
 // HID peripherals such as keyboards and page turners and emits translated key
@@ -164,7 +184,8 @@
 // ACTIVE.batteryGauge.gaugeAddr != 0) — required because X3 (gauge) and X4 (ADC)
 // share one C3 binary.
 #ifndef FREEINK_BATTERY_I2C_GAUGE
-#define FREEINK_BATTERY_I2C_GAUGE (FREEINK_DEVICE_X3 || FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_STICKY)
+#define FREEINK_BATTERY_I2C_GAUGE \
+  (FREEINK_DEVICE_X3 || FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_STICKY || FREEINK_DEVICE_X4PRO)
 #endif
 #ifndef FREEINK_CAP_COLOR
 #define FREEINK_CAP_COLOR (FREEINK_DEVICE_M5)
@@ -181,7 +202,7 @@
 // On-board I2C sensors. Each lib (Rtc / EnvironmentSensor / Imu) compiles its
 // I2C driver only when its flag is set; otherwise it links stub bodies.
 #ifndef FREEINK_CAP_RTC
-#define FREEINK_CAP_RTC (FREEINK_DEVICE_X3 || FREEINK_DEVICE_STICKY)
+#define FREEINK_CAP_RTC (FREEINK_DEVICE_X3 || FREEINK_DEVICE_STICKY || FREEINK_DEVICE_X4PRO)
 #endif
 #ifndef FREEINK_CAP_TEMP_HUMIDITY
 #define FREEINK_CAP_TEMP_HUMIDITY (FREEINK_DEVICE_STICKY)
@@ -216,11 +237,13 @@
 #define FREEINK_FB_PSRAM (FREEINK_DEVICE_M5PAPER)
 #endif
 
-// SD transport. de-link is wired for 4-bit SDMMC; SdFat can't drive SDIO, so it
-// gets a native esp-idf SDMMC block device behind SDCardManager. Every other
-// board stays on SdFat-over-SPI. Override with -DFREEINK_SD_SDMMC=0/1.
+// SD transport. de-link (4-bit) and X4 Pro (1-bit) are wired for SDMMC; SdFat
+// can't drive SDIO, so they get a native esp-idf SDMMC block device behind
+// SDCardManager. Every other board stays on SdFat-over-SPI. The consumer's build
+// must define USE_BLOCK_DEVICE_INTERFACE=1 for the SdFat FsVolume these mount on.
+// Override with -DFREEINK_SD_SDMMC=0/1.
 #ifndef FREEINK_SD_SDMMC
-#define FREEINK_SD_SDMMC (FREEINK_DEVICE_DELINK)
+#define FREEINK_SD_SDMMC (FREEINK_DEVICE_DELINK || FREEINK_DEVICE_X4PRO)
 #endif
 
 // Serial log transport hint for consumer firmware. Boards can share the same MCU
@@ -262,6 +285,7 @@ inline auto& serialTransport() { return Serial; }
 enum class Board : uint8_t {
   XteinkX4,
   XteinkX3,
+  XteinkX4Pro,  // ESP32-S3 sibling of the C3 X4: SSD1677 + GT911 touch + warm/cold frontlight
   M5StackPaperColor,
   MurphyM3,
   DeLink,
@@ -318,6 +342,11 @@ struct SdPins {
   int8_t powerEnable;
   bool separateSpi;
   uint32_t spiHz;  // 0 = use the SD manager default (40 MHz)
+  // Polarity of powerEnable. true (default) = active-high (drive HIGH to power the
+  // card, LOW to cut it) as on most boards. false = active-LOW enable (e.g. X4 Pro's
+  // GPIO5, which gates the card while held LOW); the sleep path must then drive it
+  // HIGH to power the card down. Defaulted so existing initializers stay valid.
+  bool powerActiveHigh = true;
 };
 
 // 4-bit SDMMC/SDIO wiring (e.g. de-link). SdFat can't drive SDIO, so a board with
@@ -332,6 +361,12 @@ struct SdmmcPins {
   uint8_t busWidth;  // 0 = not an SDMMC board (use SdPins/SPI), 1 or 4 = SDMMC
 };
 
+// The I2C fuel-gauge silicon a board carries. Each type has its own register map and
+// init, so BatteryMonitor dispatches on it. Bq27220: TI command registers, no profile
+// upload (LilyGo/X3). Cw2017: CellWise gauge that needs an 80-byte BATINFO battery
+// profile loaded before it reports a valid SoC (Xteink X4 Pro).
+enum class GaugeType : uint8_t { Bq27220, Cw2017 };
+
 // I2C fuel-gauge / charger wiring (e.g. BQ27220 + BQ25896 on LilyGo T5 S3). When
 // gaugeAddr != 0 (and FREEINK_BATTERY_I2C_GAUGE is set), BatteryMonitor reads the
 // gauge over I2C instead of an ADC pin. chargerAddr is optional (0 = none) and
@@ -340,7 +375,7 @@ struct BatteryGaugeConfig {
   int8_t i2cSda;
   int8_t i2cScl;
   uint32_t i2cHz;
-  uint8_t gaugeAddr;    // BQ27220 = 0x55; 0 = no I2C gauge (use ADC)
+  uint8_t gaugeAddr;    // BQ27220 = 0x55; CW2017 = 0x63; 0 = no I2C gauge (use ADC)
   uint8_t chargerAddr;  // BQ25896 = 0x6B; 0 = none
   // Arduino I2C controller index: 0 = Wire, 1 = Wire1. Default 0. Set to 1 on
   // boards where the gauge sits on a different physical bus than another I2C
@@ -348,6 +383,7 @@ struct BatteryGaugeConfig {
   // Wire1/SDA1-SCL0) so they don't fight over one controller. Only honored on
   // multi-bus SoCs (SOC_I2C_NUM > 1); single-bus parts (ESP32-C3) ignore it.
   uint8_t i2cBus = 0;
+  GaugeType gaugeType = GaugeType::Bq27220;  // register map / init to use
 };
 
 struct InputPins {
@@ -378,9 +414,10 @@ struct TouchConfig {
   // coords start at byte 1); true = coords start at byte 0 (no track-id), as seen
   // on M5Paper's GT911 which boots without a reset/config dance. Ignored (CHSC6x).
   bool gt911CoordsAtByte0;
-  // Touch power-rail enable (active-high). PIN_UNASSIGNED on boards whose touch
-  // controller is always powered; driven HIGH before the reset/probe on boards
-  // that gate it (e.g. Sticky's TOUCH_EN). Default keeps existing initializers valid.
+  // Touch power-rail enable. PIN_UNASSIGNED on boards whose touch controller is always
+  // powered; otherwise driven to its ON level before the reset/probe on boards that
+  // gate it (e.g. Sticky's active-high TOUCH_EN, or the X4 Pro's active-low GPIO2).
+  // Default keeps existing initializers valid.
   int8_t powerEnable = PIN_UNASSIGNED;
   // Touch-to-panel mounting correction, applied to the raw coords so the touch
   // frame aligns with the display's NATIVE (panel) frame before orientation
@@ -391,14 +428,30 @@ struct TouchConfig {
   bool swapXY = false;
   bool flipX = false;
   bool flipY = false;
+  // Capacitive home key below the panel, reported by the touch controller itself
+  // (GT911 "have key" status bit 0x10, surfaced as InputManager::wasHomeKeyPressed()).
+  // Lets firmware move "exit to home" off a swipe gesture on boards that have one.
+  bool hasHomeKey = false;
+  // Polarity of powerEnable. true (default) = active-high (drive HIGH to power the
+  // controller). false = active-LOW (drive LOW to power it, e.g. X4 Pro's GPIO2). The
+  // reset path drives the ON level; the sleep path drives the OFF level.
+  bool powerEnableActiveHigh = true;
 };
 
 // PWM frontlight description (gpio == PIN_UNASSIGNED disables it).
 struct FrontlightConfig {
-  int8_t gpio;
+  int8_t gpio;  // primary channel: the sole LED on a single-channel board, or the "cool"
+                // channel of a warm/cool pair.
   uint32_t pwmFrequency;
   uint8_t pwmResolutionBits;
   bool activeHigh;
+  // Optional second PWM channel for a warm/cool color-temperature frontlight (e.g. the
+  // Xteink X4 Pro: cool=gpio GPIO8, warm=gpioWarm GPIO9). PIN_UNASSIGNED on single-channel
+  // boards (de-link / LilyGo / Murphy), where setColorTemperature() stays a no-op. The warm
+  // channel shares the primary's frequency / resolution / active level. FrontlightManager
+  // treats `gpio` as cool and `gpioWarm` as warm; if a board's pair is physically reversed,
+  // the color-temperature direction inverts (cosmetic, and user-flippable in firmware).
+  int8_t gpioWarm = PIN_UNASSIGNED;
 };
 
 // Audio output description (AudioOutput::None disables it).
@@ -923,6 +976,111 @@ constexpr BoardProfile STICKY = {
     // boot (the vendor demo's first init step) — see holdPowerRails().
     {45, 46}};
 
+// --- Xteink X4 Pro — ESP32-S3, SSD1677 (800x480) + GT911 touch + warm/cold frontlight ---
+// Recovered from the OEM flash dump (x4pro_flash_dump.bin); full evidence and confidence
+// levels in docs/xteink-x4pro-support.md. This is a DISTINCT device from the C3
+// `XTEINK_X4` above: same panel controller/size, but an ESP32-S3 with 8 MB PSRAM, a
+// GT911 capacitive digitizer, and a dual warm/cold color-temperature frontlight.
+//
+// Confidence summary:
+//   CONFIRMED : display SPI + panel pins, GT911 controller/address, ADC-ladder input style.
+//   HIGH      : GT911 I2C/INT/RST pins, SD SPI bus + CS (m_csPin=GPIO45) + enable GPIO5 (driven
+//     HIGH), the BM8563 RTC (0x51 on the shared touch bus), and the GPIO1 master rail (driven
+//     HIGH first in board init) — all from the board pin-init table at IROM 0x420a2240.
+//   PENDING hardware validation: panel orientation (ships NO_FLIP), touch swap/flip, the exact
+//     frontlight GPIO(s)/freq (warm+cold; the SDK models one channel — primary brightness here),
+//     the GPIO5 SD-enable role and GPIO2 (a board-init output driven LOW, role unknown), and
+//     battery/VBUS pins. The ADC-ladder pins are UNKNOWN — GPIO1/GPIO2 (the old guess) are power
+//     outputs, not ladder inputs. See the findings doc before trusting any PENDING value.
+constexpr BoardProfile XTEINK_X4_PRO = {
+    Board::XteinkX4Pro,
+    "xteink_x4_pro",
+    InputStyle::DigitalButtons,  // confirmed on hardware: plain active-low GPIO buttons, not the OEM ADC ladder
+    DisplayController::SSD1677,
+    800,
+    480,
+    // SSD1677 SPI — CONFIRMED ON HARDWARE via a raw bit-banged pin sweep (the panel
+    // painted with these and only these): SCLK=12 MOSI=11 (write-only, no MISO)
+    // CS=13 DC=18 RST=14 BUSY=6. Note vs the RE guesses: SCLK/MOSI are app0's order
+    // (the app1 RE's 11/12 was backwards) and CS/DC are swapped from app0's 18/13.
+    // The plain X4 OTP waveform develops the image — no custom LUT/voltages/PMIC
+    // needed. GPIO1 also triggers a refresh when toggled (likely a panel power
+    // enable), but the panel works without driving it, so powerEnable stays unset.
+    {12, 11, 13, 18, 14, 6, PIN_UNASSIGNED},
+    20000000,  // displaySpiHz: 20 MHz, matching the X4's default. The OEM clocks the panel at only 5 MHz
+               // (SPISettings 0x4C4B40), but the SSD1677 handles far more (X4 runs 20, de-link 40), so 20 MHz
+               // is well in spec and gives noticeably faster RAM writes. Drop back to 5 MHz if artifacts appear.
+    // SD is native SDMMC (see the sdmmc field below) — the card is silent to SPI-mode CMD0 on
+    // hardware. This SPI SdPins entry is retained only for its powerEnable=GPIO5, the SD enable
+    // used by the SDMMC mount path. GPIO5 is ACTIVE-LOW: SdmmcBlockDevice pulses it HIGH→LOW
+    // before each mount attempt and runs the card with it held LOW (matching the OEM mountSD;
+    // holding it HIGH breaks every block read with 0x107). The bus pins (SCLK41 MISO40 MOSI42
+    // CS45) are the SPI view of the same slot and are unused now that busWidth!=0 routes through
+    // the SDMMC block device. Trailing false = powerEnable is active-LOW, so the sleep path drives
+    // GPIO5 HIGH to power the card down.
+    {41, 40, 42, 45, 5, true, 0, false},
+    // Digital buttons, confirmed on hardware (watch-up edge test): two physical nav keys —
+    // Left=GPIO0, Right=GPIO7 — plus Power=GPIO3, all active-LOW (INPUT_PULLUP, no rail needed).
+    // The two keys map to the reader's page pair (Up=prev / Down=next), so Left→up, Right→down;
+    // back/confirm come from the GT911 (touch + the capacitive Home key). NOTE: GPIO0 is a boot
+    // strap — fine as a button as long as it isn't held during reset.
+    // {back, confirm, left, right, up, down, power, powerActiveHigh}
+    {PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, 0, 7, 3, false},
+    PIN_UNASSIGNED,  // batteryAdc: monitoring exists ("Battery Meter"/"Low battery") but pin not isolated
+    PIN_UNASSIGNED,  // batteryChargeStatus
+    2.0f,
+    PIN_UNASSIGNED,  // usbDetect: USB-MSC/VBUS-detect present; GPIO10 is a candidate (unconfirmed)
+    // GT911 touch on the SHARED I2C bus SDA39/SCL38 (with RTC 0x51 + CW2017 gauge 0x63), addr 0x5D
+    // (alt 0x14), 400 kHz. CONFIRMED ON HARDWARE: **INT=GPIO10, RST=GPIO4** (a first RE had these
+    // reversed), and the controller is on an **active-LOW power rail: GPIO2** (powerEnable=2,
+    // powerEnableActiveHigh=false) — the GT911 stays unpowered/silent until GPIO2 is driven LOW
+    // (GPIO1, power.latch0, must also be HIGH). Like the Sticky panel, the GT911 SELF-LOADS its
+    // internal config on the standard reset dance — no host config upload needed. Mounted PORTRAIT
+    // (reports X:0..480, Y:0..800) on the 800x480 landscape panel → swapXY=true; rawMax describe the
+    // post-swap panel axes. Coords start at byte 0 of the 0x8150 read → gt911CoordsAtByte0=true.
+    // flipX/flipY pending a corner-tap test. {ctrl,sda,scl,irq,rst,addr,rawMinX,rawMaxX,rawMinY,rawMaxY,
+    //  synthConfirm,altAddr,irqActiveLow,coordsAtByte0,powerEnable,swapXY,flipX,flipY,hasHomeKey,pwrActiveHigh}
+    {TouchController::Gt911, 39, 38, 10, 4, 0x5D, 0, 799, 0, 479, false, 0x14, false, true, 2,
+     true, false, true, true, false},  // swapXY + flipY (confirmed by corner-tap); powerEnable=GPIO2 active-LOW; hasHomeKey
+    // Frontlight: dual warm/cold LEDC PWM with color temperature (NVS lightWarmValue/
+    // lightColdValue/lightCT/lightBri/lightOn). Recovered from the OEM LEDC init (IROM
+    // 0x420a2130 → helper 0x420a20c0): two channels — GPIO8 on LEDC ch4 and GPIO9 on ch5 —
+    // both at 10 kHz / 10-bit, active-HIGH (init drives the pin LOW = off, brightness raises
+    // duty). The SDK's FrontlightConfig models ONE channel, so this carries GPIO8 as the
+    // primary brightness pin, GPIO9 as the warm channel — FrontlightManager mixes them for
+    // color-temperature control. Which of GPIO8/GPIO9 is physically warm vs cold is not yet
+    // known; if reversed, the CT direction just inverts (user-flippable).
+    {8, 10000, 10, true, 9},
+    NO_AUDIO,
+    NO_LEDS,
+    NO_FLIP,  // panel mount transform pending hardware; native SSD1677 scan is 800x480 landscape
+    // SD is native SDMMC, NOT SPI: the card the OEM reads is silent to SPI-mode CMD0.
+    // CONFIRMED on hardware: 1-bit, slot 1, CLK=41 CMD=42 DAT0=40, internal pull-ups, 40 MHz.
+    // D1/D2/D3 are UNUSED in 1-bit. Mounts reliably via SdmmcBlockDevice, which power-cycles
+    // the GPIO5 enable (see the SPI SdPins powerEnable above) and validates a real sector-0
+    // read per attempt. {clk,cmd,d0,d1,d2,d3,busWidth}
+    {41, 42, 40, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, 1},
+    // CW2017 fuel gauge at I2C 0x63 on the SHARED touch/RTC bus SDA39/SCL38, 400 kHz, Wire.
+    // BatteryMonitor uploads the 80-byte BATINFO battery profile (recovered from app1's
+    // XTEink Cw2017PowerHal via Ghidra) if the gauge hasn't got one, then reads SoC from
+    // reg 0x04. No charger IC on the gauge bus. {sda,scl,hz,gaugeAddr,chargerAddr,bus,type}
+    {39, 38, 400000, 0x63, 0, 0, GaugeType::Cw2017},
+    NO_MIC,
+    // BM8563 RTC (PCF8563 register-compatible, class XTEink::BM8563Driver in the dump) at I2C
+    // 0x51, sharing the GT911 touch bus SDA39/SCL38 at 400 kHz (recovered: driver init at IROM
+    // 0x420a2834 adds device 0x51; the bus object is configured with {39,38,400000}). Bus 0
+    // (Wire), matching the touch driver so both drive the same peripheral on the shared pins.
+    {39, 38, 400000, 0x51, 0, 0, 0, RtcType::Pcf8563, ImuType::None},  // temp/hum + IMU: none
+    1.2f,  // uiScale: 800x480 touch device — finger-sized chrome, like the other touch boards
+    // Master peripheral-rail enable on GPIO1: the OEM board-init drives it HIGH first, before
+    // any SPI/display/SD bring-up (recovered: standalone OUTPUT, level=1, acted on first in
+    // board_begin at IROM 0x420a23dc). Carried as power.latch0 so holdPowerRails() asserts it
+    // early — without it the panel rail and the SD slot both stay unpowered (the bring-up
+    // symptom: EPD BUSY never asserts, SD returns 0xFF). GPIO2 is a second board-init output
+    // driven LOW (role unknown); not modeled here. NOTE: GPIO1/GPIO2 are therefore NOT the ADC
+    // button ladder — that earlier assumption was wrong; the ladder pins remain unconfirmed.
+    {1}};
+
 // Largest framebuffer (bytes) over the devices compiled into this build, derived
 // from the profiles above. The display facade sizes its static framebuffer to
 // this so one binary holds whichever panel is runtime-selected; a single-device
@@ -938,7 +1096,8 @@ constexpr uint32_t MAX_FRAMEBUFFER_BYTES = cmax(
               FREEINK_DEVICE_MURPHY ? panelBytes(MURPHY_M3) : 0u)),
     cmax(cmax(cmax(FREEINK_DEVICE_DELINK ? panelBytes(DE_LINK) : 0u,
                    FREEINK_DEVICE_LILYGO ? panelBytes(LILYGO_T5S3) : 0u),
-              FREEINK_DEVICE_M5PAPER ? panelBytes(M5PAPER_V11) : 0u),
+              cmax(FREEINK_DEVICE_M5PAPER ? panelBytes(M5PAPER_V11) : 0u,
+                   FREEINK_DEVICE_X4PRO ? panelBytes(XTEINK_X4_PRO) : 0u)),
          FREEINK_DEVICE_STICKY ? panelBytes(STICKY) : 0u));
 
 // Compile-time default device — the profile ACTIVE starts as. With a single
@@ -956,6 +1115,8 @@ constexpr BoardProfile DEFAULT_DEVICE = LILYGO_T5S3;
 constexpr BoardProfile DEFAULT_DEVICE = M5PAPER_V11;
 #elif FREEINK_DEVICE_STICKY
 constexpr BoardProfile DEFAULT_DEVICE = STICKY;
+#elif FREEINK_DEVICE_X4PRO
+constexpr BoardProfile DEFAULT_DEVICE = XTEINK_X4_PRO;
 #elif FREEINK_DEVICE_X3 && !FREEINK_DEVICE_X4
 constexpr BoardProfile DEFAULT_DEVICE = XTEINK_X3;  // X3-only binary
 #else
@@ -1013,6 +1174,11 @@ inline bool selectDevice(Board which) {
       ACTIVE = STICKY;
       return true;
 #endif
+#if FREEINK_DEVICE_X4PRO
+    case Board::XteinkX4Pro:
+      ACTIVE = XTEINK_X4_PRO;
+      return true;
+#endif
     default:
       break;
   }
@@ -1024,7 +1190,9 @@ inline bool isMurphyM3() { return ACTIVE.board == Board::MurphyM3; }
 inline bool isDeLink() { return ACTIVE.board == Board::DeLink; }
 inline bool isM5PaperV11() { return ACTIVE.board == Board::M5PaperV11; }
 inline bool isSticky() { return ACTIVE.board == Board::Sticky; }
+inline bool isX4Pro() { return ACTIVE.board == Board::XteinkX4Pro; }
 inline bool hasTouch() { return ACTIVE.touch.controller != TouchController::None; }
+inline bool hasHomeKey() { return ACTIVE.touch.hasHomeKey; }
 inline bool hasPwmFrontlight() { return ACTIVE.frontlight.gpio != PIN_UNASSIGNED; }
 inline bool hasAudio() { return ACTIVE.audio.output != AudioOutput::None; }
 
@@ -1052,7 +1220,9 @@ inline void releaseSdRail() {
   if (ACTIVE.sd.powerEnable >= 0) {
     gpio_hold_dis(static_cast<gpio_num_t>(ACTIVE.sd.powerEnable));
     pinMode(ACTIVE.sd.powerEnable, OUTPUT);
-    digitalWrite(ACTIVE.sd.powerEnable, HIGH);
+    // Drive the enable to its ON level: HIGH for active-high rails, LOW for the
+    // active-low ones (X4 Pro's GPIO5 powers the card while held LOW).
+    digitalWrite(ACTIVE.sd.powerEnable, ACTIVE.sd.powerActiveHigh ? HIGH : LOW);
   }
   if (ACTIVE.sd.cs >= 0) {
     pinMode(ACTIVE.sd.cs, OUTPUT);

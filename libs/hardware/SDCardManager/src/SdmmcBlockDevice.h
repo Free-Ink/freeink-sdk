@@ -9,8 +9,9 @@
 // the public SDCardManager API (and CrossPoint's HalFile, which stores FsFile by
 // value) keeps working unchanged. Only compiled when FREEINK_SD_SDMMC is set.
 //
-// Untested on silicon by the SDK author — validated against the de-link board by
-// its maintainer, who has shipped an equivalent native-SDMMC FsFile path.
+// Hardware-validated in 1-bit mode on the Xteink X4 Pro (ESP32-S3, SSD1677 build);
+// also matches the de-link board's 4-bit native-SDMMC FsFile path. The X4 Pro mount
+// needs an active-LOW power-enable power-cycle per attempt (see SdmmcBlockDevice.cpp).
 
 #include <BoardConfig.h>
 
@@ -19,8 +20,6 @@
 // Needs SdFat built with -DUSE_BLOCK_DEVICE_INTERFACE=1 so FsBlockDevice resolves
 // to the generic FsBlockDeviceInterface (set in the de-link build env).
 #include <SdFat.h>  // FsBlockDeviceInterface, Sector_t
-
-struct sdmmc_card_t;  // forward decl (esp-idf type)
 
 namespace freeink {
 
@@ -40,7 +39,10 @@ class SdmmcBlockDevice : public FsBlockDeviceInterface {
   bool syncDevice() override { return true; }
 
  private:
-  sdmmc_card_t* _card = nullptr;
+  // esp-idf's sdmmc_card_t is a typedef of an anonymous struct, so it can't be
+  // forward-declared here (a `struct sdmmc_card_t;` tag is a different, conflicting
+  // type). Hold it opaquely and cast in the .cpp, where the esp-idf header is included.
+  void* _card = nullptr;
 };
 
 }  // namespace freeink

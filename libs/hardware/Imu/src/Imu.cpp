@@ -45,6 +45,10 @@ constexpr uint8_t QMI8658_CTRL2_ODR_28HZ = 0x08;
 constexpr uint8_t QMI8658_CTRL3_FS_512DPS = 0b101U << 4;
 constexpr uint8_t QMI8658_CTRL3_ODR_28HZ = 0x08;
 constexpr uint8_t QMI8658_CTRL7_ACC_GYRO_ENABLE = 0x03;
+constexpr uint8_t QMI8658_CTRL7_DISABLE_ALL = 0x00;
+// LSM6DS3: ODR bits [7:4] = 0000b powers the sensor down; full-scale bits are
+// retained, so restoring the configured CTRL value resumes sampling.
+constexpr uint8_t CTRL_ODR_POWER_DOWN = 0x00;
 constexpr float QMI8658_ACCEL_G_PER_LSB = 1.0f / 16384.0f;  // ±2 g
 constexpr float QMI8658_GYRO_DPS_PER_LSB = 1.0f / 64.0f;    // ±512 dps
 
@@ -157,6 +161,34 @@ bool Imu::read(Sample& out) {
   return true;
 }
 
+bool Imu::sleep() {
+  const uint8_t addr = BoardConfig::ACTIVE.sensors.imuAddr;
+  if (!begun_ || addr == 0) return false;
+  switch (BoardConfig::ACTIVE.sensors.imuType) {
+    case BoardConfig::ImuType::Lsm6ds3:
+      return writeReg(addr, REG_CTRL1_XL, CTRL_ODR_POWER_DOWN) && writeReg(addr, REG_CTRL2_G, CTRL_ODR_POWER_DOWN);
+    case BoardConfig::ImuType::Qmi8658:
+      return writeReg(addr, QMI8658_REG_CTRL7, QMI8658_CTRL7_DISABLE_ALL);
+    case BoardConfig::ImuType::None:
+      return false;
+  }
+  return false;
+}
+
+bool Imu::wake() {
+  const uint8_t addr = BoardConfig::ACTIVE.sensors.imuAddr;
+  if (!begun_ || addr == 0) return false;
+  switch (BoardConfig::ACTIVE.sensors.imuType) {
+    case BoardConfig::ImuType::Lsm6ds3:
+      return writeReg(addr, REG_CTRL1_XL, CTRL1_XL_104HZ_2G) && writeReg(addr, REG_CTRL2_G, CTRL2_G_104HZ_245DPS);
+    case BoardConfig::ImuType::Qmi8658:
+      return writeReg(addr, QMI8658_REG_CTRL7, QMI8658_CTRL7_ACC_GYRO_ENABLE);
+    case BoardConfig::ImuType::None:
+      return false;
+  }
+  return false;
+}
+
 }  // namespace freeink
 
 #else  // FREEINK_CAP_IMU — IMU absent.
@@ -164,6 +196,8 @@ bool Imu::read(Sample& out) {
 namespace freeink {
 bool Imu::begin() { return false; }
 bool Imu::read(Sample&) { return false; }
+bool Imu::sleep() { return false; }
+bool Imu::wake() { return false; }
 }  // namespace freeink
 
 #endif  // FREEINK_CAP_IMU

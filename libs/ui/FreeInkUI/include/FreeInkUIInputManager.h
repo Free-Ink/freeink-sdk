@@ -46,6 +46,7 @@ inline InputSnapshot snapshotFrom(const InputManager& input, const ButtonBinding
     if (point.valid) {
       snapshot.touchX = static_cast<int16_t>(point.x);
       snapshot.touchY = static_cast<int16_t>(point.y);
+      snapshot.touchHeld = !snapshot.touchReleased;
     }
   }
   return snapshot;
@@ -62,8 +63,17 @@ inline InputSnapshot snapshotFrom(const InputManager& input, const DeviceContext
   InputSnapshot snapshot = snapshotFrom(input, bindings);
   snapshot.touchPressed = false;
   snapshot.touchReleased = false;
+  snapshot.touchHeld = false;
   float nx = 0.0f;
   float ny = 0.0f;
+  // Live contact position for InputDrag interactions (sliders): mapped like
+  // taps, delivered every frame while the finger is down.
+  if (input.hasTouch() && input.isTouchHeldAt(nx, ny)) {
+    const Point p = touchToLogical(device, nx, ny, touchFlipX, touchFlipY);
+    snapshot.touchHeld = true;
+    snapshot.touchX = p.x;
+    snapshot.touchY = p.y;
+  }
   // Press edge, mapped like the tap: lets interaction routing mark the element
   // under the finger active on touch-down (pressed-style feedback) before the
   // release delivers the action.
@@ -78,6 +88,16 @@ inline InputSnapshot snapshotFrom(const InputManager& input, const DeviceContext
     snapshot.touchReleased = true;
     snapshot.touchX = p.x;
     snapshot.touchY = p.y;
+  }
+  // Raw release the tap classifier didn't report (swipe end, drag-off).
+  // Deliver it off-target: routing dispatches nothing, but the interaction
+  // buffer drops its pressed-element state — otherwise that state survives
+  // the next frame's rebuild and paints a phantom active highlight on
+  // whatever lands in the same slot (e.g. after a swipe pages a list).
+  if (input.hasTouch() && !snapshot.touchReleased && input.wasTouchReleased()) {
+    snapshot.touchReleased = true;
+    snapshot.touchX = -1;
+    snapshot.touchY = -1;
   }
   return snapshot;
 }

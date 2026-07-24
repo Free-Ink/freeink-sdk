@@ -18,6 +18,7 @@
 #include "components/controls/progress-bar.h"
 #include "components/controls/slider.h"
 #include "components/controls/checkbox.h"
+#include "components/controls/toggle.h"
 #include "components/bars/status-bar.h"
 #include "components/bars/gesture-bar.h"
 #include "components/bars/tab-bar.h"

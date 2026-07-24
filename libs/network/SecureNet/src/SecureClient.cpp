@@ -47,8 +47,11 @@ int wcRecv(WOLFSSL* /*ssl*/, char* buf, int sz, void* ctx) {
 }
 
 bool isWantIo(const int err) {
-  return err == WOLFSSL_ERROR_WANT_READ || err == WOLFSSL_ERROR_WANT_WRITE || err == WOLFSSL_CBIO_ERR_WANT_READ ||
-         err == WOLFSSL_CBIO_ERR_WANT_WRITE;
+  // Only the wolfSSL_get_error() codes. The WOLFSSL_CBIO_ERR_* callback return
+  // codes never come out of wolfSSL_get_error and collide with fatal wolfCrypt
+  // errors (MP_MEM is -2 == WOLFSSL_CBIO_ERR_WANT_READ); matching them here made
+  // an out-of-memory handshake spin until the deadline instead of failing fast.
+  return err == WOLFSSL_ERROR_WANT_READ || err == WOLFSSL_ERROR_WANT_WRITE;
 }
 }  // namespace
 
@@ -96,6 +99,16 @@ int SecureClient::connectWithMethod(const char* host, uint16_t port, void* metho
   wolfSSL_SetIOReadCtx(ssl, &_transport);
   wolfSSL_SetIOWriteCtx(ssl, &_transport);
   wolfSSL_UseSNI(ssl, WOLFSSL_SNI_HOST_NAME, host, strlen(host));
+#if defined(WOLFSSL_TLS13) && defined(HAVE_CURVE25519)
+  // MEMFIX-PORT: pin the TLS 1.3 key_share to X25519. wolfSSL's default is a
+  // P-256 share, generated with fast-math bignums that WOLFSSL_SMALL_STACK
+  // heap-allocates at ~4KB apiece (FP_MAX_BITS-sized) -- at the free-heap
+  // levels a reading session leaves (~45-50KB) that keygen fails with MP_MEM
+  // and the ClientHello is never sent. Curve25519 uses fixed 32-byte field
+  // arithmetic with no bignum temporaries. A server without X25519 answers
+  // with a HelloRetryRequest and wolfSSL falls back to its group list.
+  wolfSSL_UseKeyShare(ssl, WOLFSSL_ECC_X25519);
+#endif
 
   // The recv callback is non-blocking (returns WANT_READ when no bytes are
   // buffered), so wolfSSL_connect must be retried across handshake round-trips

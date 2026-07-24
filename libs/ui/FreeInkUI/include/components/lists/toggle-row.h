@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../../FreeInkUICore.h"
+#include "../controls/toggle.h"
 #include "../lists/setting-row.h"
 
 namespace freeink {
@@ -29,7 +30,8 @@ struct ToggleRowProps {
 };
 
 template <size_t MaxInteractions>
-void toggleRow(Frame<MaxInteractions>& frame, Rect rect, const ToggleRowProps& props) {
+void toggleRow(Frame<MaxInteractions> &frame, Rect rect,
+               const ToggleRowProps &props) {
   SettingRowProps row = props.row;
   row.value = nullptr;
   if (!props.hitToggleOnly && row.action == NO_ACTION) {
@@ -47,35 +49,39 @@ void toggleRow(Frame<MaxInteractions>& frame, Rect rect, const ToggleRowProps& p
   if (props.row.subtitle) {
     const int16_t labelH = frame.target().lineHeight(props.row.labelText.font);
     const int16_t subH = frame.target().lineHeight(props.row.subtitleText.font);
-    const int16_t gap = props.row.titleSubtitleGap > 0 ? props.row.titleSubtitleGap : 0;
-    int16_t top = static_cast<int16_t>(rect.y + (rect.height - labelH - gap - subH) / 2);
-    if (top < rect.y) top = rect.y;
+    const int16_t gap =
+        props.row.titleSubtitleGap > 0 ? props.row.titleSubtitleGap : 0;
+    int16_t top =
+        static_cast<int16_t>(rect.y + (rect.height - labelH - gap - subH) / 2);
+    if (top < rect.y)
+      top = rect.y;
     bandY = top;
     bandH = labelH;
   }
-  Rect toggleRect{static_cast<int16_t>(rect.right() - row.sidePadding - toggleW),
-                  static_cast<int16_t>(bandY + (bandH - toggleH) / 2), toggleW, toggleH};
-  if (props.hitToggleOnly && props.toggleAction != NO_ACTION) {
-    frame.hit(ensureMinTouchRect(toggleRect, row.minTouchSize, frame.screen()), props.toggleAction,
-              props.toggleValue);
-  }
-  const uint8_t trackRadius = static_cast<uint8_t>(
-      props.radius > toggleH / 2 ? toggleH / 2 : props.radius);
-  frame.target().fill(toggleRect, props.checked ? props.checkedTrack : props.track, trackRadius);
-  if (props.border.kind != PaintKind::None && props.borderWidth > 0) {
-    frame.target().stroke(toggleRect, props.border, props.borderWidth, trackRadius);
-  }
-
-  const int16_t inset = props.knobInset < 0 ? 0 : props.knobInset;
-  const int16_t knobH = static_cast<int16_t>(toggleH - inset * 2);
-  const int16_t knobW = knobH;
-  if (knobH <= 0) return;
-  Rect knob{static_cast<int16_t>(props.checked ? toggleRect.right() - inset - knobW : toggleRect.x + inset),
-            static_cast<int16_t>(toggleRect.y + inset), knobW, knobH};
-  const uint8_t knobRadius = static_cast<uint8_t>(
-      props.knobRadius > knobH / 2 ? knobH / 2 : props.knobRadius);
-  frame.target().fill(knob, props.checked ? props.checkedKnob : props.knob, knobRadius);
+  const Rect toggleRect{
+      static_cast<int16_t>(rect.right() - row.sidePadding - toggleW),
+      static_cast<int16_t>(bandY + (bandH - toggleH) / 2), toggleW, toggleH};
+  // The switch itself is the shared standalone control; the row only decides
+  // where it sits and whether the switch owns the hit (hitToggleOnly) or the
+  // whole row does (handled by settingRow above).
+  ToggleProps sw;
+  sw.checked = props.checked;
+  sw.action = props.hitToggleOnly ? props.toggleAction : NO_ACTION;
+  sw.value = props.toggleValue;
+  sw.minTouchSize = row.minTouchSize;
+  sw.width = toggleW;
+  sw.height = toggleH;
+  sw.radius = props.radius;
+  sw.knobRadius = props.knobRadius;
+  sw.knobInset = props.knobInset;
+  sw.borderWidth = props.borderWidth;
+  sw.track = props.track;
+  sw.checkedTrack = props.checkedTrack;
+  sw.border = props.border;
+  sw.knob = props.knob;
+  sw.checkedKnob = props.checkedKnob;
+  toggle(frame, toggleRect, sw);
 }
 
-}  // namespace ui
-}  // namespace freeink
+} // namespace ui
+} // namespace freeink

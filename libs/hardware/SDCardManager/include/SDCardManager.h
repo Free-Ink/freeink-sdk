@@ -75,6 +75,14 @@ class SDCardManager {
   using PowerHook = void (*)();
   void setPowerHook(PowerHook hook) { _powerHook = hook; }
 
+#if FREEINK_SD_SDMMC
+  // The raw SDMMC block device (512-byte sector I/O) backing the volume, for
+  // exposing the card over USB-MSC ("USB Transfer" mode). Null until begin()
+  // succeeds. The returned pointer implements SdFat's FsBlockDeviceInterface.
+  // Do NOT touch the filesystem while the card is handed to the USB host.
+  freeink::SdmmcBlockDevice* rawBlockDevice() { return _dev; }
+#endif
+
  static SDCardManager& getInstance() { return instance; }
 
  private:

@@ -28,6 +28,15 @@ class Imu {
   // Reads one accel + gyro sample. Returns false on I2C error.
   bool read(Sample& out);
 
+  // Puts the sensors into hardware standby / power-down. Config registers are
+  // retained, so wake() restores sampling without a full begin(). Returns
+  // false when the IMU is absent or on I2C error.
+  bool sleep();
+
+  // Restarts sampling after sleep(). Returns false when absent or on I2C
+  // error; allow for a settling transient before trusting samples.
+  bool wake();
+
  private:
   bool begun_ = false;
 };

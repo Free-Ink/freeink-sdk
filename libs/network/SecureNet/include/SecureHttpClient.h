@@ -8,7 +8,10 @@
 // that API. Instead this implements the small slice of HTTP/1.1 that firmware
 // needs — GET/POST/PUT with custom headers and a buffered response body —
 // directly over SecureClient, handling Content-Length, chunked, and
-// connection-close-delimited responses.
+// connection-close-delimited responses. Connections are kept alive and reused
+// across requests to the same scheme://host:port (see setReuse), so a burst of
+// requests — an OPDS crawl, a sync exchange, a multi-file download — pays for
+// one TLS handshake instead of one per request.
 //
 // Usage:
 //   SecureHttpClient http;
@@ -20,7 +23,8 @@
 //     http.end();
 //   }
 //
-// Header-only. Callers must pass a final URL (no redirect following here).
+// Header-only. Redirects are returned to the caller by default; opt in to
+// following them with setFollowRedirects().
 //
 // OPT-IN: requires -DFREEINK_NET_WOLFSSL=1 for TLS. With the flag off,
 // SecureClient is an inert stub and https requests fail at connect()
@@ -29,6 +33,7 @@
 
 #include <Arduino.h>
 #include <WiFiClient.h>
+#include <base64.h>
 
 #include <algorithm>
 #include <cctype>
@@ -46,6 +51,15 @@ class SecureHttpClient {
  public:
   using DataCallback = std::function<bool(const uint8_t* data, size_t len)>;
   using AbortCallback = std::function<bool()>;
+  // (bytes so far, total from Content-Length or 0 when unknown).
+  // Return false to abort the transfer.
+  using ProgressCallback = std::function<bool(size_t downloaded, size_t total)>;
+
+  SecureHttpClient() = default;
+  ~SecureHttpClient() { end(); }
+  // Non-copyable: owns a live connection and a Client* into its own members.
+  SecureHttpClient(const SecureHttpClient&) = delete;
+  SecureHttpClient& operator=(const SecureHttpClient&) = delete;
 
   // Skip peer verification (SecureClient does likewise). Required today because
   // the wolfSSL transport has no CA bundle wired up; see setCACert().
@@ -56,6 +70,41 @@ class SecureHttpClient {
     _insecure = false;
   }
   void setTimeout(uint32_t ms) { _timeoutMs = ms; }
+  // Progress reporting for response bodies (download meters). Called after
+  // each delivered chunk with the running byte count; never called for
+  // drained redirect bodies. Returning false aborts the transfer (reported
+  // via callbackAborted()). Clear with nullptr.
+  void setProgressCallback(const ProgressCallback& progress) { _progress = progress; }
+  // Follow up to maxHops redirect hops (default 0: 3xx responses are returned
+  // to the caller, matching the previous behavior). While following, the
+  // intermediate 3xx bodies are drained and discarded; only the final
+  // response reaches the caller. 303 — and, per long-standing convention,
+  // 301/302 after a POST — continue as GET without the request body; 307/308
+  // preserve method and body.
+  void setFollowRedirects(int maxHops) { _followRedirects = maxHops < 0 ? 0 : maxHops; }
+  // Allow a redirect to step down from https to http. Off by default, because
+  // the downgrade silently drops transport security; when refused, following
+  // stops and the caller sees the 3xx.
+  void setAllowRedirectDowngrade(bool allow) { _allowRedirectDowngrade = allow; }
+  // HTTP Basic authentication, sent on every request while set (OPDS servers
+  // commonly protect their catalogs this way). An empty user disables it; an
+  // empty password with a non-empty user is valid per RFC 7617.
+  void setBasicAuth(const std::string& user, const std::string& pass) {
+    _authUser = user;
+    _authPass = pass;
+  }
+  void clearBasicAuth() {
+    _authUser.clear();
+    _authPass.clear();
+  }
+  // Identify the client. Sent on every request: several CDNs (notably
+  // Cloudflare in front of OPDS catalogs) answer UA-less requests with 403.
+  void setUserAgent(const std::string& ua) { _userAgent = ua; }
+  // Keep the connection open between requests to the same scheme://host:port
+  // (the default). Reusing the TLS session skips a full handshake per request —
+  // seconds of latency plus the ECC/RSA heap spike on PSRAM-less boards.
+  // setReuse(false) restores connection-per-request behavior.
+  void setReuse(bool reuse) { _reuse = reuse; }
 
   // Parse the URL and reset per-request state. Returns false on a malformed
   // URL.
@@ -65,9 +114,9 @@ class SecureHttpClient {
     _status = 0;
     return parseUrl(url, _scheme, _host, _path, _port);
   }
-  // Each request uses Connection: close, so there is no socket to release here;
-  // present for symmetry with HTTPClient call sites.
-  void end() {}
+  // Closes the kept-alive connection (if any). Call when done with a server;
+  // the next request transparently reconnects.
+  void end() { closeConnection(); }
 
   void addHeader(const std::string& name, const std::string& value) {
     _headers.push_back(name + ": " + value + "\r\n");
@@ -101,6 +150,47 @@ class SecureHttpClient {
   // an incomplete body from a caller-initiated stop.
   int sendRequest(const char* method, const uint8_t* payload, size_t payloadLen, const DataCallback& onData,
                   const AbortCallback& shouldAbort = nullptr) {
+    std::string activeMethod = method;
+    const uint8_t* activePayload = payload;
+    size_t activePayloadLen = payloadLen;
+    for (int hop = 0;; ++hop) {
+      const int status = sendRequestOnce(activeMethod.c_str(), activePayload, activePayloadLen, onData, shouldAbort);
+      if (status < 0 || hop >= _followRedirects || !isRedirectStatus(status)) return status;
+
+      const std::string location = getHeader("location");
+      if (location.empty()) return status;
+      const std::string base = _scheme + "://" + hostHeader() + _path;
+      std::string next;
+      if (!resolveUrl(base, location, next)) return status;
+      std::string scheme;
+      std::string host;
+      std::string path;
+      uint16_t port = 0;
+      if (!parseUrl(next, scheme, host, path, port)) return status;
+      // Refuse to silently drop transport security: a https -> http redirect
+      // stops here (the caller sees the 3xx) unless explicitly allowed.
+      if (_scheme == "https" && scheme == "http" && !_allowRedirectDowngrade) return status;
+      _scheme = scheme;
+      _host = host;
+      _path = path;
+      _port = port;
+
+      // 303 always continues as GET; after 301/302, long-standing convention
+      // downgrades POST to GET too. 307/308 preserve method and body.
+      if ((status == 301 || status == 302 || status == 303) && activeMethod != "GET" && activeMethod != "HEAD") {
+        activeMethod = "GET";
+        activePayload = nullptr;
+        activePayloadLen = 0;
+      }
+    }
+  }
+
+  // One request/response transaction against the URL state — never follows
+  // redirects. When following is enabled and the response is a 3xx, its body
+  // is drained but NOT delivered to onData (only the final response's body
+  // reaches the caller's sink).
+  int sendRequestOnce(const char* method, const uint8_t* payload, size_t payloadLen, const DataCallback& onData,
+                      const AbortCallback& shouldAbort = nullptr) {
     _status = 0;
     _body.clear();
     _responseHeaders.clear();
@@ -110,78 +200,98 @@ class SecureHttpClient {
     _callbackAborted = false;
     _aborted = false;
 
-    WiFiClient plain;
-    SecureClient secure;
-    Client* client;
-    if (_scheme == "https") {
-      if (_insecure) {
-        secure.setInsecure();
-      } else if (_rootCA) {
-        secure.setCACert(_rootCA);
+    // One transparent retry: a keep-alive server may close the connection
+    // between requests at any time, and the race surfaces as a write failure
+    // or a missing status line on a socket that looked connected. That is a
+    // property of the reused connection, not of the request, so it earns one
+    // attempt on a fresh connection. A request that failed on a fresh
+    // connection is a real error and is not retried.
+    for (int attempt = 0; attempt < 2; ++attempt) {
+      const bool reusing = connectionMatches();
+      if (isAborted(shouldAbort)) return -1;
+      if (!ensureConnected()) return -1;
+
+      if (!writeRequest(method, payload, payloadLen)) {
+        closeConnection();
+        if (reusing && attempt == 0) continue;
+        return -1;
       }
-      client = &secure;
-    } else {
-      client = &plain;
-    }
-    client->setTimeout(_timeoutMs / 1000);
-    if (isAborted(shouldAbort)) return -1;
-    if (!client->connect(_host.c_str(), _port)) return -1;
 
-    std::string req =
-        std::string(method) + " " + _path + " HTTP/1.1\r\nHost: " + hostHeader() + "\r\nConnection: close\r\n";
-    for (const std::string& h : _headers) req += h;
-    if (payload && payloadLen) req += "Content-Length: " + std::to_string(payloadLen) + "\r\n";
-    req += "\r\n";
-    client->write(reinterpret_cast<const uint8_t*>(req.data()), req.size());
-    if (payload && payloadLen) client->write(payload, payloadLen);
+      const unsigned long headerDeadline = millis() + _timeoutMs;
+      std::string line;
+      if (!readLine(*_conn, line, headerDeadline, shouldAbort)) {
+        closeConnection();
+        if (reusing && attempt == 0 && !_aborted) continue;
+        return -1;
+      }
+      // "HTTP/1.1 200 OK" — the status code starts at offset 9.
+      _status = line.size() >= 12 ? atoi(line.c_str() + 9) : 0;
+      // HTTP/1.0 peers default to connection-per-request; only an explicit
+      // Connection: keep-alive header (below) overrides that.
+      bool keepAlive = line.compare(0, 9, "HTTP/1.0 ") != 0;
 
-    const unsigned long headerDeadline = millis() + _timeoutMs;
-    std::string line;
-    if (!readLine(*client, line, headerDeadline, shouldAbort)) {
-      client->stop();
-      return -1;
-    }
-    // "HTTP/1.1 200 OK" — the status code starts at offset 9.
-    _status = line.size() >= 12 ? atoi(line.c_str() + 9) : 0;
-
-    std::string transferEncoding;
-    while (readLine(*client, line, headerDeadline, shouldAbort)) {
-      if (line.empty()) break;  // end of headers
-      const size_t colon = line.find(':');
-      if (colon == std::string::npos) continue;
-      std::string name = line.substr(0, colon);
-      std::string value = line.substr(colon + 1);
-      while (!value.empty() && value.front() == ' ') value.erase(value.begin());
-      std::transform(name.begin(), name.end(), name.begin(),
-                     [](unsigned char c) { return static_cast<char>(tolower(c)); });
-      _responseHeaders.push_back(Header{name, value});
-      if (name == "content-length") {
-        _contentLength = static_cast<size_t>(strtoul(value.c_str(), nullptr, 10));
-        _haveContentLength = true;
-      } else if (name == "transfer-encoding") {
-        std::transform(value.begin(), value.end(), value.begin(),
+      std::string transferEncoding;
+      while (readLine(*_conn, line, headerDeadline, shouldAbort)) {
+        if (line.empty()) break;  // end of headers
+        const size_t colon = line.find(':');
+        if (colon == std::string::npos) continue;
+        std::string name = line.substr(0, colon);
+        std::string value = line.substr(colon + 1);
+        while (!value.empty() && value.front() == ' ') value.erase(value.begin());
+        std::transform(name.begin(), name.end(), name.begin(),
                        [](unsigned char c) { return static_cast<char>(tolower(c)); });
-        transferEncoding = value;
+        _responseHeaders.push_back(Header{name, value});
+        if (name == "content-length") {
+          _contentLength = static_cast<size_t>(strtoul(value.c_str(), nullptr, 10));
+          _haveContentLength = true;
+        } else if (name == "transfer-encoding") {
+          std::transform(value.begin(), value.end(), value.begin(),
+                         [](unsigned char c) { return static_cast<char>(tolower(c)); });
+          transferEncoding = value;
+        } else if (name == "connection") {
+          std::string v = value;
+          std::transform(v.begin(), v.end(), v.begin(), [](unsigned char c) { return static_cast<char>(tolower(c)); });
+          if (v.find("close") != std::string::npos) keepAlive = false;
+          else if (v.find("keep-alive") != std::string::npos) keepAlive = true;
+        }
       }
-    }
-    if (_aborted) {
-      client->stop();
-      return -1;
-    }
+      if (_aborted) {
+        closeConnection();
+        return -1;
+      }
 
-    if (transferEncoding.find("chunked") != std::string::npos) {
-      _bodyComplete = readChunked(*client, onData, shouldAbort);
-    } else if (transferEncoding.empty() || transferEncoding == "identity") {
-      if (_haveContentLength) {
-        _bodyComplete = readFixed(*client, _contentLength, onData, shouldAbort);
+      // A close-delimited body (no framing) ends WITH the connection, so it can
+      // never leave a reusable socket behind.
+      // A 3xx body that is about to be followed is protocol plumbing, not
+      // payload: drain it (keeping the connection reusable for the next hop)
+      // without touching the caller's sink.
+      const bool discardBody = _followRedirects > 0 && isRedirectStatus(_status);
+      const DataCallback discard = [](const uint8_t*, size_t) { return true; };
+      const DataCallback& bodySink = discardBody ? discard : onData;
+      _downloaded = 0;
+      _reportProgress = !discardBody && static_cast<bool>(_progress);
+
+      bool reusableFraming = true;
+      if (transferEncoding.find("chunked") != std::string::npos) {
+        _bodyComplete = readChunked(*_conn, bodySink, shouldAbort);
+      } else if (transferEncoding.empty() || transferEncoding == "identity") {
+        if (_haveContentLength) {
+          _bodyComplete = readFixed(*_conn, _contentLength, bodySink, shouldAbort);
+        } else {
+          _bodyComplete = readUntilClose(*_conn, bodySink, shouldAbort);
+          reusableFraming = false;
+        }
       } else {
-        _bodyComplete = readUntilClose(*client, onData, shouldAbort);
+        _bodyComplete = false;
       }
-    } else {
-      _bodyComplete = false;
+
+      // Reuse only a provably clean connection. An aborted/truncated body
+      // leaves undrained bytes on the socket, and the next request would parse
+      // leftover body data as its status line.
+      if (!_reuse || !keepAlive || !_bodyComplete || !reusableFraming) closeConnection();
+      return _status;
     }
-    client->stop();
-    return _status;
+    return -1;
   }
 
   const std::string& getString() const { return _body; }
@@ -233,11 +343,19 @@ class SecureHttpClient {
     std::string value;
   };
 
+  static bool isRedirectStatus(int status) {
+    return status == 301 || status == 302 || status == 303 || status == 307 || status == 308;
+  }
+
   static bool parseUrl(const std::string& url, std::string& scheme, std::string& host, std::string& path,
                        uint16_t& port) {
     const size_t schemeEnd = url.find("://");
     if (schemeEnd == std::string::npos) return false;
+    // URL schemes are case-insensitive (RFC 3986 §3.1): "HTTPS://..." from a
+    // server's Location header or user input must parse like "https://...".
     scheme = url.substr(0, schemeEnd);
+    std::transform(scheme.begin(), scheme.end(), scheme.begin(),
+                   [](unsigned char c) { return static_cast<char>(tolower(c)); });
     const size_t hostStart = schemeEnd + 3;
     const size_t pathStart = url.find('/', hostStart);
     const std::string hostPort =
@@ -264,6 +382,67 @@ class SecureHttpClient {
     return host + ":" + std::to_string(port);
   }
 
+  // True when the kept-alive connection matches the target of the next request
+  // and still looks alive. "Looks" is best-effort: the server may have closed
+  // it already, which the send path handles with its one-shot retry.
+  bool connectionMatches() const {
+    return _conn && _conn->connected() && _connHttps == (_scheme == "https") && _connHost == _host &&
+           _connPort == _port;
+  }
+
+  // Reuse the kept-alive connection when it matches, else (re)connect.
+  bool ensureConnected() {
+    if (connectionMatches()) return true;
+    closeConnection();
+    if (_scheme == "https") {
+      if (_insecure) {
+        _secure.setInsecure();
+      } else if (_rootCA) {
+        _secure.setCACert(_rootCA);
+      }
+      _secure.setTimeout(_timeoutMs / 1000);
+      if (!_secure.connect(_host.c_str(), _port)) return false;
+      _conn = &_secure;
+      _connHttps = true;
+    } else {
+      _plain.setTimeout(_timeoutMs / 1000);
+      if (!_plain.connect(_host.c_str(), _port)) return false;
+      _conn = &_plain;
+      _connHttps = false;
+    }
+    _connHost = _host;
+    _connPort = _port;
+    return true;
+  }
+
+  void closeConnection() {
+    if (_conn) {
+      _conn->stop();
+      _conn = nullptr;
+    }
+    _connHost.clear();
+    _connPort = 0;
+    _connHttps = false;
+  }
+
+  // Request line + headers (+ body). Write results are checked: a stale
+  // keep-alive socket often surfaces first as a failed write.
+  bool writeRequest(const char* method, const uint8_t* payload, size_t payloadLen) {
+    std::string req = std::string(method) + " " + _path + " HTTP/1.1\r\nHost: " + hostHeader() + "\r\n";
+    req += "User-Agent: " + _userAgent + "\r\n";
+    req += _reuse ? "Connection: keep-alive\r\n" : "Connection: close\r\n";
+    if (!_authUser.empty()) {
+      const std::string creds = _authUser + ":" + _authPass;
+      req += "Authorization: Basic " + std::string(base64::encode(creds.c_str()).c_str()) + "\r\n";
+    }
+    for (const std::string& h : _headers) req += h;
+    if (payload && payloadLen) req += "Content-Length: " + std::to_string(payloadLen) + "\r\n";
+    req += "\r\n";
+    if (_conn->write(reinterpret_cast<const uint8_t*>(req.data()), req.size()) != req.size()) return false;
+    if (payload && payloadLen && _conn->write(payload, payloadLen) != payloadLen) return false;
+    return true;
+  }
+
   bool isAborted(const AbortCallback& shouldAbort) {
     if (shouldAbort && shouldAbort()) {
       _aborted = true;
@@ -274,6 +453,11 @@ class SecureHttpClient {
 
   bool emitBody(const DataCallback& onData, const uint8_t* data, size_t len) {
     if (!onData(data, len)) {
+      _callbackAborted = true;
+      return false;
+    }
+    _downloaded += len;
+    if (_reportProgress && !_progress(_downloaded, _haveContentLength ? _contentLength : 0)) {
       _callbackAborted = true;
       return false;
     }
@@ -363,8 +547,23 @@ class SecureHttpClient {
     }
   }
 
-  static constexpr size_t READ_CHUNK = 1024;  // body read buffer; keep TLS downloads moving
-  static constexpr size_t MAX_LINE = 4096;    // header / chunk-size line cap
+  // Body read buffer. 2 KB drains wolfSSL's decrypted TLS records in few
+  // enough read() calls to keep large downloads moving: at 512 B a consuming
+  // firmware measured ~30 KB/s and slow CDNs (Cloudflare) dropped the
+  // connection mid-stream; 2 KB removed the stall. Stack-allocated in the
+  // body readers, so kept modest.
+  static constexpr size_t READ_CHUNK = 2048;
+  static constexpr size_t MAX_LINE = 4096;  // header / chunk-size line cap
+
+  // Kept-alive connection state. _conn points at _secure or _plain while a
+  // connection is held open, and null otherwise.
+  WiFiClient _plain;
+  SecureClient _secure;
+  Client* _conn = nullptr;
+  std::string _connHost;
+  uint16_t _connPort = 0;
+  bool _connHttps = false;
+  bool _reuse = true;
 
   std::string _scheme;
   std::string _host;
@@ -375,7 +574,15 @@ class SecureHttpClient {
   int _status = 0;
   size_t _contentLength = 0;
   const char* _rootCA = nullptr;
+  std::string _userAgent = "FreeInk-ESP32";
+  std::string _authUser;
+  std::string _authPass;
   bool _insecure = false;
+  int _followRedirects = 0;
+  bool _allowRedirectDowngrade = false;
+  ProgressCallback _progress;
+  size_t _downloaded = 0;
+  bool _reportProgress = false;
   bool _haveContentLength = false;
   bool _bodyComplete = false;
   bool _callbackAborted = false;

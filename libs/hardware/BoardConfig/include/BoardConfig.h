@@ -136,6 +136,17 @@
 #define FREEINK_CAP_FRONTLIGHT \
   (FREEINK_DEVICE_DELINK || FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_X4PRO)
 #endif
+// USB Mass Storage ("USB Transfer" mode): exposes the SD card to a host over
+// USB-MSC. OPT-IN (default off), NOT board-derived: it forces the build into
+// USB-OTG mode (ARDUINO_USB_MODE=0 + CONFIG_TINYUSB_MSC_ENABLED), which changes
+// how the USB serial console works — so a board enables it in its OWN env
+// alongside those flags (e.g. X4 Pro adds -DFREEINK_CAP_USB_MSC=1
+// -DARDUINO_USB_MODE=0 -DARDUINO_USB_CDC_ON_BOOT=1). Native-USB (ESP32-S3/C3
+// OTG) targets only. When 0, UsbMassStorage links stub bodies and pulls in no
+// TinyUSB/MSC code. Requires SDMMC/SPI storage exposing a block device.
+#ifndef FREEINK_CAP_USB_MSC
+#define FREEINK_CAP_USB_MSC 0
+#endif
 // BLE HID host. The BleKeyboardHost lib pairs/connects to Bluetooth Low Energy
 // HID peripherals such as keyboards and page turners and emits translated key
 // events; it compiles its NimBLE central code only when this is set, otherwise

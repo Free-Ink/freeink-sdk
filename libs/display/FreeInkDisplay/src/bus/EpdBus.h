@@ -9,6 +9,10 @@
 
 #include <Arduino.h>
 #include <SPI.h>
+#include <utility>
+#if defined(ARDUINO) && defined(CONFIG_PM_ENABLE) && CONFIG_PM_ENABLE
+#include <esp_pm.h>
+#endif
 
 namespace freeink {
 
@@ -33,9 +37,107 @@ struct EpdPins {
 };
 
 class EpdBus {
+ private:
+#if defined(ARDUINO) && defined(CONFIG_PM_ENABLE) && CONFIG_PM_ENABLE
+  // Holds APB at its maximum while SPI timing is configured or bytes are on the bus.
+  // Use for SPI.begin() and every SPI transaction so DFS cannot change the APB clock mid-operation.
+  esp_pm_lock_handle_t _spiApbLock = nullptr;
+
+  // Blocks automatic light sleep while panel rails, reset GPIO, or BUSY polling are active.
+  // Use around non-SPI panel control sequences that must not be paused by light sleep.
+  esp_pm_lock_handle_t _noLightSleepLock = nullptr;
+
+  template <esp_pm_lock_handle_t EpdBus::*Lock>
+  class PmLockGuard {
+   public:
+    PmLockGuard() = default;
+    explicit PmLockGuard(EpdBus& bus) : _bus(&bus) { acquire(); }
+    ~PmLockGuard() { release(); }
+
+    PmLockGuard(const PmLockGuard&) = delete;
+    PmLockGuard& operator=(const PmLockGuard&) = delete;
+    PmLockGuard(PmLockGuard&& other) noexcept : _bus(other._bus), _acquired(other._acquired) {
+      other._bus = nullptr;
+      other._acquired = false;
+    }
+    PmLockGuard& operator=(PmLockGuard&& other) noexcept {
+      if (this != &other) {
+        release();
+        _bus = other._bus;
+        _acquired = other._acquired;
+        other._bus = nullptr;
+        other._acquired = false;
+      }
+      return *this;
+    }
+
+    void acquire() {
+      if (_acquired || _bus == nullptr) {
+        return;
+      }
+      const esp_pm_lock_handle_t lock = _bus->*Lock;
+      _acquired = lock != nullptr && esp_pm_lock_acquire(lock) == ESP_OK;
+    }
+
+    void release() {
+      if (!_acquired || _bus == nullptr) {
+        return;
+      }
+      const esp_pm_lock_handle_t lock = _bus->*Lock;
+      if (lock != nullptr) {
+        esp_pm_lock_release(lock);
+      }
+      _acquired = false;
+    }
+
+   private:
+    EpdBus* _bus = nullptr;
+    bool _acquired = false;
+  };
+
+  using SpiApbLockGuard = PmLockGuard<&EpdBus::_spiApbLock>;
+  using NoLightSleepLockGuard = PmLockGuard<&EpdBus::_noLightSleepLock>;
+#else
+  class SpiApbLockGuard {
+   public:
+    SpiApbLockGuard() = default;
+    explicit SpiApbLockGuard(EpdBus&) {}
+    void release() {}
+  };
+
+  class NoLightSleepLockGuard {
+   public:
+    explicit NoLightSleepLockGuard(EpdBus&) {}
+  };
+#endif
+
  public:
+  class Transaction {
+   public:
+    Transaction() = default;
+    explicit Transaction(EpdBus& bus);
+    ~Transaction();
+
+    Transaction(const Transaction&) = delete;
+    Transaction& operator=(const Transaction&) = delete;
+    Transaction(Transaction&& other) noexcept;
+    Transaction& operator=(Transaction&& other) noexcept;
+
+    void end();
+    void cmd(uint8_t c);
+    void data(uint8_t d);
+    uint8_t transfer(uint8_t d);
+    void writeBytes(const uint8_t* d, uint16_t len);
+
+   private:
+    EpdBus* _bus = nullptr;
+    SpiApbLockGuard _pmLock;
+    bool _active = false;
+  };
+
   // coCs: a co-resident chip-select (e.g. the SD card sharing the SPI bus on
   // M5 PaperColor) that must be held de-asserted during panel transactions.
+  ~EpdBus();
   void begin(const EpdPins& pins, uint32_t spiHz, BusyPolarity busy, int8_t spiMiso = -1, int8_t coCs = -1);
 
   // Hardware reset pulse; extraSettleMs adds a post-reset settle (X3 needs 50 ms).
@@ -50,12 +152,8 @@ class EpdBus {
   void cmdData(uint8_t c, const uint8_t* d, uint16_t len);
   void cmdData2(uint8_t c, uint8_t d0, uint8_t d1);
 
-  // Grouped transaction primitives (used by multi-step sequences, e.g. M5).
-  void beginTxn();
-  void endTxn();
-  void rawCmd(uint8_t c);                            // assumes a transaction is open
-  void rawData(uint8_t d);                           // assumes a transaction is open
-  void rawWriteBytes(const uint8_t* d, uint16_t len);  // bulk data, transaction open
+  // Scoped SPI/APB transaction that selects the panel and de-selects it on exit.
+  [[nodiscard]] Transaction beginTxn();
 
   // Wait for a refresh/operation to finish using the configured (or given) polarity.
   void waitBusy(const char* tag = nullptr);
@@ -126,6 +224,9 @@ class EpdBus {
     }
     delay(fallbackDelayMs);
   }
+
+  void createPmLocks();
+  [[nodiscard]] Transaction transaction();
 
   EpdPins _pins{-1, -1, -1, -1, -1, -1};
   SPISettings _spi;

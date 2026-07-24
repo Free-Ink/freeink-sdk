@@ -1,19 +1,14 @@
 #include "EpdBus.h"
 
 #include <driver/gpio.h>
+#if defined(ARDUINO) && defined(CONFIG_PM_ENABLE) && CONFIG_PM_ENABLE
+#include <esp_pm.h>
+#endif
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 
 namespace freeink {
 
-// ── ISR-driven waveform-completion notification ──────────────────────────────
-// A single binary semaphore, shared between the BUSY-pin GPIO ISR and
-// waitRefreshComplete(). The ISR is attached only for the duration of one
-// refresh wait (and only after the waveform is confirmed running), so it fires
-// on the real completion edge, not on the idle->busy transition or SPI noise.
-// File-static so the plain-C ISR can reach it; only one panel is ever active at
-// a time, so a single instance is safe. DRAM_ATTR keeps it out of flash for the
-// IRAM_ATTR ISR. Ported from the CrossPoint community-sdk EInkDisplay.
 static DRAM_ATTR SemaphoreHandle_t s_epdRefreshDone = nullptr;
 
 static void IRAM_ATTR epdBusyIsr() {
@@ -23,14 +18,80 @@ static void IRAM_ATTR epdBusyIsr() {
   if (woken) portYIELD_FROM_ISR();
 }
 
+EpdBus::Transaction::Transaction(EpdBus& bus) : _bus(&bus), _pmLock(bus), _active(true) {
+  SPI.beginTransaction(_bus->_spi);
+}
+
+EpdBus::Transaction::~Transaction() { end(); }
+
+EpdBus::Transaction::Transaction(Transaction&& other) noexcept
+    : _bus(other._bus), _pmLock(std::move(other._pmLock)), _active(other._active) {
+  other._bus = nullptr;
+  other._active = false;
+}
+
+EpdBus::Transaction& EpdBus::Transaction::operator=(Transaction&& other) noexcept {
+  if (this != &other) {
+    end();
+    _bus = other._bus;
+    _pmLock = std::move(other._pmLock);
+    _active = other._active;
+    other._bus = nullptr;
+    other._active = false;
+  }
+  return *this;
+}
+
+void EpdBus::Transaction::end() {
+  if (!_active || _bus == nullptr) {
+    return;
+  }
+  digitalWrite(_bus->_pins.cs, HIGH);
+  SPI.endTransaction();
+  _pmLock.release();
+  _active = false;
+}
+
+uint8_t EpdBus::Transaction::transfer(uint8_t d) { return SPI.transfer(d); }
+
+void EpdBus::Transaction::cmd(uint8_t c) {
+  digitalWrite(_bus->_pins.dc, LOW);
+  SPI.transfer(c);
+  digitalWrite(_bus->_pins.dc, HIGH);
+}
+
+void EpdBus::Transaction::data(uint8_t d) {
+  digitalWrite(_bus->_pins.dc, HIGH);
+  SPI.transfer(d);
+}
+
+void EpdBus::Transaction::writeBytes(const uint8_t* d, uint16_t len) {
+  digitalWrite(_bus->_pins.dc, HIGH);
+  SPI.writeBytes(d, len);
+}
+
+EpdBus::~EpdBus() {
+#if defined(ARDUINO) && defined(CONFIG_PM_ENABLE) && CONFIG_PM_ENABLE
+  if (_spiApbLock != nullptr) {
+    esp_pm_lock_delete(_spiApbLock);
+    _spiApbLock = nullptr;
+  }
+  if (_noLightSleepLock != nullptr) {
+    esp_pm_lock_delete(_noLightSleepLock);
+    _noLightSleepLock = nullptr;
+  }
+#endif
+}
+
 void EpdBus::begin(const EpdPins& pins, uint32_t spiHz, BusyPolarity busy, int8_t spiMiso, int8_t coCs) {
+  createPmLocks();
+  NoLightSleepLockGuard noLightSleepLock(*this);
   _pins = pins;
   _spiHz = spiHz;
   _busy = busy;
   _coCs = coCs;
   _spi = SPISettings(spiHz, MSBFIRST, SPI_MODE0);
 
-  // One-shot semaphore backing waitRefreshComplete()'s ISR wait (created once).
   if (!s_epdRefreshDone) s_epdRefreshDone = xSemaphoreCreateBinary();
 
   // Power the EPD rail first (boards that gate it, e.g. Sticky's EP_PWR_EN), so the
@@ -45,7 +106,12 @@ void EpdBus::begin(const EpdPins& pins, uint32_t spiHz, BusyPolarity busy, int8_
     delay(100);
   }
 
-  SPI.begin(pins.sclk, spiMiso, pins.mosi, pins.cs);
+  {
+    // SPI.begin() configures the peripheral/dividers from the current APB clock;
+    // keep APB fixed here so the setup matches the requested display SPI rate.
+    SpiApbLockGuard spiPmLock(*this);
+    SPI.begin(pins.sclk, spiMiso, pins.mosi, pins.cs);
+  }
 
   pinMode(pins.cs, OUTPUT);
   pinMode(pins.dc, OUTPUT);
@@ -60,6 +126,7 @@ void EpdBus::begin(const EpdPins& pins, uint32_t spiHz, BusyPolarity busy, int8_
 }
 
 void EpdBus::reset(uint16_t extraSettleMs) {
+  NoLightSleepLockGuard noLightSleepLock(*this);
   digitalWrite(_pins.rst, HIGH);
   delay(20);
   digitalWrite(_pins.rst, LOW);
@@ -71,44 +138,47 @@ void EpdBus::reset(uint16_t extraSettleMs) {
   }
 }
 
+EpdBus::Transaction EpdBus::transaction() { return Transaction(*this); }
+
+EpdBus::Transaction EpdBus::beginTxn() {
+  if (_coCs >= 0) {
+    digitalWrite(_coCs, HIGH);
+  }
+  auto txn = transaction();
+  digitalWrite(_pins.cs, LOW);
+  return txn;
+}
+
 void EpdBus::cmd(uint8_t c) {
-  SPI.beginTransaction(_spi);
+  auto txn = transaction();
   digitalWrite(_pins.dc, LOW);
   digitalWrite(_pins.cs, LOW);
-  SPI.transfer(c);
-  digitalWrite(_pins.cs, HIGH);
-  SPI.endTransaction();
+  txn.transfer(c);
 }
 
 void EpdBus::data(uint8_t d) {
-  SPI.beginTransaction(_spi);
+  auto txn = transaction();
   digitalWrite(_pins.dc, HIGH);
   digitalWrite(_pins.cs, LOW);
-  SPI.transfer(d);
-  digitalWrite(_pins.cs, HIGH);
-  SPI.endTransaction();
+  txn.transfer(d);
 }
 
 void EpdBus::data(const uint8_t* d, uint16_t len) {
-  SPI.beginTransaction(_spi);
+  auto txn = transaction();
   digitalWrite(_pins.dc, HIGH);
   digitalWrite(_pins.cs, LOW);
   SPI.writeBytes(d, len);
-  digitalWrite(_pins.cs, HIGH);
-  SPI.endTransaction();
 }
 
 void EpdBus::cmdData(uint8_t c, const uint8_t* d, uint16_t len) {
-  SPI.beginTransaction(_spi);
+  auto txn = transaction();
   digitalWrite(_pins.cs, LOW);
   digitalWrite(_pins.dc, LOW);
-  SPI.transfer(c);
+  txn.transfer(c);
   if (len > 0 && d != nullptr) {
     digitalWrite(_pins.dc, HIGH);
     SPI.writeBytes(d, len);
   }
-  digitalWrite(_pins.cs, HIGH);
-  SPI.endTransaction();
 }
 
 void EpdBus::cmdData2(uint8_t c, uint8_t d0, uint8_t d1) {
@@ -116,33 +186,19 @@ void EpdBus::cmdData2(uint8_t c, uint8_t d0, uint8_t d1) {
   cmdData(c, d, 2);
 }
 
-void EpdBus::beginTxn() {
-  if (_coCs >= 0) {
-    digitalWrite(_coCs, HIGH);
+void EpdBus::createPmLocks() {
+#if defined(ARDUINO) && defined(CONFIG_PM_ENABLE) && CONFIG_PM_ENABLE
+  if (_spiApbLock == nullptr) {
+    if (esp_pm_lock_create(ESP_PM_APB_FREQ_MAX, 0, "freeink-epd-spi", &_spiApbLock) != ESP_OK) {
+      _spiApbLock = nullptr;
+    }
   }
-  SPI.beginTransaction(_spi);
-  digitalWrite(_pins.cs, LOW);
-}
-
-void EpdBus::endTxn() {
-  digitalWrite(_pins.cs, HIGH);
-  SPI.endTransaction();
-}
-
-void EpdBus::rawCmd(uint8_t c) {
-  digitalWrite(_pins.dc, LOW);
-  SPI.transfer(c);
-  digitalWrite(_pins.dc, HIGH);
-}
-
-void EpdBus::rawData(uint8_t d) {
-  digitalWrite(_pins.dc, HIGH);
-  SPI.transfer(d);
-}
-
-void EpdBus::rawWriteBytes(const uint8_t* d, uint16_t len) {
-  digitalWrite(_pins.dc, HIGH);
-  SPI.writeBytes(d, len);
+  if (_noLightSleepLock == nullptr) {
+    if (esp_pm_lock_create(ESP_PM_NO_LIGHT_SLEEP, 0, "freeink-epd-bus", &_noLightSleepLock) != ESP_OK) {
+      _noLightSleepLock = nullptr;
+    }
+  }
+#endif
 }
 
 void EpdBus::waitBusy(const char* tag) { waitBusy(_busy, tag); }
@@ -222,60 +278,35 @@ void EpdBus::waitBusy(BusyPolarity p, const char* tag) {
 }
 
 void EpdBus::waitRefreshComplete(const char* tag) {
-  // A host that installed a busy-wait slice hook (e.g. CrossPoint light-sleeping
-  // through the refresh) must keep the polling path: waitBusy() invokes the slice
-  // hook on each idle step, while this ISR path sleeps the task on a semaphore and
-  // never calls it. Bypassing the hook costs that host its power policy (~9% more
-  // per refresh, measured ~29 mC vs ~26.5 mC on X3), and is a latent hazard: edge
-  // interrupts do not fire during light sleep, so a completion edge taken while the
-  // host is slept would be missed and the wait would stall to its 30 s timeout. The
-  // slice hook already delivers GPIO-precise wake, so the ISR path buys these hosts
-  // nothing — fall back to the hooked poll.
   if (_busyWaitSliceHook != nullptr) {
     waitBusy(tag);
     return;
   }
-  // ISR-driven completion wait: sleep the task on a semaphore and wake on the
-  // exact BUSY completion edge, instead of polling every 1 ms. Falls back to
-  // polling if the semaphore could not be created.
   if (!s_epdRefreshDone) {
     waitBusy(tag);
     return;
   }
-  // Levels/edge by polarity. X4 (ActiveHigh): working HIGH, done on the HIGH->LOW
-  // (FALLING) edge. X3 (X3TwoPhase) / ActiveLow: working LOW, done on the LOW->HIGH
-  // (RISING) edge.
+
   const bool activeHigh = (_busy == BusyPolarity::ActiveHigh);
   const int doneEdge = activeHigh ? FALLING : RISING;
   const int doneLevel = activeHigh ? LOW : HIGH;
   const int workingLevel = activeHigh ? HIGH : LOW;
   const unsigned long start = millis();
 
-  // Confirm the waveform is actually running (BUSY at the working level) before
-  // arming, so the already-done fast path below can't mistake the pre-start idle
-  // level for completion. Bounded poll: if BUSY never shows the working level the
-  // refresh was a no-op or already finished, and the fast path handles it. This
-  // is a no-op for X3 (displayStart already drove BUSY to LOW) and ~instant for
-  // X4 (SSD1677 asserts BUSY within microseconds of MASTER_ACTIVATION).
   {
     const unsigned long c0 = millis();
     while (digitalRead(_pins.busy) != workingLevel && millis() - c0 < 20) delay(1);
   }
 
-  xSemaphoreTake(s_epdRefreshDone, 0);  // drain any stale token
+  xSemaphoreTake(s_epdRefreshDone, 0);
   attachInterrupt(digitalPinToInterrupt(_pins.busy), epdBusyIsr, doneEdge);
 
-  // Fast path: the waveform already finished (edge passed before we armed, or a
-  // no-op refresh) — BUSY sits at the done level. Nothing to wait for. Safe
-  // against the arm/edge race: the binary semaphore latches a give from the ISR,
-  // so a take below returns immediately if the edge fired just after arming.
   if (digitalRead(_pins.busy) == doneLevel) {
     detachInterrupt(digitalPinToInterrupt(_pins.busy));
     xSemaphoreTake(s_epdRefreshDone, 0);
     return;
   }
 
-  // Long sleep — fire the power hooks (if any) around it, matching the poll path.
   const bool hook = (_busyWaitBeginHook != nullptr);
   if (hook) _busyWaitBeginHook();
   xSemaphoreTake(s_epdRefreshDone, pdMS_TO_TICKS(30000));
@@ -304,11 +335,10 @@ void EpdBus::writeMirroredPlane(const uint8_t* plane, uint16_t height, uint16_t 
 
 void EpdBus::sendPlaneFlipped(uint8_t ramCmd, const uint8_t* plane, uint16_t height, uint16_t widthBytes) {
   cmd(ramCmd);  // own CS pulse
-  beginTxn();   // single CS-low burst for the whole plane
+  auto txn = beginTxn();  // single CS-low burst for the whole plane
   for (int y = static_cast<int>(height) - 1; y >= 0; y--) {
-    rawWriteBytes(plane + static_cast<uint32_t>(y) * widthBytes, widthBytes);
+    txn.writeBytes(plane + static_cast<uint32_t>(y) * widthBytes, widthBytes);
   }
-  endTxn();
 }
 
 void EpdBus::fillPlane(uint8_t ramCmd, uint8_t fillByte, uint16_t height, uint16_t widthBytes) {
@@ -316,11 +346,10 @@ void EpdBus::fillPlane(uint8_t ramCmd, uint8_t fillByte, uint16_t height, uint16
   if (widthBytes > sizeof(row)) widthBytes = sizeof(row);
   memset(row, fillByte, widthBytes);
   cmd(ramCmd);
-  beginTxn();
+  auto txn = beginTxn();
   for (uint16_t y = 0; y < height; y++) {
-    rawWriteBytes(row, widthBytes);
+    txn.writeBytes(row, widthBytes);
   }
-  endTxn();
 }
 
 }  // namespace freeink

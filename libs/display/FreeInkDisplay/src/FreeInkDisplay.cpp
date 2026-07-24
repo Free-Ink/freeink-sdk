@@ -1,11 +1,15 @@
 #include "FreeInkDisplay.h"
 
 #include <BoardConfig.h>
+#include <sdkconfig.h>
 
 #include <cstring>
 #ifndef ARDUINO
 #include <fstream>
 #include <vector>
+#endif
+#if defined(ARDUINO) && CONFIG_PM_ENABLE
+#include <esp_pm.h>
 #endif
 #if FREEINK_FB_PSRAM
 #include <cstdlib>
@@ -51,6 +55,46 @@ RefreshMode toInternal(FreeInkDisplay::RefreshMode m) {
     default: return RefreshMode::Fast;
   }
 }
+
+#if defined(ARDUINO) && CONFIG_PM_ENABLE
+esp_pm_lock_handle_t displayNoLightSleepLock() {
+  static esp_pm_lock_handle_t lock = nullptr;
+  static bool initialized = false;
+  if (!initialized) {
+    initialized = true;
+    if (esp_pm_lock_create(ESP_PM_NO_LIGHT_SLEEP, 0, "freeink-display", &lock) != ESP_OK) {
+      lock = nullptr;
+    }
+  }
+  return lock;
+}
+
+class DisplayPmLock {
+ public:
+  DisplayPmLock() {
+    _lock = displayNoLightSleepLock();
+    _acquired = _lock != nullptr && esp_pm_lock_acquire(_lock) == ESP_OK;
+  }
+
+  ~DisplayPmLock() {
+    if (_acquired) esp_pm_lock_release(_lock);
+  }
+
+  DisplayPmLock(const DisplayPmLock&) = delete;
+  DisplayPmLock& operator=(const DisplayPmLock&) = delete;
+
+ private:
+  esp_pm_lock_handle_t _lock = nullptr;
+  bool _acquired = false;
+};
+#else
+class DisplayPmLock {
+ public:
+  DisplayPmLock() = default;
+  DisplayPmLock(const DisplayPmLock&) = delete;
+  DisplayPmLock& operator=(const DisplayPmLock&) = delete;
+};
+#endif
 }  // namespace
 
 FreeInkDisplay::FreeInkDisplay(int8_t sclk, int8_t mosi, int8_t cs, int8_t dc, int8_t rst, int8_t busy)
@@ -122,6 +166,7 @@ void FreeInkDisplay::selectDriver() {
 }
 
 void FreeInkDisplay::begin() {
+  DisplayPmLock pmLock;
   selectDriver();
 
   // External-library drivers (e.g. M5GFX) own the SPI/display hardware; only
@@ -423,6 +468,7 @@ void FreeInkDisplay::syncPendingAsync() {
   // pipeline (X3 DTM1 sync + conditioning). A plain waitBusy would skip that
   // and leave the controller mid-pipeline.
   if (!_refreshPending) return;
+  DisplayPmLock pmLock;
 #ifdef EINK_DISPLAY_SINGLE_BUFFER_MODE
   _driver->displayFinish(_bus, frameBuffer);
 #else
@@ -437,10 +483,13 @@ bool FreeInkDisplay::refreshBusy() {
   // Does NOT clear the pending state on completion: the driver's post-waveform
   // work (X3 DTM1 sync) must run through displayFinish(). When this returns
   // false, call waitRefreshComplete() (or any blocking display op) to drain it.
+  if (!_refreshPending) return false;
+  DisplayPmLock pmLock;
   return _refreshPending && _bus.isBusy();
 }
 
 void FreeInkDisplay::displayBuffer(RefreshMode mode, bool turnOffScreen) {
+  DisplayPmLock pmLock;
 #if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
   Serial.printf("[EPD] displayBuffer mode=%d off=%d\n", (int)mode, (int)turnOffScreen);
 #endif
@@ -469,6 +518,7 @@ void FreeInkDisplay::displayAsyncImpl(RefreshMode mode, bool turnOffScreen, bool
     displayBuffer(mode, turnOffScreen);
     return;
   }
+  DisplayPmLock pmLock;
   syncPendingAsync();
 #ifdef EINK_DISPLAY_SINGLE_BUFFER_MODE
   if (noShadow) {
@@ -520,6 +570,7 @@ void FreeInkDisplay::displayAsyncImpl(RefreshMode mode, bool turnOffScreen, bool
 // ============================================================================
 
 void FreeInkDisplay::triggerDisplay(RefreshMode mode, bool turnOffScreen) {
+  DisplayPmLock pmLock;
   syncPendingAsync();  // finish any prior split/async refresh before starting another
 #ifdef EINK_DISPLAY_SINGLE_BUFFER_MODE
   const bool deferred = _driver->displayStart(_bus, frameBuffer, nullptr, toInternal(mode), turnOffScreen);
@@ -563,6 +614,7 @@ void FreeInkDisplay::syncRedRamFromFrameBuffer() {
   // X3 has no host-managed previous-frame plane (its baseline lives in DTM1); the
   // advisory flag is meaningless there.
   if (_panelSel == PanelSel::X3) return;
+  DisplayPmLock pmLock;
 #ifdef EINK_DISPLAY_SINGLE_BUFFER_MODE
   // Single-buffer builds: the driver reseeds RED from the framebuffer after every
   // refresh (displayImpl prev==nullptr path), so RED already holds the on-screen
@@ -595,6 +647,7 @@ void FreeInkDisplay::displayBufferAsyncNoShadow(RefreshMode mode) {
 }
 
 void FreeInkDisplay::displayWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t h, bool turnOffScreen) {
+  DisplayPmLock pmLock;
 #if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
   Serial.printf("[EPD] displayWindow %u,%u %ux%u\n", x, y, w, h);
 #endif
@@ -608,6 +661,7 @@ void FreeInkDisplay::displayWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t 
 }
 
 void FreeInkDisplay::displayGrayBuffer(bool turnOffScreen, const unsigned char* lut, bool factoryMode) {
+  DisplayPmLock pmLock;
 #if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
   Serial.printf("[EPD] displayGrayBuffer\n");
 #endif
@@ -620,39 +674,46 @@ void FreeInkDisplay::displayGrayBuffer(bool turnOffScreen, const unsigned char* 
 void FreeInkDisplay::refreshDisplay(RefreshMode mode, bool turnOffScreen) { displayBuffer(mode, turnOffScreen); }
 
 void FreeInkDisplay::copyGrayscaleBuffers(const uint8_t* lsbBuffer, const uint8_t* msbBuffer) {
+  DisplayPmLock pmLock;
   syncPendingAsync();  // RAM writes must not race a deferred refresh
   _driver->copyGrayscaleLsb(_bus, lsbBuffer);
   _driver->copyGrayscaleMsb(_bus, msbBuffer);
 }
 
 void FreeInkDisplay::displayGrayscaleBase(RefreshMode fallback, bool turnOffScreen) {
+  DisplayPmLock pmLock;
   syncPendingAsync();
   _shadowValid = false;
   _driver->displayGrayscaleBase(_bus, frameBuffer, toInternal(fallback), turnOffScreen);
 }
 
 void FreeInkDisplay::preconditionGrayscale() {
+  DisplayPmLock pmLock;
   syncPendingAsync();
   _driver->preconditionGrayscale(_bus, 0, 0, getDisplayWidth(), getDisplayHeight());
 }
 
 void FreeInkDisplay::preconditionGrayscale(uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
+  DisplayPmLock pmLock;
   syncPendingAsync();
   _driver->preconditionGrayscale(_bus, x, y, w, h);
 }
 
 void FreeInkDisplay::copyGrayscaleLsbBuffers(const uint8_t* lsbBuffer) {
+  DisplayPmLock pmLock;
   syncPendingAsync();
   _driver->copyGrayscaleLsb(_bus, lsbBuffer);
 }
 
 void FreeInkDisplay::copyGrayscaleMsbBuffers(const uint8_t* msbBuffer) {
+  DisplayPmLock pmLock;
   syncPendingAsync();
   _driver->copyGrayscaleMsb(_bus, msbBuffer);
 }
 
 void FreeInkDisplay::writeGrayscalePlaneStrip(GrayPlane plane, const uint8_t* rows, uint16_t yStart,
                                               uint16_t numRows) {
+  DisplayPmLock pmLock;
   syncPendingAsync();  // no-op in the reader flow (it waits first); guards misuse
   _driver->writeGrayscalePlaneStrip(_bus, plane == GRAY_PLANE_LSB ? freeink::GrayPlane::Lsb : freeink::GrayPlane::Msb,
                                     rows, yStart, numRows);
@@ -661,6 +722,7 @@ void FreeInkDisplay::writeGrayscalePlaneStrip(GrayPlane plane, const uint8_t* ro
 bool FreeInkDisplay::supportsStripGrayscale() const { return _driver && _driver->supportsStripGrayscale(); }
 
 void FreeInkDisplay::cleanupGrayscaleBuffers(const uint8_t* bwBuffer) {
+  DisplayPmLock pmLock;
   syncPendingAsync();
   _driver->cleanupGrayscaleBuffers(_bus, bwBuffer);
   // Restore frameBuffer so subsequent BW draws paint onto a valid BW baseline
@@ -670,6 +732,7 @@ void FreeInkDisplay::cleanupGrayscaleBuffers(const uint8_t* bwBuffer) {
 }
 #ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
 void FreeInkDisplay::cleanupGrayscaleWithPreviousBuffer() {
+  DisplayPmLock pmLock;
   const uint8_t* baseline = frameBufferActive ? frameBufferActive : frameBuffer;
   _driver->cleanupGrayscaleBuffers(_bus, baseline);
   if (frameBuffer && baseline && frameBuffer != baseline)
@@ -698,14 +761,17 @@ uint16_t FreeInkDisplay::fastRefreshCutoffMs() const {
 }
 
 void FreeInkDisplay::grayscaleRevert() {
+  DisplayPmLock pmLock;
   if (_driver) _driver->grayscaleRevert(_bus, frameBuffer);
 }
 
 void FreeInkDisplay::setCustomLUT(bool enabled, const unsigned char* lutData) {
+  DisplayPmLock pmLock;
   if (_driver) _driver->setCustomLut(_bus, enabled, lutData);
 }
 
 void FreeInkDisplay::deepSleep() {
+  DisplayPmLock pmLock;
   syncPendingAsync();
   if (_driver) _driver->deepSleep(_bus);
 }

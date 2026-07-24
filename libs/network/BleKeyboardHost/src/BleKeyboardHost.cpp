@@ -405,6 +405,17 @@ bool BleKeyboardHost::begin(const char* hostName) {
     return false;
   }
   g_client->setConnectTimeout(kConnectTimeoutMs);
+  // Widen the link supervision timeout. The host runs on a single RISC-V core and
+  // some operations block it for several seconds (e.g. the reader rebuilding a whole
+  // chapter to reach its last page on a backward page turn across a section boundary).
+  // NimBLE's default supervision timeout is only 2.56s, so those long renders overrun
+  // it and the controller drops the link — the peripheral then fails to re-encrypt on
+  // auto-reconnect (HCI 0x08 "Connection Timeout" -> BLE_HS err 520). Request a low
+  // interval for keypress responsiveness with an 8s supervision timeout (units:
+  // interval 1.25ms, timeout 10ms) so a slow page render can't sever the connection.
+  // Peripheral-initiated updates are still rejected (see onConnParamsUpdateRequest), so
+  // these host-chosen params hold for the life of the link.
+  g_client->setConnectionParams(/*minInterval=*/12, /*maxInterval=*/24, /*latency=*/0, /*timeout=*/800);
   g_client->setClientCallbacks(&g_clientCb, false);
 
   xTaskCreate(connTaskFn, "ble-conn", 4096, nullptr, 3, &g_connTask);

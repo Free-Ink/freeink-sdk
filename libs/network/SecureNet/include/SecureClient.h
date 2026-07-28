@@ -22,10 +22,14 @@
 #include <Client.h>
 #include <WiFiClient.h>
 
+#include <functional>
+
 namespace freeink {
 
 class SecureClient : public Client {
  public:
+  using AbortCallback = std::function<bool()>;
+
   SecureClient() = default;
   ~SecureClient() override;
 
@@ -36,6 +40,11 @@ class SecureClient : public Client {
   // Connect and perform a TLS 1.3 handshake to host:port (uses the SNI host).
   int connect(IPAddress ip, uint16_t port) override;
   int connect(const char* host, uint16_t port) override;
+  // Connect with one timeout shared by TCP setup, TLS negotiation, and the
+  // TLS 1.2 fallback. The optional callback can abort between handshake
+  // iterations. Existing connect() callers retain their current behavior.
+  int connectWithTimeout(const char* host, uint16_t port, uint32_t timeoutMs,
+                         const AbortCallback& shouldAbort = nullptr);
 
   size_t write(uint8_t b) override;
   size_t write(const uint8_t* buf, size_t size) override;
@@ -52,7 +61,8 @@ class SecureClient : public Client {
   static bool tls13Available();
 
  private:
-  int connectWithMethod(const char* host, uint16_t port, void* method, const char* label);
+  int connectWithMethod(const char* host, uint16_t port, void* method, const char* label, uint32_t deadline,
+                        const AbortCallback& shouldAbort);
 
   WiFiClient _transport;
   const char* _rootCA = nullptr;

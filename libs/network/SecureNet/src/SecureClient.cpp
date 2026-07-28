@@ -7,6 +7,9 @@
 #include <wolfssl/ssl.h>
 #endif
 
+#include <algorithm>
+#include <limits>
+
 namespace freeink {
 
 bool SecureClient::tls13Available() {
@@ -53,9 +56,15 @@ bool isWantIo(const int err) {
   // an out-of-memory handshake spin until the deadline instead of failing fast.
   return err == WOLFSSL_ERROR_WANT_READ || err == WOLFSSL_ERROR_WANT_WRITE;
 }
+
+uint32_t remainingTimeMs(const uint32_t deadline) {
+  const int32_t remaining = static_cast<int32_t>(deadline - millis());
+  return remaining > 0 ? static_cast<uint32_t>(remaining) : 0;
+}
 }  // namespace
 
-int SecureClient::connectWithMethod(const char* host, uint16_t port, void* method, const char* label) {
+int SecureClient::connectWithMethod(const char* host, uint16_t port, void* method, const char* label,
+                                    const uint32_t deadline, const AbortCallback& shouldAbort) {
 #if defined(FREEINK_WOLFSSL_DEBUG)
   // Routes wolfSSL's internal trace through wolfSSL_Arduino_Serial_Print (the
   // application provides that hook). Shows exactly where a handshake stalls.
@@ -67,14 +76,23 @@ int SecureClient::connectWithMethod(const char* host, uint16_t port, void* metho
 #endif
   const uint32_t started = millis();
   stop();
-  if (!_transport.connect(host, port)) {
+  if ((shouldAbort && shouldAbort()) || remainingTimeMs(deadline) == 0) return 0;
+
+  const uint32_t tcpTimeout =
+      std::min(remainingTimeMs(deadline), static_cast<uint32_t>(std::numeric_limits<int32_t>::max()));
+  if (!_transport.connect(host, port, static_cast<int32_t>(tcpTimeout))) {
     if (Serial) Serial.printf("[SecureClient] TCP connect failed (%s): %s:%u\n", label, host, port);
+    return 0;
+  }
+  if ((shouldAbort && shouldAbort()) || remainingTimeMs(deadline) == 0) {
+    _transport.stop();
     return 0;
   }
 
   auto* ctx = wolfSSL_CTX_new(static_cast<WOLFSSL_METHOD*>(method));
   if (!ctx) {
-    if (Serial) Serial.printf("[SecureClient] CTX alloc failed (%s), free heap %u\n", label, (unsigned)ESP.getFreeHeap());
+    if (Serial)
+      Serial.printf("[SecureClient] CTX alloc failed (%s), free heap %u\n", label, (unsigned)ESP.getFreeHeap());
     _transport.stop();
     return 0;
   }
@@ -83,15 +101,16 @@ int SecureClient::connectWithMethod(const char* host, uint16_t port, void* metho
   if (_insecure) {
     wolfSSL_CTX_set_verify(ctx, WOLFSSL_VERIFY_NONE, nullptr);
   } else if (_rootCA) {
-    wolfSSL_CTX_load_verify_buffer(ctx, reinterpret_cast<const unsigned char*>(_rootCA),
-                                   strlen(_rootCA), WOLFSSL_FILETYPE_PEM);
+    wolfSSL_CTX_load_verify_buffer(ctx, reinterpret_cast<const unsigned char*>(_rootCA), strlen(_rootCA),
+                                   WOLFSSL_FILETYPE_PEM);
   }
   wolfSSL_SetIORecv(ctx, wcRecv);
   wolfSSL_SetIOSend(ctx, wcSend);
 
   auto* ssl = wolfSSL_new(ctx);
   if (!ssl) {
-    if (Serial) Serial.printf("[SecureClient] SSL alloc failed (%s), free heap %u\n", label, (unsigned)ESP.getFreeHeap());
+    if (Serial)
+      Serial.printf("[SecureClient] SSL alloc failed (%s), free heap %u\n", label, (unsigned)ESP.getFreeHeap());
     stop();
     return 0;
   }
@@ -113,7 +132,6 @@ int SecureClient::connectWithMethod(const char* host, uint16_t port, void* metho
   // The recv callback is non-blocking (returns WANT_READ when no bytes are
   // buffered), so wolfSSL_connect must be retried across handshake round-trips
   // rather than called once.
-  const uint32_t deadline = millis() + 15000;
   int ret;
   while ((ret = wolfSSL_connect(ssl)) != WOLFSSL_SUCCESS) {
     const int err = wolfSSL_get_error(ssl, ret);
@@ -122,7 +140,7 @@ int SecureClient::connectWithMethod(const char* host, uint16_t port, void* metho
       stop();
       return 0;
     }
-    if (static_cast<int32_t>(millis() - deadline) >= 0) {
+    if ((shouldAbort && shouldAbort()) || remainingTimeMs(deadline) == 0) {
       if (Serial) {
         Serial.printf("[SecureClient] handshake timeout (%s): last err %d, transport %s, free heap %u\n", label, err,
                       _transport.connected() ? "up" : "down", (unsigned)ESP.getFreeHeap());
@@ -145,13 +163,24 @@ int SecureClient::connect(const char* host, uint16_t port) {
   // self-hosted / Let's Encrypt nginx often tops out at TLS 1.2, and a 1.3-only
   // client fails those handshakes outright. v23 still selects 1.3 when the peer
   // offers it (WOLFSSL_TLS13 is enabled) and falls back to 1.2 otherwise.
-  if (connectWithMethod(host, port, wolfSSLv23_client_method(), "auto")) return 1;
+  if (connectWithMethod(host, port, wolfSSLv23_client_method(), "auto", millis() + 15000, nullptr)) return 1;
 
   // Some TLS 1.2-only servers are intolerant of a TLS 1.3-capable ClientHello
   // and abort with a fatal handshake_failure alert. Retry with an explicit
   // TLS 1.2 ClientHello before giving up.
   if (Serial) Serial.println("[SecureClient] retrying with TLS 1.2-only handshake");
-  return connectWithMethod(host, port, wolfTLSv1_2_client_method(), "tls1.2");
+  return connectWithMethod(host, port, wolfTLSv1_2_client_method(), "tls1.2", millis() + 15000, nullptr);
+}
+
+int SecureClient::connectWithTimeout(const char* host, const uint16_t port, const uint32_t timeoutMs,
+                                     const AbortCallback& shouldAbort) {
+  if (timeoutMs == 0 || (shouldAbort && shouldAbort())) return 0;
+  const uint32_t deadline = millis() + timeoutMs;
+  if (connectWithMethod(host, port, wolfSSLv23_client_method(), "auto", deadline, shouldAbort)) return 1;
+  if (remainingTimeMs(deadline) == 0 || (shouldAbort && shouldAbort())) return 0;
+
+  if (Serial) Serial.println("[SecureClient] retrying with TLS 1.2-only handshake");
+  return connectWithMethod(host, port, wolfTLSv1_2_client_method(), "tls1.2", deadline, shouldAbort);
 }
 
 int SecureClient::connect(IPAddress ip, uint16_t port) {
@@ -188,8 +217,14 @@ int SecureClient::available() {
 }
 
 void SecureClient::stop() {
-  if (_ssl) { wolfSSL_free(static_cast<WOLFSSL*>(_ssl)); _ssl = nullptr; }
-  if (_ctx) { wolfSSL_CTX_free(static_cast<WOLFSSL_CTX*>(_ctx)); _ctx = nullptr; }
+  if (_ssl) {
+    wolfSSL_free(static_cast<WOLFSSL*>(_ssl));
+    _ssl = nullptr;
+  }
+  if (_ctx) {
+    wolfSSL_CTX_free(static_cast<WOLFSSL_CTX*>(_ctx));
+    _ctx = nullptr;
+  }
   _transport.stop();
   _connected = false;
 }
@@ -199,15 +234,39 @@ uint8_t SecureClient::connected() { return _connected && _transport.connected();
 #else  // !FREEINK_NET_WOLFSSL — inert stub so the SDK builds without wolfSSL.
 
 int SecureClient::connect(const char* host, uint16_t port) {
-  (void)host; (void)port;
+  (void)host;
+  (void)port;
   if (Serial) Serial.println("[SecureClient] TLS 1.3 unavailable: build with -DFREEINK_NET_WOLFSSL=1");
   return 0;
 }
-int SecureClient::connect(IPAddress ip, uint16_t port) { (void)ip; (void)port; return 0; }
-size_t SecureClient::write(const uint8_t* buf, size_t size) { (void)buf; (void)size; return 0; }
-int SecureClient::read(uint8_t* buf, size_t size) { (void)buf; (void)size; return -1; }
+int SecureClient::connectWithTimeout(const char* host, uint16_t port, uint32_t timeoutMs,
+                                     const AbortCallback& shouldAbort) {
+  (void)host;
+  (void)port;
+  (void)timeoutMs;
+  (void)shouldAbort;
+  return 0;
+}
+int SecureClient::connect(IPAddress ip, uint16_t port) {
+  (void)ip;
+  (void)port;
+  return 0;
+}
+size_t SecureClient::write(const uint8_t* buf, size_t size) {
+  (void)buf;
+  (void)size;
+  return 0;
+}
+int SecureClient::read(uint8_t* buf, size_t size) {
+  (void)buf;
+  (void)size;
+  return -1;
+}
 int SecureClient::available() { return 0; }
-void SecureClient::stop() { _transport.stop(); _connected = false; }
+void SecureClient::stop() {
+  _transport.stop();
+  _connected = false;
+}
 uint8_t SecureClient::connected() { return 0; }
 
 #endif

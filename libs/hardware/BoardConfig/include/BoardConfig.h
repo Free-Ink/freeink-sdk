@@ -262,7 +262,7 @@
 // must define USE_BLOCK_DEVICE_INTERFACE=1 for the SdFat FsVolume these mount on.
 // Override with -DFREEINK_SD_SDMMC=0/1.
 #ifndef FREEINK_SD_SDMMC
-#define FREEINK_SD_SDMMC (FREEINK_DEVICE_DELINK || FREEINK_DEVICE_X4PRO)
+#define FREEINK_SD_SDMMC (FREEINK_DEVICE_DELINK || FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_MURPHY)
 #endif
 
 // Serial log transport hint for consumer firmware. Boards can share the same MCU
@@ -815,7 +815,12 @@ constexpr BoardProfile MURPHY_M3 = {
     240,
     {4, 3, 5, 6, 7, 8, PIN_UNASSIGNED},
     0,  // displaySpiHz: 0 -> Murphy UC8253 driver default (4 MHz)
-    {39, 13, 40, 10, PIN_UNASSIGNED, true, 0},
+    // SD is native 4-bit SDMMC (stock firmware uses SD_MMC.setPins; wiring
+    // confirmed by the reverse schematic: D1=14 D0=15 CLK=16 CMD=17 D3=18
+    // D2=21). This SdPins entry carries only powerEnable=GPIO10, which gates
+    // the card rail through an AO3401 P-FET and is ACTIVE-LOW (drive LOW to
+    // power the card) — the sdmmc field below owns the bus.
+    {PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, 10, false, 0, false},
     {PIN_UNASSIGNED, 0, PIN_UNASSIGNED, PIN_UNASSIGNED, 1, 2, 0, false},
     9,               // batteryAdc: stock firmware samples analogRead(9) for battery voltage
     PIN_UNASSIGNED,  // batteryChargeStatus: not identified
@@ -823,13 +828,10 @@ constexpr BoardProfile MURPHY_M3 = {
     PIN_UNASSIGNED,
     {TouchController::Chsc6x, 13, 12, 44, 45, 0x2e, 24, 224, 24, 398, false, 0, true, false},
     {48, 25000, 10, true},
-    // NOTE: the SPI SD pin guess above (39/13/40) predates the OEM firmware
-    // audio recovery and conflicts with the proven I2S pins (39/40/41/42) and
-    // shared I2C (13). Audio is the verified owner of those pins.
     MURPHY_AUDIO,
     NO_LEDS,
     NO_FLIP,
-    NO_SDMMC,
+    {16, 17, 15, 14, 21, 18, 4},  // 4-bit SDMMC: CLK=16 CMD=17 D0=15 D1=14 D2=21 D3=18
     NO_GAUGE};
 
 // --- de-link (X4-class GDEQ0426T82 panel on ESP32-S3) — SSD1677 + frontlight ---

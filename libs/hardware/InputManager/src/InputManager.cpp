@@ -669,6 +669,18 @@ void InputManager::beginTouch() {
   if (t.controller == BoardConfig::TouchController::None) {
     return;
   }
+  // Power the touch rail first, for every controller type (boards that gate it:
+  // Sticky's active-high TOUCH_EN, X4 Pro's active-low GPIO2, Murphy M3's
+  // active-low GPIO45 CH442E switch). Active level + settle before any reset
+  // dance or I2C probe. No-op when unassigned. gpio_hold_dis first: the sleep
+  // path holds this pin at its OFF level and the hold survives the deep-sleep
+  // wake reset; the ON write is a no-op until it is released.
+  if (t.powerEnable >= 0) {
+    gpio_hold_dis(static_cast<gpio_num_t>(t.powerEnable));
+    pinMode(t.powerEnable, OUTPUT);
+    digitalWrite(t.powerEnable, t.powerEnableActiveHigh ? HIGH : LOW);
+    delay(50);
+  }
   if (t.controller == BoardConfig::TouchController::Gt911) {
     beginGt911();
     return;
@@ -678,7 +690,9 @@ void InputManager::beginTouch() {
   // instead (see decodeChsc6xFrame / updateTouchFromIrq).
   if (t.sda >= 0 && t.scl >= 0 && t.i2cAddress != 0) {
     Wire.begin(t.sda, t.scl, 100000);
-    Wire.setTimeOut(4);
+    // 10 ms: a 16-byte frame at 100 kHz is ~1.7 ms on the wire; 4 ms left no
+    // headroom for clock stretching on the shared (rail-gated) Murphy bus.
+    Wire.setTimeOut(10);
     touchDataEnabled = true;
   }
 #endif
@@ -756,7 +770,11 @@ bool InputManager::readChsc6xPoint(TouchPoint &point) {
   const uint8_t addr = BoardConfig::ACTIVE.touch.i2cAddress;
   Wire.beginTransmission(addr);
   Wire.write(TOUCH_READ_COMMAND);
-  if (Wire.endTransmission(false) != 0) {
+  // Full STOP between the command write and the read: the Murphy M3's CHSC6x
+  // (and its ES8388 bus-mate) NACK repeated-start reads — hardware-probed; a
+  // stop-separated read works. The controller keeps its register pointer across
+  // the stop, so this is safe for the frame read.
+  if (Wire.endTransmission(true) != 0) {
     return false;
   }
 
@@ -820,21 +838,7 @@ uint16_t InputManager::mapTouchAxis(uint16_t raw, const uint16_t rawMin,
 void InputManager::beginGt911() {
   const auto &t = BoardConfig::ACTIVE.touch;
 
-  // Power the touch rail first (boards that gate it, e.g. Sticky's TOUCH_EN on
-  // GPIO42). Active-high + settle, before the reset dance and I2C probe;
-  // without this the GT911 never ACKs and touch is reported absent. No-op when
-  // unassigned. gpio_hold_dis first: the sleep path holds this pin LOW and the
-  // hold survives the deep-sleep wake reset; the HIGH write is a no-op until it
-  // is released.
-  if (t.powerEnable >= 0) {
-    gpio_hold_dis(static_cast<gpio_num_t>(t.powerEnable));
-    pinMode(t.powerEnable, OUTPUT);
-    // ON level: HIGH for active-high enables (Sticky), LOW for active-low (X4
-    // Pro GPIO2).
-    digitalWrite(t.powerEnable, t.powerEnableActiveHigh ? HIGH : LOW);
-    delay(50);
-  }
-
+  // Touch rail power is asserted by beginTouch() before this runs.
   if (t.sda >= 0 && t.scl >= 0) {
     Wire.begin(t.sda, t.scl, 400000);
     Wire.setTimeOut(10);

@@ -826,13 +826,30 @@ constexpr BoardProfile MURPHY_M3 = {
     PIN_UNASSIGNED,  // batteryChargeStatus: not identified
     3.030303f,       // stock firmware scales ADC by 0.0016 / 0.33, implying a 1:0.33 divider
     PIN_UNASSIGNED,
-    {TouchController::Chsc6x, 13, 12, 44, 45, 0x2e, 24, 224, 24, 398, false, 0, true, false},
+    // Touch: CHSC6x-class at 0x2e. GPIO45 is NOT a controller reset — it gates the
+    // touch rail through a CH442E analog switch + AO3401 P-FET, ACTIVE-LOW (probing
+    // confirmed: with GPIO45 HIGH both touch AND the ES8388 vanish from the I2C
+    // bus). Carried as powerEnable with powerEnableActiveHigh=false.
+    {TouchController::Chsc6x, 13, 12, 44, PIN_UNASSIGNED, 0x2e, 24, 224, 24, 398, false, 0, true,
+     false, /*powerEnable=*/45, false, false, false, false, /*powerEnableActiveHigh=*/false},
     {48, 25000, 10, true},
     MURPHY_AUDIO,
     NO_LEDS,
     NO_FLIP,
     {16, 17, 15, 14, 21, 18, 4},  // 4-bit SDMMC: CLK=16 CMD=17 D0=15 D1=14 D2=21 D3=18
-    NO_GAUGE};
+    NO_GAUGE,
+    NO_MIC,
+    // RX8010SJ RTC (0x32) + AHT30 (0x38) share the I2C bus but have no SDK driver
+    // types yet (RtcType covers PCF8563/DS3231; temp path expects SHT40), so the
+    // sensors block stays empty until those drivers exist.
+    NO_SENSORS,
+    0.6f,  // uiScale: 240x416 logical canvas @ ~130 PPI — half the X4 canvas, ~0.6x its PPI.
+           // (Advisory: CrossPoint implements density via its compile-time kUiDensityScale.)
+    // GPIO43 gates the ENTIRE I2C bus rail (touch, ES8388, RX8010, AHT30) through a
+    // dedicated LDO — probing confirmed the bus scans empty with it low. The OEM
+    // firmware drives it HIGH at boot. Carried as power.latch0 so holdPowerRails()
+    // asserts it before any I2C user comes up.
+    {43, PIN_UNASSIGNED}};
 
 // --- de-link (X4-class GDEQ0426T82 panel on ESP32-S3) — SSD1677 + frontlight ---
 // Reuses the SSD1677 driver (same controller/panel as X4); differs at the board

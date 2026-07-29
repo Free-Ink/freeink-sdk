@@ -40,7 +40,7 @@ const Uc8253MurphyConfig& uc8253MurphyDefaultConfig() {
   static const Uc8253MurphyConfig cfg = {
       {MURPHY_LUT_20_DEFAULT, MURPHY_LUT_21_DEFAULT, MURPHY_LUT_22_DEFAULT, MURPHY_LUT_23_DEFAULT, MURPHY_LUT_24_DEFAULT},
       {MURPHY_LUT_20_FAST, MURPHY_LUT_21_FAST, MURPHY_LUT_22_FAST, MURPHY_LUT_23_FAST, MURPHY_LUT_24_FAST},
-      {MURPHY_LUT_LEN_VCOM, MURPHY_LUT_LEN_WW, MURPHY_LUT_LEN_BW, MURPHY_LUT_LEN_WB, MURPHY_LUT_LEN_BB},  // 56/42/56/42/42
+      {MURPHY_LUT_LEN_VCOM, MURPHY_LUT_LEN_WW, MURPHY_LUT_LEN_BW, MURPHY_LUT_LEN_WB, MURPHY_LUT_LEN_BB},  // 42 each (OEM writes ten 42-byte payloads)
       8,  // promote FAST -> full every 8 refreshes
   };
   return cfg;
@@ -167,18 +167,14 @@ void Uc8253MurphyDriver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* 
 
   loadLut(bus, useFast ? _cfg.fast : _cfg.def);
 
-  // Full (GC) refresh writes the new frame to BOTH planes, so only WW/BB fire and
-  // every pixel is fully driven to its target — clean, no half-flipped pixels.
-  // FAST (DU) refresh is differential: old frame -> DTM1, new -> DTM2, so unchanged
-  // pixels take WW/BB and changed pixels take the quick BW/WB transition kicks.
-  // Without a previous frame (single-buffer builds) fall back to both-planes-new.
-  if (useFast && prev != nullptr) {
-    writePlane(bus, CMD_DTM1, prev);
-    writePlane(bus, CMD_DTM2, fb);
-  } else {
-    writePlane(bus, CMD_DTM1, fb);
-    writePlane(bus, CMD_DTM2, fb);
-  }
+  // OEM scheme: the SAME buffer goes to both planes, always — only WW/BB fire
+  // and every pixel is driven straight to its target. A real differential
+  // (old->DTM1, new->DTM2) through these LUTs leaves pixels half-flipped
+  // (verified empirically, see the Murphy repo display findings), so it is
+  // deliberately not attempted even when a previous frame exists.
+  (void)prev;
+  writePlane(bus, CMD_DTM1, fb);
+  writePlane(bus, CMD_DTM2, fb);
 
   triggerRefresh(bus, turnOff);
 }

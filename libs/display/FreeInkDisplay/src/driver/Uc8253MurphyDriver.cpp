@@ -46,9 +46,10 @@ const Uc8253MurphyConfig& uc8253MurphyDefaultConfig() {
       // flash that clears accumulated residue). The FAST bank is single-phase
       // and DC-unbalanced by construction — the OEM has no fast waveform at all
       // — so the cadence is the whole anti-ghosting story: lower = cleaner,
-      // higher = fewer flashes. 6 ≈ the usual e-reader page-turn compromise.
+      // higher = fewer flashes. 4 after hardware feedback (6 left a
+      // distracting residue while reading).
       // (Interval semantics: N fast refreshes pass, the N+1th promotes.)
-      6,
+      4,
   };
   return cfg;
 }

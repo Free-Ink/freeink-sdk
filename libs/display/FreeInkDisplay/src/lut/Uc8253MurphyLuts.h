@@ -17,12 +17,14 @@
 // accumulates — the driver promotes every MURPHY_GHOST_CLEAR_INTERVAL'th fast
 // refresh to a DEFAULT one to flush it.
 //
-// History: an earlier revision of this header transcribed the manufacturer
-// "M3 LUT.txt" blocks (0f8f4f / 4f8f0f / ...) as waveforms. The v525 dump
-// analysis re-classified those five blocks as per-mode VOLTAGE CONFIG data
-// (POWER_SETTING / VCOM_DC arguments), not LUTs — driving the panel with them
-// flashes without properly latching and ghosts badly (community-sdk 59bc0e5
-// hit the same failure). Do not resurrect them here.
+// History: an earlier revision of this header carried the manufacturer
+// "M3 LUT.txt" blocks (0f8f4f / 4f8f0f / ...) as the default bank. Those five
+// blocks ARE LUTs — but they are the OEM's ALTERNATE bank, a package deal with
+// the data-driven init (0x82=0x07, 0x50=0xD7) and the 0x17/0xA5 partial-window
+// trigger (Ghidra: FUN_42038b60 else-branch loads them to 0x20..0x24). Run
+// under the mode-0 init they flash without properly latching and ghost badly
+// (community-sdk 59bc0e5 hit the same failure). Adopting them means porting
+// the whole alternate init+trigger path, not swapping tables.
 
 namespace freeink {
 

@@ -221,6 +221,8 @@ private:
   bool readChsc6xPoint(TouchPoint &point);
   bool decodeChsc6xFrame(const uint8_t *data, size_t len,
                          TouchPoint &point) const;
+  int touchTapSlopPx() const;
+  int touchSwipeMinPx() const;
   uint16_t mapTouchAxis(uint16_t raw, uint16_t rawMin, uint16_t rawMax,
                         uint16_t outMax) const;
   void beginGt911();
@@ -287,6 +289,9 @@ private:
   static constexpr unsigned long TOUCH_IRQ_PULSE_MS =
       120; // release hold-over after last valid read
   static constexpr unsigned long TOUCH_SAMPLE_DELAY_MS = 8; // I2C poll cadence
+  // Baseline values in GT911 (800x480-class) mapped units; consumed via
+  // touchTapSlopPx()/touchSwipeMinPx(), which scale them to the active
+  // digitizer's span so small panels need the same physical finger travel.
   static constexpr int TOUCH_TAP_SLOP_PX = 28;
   static constexpr int TOUCH_SWIPE_MIN_PX = 60;
   static constexpr unsigned long TOUCH_SWIPE_MAX_MS = 700;

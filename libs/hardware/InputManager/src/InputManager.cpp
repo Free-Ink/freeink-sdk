@@ -629,7 +629,8 @@ bool InputManager::wasSwipe(float &nxStart, float &nyStart, float &nxEnd,
       static_cast<int>(touchUpPoint.y) - static_cast<int>(touchDownPoint.y);
   const int adx = absInt(dx);
   const int ady = absInt(dy);
-  if (adx < TOUCH_SWIPE_MIN_PX && ady < TOUCH_SWIPE_MIN_PX)
+  const int swipeMin = touchSwipeMinPx();
+  if (adx < swipeMin && ady < swipeMin)
     return false;
   const auto &t = BoardConfig::ACTIVE.touch;
   const uint16_t w = (t.rawMaxX > t.rawMinX)
@@ -751,7 +752,8 @@ void InputManager::updateTouchFromIrq(const unsigned long now,
                        static_cast<int>(touchDownPoint.x);
         const int dy = static_cast<int>(touchUpPoint.y) -
                        static_cast<int>(touchDownPoint.y);
-        if (absInt(dx) > TOUCH_TAP_SLOP_PX || absInt(dy) > TOUCH_TAP_SLOP_PX) {
+        const int slop = touchTapSlopPx();
+        if (absInt(dx) > slop || absInt(dy) > slop) {
           touchMovedBeyondTapSlop = true;
         }
       }
@@ -762,7 +764,12 @@ void InputManager::updateTouchFromIrq(const unsigned long now,
   if (touchPressed && now >= touchReleaseAt) {
     touchPressed = false;
     touchReleasedEvent = true;
-    lastTouchHeldDurationMs = now - touchDownPoint.timestamp;
+    // Measure to the last REAL sample (touchUpPoint), not to this expiry —
+    // the TOUCH_IRQ_PULSE_MS hold-over otherwise inflates every contact by
+    // ~120ms, which eats into the swipe time window and long-press thresholds.
+    lastTouchHeldDurationMs = (touchUpPoint.timestamp >= touchDownPoint.timestamp)
+                                  ? touchUpPoint.timestamp - touchDownPoint.timestamp
+                                  : now - touchDownPoint.timestamp;
   }
 }
 
@@ -814,13 +821,43 @@ bool InputManager::decodeChsc6xFrame(const uint8_t *data, const size_t len,
   }
   const auto &t = BoardConfig::ACTIVE.touch;
   point.valid = true;
-  // Panel-native coordinates (the calibrated raw range, in the touch panel's
-  // own orientation); the app maps to its display/logical frame. See the touch
-  // note in the README.
-  point.x = mapTouchAxis(rawX, t.rawMinX, t.rawMaxX, t.rawMaxX - t.rawMinX);
-  point.y = mapTouchAxis(rawY, t.rawMinY, t.rawMaxY, t.rawMaxY - t.rawMinY);
+  // Digitizer mount correction, same scheme as the GT911 path: swap axes first
+  // (rotated sensor), then map with the panel-axis ranges (rawMin/Max describe
+  // the POST-swap axes), then per-axis flip. Previously this decoder ignored
+  // swapXY/flipX/flipY entirely — Murphy is the only CHSC6x board, so the gap
+  // went unnoticed until its transposed taps surfaced on hardware.
+  const uint16_t sx = t.swapXY ? rawY : rawX;
+  const uint16_t sy = t.swapXY ? rawX : rawY;
+  point.x = mapTouchAxis(sx, t.rawMinX, t.rawMaxX, t.rawMaxX - t.rawMinX);
+  point.y = mapTouchAxis(sy, t.rawMinY, t.rawMaxY, t.rawMaxY - t.rawMinY);
+  if (t.flipX)
+    point.x = static_cast<uint16_t>((t.rawMaxX - t.rawMinX) - point.x);
+  if (t.flipY)
+    point.y = static_cast<uint16_t>((t.rawMaxY - t.rawMinY) - point.y);
   point.timestamp = millis();
   return true;
+}
+
+// Gesture thresholds (TOUCH_TAP_SLOP_PX / TOUCH_SWIPE_MIN_PX) are tuned in the
+// mapped units of the GT911 boards (800x480-class, average axis span 640). On a
+// small digitizer like the Murphy's (200x374, average 287) the same pixel
+// numbers demand 3-4x the physical finger travel, which swallows swipes into
+// taps. Scale by the active digitizer's average span so gestures need the same
+// physical fraction of the panel everywhere; GT911 boards are unchanged.
+int InputManager::touchTapSlopPx() const {
+  const auto &t = BoardConfig::ACTIVE.touch;
+  const int xs = (t.rawMaxX > t.rawMinX) ? t.rawMaxX - t.rawMinX : 1;
+  const int ys = (t.rawMaxY > t.rawMinY) ? t.rawMaxY - t.rawMinY : 1;
+  const int v = TOUCH_TAP_SLOP_PX * ((xs + ys) / 2) / 640;
+  return v < 8 ? 8 : v;
+}
+
+int InputManager::touchSwipeMinPx() const {
+  const auto &t = BoardConfig::ACTIVE.touch;
+  const int xs = (t.rawMaxX > t.rawMinX) ? t.rawMaxX - t.rawMinX : 1;
+  const int ys = (t.rawMaxY > t.rawMinY) ? t.rawMaxY - t.rawMinY : 1;
+  const int v = TOUCH_SWIPE_MIN_PX * ((xs + ys) / 2) / 640;
+  return v < 16 ? 16 : v;
 }
 
 uint16_t InputManager::mapTouchAxis(uint16_t raw, const uint16_t rawMin,
@@ -1002,7 +1039,7 @@ void InputManager::pollGt911(const unsigned long now) {
           static_cast<int>(touchUpPoint.x) - static_cast<int>(touchDownPoint.x);
       const int dy =
           static_cast<int>(touchUpPoint.y) - static_cast<int>(touchDownPoint.y);
-      if (absInt(dx) > TOUCH_TAP_SLOP_PX || absInt(dy) > TOUCH_TAP_SLOP_PX) {
+      if (absInt(dx) > touchTapSlopPx() || absInt(dy) > touchTapSlopPx()) {
         touchMovedBeyondTapSlop = true;
       }
 #ifdef TOUCH_PROBE_DEBUG

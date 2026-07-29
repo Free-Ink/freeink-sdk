@@ -41,7 +41,12 @@ const Uc8253MurphyConfig& uc8253MurphyDefaultConfig() {
       {MURPHY_LUT_20_DEFAULT, MURPHY_LUT_21_DEFAULT, MURPHY_LUT_22_DEFAULT, MURPHY_LUT_23_DEFAULT, MURPHY_LUT_24_DEFAULT},
       {MURPHY_LUT_20_FAST, MURPHY_LUT_21_FAST, MURPHY_LUT_22_FAST, MURPHY_LUT_23_FAST, MURPHY_LUT_24_FAST},
       {MURPHY_LUT_LEN_VCOM, MURPHY_LUT_LEN_WW, MURPHY_LUT_LEN_BW, MURPHY_LUT_LEN_WB, MURPHY_LUT_LEN_BB},  // 42 each (OEM writes ten 42-byte payloads)
-      8,  // promote FAST -> full every 8 refreshes
+      // 1 = every refresh runs the OEM three-phase GC bank, matching stock
+      // behavior exactly (the OEM has NO fast waveform on the mode-0 path; our
+      // single-phase FAST bank is DC-unbalanced by construction and leaves
+      // afterimages that drift over seconds — hardware-confirmed). Raise this
+      // only after a genuinely DC-balanced fast waveform exists.
+      1,
   };
   return cfg;
 }

@@ -830,8 +830,13 @@ constexpr BoardProfile MURPHY_M3 = {
     // touch rail through a CH442E analog switch + AO3401 P-FET, ACTIVE-LOW (probing
     // confirmed: with GPIO45 HIGH both touch AND the ES8388 vanish from the I2C
     // bus). Carried as powerEnable with powerEnableActiveHigh=false.
-    {TouchController::Chsc6x, 13, 12, 44, PIN_UNASSIGNED, 0x2e, 24, 224, 24, 398, false, 0, true,
-     false, /*powerEnable=*/45, false, false, false, false, /*powerEnableActiveHigh=*/false},
+    // Mount: the digitizer reports raw x over the SHORT axis (24..224) and raw y
+    // over the LONG axis (24..398), but the framebuffer is landscape 416x240 —
+    // swapXY=true so mapped x tracks the long axis; ranges are POST-swap
+    // (x: 24/398 long, y: 24/224 short). flipY from the corner-tap test.
+    {TouchController::Chsc6x, 13, 12, 44, PIN_UNASSIGNED, 0x2e, 24, 398, 24, 224, false, 0, true,
+     false, /*powerEnable=*/45, /*swapXY=*/true, false, /*flipY=*/true, false,
+     /*powerEnableActiveHigh=*/false},
     {48, 25000, 10, true},
     MURPHY_AUDIO,
     NO_LEDS,

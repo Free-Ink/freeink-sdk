@@ -101,6 +101,11 @@ class PanelDriver {
 
   // --- grayscale (dual-plane LSB/MSB) ---
   virtual bool supportsStripGrayscale() const { return false; }
+  // Whether the panel can display grayscale AT ALL. Consumers use this to skip
+  // building gray planes entirely on B/W-only panels (e.g. Murphy M3), whose
+  // displayGray must be a no-op. Default true: every pre-existing driver
+  // implements a real grayscale path.
+  virtual bool supportsGrayscale() const { return true; }
   // Display `fb` as the base frame for a grayscale overlay that follows.
   // X3 runs the OEM pipeline (the "AA-pre-BW(mid)" bank as a differential
   // base update with calibrated drives); panels without a dedicated base

@@ -770,6 +770,10 @@ bool FreeInkDisplay::supportsStripGrayscale() const {
   return !_inverted && _driver && _driver->supportsStripGrayscale();
 }
 
+bool FreeInkDisplay::supportsGrayscale() const {
+  return _driver && _driver->supportsGrayscale();
+}
+
 void FreeInkDisplay::cleanupGrayscaleBuffers(const uint8_t* bwBuffer) {
   syncPendingAsync();
   if (!_inverted) {

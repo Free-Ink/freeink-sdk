@@ -65,6 +65,14 @@ class Uc8253MurphyDriver : public PanelDriver {
   void deepSleep(EpdBus& bus) override;
   void display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) override;
 
+  // B/W only: no gray LUT bank, no plane ingest (grayscale AA was tried on this
+  // panel and abandoned — asymmetric VSH/VSL rails, see the Murphy repo display
+  // findings). The PanelDriver default would refresh the renderer's gray PLANE
+  // as if it were a B/W frame — a near-solid-black page — so it must be a no-op
+  // here. supportsGrayscale() lets consumers skip building the planes at all.
+  void displayGray(EpdBus&, const uint8_t*, bool, const unsigned char*, bool) override {}
+  bool supportsGrayscale() const override { return false; }
+
  private:
   void initController(EpdBus& bus);
   void loadLut(EpdBus& bus, const Uc8253MurphyLutBank& bank);

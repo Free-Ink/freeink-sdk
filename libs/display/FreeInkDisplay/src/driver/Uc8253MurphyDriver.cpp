@@ -41,12 +41,14 @@ const Uc8253MurphyConfig& uc8253MurphyDefaultConfig() {
       {MURPHY_LUT_20_DEFAULT, MURPHY_LUT_21_DEFAULT, MURPHY_LUT_22_DEFAULT, MURPHY_LUT_23_DEFAULT, MURPHY_LUT_24_DEFAULT},
       {MURPHY_LUT_20_FAST, MURPHY_LUT_21_FAST, MURPHY_LUT_22_FAST, MURPHY_LUT_23_FAST, MURPHY_LUT_24_FAST},
       {MURPHY_LUT_LEN_VCOM, MURPHY_LUT_LEN_WW, MURPHY_LUT_LEN_BW, MURPHY_LUT_LEN_WB, MURPHY_LUT_LEN_BB},  // 42 each (OEM writes ten 42-byte payloads)
-      // 1 = every refresh runs the OEM three-phase GC bank, matching stock
-      // behavior exactly (the OEM has NO fast waveform on the mode-0 path; our
-      // single-phase FAST bank is DC-unbalanced by construction and leaves
-      // afterimages that drift over seconds — hardware-confirmed). Raise this
-      // only after a genuinely DC-balanced fast waveform exists.
-      1,
+      // Non-flashing FAST refreshes are allowed to run this many times in a row
+      // before one is promoted to the OEM three-phase GC bank (the inversion
+      // flash that clears accumulated residue). The FAST bank is single-phase
+      // and DC-unbalanced by construction — the OEM has no fast waveform at all
+      // — so the cadence is the whole anti-ghosting story: lower = cleaner,
+      // higher = fewer flashes. 6 ≈ the usual e-reader page-turn compromise.
+      // (Interval semantics: N fast refreshes pass, the N+1th promotes.)
+      6,
   };
   return cfg;
 }

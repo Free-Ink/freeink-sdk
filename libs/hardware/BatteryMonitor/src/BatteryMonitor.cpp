@@ -11,34 +11,6 @@
 #include <algorithm>
 #include <cmath>
 
-#if FREEINK_USB_PRESENCE_AS_CHARGING
-#include "soc/usb_serial_jtag_reg.h"
-namespace {
-// USB host presence via SOF activity: the USB-Serial/JTAG frame counter
-// advances at 1 kHz only while a host is attached. First call records a
-// baseline and reports absent; any later call that sees the counter move
-// marks presence, decaying after 1s without movement (covers detach).
-bool usbHostPresent() {
-  static uint32_t lastFram = 0;
-  static unsigned long lastChangeMs = 0;
-  static bool baselineSet = false;
-  static bool changeSeen = false;
-  const uint32_t fram = REG_READ(USB_SERIAL_JTAG_FRAM_NUM_REG);
-  const unsigned long now = millis();
-  if (!baselineSet) {
-    baselineSet = true;
-    lastFram = fram;
-    return false;
-  }
-  if (fram != lastFram) {
-    lastFram = fram;
-    lastChangeMs = now;
-    changeSeen = true;
-  }
-  return changeSeen && (now - lastChangeMs) < 1000;
-}
-}  // namespace
-#endif
 
 #if FREEINK_BATTERY_I2C_GAUGE
 #include <Wire.h>
@@ -375,7 +347,7 @@ BatteryMonitor::Status BatteryMonitor::readStatus() const {
 #if FREEINK_USB_PRESENCE_AS_CHARGING
     else {
       status.chargingKnown = true;
-      status.charging = usbHostPresent();
+      status.charging = freeink::usbHostPresent();
     }
 #endif
   }
@@ -432,7 +404,7 @@ bool BatteryMonitor::isCharging() const {
   if (_chargeStatusPin < 0) {
 #if FREEINK_USB_PRESENCE_AS_CHARGING
     // No status GPIO exists on this board — report USB presence instead.
-    return usbHostPresent();
+    return freeink::usbHostPresent();
 #else
     return false;
 #endif

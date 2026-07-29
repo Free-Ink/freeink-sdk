@@ -274,6 +274,36 @@
 #define FREEINK_USB_PRESENCE_AS_CHARGING (FREEINK_DEVICE_MURPHY)
 #endif
 
+#if FREEINK_USB_PRESENCE_AS_CHARGING
+#include "soc/usb_serial_jtag_reg.h"
+namespace freeink {
+// USB host presence via SOF activity: the USB-Serial/JTAG frame counter
+// advances at 1 kHz only while a host is attached. First call records a
+// baseline and reports absent; any later call that sees the counter move marks
+// presence, decaying after 1s without movement (covers detach). Shared by
+// BatteryMonitor::isCharging() and consumer firmware's USB-connected checks.
+inline bool usbHostPresent() {
+  static uint32_t lastFram = 0;
+  static unsigned long lastChangeMs = 0;
+  static bool baselineSet = false;
+  static bool changeSeen = false;
+  const uint32_t fram = REG_READ(USB_SERIAL_JTAG_FRAM_NUM_REG);
+  const unsigned long now = millis();
+  if (!baselineSet) {
+    baselineSet = true;
+    lastFram = fram;
+    return false;
+  }
+  if (fram != lastFram) {
+    lastFram = fram;
+    lastChangeMs = now;
+    changeSeen = true;
+  }
+  return changeSeen && (now - lastChangeMs) < 1000;
+}
+}  // namespace freeink
+#endif
+
 // Serial log transport hint for consumer firmware. Boards can share the same MCU
 // but expose logs differently: LilyGo T5 S3 is monitored over native USB CDC,
 // while Sticky bring-up is more reliable through the IDF/ROM console path.

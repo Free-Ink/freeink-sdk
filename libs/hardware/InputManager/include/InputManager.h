@@ -282,7 +282,11 @@ private:
   static constexpr int ADC_NO_BUTTON = 3900;
   static constexpr unsigned long DEBOUNCE_DELAY = 5;
   static constexpr unsigned long CONFIRM_BACK_HOLD_MS = 650;
-  static constexpr unsigned long CONFIRM_POWER_HOLD_MS = 400;
+  // Hold time on the shared confirm/power pin before it means POWER (sleep).
+  // On boards where that pin is also the PRIMARY select button (Murphy M3's
+  // middle key), 400ms fires on merely deliberate presses — hardware feedback
+  // showed accidental sleeps — so those boards demand a real 1.5s hold.
+  static constexpr unsigned long CONFIRM_POWER_HOLD_MS = FREEINK_DEVICE_MURPHY ? 1500 : 400;
 
   // Touch timing / protocol constants (ported from the Murphy M3 CHSC6x
   // driver).

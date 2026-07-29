@@ -265,6 +265,15 @@
 #define FREEINK_SD_SDMMC (FREEINK_DEVICE_DELINK || FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_MURPHY)
 #endif
 
+// Boards with no charger-status GPIO at all (Murphy M3: the TP4054's CHRG pin
+// drives only its LED) can report "USB host present" as the charging state —
+// the native USB-Serial/JTAG peripheral's SOF frame counter advances only
+// while a host is attached, so it needs no wiring. Only used when
+// batteryChargeStatus is PIN_UNASSIGNED. Override with 0/1 per build.
+#ifndef FREEINK_USB_PRESENCE_AS_CHARGING
+#define FREEINK_USB_PRESENCE_AS_CHARGING (FREEINK_DEVICE_MURPHY)
+#endif
+
 // Serial log transport hint for consumer firmware. Boards can share the same MCU
 // but expose logs differently: LilyGo T5 S3 is monitored over native USB CDC,
 // while Sticky bring-up is more reliable through the IDF/ROM console path.
@@ -823,8 +832,12 @@ constexpr BoardProfile MURPHY_M3 = {
     {PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, 10, false, 0, false},
     {PIN_UNASSIGNED, 0, PIN_UNASSIGNED, PIN_UNASSIGNED, 1, 2, 0, false},
     9,               // batteryAdc: stock firmware samples analogRead(9) for battery voltage
-    PIN_UNASSIGNED,  // batteryChargeStatus: not identified
-    3.030303f,       // stock firmware scales ADC by 0.0016 / 0.33, implying a 1:0.33 divider
+    PIN_UNASSIGNED,  // batteryChargeStatus: none — TP4054 CHRG drives only its LED (GPIO47
+                     // probe-verified static across plug/unplug); see FREEINK_USB_PRESENCE_AS_CHARGING
+    // VBAT divider is 680k/680k (reverse schematic) = x2.0. Hardware-verified:
+    // the pin reads ~2.07V with a charging pack (x2 = 4.15V, plausible; the old
+    // 3.030303 stock-firmware-derived guess yielded an impossible 6.3V).
+    2.0f,
     PIN_UNASSIGNED,
     // Touch: CHSC6x-class at 0x2e. GPIO45 is NOT a controller reset — it gates the
     // touch rail through a CH442E analog switch + AO3401 P-FET, ACTIVE-LOW (probing

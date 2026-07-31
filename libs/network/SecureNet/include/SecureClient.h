@@ -26,6 +26,8 @@ namespace freeink {
 
 class SecureClient : public Client {
  public:
+  using AbortCallback = bool (*)(const void* context);
+
   SecureClient() = default;
   ~SecureClient() override;
 
@@ -36,6 +38,7 @@ class SecureClient : public Client {
   // Connect and perform a TLS 1.3 handshake to host:port (uses the SNI host).
   int connect(IPAddress ip, uint16_t port) override;
   int connect(const char* host, uint16_t port) override;
+  int connect(const char* host, uint16_t port, uint32_t timeoutMs, AbortCallback shouldAbort, const void* abortContext);
 
   size_t write(uint8_t b) override;
   size_t write(const uint8_t* buf, size_t size) override;
@@ -52,7 +55,8 @@ class SecureClient : public Client {
   static bool tls13Available();
 
  private:
-  int connectWithMethod(const char* host, uint16_t port, void* method, const char* label);
+  int connectWithMethod(const char* host, uint16_t port, void* method, const char* label, uint32_t absoluteDeadlineMs,
+                        AbortCallback shouldAbort, const void* abortContext);
 
   WiFiClient _transport;
   const char* _rootCA = nullptr;

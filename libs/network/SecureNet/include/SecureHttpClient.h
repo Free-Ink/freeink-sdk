@@ -37,10 +37,10 @@
 
 #include <algorithm>
 #include <cctype>
-#include <iterator>
 #include <cstdint>
 #include <cstdlib>
 #include <functional>
+#include <iterator>
 #include <string>
 #include <utility>
 #include <vector>
@@ -125,6 +125,7 @@ class SecureHttpClient {
   }
 
   int GET() { return sendRequest("GET", nullptr, 0); }
+  int GET(const AbortCallback& shouldAbort) { return sendRequest("GET", nullptr, 0, shouldAbort); }
   int GET(const DataCallback& onData, const AbortCallback& shouldAbort = nullptr) {
     return sendRequest("GET", nullptr, 0, onData, shouldAbort);
   }
@@ -134,16 +135,25 @@ class SecureHttpClient {
   int sendRequest(const char* method, const std::string& payload) {
     return sendRequest(method, reinterpret_cast<const uint8_t*>(payload.data()), payload.size());
   }
+  int sendRequest(const char* method, const std::string& payload, const AbortCallback& shouldAbort) {
+    return sendRequest(method, reinterpret_cast<const uint8_t*>(payload.data()), payload.size(), shouldAbort);
+  }
 
   // Performs the request and reads the full response body. Returns the HTTP
   // status code, or -1 if the connection or status line could not be read. The
   // body (which may be empty or, on a mid-stream drop, truncated) is available
   // via getString().
   int sendRequest(const char* method, const uint8_t* payload, size_t payloadLen) {
-    return sendRequest(method, payload, payloadLen, [this](const uint8_t* data, size_t len) {
-      _body.append(reinterpret_cast<const char*>(data), len);
-      return true;
-    });
+    return sendRequest(method, payload, payloadLen, AbortCallback{});
+  }
+  int sendRequest(const char* method, const uint8_t* payload, size_t payloadLen, const AbortCallback& shouldAbort) {
+    return sendRequest(
+        method, payload, payloadLen,
+        [this](const uint8_t* data, size_t len) {
+          _body.append(reinterpret_cast<const char*>(data), len);
+          return true;
+        },
+        shouldAbort);
   }
 
   // Performs the request and streams the response body to `onData` as chunks
@@ -211,9 +221,9 @@ class SecureHttpClient {
     for (int attempt = 0; attempt < 2; ++attempt) {
       const bool reusing = connectionMatches();
       if (isAborted(shouldAbort)) return -1;
-      if (!ensureConnected()) return -1;
+      if (!ensureConnected(shouldAbort)) return -1;
 
-      if (!writeRequest(method, payload, payloadLen)) {
+      if (!writeRequest(method, payload, payloadLen, shouldAbort)) {
         closeConnection();
         if (reusing && attempt == 0) continue;
         return -1;
@@ -253,8 +263,10 @@ class SecureHttpClient {
         } else if (name == "connection") {
           std::string v = value;
           std::transform(v.begin(), v.end(), v.begin(), [](unsigned char c) { return static_cast<char>(tolower(c)); });
-          if (v.find("close") != std::string::npos) keepAlive = false;
-          else if (v.find("keep-alive") != std::string::npos) keepAlive = true;
+          if (v.find("close") != std::string::npos)
+            keepAlive = false;
+          else if (v.find("keep-alive") != std::string::npos)
+            keepAlive = true;
         }
       }
       if (_aborted) {
@@ -385,9 +397,7 @@ class SecureHttpClient {
     return !host.empty() && (scheme == "http" || scheme == "https");
   }
 
-  std::string hostHeader() const {
-    return hostHeaderFor(_scheme, _host, _port);
-  }
+  std::string hostHeader() const { return hostHeaderFor(_scheme, _host, _port); }
 
   static std::string hostHeaderFor(const std::string& scheme, const std::string& host, uint16_t port) {
     const uint16_t defaultPort = scheme == "https" ? 443 : 80;
@@ -404,7 +414,13 @@ class SecureHttpClient {
   }
 
   // Reuse the kept-alive connection when it matches, else (re)connect.
-  bool ensureConnected() {
+  static bool secureAbortThunk(const void* context) {
+    const auto* callback = static_cast<const AbortCallback*>(context);
+    return callback && *callback && (*callback)();
+  }
+
+  bool ensureConnected(const AbortCallback& shouldAbort) {
+    if (isAborted(shouldAbort)) return false;
     if (connectionMatches()) return true;
     closeConnection();
     if (_scheme == "https") {
@@ -414,18 +430,21 @@ class SecureHttpClient {
         _secure.setCACert(_rootCA);
       }
       _secure.setTimeout(_timeoutMs / 1000);
-      if (!_secure.connect(_host.c_str(), _port)) return false;
+      if (!_secure.connect(_host.c_str(), _port, _timeoutMs, secureAbortThunk, &shouldAbort)) {
+        if (shouldAbort && shouldAbort()) _aborted = true;
+        return false;
+      }
       _conn = &_secure;
       _connHttps = true;
     } else {
       _plain.setTimeout(_timeoutMs / 1000);
-      if (!_plain.connect(_host.c_str(), _port)) return false;
+      if (!_plain.connect(_host.c_str(), _port, static_cast<int32_t>(_timeoutMs))) return false;
       _conn = &_plain;
       _connHttps = false;
     }
     _connHost = _host;
     _connPort = _port;
-    return true;
+    return !isAborted(shouldAbort);
   }
 
   void closeConnection() {
@@ -440,7 +459,8 @@ class SecureHttpClient {
 
   // Request line + headers (+ body). Write results are checked: a stale
   // keep-alive socket often surfaces first as a failed write.
-  bool writeRequest(const char* method, const uint8_t* payload, size_t payloadLen) {
+  bool writeRequest(const char* method, const uint8_t* payload, size_t payloadLen,
+                    const AbortCallback& shouldAbort = nullptr) {
     std::string req = std::string(method) + " " + _path + " HTTP/1.1\r\nHost: " + hostHeader() + "\r\n";
     req += "User-Agent: " + _userAgent + "\r\n";
     req += _reuse ? "Connection: keep-alive\r\n" : "Connection: close\r\n";
@@ -451,8 +471,23 @@ class SecureHttpClient {
     for (const std::string& h : _headers) req += h;
     if (payload && payloadLen) req += "Content-Length: " + std::to_string(payloadLen) + "\r\n";
     req += "\r\n";
-    if (_conn->write(reinterpret_cast<const uint8_t*>(req.data()), req.size()) != req.size()) return false;
-    if (payload && payloadLen && _conn->write(payload, payloadLen) != payloadLen) return false;
+    if (!writeAll(reinterpret_cast<const uint8_t*>(req.data()), req.size(), shouldAbort)) return false;
+    if (payload && payloadLen && !writeAll(payload, payloadLen, shouldAbort)) return false;
+    return true;
+  }
+
+  // Chunked writes keep a large body interruptible: the abort callback is
+  // checked between chunks so a stalled socket cannot hold the caller past an
+  // absolute deadline for longer than one chunk's send.
+  bool writeAll(const uint8_t* data, size_t len, const AbortCallback& shouldAbort) {
+    constexpr size_t WRITE_CHUNK = 1024;
+    size_t offset = 0;
+    while (offset < len) {
+      if (isAborted(shouldAbort)) return false;
+      const size_t chunk = len - offset < WRITE_CHUNK ? len - offset : WRITE_CHUNK;
+      if (_conn->write(data + offset, chunk) != chunk) return false;
+      offset += chunk;
+    }
     return true;
   }
 

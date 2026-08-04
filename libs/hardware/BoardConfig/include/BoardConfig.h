@@ -627,6 +627,11 @@ struct BoardProfile {
   // Power-rail latch pins (see PowerConfig). Defaulted so existing profiles
   // need no change; a board with a latch sets it.
   PowerConfig power = {};
+  // Hold time (ms) on the shared confirm/power button before a press means
+  // POWER (sleep). Defaulted so existing profiles need no change; boards where
+  // that pin is also the primary select button (e.g. Murphy M3's middle key)
+  // set a longer hold so deliberate selects don't trip sleep.
+  unsigned long confirmPowerHoldMs = 400;
 };
 
 constexpr TouchConfig NO_TOUCH = {TouchController::None,
@@ -897,7 +902,8 @@ constexpr BoardProfile MURPHY_M3 = {
     // dedicated LDO — probing confirmed the bus scans empty with it low. The OEM
     // firmware drives it HIGH at boot. Carried as power.latch0 so holdPowerRails()
     // asserts it before any I2C user comes up.
-    {43, PIN_UNASSIGNED}};
+    {43, PIN_UNASSIGNED},
+    1500};  // confirmPowerHoldMs: GPIO0 middle key doubles as power — long hold to avoid stray sleeps
 
 // --- de-link (X4-class GDEQ0426T82 panel on ESP32-S3) — SSD1677 + frontlight ---
 // Reuses the SSD1677 driver (same controller/panel as X4); differs at the board

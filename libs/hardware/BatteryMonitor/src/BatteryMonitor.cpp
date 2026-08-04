@@ -11,10 +11,8 @@
 #include <algorithm>
 #include <cmath>
 
-
 #if FREEINK_BATTERY_I2C_GAUGE
 #include <Wire.h>
-
 
 // Minimal, dependency-free I2C fuel-gauge read for boards that carry one (e.g.
 // LilyGo T5 S3: BQ27220 gauge + BQ25896 charger). Standard TI command registers;

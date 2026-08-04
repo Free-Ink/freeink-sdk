@@ -353,7 +353,7 @@ void InputManager::updateConfirmPowerHold(const unsigned long currentTime) {
   if (pressed && s_sharedConfirmPowerShortPressEmitsPower) {
     nextState |= (1 << BTN_POWER);
   } else if (pressed &&
-             currentTime - confirmPowerPressStart >= CONFIRM_POWER_HOLD_MS) {
+             currentTime - confirmPowerPressStart >= BoardConfig::ACTIVE.confirmPowerHoldMs) {
     confirmPowerLongPressActive = true;
     nextState |= (1 << BTN_POWER);
   }
@@ -839,25 +839,31 @@ bool InputManager::decodeChsc6xFrame(const uint8_t *data, const size_t len,
 }
 
 // Gesture thresholds (TOUCH_TAP_SLOP_PX / TOUCH_SWIPE_MIN_PX) are tuned in the
-// mapped units of the GT911 boards (800x480-class, average axis span 640). On a
-// small digitizer like the Murphy's (200x374, average 287) the same pixel
-// numbers demand 3-4x the physical finger travel, which swallows swipes into
-// taps. Scale by the active digitizer's average span so gestures need the same
-// physical fraction of the panel everywhere; GT911 boards are unchanged.
-int InputManager::touchTapSlopPx() const {
+// mapped units of the GT911 boards. On a small digitizer like the Murphy's
+// (200x374, average span 287) the same pixel numbers demand 3-4x the physical
+// finger travel, which swallows swipes into taps. Scale by the active
+// digitizer's average span so gestures need the same physical fraction of the
+// panel — but CAP at the tuned value so this never RAISES the threshold on a
+// larger existing panel (e.g. the 960x540 GT911, span 749, which would
+// otherwise jump +17%). Existing boards keep their tuned feel; only smaller
+// panels scale down.
+int InputManager::touchAxisSpanAvg() const {
   const auto &t = BoardConfig::ACTIVE.touch;
   const int xs = (t.rawMaxX > t.rawMinX) ? t.rawMaxX - t.rawMinX : 1;
   const int ys = (t.rawMaxY > t.rawMinY) ? t.rawMaxY - t.rawMinY : 1;
-  const int v = TOUCH_TAP_SLOP_PX * ((xs + ys) / 2) / 640;
-  return v < 8 ? 8 : v;
+  return (xs + ys) / 2;
+}
+
+int InputManager::touchTapSlopPx() const {
+  const int v = TOUCH_TAP_SLOP_PX * touchAxisSpanAvg() / GT911_REFERENCE_SPAN;
+  const int capped = v < TOUCH_TAP_SLOP_PX ? v : TOUCH_TAP_SLOP_PX;
+  return capped < 8 ? 8 : capped;
 }
 
 int InputManager::touchSwipeMinPx() const {
-  const auto &t = BoardConfig::ACTIVE.touch;
-  const int xs = (t.rawMaxX > t.rawMinX) ? t.rawMaxX - t.rawMinX : 1;
-  const int ys = (t.rawMaxY > t.rawMinY) ? t.rawMaxY - t.rawMinY : 1;
-  const int v = TOUCH_SWIPE_MIN_PX * ((xs + ys) / 2) / 640;
-  return v < 16 ? 16 : v;
+  const int v = TOUCH_SWIPE_MIN_PX * touchAxisSpanAvg() / GT911_REFERENCE_SPAN;
+  const int capped = v < TOUCH_SWIPE_MIN_PX ? v : TOUCH_SWIPE_MIN_PX;
+  return capped < 16 ? 16 : capped;
 }
 
 uint16_t InputManager::mapTouchAxis(uint16_t raw, const uint16_t rawMin,

@@ -148,10 +148,6 @@ void Uc8253MurphyDriver::writePlane(EpdBus& bus, uint8_t command, const uint8_t*
   bus.endTxn();
 }
 
-void Uc8253MurphyDriver::fillPlane(EpdBus& bus, uint8_t command, uint8_t fillByte) {
-  bus.fillPlane(command, fillByte, CTRL_H, CTRL_WB);
-}
-
 void Uc8253MurphyDriver::triggerRefresh(EpdBus& bus, bool turnOff) {
   if (!_isScreenOn) {
     bus.cmd(CMD_POWER_ON);

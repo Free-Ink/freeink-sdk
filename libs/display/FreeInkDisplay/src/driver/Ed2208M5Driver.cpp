@@ -165,7 +165,7 @@ void Ed2208M5Driver::writeFrame(EpdBus& bus, const uint8_t* fb) {
 void Ed2208M5Driver::setPartialWindow(EpdBus& bus, uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
   if (w == 0 || h == 0) return;
   const uint16_t xEnd = static_cast<uint16_t>(x + w - 1);
-  const uint16_t yEnd = static_cast<uint16_t>(y + h);
+  const uint16_t yEnd = static_cast<uint16_t>(y + h - 1);  // inclusive, matching xEnd
   const uint8_t window[9] = {
       static_cast<uint8_t>(x >> 8),    static_cast<uint8_t>(x & 0xFF),
       static_cast<uint8_t>(xEnd >> 8), static_cast<uint8_t>(xEnd & 0xFF),

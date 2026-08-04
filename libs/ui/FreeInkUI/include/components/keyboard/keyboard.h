@@ -9,15 +9,35 @@ namespace ui {
 
 constexpr int16_t QWERTY_KEY_SHIFT = -1;
 constexpr int16_t QWERTY_KEY_MODE = -2;
+// -3 is taken by app-defined keys downstream (CrossPoint's URL panel toggle),
+// so the script switch takes -4.
+constexpr int16_t QWERTY_KEY_LANG = -4;
 constexpr int16_t QWERTY_KEY_BACKSPACE = 8;
 constexpr int16_t QWERTY_KEY_ENTER = 13;
 constexpr int16_t QWERTY_KEY_SPACE = 32;
 
+// Layouts are grouped by script. A build ships all of them in flash; which ones
+// a user can reach is the app's decision, so nothing here assumes a pairing
+// between UI language and available layouts.
 enum class KeyboardLayoutId : uint8_t {
   QwertyEn,
   AzertyFr,
   QwertzDe,
   SpanishEs,
+  // ЙЦУКЕН family. Each ships as two explicit layers (shift picks between them)
+  // because Cyrillic has no single-key case toggle the way the Latin layouts
+  // do; the long-press case flip is handled by keyboardAltOutputFor.
+  //
+  // The four differ only in which letters occupy a handful of slots. Ukrainian
+  // reaches ґ, and Kazakh its nine extra letters, by long-press rather than
+  // dedicated keys — a 480px panel has no room for a wider grid.
+  CyrillicRu,
+  CyrillicUk,
+  CyrillicBe,
+  CyrillicKk,
+  // Hebrew: no letter case, so a single layer and no shift key. Right-to-left
+  // is the renderer's job -- the layout inserts code points in logical order.
+  HebrewIl,
 };
 
 struct KeyboardKey {
@@ -49,6 +69,7 @@ struct KeyboardProps {
   ActionId keyAction = NO_ACTION;
   ActionId shiftAction = NO_ACTION;
   ActionId modeAction = NO_ACTION;
+  ActionId langAction = NO_ACTION;
   ActionId deleteAction = NO_ACTION;
   ActionId okAction = NO_ACTION;
   // Optional localized labels for KeyKind::Ok / Shift / Mode keys. Layout
@@ -59,6 +80,10 @@ struct KeyboardProps {
   const char* okLabel = nullptr;
   const char* shiftLabel = nullptr;
   const char* modeLabel = nullptr;
+  // KeyKind::Lang has no sensible table label: which layout is in use is the
+  // app's state, not the table's. Always supplied per frame; a Lang key with no
+  // label falls back to the table's, which the built-in tables leave as "EN".
+  const char* langLabel = nullptr;
   uint16_t inputMask = InputDefault;
   int16_t selectedIndex = -1;
   TextStyle labelText{};
@@ -83,9 +108,17 @@ struct KeyboardProps {
 // long-press) to the letter layers — for entry fields where digits must stay
 // one tap away (passwords, hosts, ports). The symbol layers already carry
 // digits, so they ignore the flag. Shift swaps the row to symbols-primary on
-// QwertyEn; the other languages keep their single letter layer.
+// QwertyEn and picks the uppercase layer on the Cyrillic layouts; FR/DE/ES keep
+// their single letter layer, and HebrewIl has no case at all.
+//
+// `langKey` puts a KeyKind::Lang key in the bottom row, for apps that let the
+// user reach more than one script. It costs a slot in that row, so it is off by
+// default and single-script keyboards render exactly as before. The non-Latin
+// layouts ignore the flag and always carry the key: a keyboard with no Latin
+// letters cannot type a Wi-Fi password or a URL, so there always has to be a
+// way back.
 const KeyboardLayout& builtinKeyboardLayout(KeyboardLayoutId id, bool shifted = false, bool symbols = false,
-                                            bool numberRow = false);
+                                            bool numberRow = false, bool langKey = false);
 
 // The UTF-8 text a key id inserts under the given layout (nullptr for
 // shift/mode/delete/OK and unknown ids). Keys report stable ids in
@@ -95,10 +128,11 @@ const KeyboardLayout& builtinKeyboardLayout(KeyboardLayoutId id, bool shifted = 
 const char* keyboardOutputFor(const KeyboardLayout& layout, int16_t value);
 
 // The UTF-8 alternate a key id inserts on long-press. Explicit KeyboardKey::alt
-// wins; ASCII letter keys without one fall back to the opposite case (the
-// phone-keyboard hold-for-capital convention). Returns nullptr when the key
-// has no alternate. The case-flip result lives in a static buffer — call from
-// one task (the UI loop), and consume before the next call.
+// wins; letter keys without one fall back to the opposite case (the
+// phone-keyboard hold-for-capital convention) — ASCII a-z/A-Z and Cyrillic
+// U+0410..U+044F plus Ё/ё. Returns nullptr when the key has no alternate. The
+// case-flip result lives in a static buffer — call from one task (the UI loop),
+// and consume before the next call.
 const char* keyboardAltOutputFor(const KeyboardLayout& layout, int16_t value);
 
 // Touch hold routing for e-paper keyboards: fires the long-press at the
@@ -325,6 +359,7 @@ void keyboard(Frame<MaxInteractions>& frame, Rect rect, const KeyboardProps& pro
   auto actionFor = [&](KeyKind kind) {
     if (kind == KeyKind::Shift && props.shiftAction != NO_ACTION) return props.shiftAction;
     if (kind == KeyKind::Mode && props.modeAction != NO_ACTION) return props.modeAction;
+    if (kind == KeyKind::Lang && props.langAction != NO_ACTION) return props.langAction;
     if (kind == KeyKind::Delete && props.deleteAction != NO_ACTION) return props.deleteAction;
     if (kind == KeyKind::Ok && props.okAction != NO_ACTION) return props.okAction;
     return props.keyAction;
@@ -341,6 +376,7 @@ void keyboard(Frame<MaxInteractions>& frame, Rect rect, const KeyboardProps& pro
     if (key.kind == KeyKind::Ok && props.okLabel) bp.label = props.okLabel;
     if (key.kind == KeyKind::Shift && props.shiftLabel) bp.label = props.shiftLabel;
     if (key.kind == KeyKind::Mode && props.modeLabel) bp.label = props.modeLabel;
+    if (key.kind == KeyKind::Lang && props.langLabel) bp.label = props.langLabel;
     bp.action = action;
     bp.value = key.value;
     bp.inputMask = props.inputMask;

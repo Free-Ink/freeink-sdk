@@ -26,18 +26,19 @@ struct Uc8179Config {
   uint8_t psr0;
   // PSR (0x00) byte 1.
   uint8_t psr1;
-  // PLL/OSC control (cmd 0x03).
-  uint8_t pll;
+  // PFS power-off sequence (cmd 0x03). (PLL is 0x30 and stays panel-programmed.)
+  uint8_t pfs;
   // Booster soft-start (cmd 0x06), 4 bytes.
   uint8_t btst[4];
-  // cmd 0xE1 (power/analog control tail).
-  uint8_t e1;
-  // cmd 0xE0.
-  uint8_t e0;
-  // VCOM_DC (cmd 0xE5) for a full refresh.
-  uint8_t vcomDc;
-  // VCOM_DC (cmd 0xE5) for a fast/partial refresh (the OEM uses a different value).
-  uint8_t vcomDcFast;
+  // Gate-scan selection (cmd 0xE1).
+  uint8_t gateScan;
+  // CCSET cascade/output enable (cmd 0xE0).
+  uint8_t ccset;
+  // TSSET forced temperature (cmd 0xE5) for a full refresh — selects the OTP
+  // waveform's frame count/rate.
+  uint8_t tsset;
+  // TSSET (cmd 0xE5) for a fast/partial refresh (the OEM uses a different value).
+  uint8_t tssetFast;
   // CDI (0x50) byte0 asserted during a refresh (before DRF); byte1 is 0x07.
   uint8_t cdiActive;
   // CDI (0x50) byte0 restored after the refresh completes; byte1 is 0x07.
@@ -105,6 +106,9 @@ class Uc8179Driver : public PanelDriver {
   // differential partial has a real baseline to diff against (no ghosting).
   // Cleared after grayscale (which overwrites the planes) so the next B/W is full.
   bool _oldPlaneValid = false;
+  // AA CDI select: the first grayscale refresh after init sends the border-driving
+  // CDI (0x29); later ones the border-holding CDI (0xA9), per the vendor reference.
+  bool _grayRefreshedOnce = false;
 
   // Async split state (see Uc8279Driver for the contract).
   bool _pendingRefresh = false;

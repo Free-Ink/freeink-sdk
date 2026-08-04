@@ -334,6 +334,10 @@ class FreeInkDisplay {
 
  private:
   void selectDriver();
+  // Shared body of drawImage()/drawImageTransparent(). transparent=true ANDs
+  // (black-only); false overwrites. Handles non-byte-aligned x per-pixel.
+  void blitImage(const uint8_t* imageData, uint16_t x, uint16_t y, uint16_t w, uint16_t h, bool fromProgmem,
+                 bool transparent) const;
   // Block until a pending async refresh completes (no-op when none is).
   // Every blocking panel operation calls this before touching the bus.
   void syncPendingAsync();

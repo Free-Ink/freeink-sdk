@@ -14,6 +14,11 @@ enum class KeyKind : uint8_t {
   Delete,
   Ok,
   Disabled,
+  // Switches to the next enabled script layout (Latin <-> Cyrillic <-> ...).
+  // Distinct from Mode, which pages between letters and symbols within one
+  // script. The label is always supplied by the app through KeyboardProps,
+  // since which layout is active is app state the static tables cannot know.
+  Lang,
 };
 
 struct KeyGridKey {

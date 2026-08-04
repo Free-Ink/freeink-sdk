@@ -32,6 +32,9 @@
 #if FREEINK_DRIVER_UC8179
 #include "driver/Uc8179Driver.h"
 #endif
+#if FREEINK_DRIVER_UC8279_X4
+#include "driver/Uc8279X4Driver.h"
+#endif
 #if FREEINK_DRIVER_ED2208
 #include "driver/Ed2208M5Driver.h"
 #endif
@@ -134,12 +137,21 @@ void FreeInkDisplay::selectDriver() {
     case PanelSel::X4:
     default:
 #if FREEINK_DRIVER_UC8179
-      // Newer X4 / X4 Pro batches swap the SSD1677 for an UltraChip UC8179.
+      // Newer X4 / X4 Pro batches swap the SSD1677 for an UltraChip part.
       // Which silicon a unit carries is decided before begin() by the boot-time
-      // controller resolution (OEM hw_calib/screenType, then a bus probe), which
-      // sets ACTIVE.displayController.
+      // display-bus probe (probe-only; NVS hw_calib/screenType is diagnostics),
+      // which sets ACTIVE.displayController (and, for the UC8279 800x480
+      // variant, ACTIVE.displayControllerVariant from the VER LUT_VER byte).
       if (BoardConfig::ACTIVE.displayController == BoardConfig::DisplayController::UC8179) {
         _driver = &uc8179Driver();
+        break;
+      }
+#endif
+#if FREEINK_DRIVER_UC8279_X4
+      // UC8279 (800x480) — the second UltraChip variant of this panel. Distinct
+      // from the X3's UC8279d driver, which routes via PanelSel::X3 above.
+      if (BoardConfig::ACTIVE.displayController == BoardConfig::DisplayController::UC8279) {
+        _driver = &uc8279X4Driver();
         break;
       }
 #endif
@@ -210,38 +222,85 @@ void FreeInkDisplay::begin() {
 
 void FreeInkDisplay::clearScreen(uint8_t color) const { memset(frameBuffer, color, bufferSize); }
 
-void FreeInkDisplay::drawImage(const uint8_t* imageData, uint16_t x, uint16_t y, uint16_t w, uint16_t h,
-                               bool fromProgmem) const {
+// Blit a 1bpp image (MSB-first, 1=white/0=black) into the framebuffer.
+// `transparent` = only paint black pixels (AND, leaving white untouched);
+// otherwise overwrite the region. The byte-aligned case (x%8==0) keeps the
+// original whole-byte copy; a non-byte-aligned x uses a per-pixel path so the
+// image lands at the exact column instead of snapping to the nearest byte
+// (e.g. a logo centered at x=180 no longer shifts to 176). Source row stride is
+// ceil(w/8), so non-multiple-of-8 widths are handled too.
+void FreeInkDisplay::blitImage(const uint8_t* imageData, uint16_t x, uint16_t y, uint16_t w, uint16_t h,
+                               bool fromProgmem, bool transparent) const {
   if (!frameBuffer) return;
-  const uint16_t imageWidthBytes = w / 8;
+  const uint16_t imageWidthBytes = (w + 7) / 8;
+
+  if ((x & 7) == 0) {
+    // Byte-aligned fast path (unchanged behavior).
+    const uint16_t xByte = x / 8;
+    for (uint16_t row = 0; row < h; row++) {
+      const uint16_t destY = y + row;
+      if (destY >= displayHeight) break;
+      const uint32_t destOffset = static_cast<uint32_t>(destY) * displayWidthBytes + xByte;
+      const uint32_t srcOffset = static_cast<uint32_t>(row) * imageWidthBytes;
+      for (uint16_t col = 0; col < imageWidthBytes; col++) {
+        if ((xByte + col) >= displayWidthBytes) break;
+        const uint8_t srcByte = fromProgmem ? pgm_read_byte(&imageData[srcOffset + col]) : imageData[srcOffset + col];
+        uint8_t& destByte = frameBuffer[destOffset + col];
+        const bool isPartialFinalByte = col + 1 == imageWidthBytes && (w & 7) != 0;
+        if (!isPartialFinalByte) {
+          if (transparent)
+            destByte &= srcByte;  // only black pixels are drawn
+          else
+            destByte = srcByte;
+          continue;
+        }
+
+        // Only the high `w % 8` bits belong to the image. Preserve the
+        // destination pixels represented by padding bits in its final byte.
+        const uint8_t validMask = static_cast<uint8_t>(0xFFU << (8U - (w & 7)));
+        if (transparent)
+          destByte &= static_cast<uint8_t>(srcByte | static_cast<uint8_t>(~validMask));
+        else
+          destByte = static_cast<uint8_t>((destByte & static_cast<uint8_t>(~validMask)) | (srcByte & validMask));
+      }
+    }
+    return;
+  }
+
+  // Non-byte-aligned: per-pixel placement.
   for (uint16_t row = 0; row < h; row++) {
     const uint16_t destY = y + row;
     if (destY >= displayHeight) break;
-    const uint32_t destOffset = static_cast<uint32_t>(destY) * displayWidthBytes + (x / 8);
-    const uint32_t srcOffset = static_cast<uint32_t>(row) * imageWidthBytes;
-    for (uint16_t col = 0; col < imageWidthBytes; col++) {
-      if ((x / 8 + col) >= displayWidthBytes) break;
-      frameBuffer[destOffset + col] =
-          fromProgmem ? pgm_read_byte(&imageData[srcOffset + col]) : imageData[srcOffset + col];
+    const uint32_t srcRow = static_cast<uint32_t>(row) * imageWidthBytes;
+    const uint32_t destRow = static_cast<uint32_t>(destY) * displayWidthBytes;
+    for (uint16_t col = 0; col < w; col++) {
+      const uint16_t destX = x + col;
+      if (destX >= displayWidth) break;
+      const uint8_t srcByte =
+          fromProgmem ? pgm_read_byte(&imageData[srcRow + (col >> 3)]) : imageData[srcRow + (col >> 3)];
+      const bool white = (srcByte >> (7 - (col & 7))) & 1;  // 1 = white, 0 = black
+      const uint8_t mask = static_cast<uint8_t>(0x80 >> (destX & 7));
+      uint8_t& cell = frameBuffer[destRow + (destX >> 3)];
+      if (transparent) {
+        if (!white) cell &= static_cast<uint8_t>(~mask);  // paint black only
+      } else {
+        if (white)
+          cell |= mask;
+        else
+          cell &= static_cast<uint8_t>(~mask);
+      }
     }
   }
 }
 
+void FreeInkDisplay::drawImage(const uint8_t* imageData, uint16_t x, uint16_t y, uint16_t w, uint16_t h,
+                               bool fromProgmem) const {
+  blitImage(imageData, x, y, w, h, fromProgmem, /*transparent=*/false);
+}
+
 void FreeInkDisplay::drawImageTransparent(const uint8_t* imageData, uint16_t x, uint16_t y, uint16_t w, uint16_t h,
                                           bool fromProgmem) const {
-  if (!frameBuffer) return;
-  const uint16_t imageWidthBytes = w / 8;
-  for (uint16_t row = 0; row < h; row++) {
-    const uint16_t destY = y + row;
-    if (destY >= displayHeight) break;
-    const uint32_t destOffset = static_cast<uint32_t>(destY) * displayWidthBytes + (x / 8);
-    const uint32_t srcOffset = static_cast<uint32_t>(row) * imageWidthBytes;
-    for (uint16_t col = 0; col < imageWidthBytes; col++) {
-      if ((x / 8 + col) >= displayWidthBytes) break;
-      const uint8_t srcByte = fromProgmem ? pgm_read_byte(&imageData[srcOffset + col]) : imageData[srcOffset + col];
-      frameBuffer[destOffset + col] &= srcByte;  // only black pixels are drawn
-    }
-  }
+  blitImage(imageData, x, y, w, h, fromProgmem, /*transparent=*/true);
 }
 
 void FreeInkDisplay::setFramebuffer(const uint8_t* bwBuffer) const { memcpy(frameBuffer, bwBuffer, bufferSize); }

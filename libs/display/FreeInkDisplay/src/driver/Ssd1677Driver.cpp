@@ -62,6 +62,9 @@ const Ssd1677Config& ssd1677DefaultConfig() {
       0xC0,  // borderWaveformFull: stock X4 border
       0xC0,  // borderWaveformFast: stock X4 border
       0xC0,  // borderWaveformHalf: stock X4 border
+      0xC0,  // borderWaveformGray: written explicitly with the external AA LUT (vendor
+             // reference stage 2); same value the B/W paths leave in the register, so
+             // the wire state is unchanged — just no longer relying on carry-over
   };
   return cfg;
 }
@@ -309,8 +312,18 @@ void Ssd1677Driver::refresh(EpdBus& bus, RefreshMode mode, bool turnOff, bool as
     bus.cmd(CMD_WRITE_TEMP);
     bus.data(_cfg.halfRefreshTemp);
     displayMode |= 0xD4;
+  } else if (_customLutActive) {
+    // External-LUT (AA grayscale) activation is the absolute 0xCC sequence per the
+    // vendor reference — clock/analog enable + display, WITHOUT the OTP LUT reload
+    // (0x10 bit clear). The enable bits are a no-op when the rails are already up
+    // (the usual X4 case, where stage 1 left them on), and required when they are
+    // not, so 0xCC is correct in both states. The production driver marks power OFF
+    // after this pass; mirror that so the next refresh re-enables the rails.
+    displayMode = 0xCC;
+    if (turnOff) displayMode |= 0x03;
+    _isScreenOn = false;
   } else {  // Fast
-    displayMode |= _customLutActive ? 0x0C : 0x1C;
+    displayMode |= 0x1C;
   }
 
   bus.cmd(CMD_DISPLAY_UPDATE_CTRL2);
@@ -528,7 +541,8 @@ void Ssd1677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
     _isScreenOn = false;  // 0xC7 always powers down after the update
   } else {
     // Settled rails before the gray waveform (no-op where the panel is already
-    // on, i.e. the X4's fast path). refresh() then sends 0x0C, not 0xCC.
+    // on, i.e. the X4's fast path). refresh() then runs the 0xCC external-LUT
+    // sequence (its enable bits are a no-op on already-up rails).
     if (_cfg.grayPowerUpFirst) powerOn(bus);
     refresh(bus, RefreshMode::Fast, turnOff);
   }

@@ -37,8 +37,13 @@ struct EpdProbePins {
 };
 
 // UC81xx read-capable registers (UC8179 / UC8279d datasheets, identical layout).
-constexpr uint8_t UC81XX_CMD_VER = 0x70;  // reserved 0x00, CHIP_VER, LUT_VER[23:0]
-constexpr uint8_t UC81XX_CMD_FLG = 0x71;  // status; BUSY_N (D0) = 1 when idle
+constexpr uint8_t UC81XX_CMD_VER = 0x70;   // reserved 0x00, CHIP_VER, LUT_VER[23:0]
+constexpr uint8_t UC81XX_CMD_FLG = 0x71;   // status; BUSY_N (D0) = 1 when idle
+constexpr uint8_t UC81XX_CMD_RMTP = 0xA2;  // bulk MTP read: 1 dummy byte, then MTP[0..n]
+
+// Diagnostics snapshot of the last probe (see XteinkDisplayProbeDiag in the
+// header). File-scope so locked-unit firmware can persist it after the fact.
+XteinkDisplayProbeDiag g_probeDiag;
 
 inline void epdClockDelay() { delayMicroseconds(1); }  // ~500 kHz, timing-safe
 
@@ -88,16 +93,30 @@ void epdCmdRead(const EpdProbePins& p, uint8_t cmd, uint8_t* out, uint8_t len) {
 // that is neither a floating-low nor a floating-high bus. A released SDA reads
 // back all-0x00 or all-0xFF through the pull-up, and neither the UC8253 nor the
 // SSD1677 answers 0x70 with this shape (the SSD-family has no such read), so a
-// genuine 0x00 lead followed by a non-trivial byte is discriminating. FLG must
 // additionally report idle (BUSY_N=1) without being a floating pattern.
-bool matchUc81xx(const uint8_t ver[5], uint8_t flg) {
-  if (ver[0] != 0x00) return false;
-  if (ver[1] == 0x00 || ver[1] == 0xFF) return false;
-  if (flg == 0x00 || flg == 0xFF) return false;
-  return (flg & 0x01) == 0x01;
+//
+// Match on the FLG status plus a non-uniform VER. A UC81xx drives 0x71 to a real
+// status byte (BUSY_N=D0=1 when idle) and returns a structured VER; an SSD-family
+// controller doesn't answer 0x70/0x71 at all, so the half-duplex line floats to a
+// uniform level (all 0xFF via the pull-up, or all 0x00). We deliberately do NOT
+// require any specific CHIP_VER value: a shipping X4 Pro UC8179 was observed
+// returning VER=00 00 01 FF FF (CHIP_VER byte = 0x00) with FLG=0x13 — an earlier
+// matcher that required ver[1] != 0 wrongly rejected it.
+bool verIsFloating(const uint8_t ver[5]) {
+  for (int i = 1; i < 5; i++)
+    if (ver[i] != ver[0]) return false;  // any variation => a real, driven response
+  return true;                           // all five bytes identical => floating bus
 }
 
-bool runDisplayProbePass(const EpdProbePins& p, uint8_t ver[5], uint8_t* flg) {
+bool matchUc81xx(const uint8_t ver[5], uint8_t flg) {
+  // FLG must be a real, non-floating status with BUSY_N (bit0) asserted (idle).
+  if (flg == 0x00 || flg == 0xFF) return false;
+  if ((flg & 0x01) != 0x01) return false;
+  // VER must be an actually-driven (non-uniform) pattern, not a floating bus.
+  return !verIsFloating(ver);
+}
+
+bool runDisplayProbePass(const EpdProbePins& p, uint8_t ver[5], uint8_t* flg, uint8_t rstLowMs) {
   pinMode(p.cs, OUTPUT);
   digitalWrite(p.cs, HIGH);
   pinMode(p.sclk, OUTPUT);
@@ -107,17 +126,22 @@ bool runDisplayProbePass(const EpdProbePins& p, uint8_t ver[5], uint8_t* flg) {
   pinMode(p.mosi, OUTPUT);
   if (p.busy >= 0) pinMode(p.busy, INPUT);
 
-  // Hardware reset pulse (RST_N min low width 50 us; give it 1 ms) then wait a
-  // fixed settle time. We can't trust BUSY polarity here — the controller (and
-  // therefore its idle level) is exactly what we're trying to identify — so we
-  // don't gate on BUSY; a flat delay covers every UC81xx power-up. The panel
-  // driver's own begin() resets again afterwards, so this leaves no state.
+  // Hardware reset pulse (rstLowMs low, then a fixed settle). The vendor
+  // identification path holds RST_N low for 50 ms (well beyond the datasheet's
+  // 50 us minimum — the ID readback is less forgiving than normal operation),
+  // but that cost is only paid on the CONFIRM pass: the screening pass uses a
+  // short pulse so the common case — an SSD-family panel that will never answer
+  // 0x70 — doesn't add ~100 ms to every boot and wake (see
+  // probeDisplayController). We can't trust BUSY polarity here — the controller
+  // (and therefore its idle level) is exactly what we're trying to identify —
+  // so we don't gate on BUSY; a flat delay covers every UC81xx power-up. The
+  // panel driver's own begin() resets again afterwards, so this leaves no state.
   if (p.rst >= 0) {
     pinMode(p.rst, OUTPUT);
     digitalWrite(p.rst, HIGH);
     delay(2);
     digitalWrite(p.rst, LOW);
-    delay(1);
+    delay(rstLowMs);
     digitalWrite(p.rst, HIGH);
   }
   delay(30);
@@ -143,19 +167,78 @@ void releaseDisplayPins(const EpdProbePins& p) {
 // both passes match the UC81xx signature AND agree on the VER bytes — a floating
 // bus can't produce the same stable non-trivial pattern twice. Disagreement is
 // Inconclusive; both-fail is PrimaryAssumed (the profile's default controller).
-DisplayControllerVerdict probeDisplayController(const EpdProbePins& p, uint8_t verBytes[5], uint8_t* flg) {
+//
+// Reset budget: pass 1 screens with the short (1 ms) reset that every benched
+// UC81xx answers fine; only if it matches does pass 2 confirm with the vendor
+// identification timing (RST low 50 ms), which also makes pass 2's VER the one
+// read under doc conditions. An SSD-family board (floating bus) therefore pays
+// two cheap passes (~66 ms total, as before the doc-timing change) instead of
+// two 50 ms resets on every boot and wake.
+DisplayControllerVerdict probeDisplayController(const EpdProbePins& p, uint8_t verBytes[5], uint8_t* flg,
+                                                bool escalateReset) {
   uint8_t ver1[5] = {0};
   uint8_t ver2[5] = {0};
   uint8_t flg1 = 0;
-  const bool pass1 = runDisplayProbePass(p, ver1, &flg1);
+  bool pass1 = runDisplayProbePass(p, ver1, &flg1, /*rstLowMs=*/1);
+  if (!pass1 && escalateReset) {
+    // Escalation for boards whose UC sibling might only answer the vendor's
+    // identification timing (RST low 50 ms): a failed short screening pass is
+    // retried once at doc timing before concluding "no UC part". Requested for
+    // X3-family boards (their boot budget tolerates it); the X4 family keeps
+    // the cheap path — its UC8179 is bench-proven to answer the 1 ms pulse.
+    delay(2);
+    pass1 = runDisplayProbePass(p, ver1, &flg1, /*rstLowMs=*/50);
+  }
   delay(2);
-  const bool pass2 = runDisplayProbePass(p, ver2, nullptr);
+  const bool pass2 = runDisplayProbePass(p, ver2, nullptr, /*rstLowMs=*/pass1 ? 50 : 1);
+
+  const bool verAgree = memcmp(ver1, ver2, 5) == 0;
+  bool confirmed = pass1 && pass2 && verAgree;
+  // FLG is a driven idle status (not a floating 0xFF / dead 0x00, BUSY_N set).
+  const bool flgDriven = flg1 != 0x00 && flg1 != 0xFF && (flg1 & 0x01) == 0x01;
+
+  // Diagnostics snapshot for locked units (persisted by firmware, e.g. to SD).
+  g_probeDiag.valid = true;
+  memcpy(g_probeDiag.ver, pass1 && pass2 ? ver2 : ver1, 5);
+  g_probeDiag.flg = flg1;
+  g_probeDiag.promoted = false;
+  g_probeDiag.mtpValid = false;
+
+  // Ground-truth dump of the module's factory configuration: RMTP (0xA2)
+  // returns a dummy byte then MTP[0..n] — the 0xA5 refresh-enable key, the
+  // Command Default Setting block (real PSR/TRES/GSST/CDI/TCON), product ID
+  // and LUT version. Read whenever SOMETHING is driving the status line: on a
+  // confirmed part it's diagnostics; on the fallback path below it is the
+  // discriminator itself. A part without RMTP (UC8253, SSD-family) floats the
+  // line and reads uniform garbage here.
+  if (confirmed || flgDriven) {
+    uint8_t raw[sizeof(g_probeDiag.mtp) + 1] = {0};
+    epdCmdRead(p, UC81XX_CMD_RMTP, raw, sizeof(raw));
+    memcpy(g_probeDiag.mtp, raw + 1, sizeof(g_probeDiag.mtp));
+    g_probeDiag.mtpValid = true;
+  }
+
+  // Fallback match — FIELD-OBSERVED UC8279d signature: new X3 units return
+  // VER = FF FF FF FF FF (blank/unreadable LUT_VER area) with FLG = 0x13 (the
+  // datasheet's idle default), which the uniform-VER floating-bus test wrongly
+  // rejects. A pulled-up floating bus also reads FF — so require POSITIVE
+  // evidence: the RMTP dump must start with the 0xA5 MTP key, which only a
+  // real UC81xx with a programmed MTP can produce (and without which OTP-mode
+  // refreshes wouldn't run anyway). UC8253 has no RMTP command; its read
+  // floats and can never match.
+  if (!confirmed && flgDriven && verAgree && verIsFloating(ver1) && ver1[0] == 0xFF && g_probeDiag.mtpValid &&
+      g_probeDiag.mtp[0] == 0xA5) {
+    confirmed = true;
+  }
   releaseDisplayPins(p);
-  if (verBytes) memcpy(verBytes, ver1, 5);
+
+  if (verBytes) memcpy(verBytes, g_probeDiag.ver, 5);
   if (flg) *flg = flg1;
-  if (pass1 && pass2 && memcmp(ver1, ver2, 5) == 0) return DisplayControllerVerdict::Uc81xxConfirmed;
-  if (!pass1 && !pass2) return DisplayControllerVerdict::PrimaryAssumed;
-  return DisplayControllerVerdict::Inconclusive;
+  DisplayControllerVerdict v = DisplayControllerVerdict::Inconclusive;
+  if (confirmed) v = DisplayControllerVerdict::Uc81xxConfirmed;
+  else if (!pass1 && !pass2) v = DisplayControllerVerdict::PrimaryAssumed;
+  g_probeDiag.verdict = static_cast<uint8_t>(v);
+  return v;
 }
 
 }  // namespace
@@ -163,18 +246,23 @@ DisplayControllerVerdict probeDisplayController(const EpdProbePins& p, uint8_t v
 DisplayControllerVerdict detectXteinkDisplayController(uint8_t verBytes[5], uint8_t* flg) {
   const auto& d = BoardConfig::ACTIVE.display;
   const EpdProbePins p{d.sclk, d.mosi, d.cs, d.dc, d.rst, d.busy};
-  return probeDisplayController(p, verBytes, flg);
+  // X3-family boards (UC8253 default) escalate a failed screening pass to the
+  // 50 ms vendor-ID reset — see probeDisplayController.
+  const bool escalate = BoardConfig::ACTIVE.displayController == BoardConfig::DisplayController::UC8253;
+  return probeDisplayController(p, verBytes, flg, escalate);
 }
+
+const XteinkDisplayProbeDiag& getXteinkDisplayProbeDiag() { return g_probeDiag; }
 
 namespace {
 
 // The OEM records the panel controller per unit in NVS namespace `hw_calib`,
 // key `screenType` (u8): 1/0x0B = UC8179, 2/0x0C = UC8279, anything else (incl.
-// the default 3) = the shipping SSD-family / UC8253 part. This value is written
-// once at the factory and never rewritten, so it survives a reflash to a
-// different firmware as long as the NVS partition isn't erased — making it the
-// authoritative, probe-free answer when present. Returns false if NVS has no
-// such namespace/key (fresh chip, erased NVS, or a non-Xteink board).
+// the default 3) = the shipping SSD-family / UC8253 part. We READ it only for
+// diagnostics/cross-reference — NOT for the decision. It is unreliable in the
+// field: a full-flash from another unit overwrites this namespace, so it can
+// describe the wrong panel entirely. The live bus probe is the ground truth.
+// Returns false if NVS has no such namespace/key.
 bool readOemScreenType(uint8_t* out) {
   nvs_handle_t h;
   if (nvs_open("hw_calib", NVS_READONLY, &h) != ESP_OK) return false;
@@ -188,43 +276,81 @@ bool readOemScreenType(uint8_t* out) {
 
 bool screenTypeIsUltraChip(uint8_t st) { return st == 1 || st == 2 || st == 0x0B || st == 0x0C; }
 
+// Run the display-bus probe and report the verdict with a diagnostic log line.
+// On a confirmed UltraChip part, `verOut` receives the 5 VER bytes (byte2 is
+// LUT_VER, which identifies the silicon variant).
+bool probeSaysUltraChip(uint8_t verOut[5]) {
+  uint8_t ver[5] = {0};
+  uint8_t flg = 0;
+  const DisplayControllerVerdict v = detectXteinkDisplayController(ver, &flg);
+  memcpy(verOut, ver, 5);
+  if (Serial) {
+    Serial.printf("[%lu] [XTDET] bus probe VER=%02X %02X %02X %02X %02X FLG=%02X -> %s\n", millis(), ver[0], ver[1],
+                  ver[2], ver[3], ver[4], flg,
+                  v == DisplayControllerVerdict::Uc81xxConfirmed  ? "UltraChip"
+                  : v == DisplayControllerVerdict::PrimaryAssumed ? "default controller"
+                                                                  : "inconclusive (default)");
+    // MTP header (RMTP 0xA2), read whenever the status line was driven: 0xA5 at
+    // byte 0 = a UC part with a programmed MTP (the fallback discriminator);
+    // uniform FF/00 = no RMTP support (UC8253 / SSD-family) or unreadable.
+    if (g_probeDiag.mtpValid) {
+      Serial.printf("[%lu] [XTDET] MTP[0x000..0x02F]:", millis());
+      for (size_t i = 0; i < sizeof(g_probeDiag.mtp); i++) Serial.printf(" %02X", g_probeDiag.mtp[i]);
+      Serial.printf("\n");
+    }
+  }
+  return v == DisplayControllerVerdict::Uc81xxConfirmed;
+}
+
 }  // namespace
 
 bool applyXteinkDisplayController() {
-  bool ultraChip;
+  // Decide from the live display-bus probe — the ground truth. The OEM NVS
+  // hw_calib/screenType is read only for diagnostics: it's unreliable in the
+  // field (a full-flash from another unit overwrites it, so it can name the wrong
+  // panel). Log it — and flag when it disagrees with the probe — but never
+  // decide on it.
   uint8_t screenType = 0;
   if (readOemScreenType(&screenType)) {
-    // Authoritative: trust the factory value and skip the bus probe entirely. A
-    // valid non-UltraChip value means the shipping controller — don't promote.
-    ultraChip = screenTypeIsUltraChip(screenType);
     if (Serial)
-      Serial.printf("[%lu] [XTDET] screenType=%u (NVS hw_calib) -> %s\n", millis(), screenType,
-                    ultraChip ? "UltraChip" : "default controller");
-  } else {
-    // No factory value (erased/absent NVS): fall back to the display-bus probe.
-    uint8_t ver[5] = {0};
-    uint8_t flg = 0;
-    const DisplayControllerVerdict v = detectXteinkDisplayController(ver, &flg);
-    ultraChip = v == DisplayControllerVerdict::Uc81xxConfirmed;
-    if (Serial)
-      Serial.printf("[%lu] [XTDET] no NVS screenType; bus probe VER=%02X %02X %02X %02X %02X FLG=%02X -> %s\n",
-                    millis(), ver[0], ver[1], ver[2], ver[3], ver[4], flg,
-                    v == DisplayControllerVerdict::Uc81xxConfirmed  ? "UltraChip"
-                    : v == DisplayControllerVerdict::PrimaryAssumed ? "default controller"
-                                                                    : "inconclusive (default)");
+      Serial.printf("[%lu] [XTDET] NVS hw_calib/screenType=%u (%s) [info only]\n", millis(), screenType,
+                    screenTypeIsUltraChip(screenType) ? "UltraChip" : "default");
+  } else if (Serial) {
+    Serial.printf("[%lu] [XTDET] NVS hw_calib/screenType: not set [info only]\n", millis());
   }
+
+  uint8_t ver[5] = {0};
+  const bool ultraChip = probeSaysUltraChip(ver);
   if (!ultraChip) return false;
 
-  // Promote the profile's default controller to its UltraChip sibling. screenType
-  // 1/0x0B (UC8179) pairs with the SSD1677 boards, 2/0x0C (UC8279) with UC8253,
-  // so promoting by the profile default lands on the right driver either way.
+  // Promote the profile's default controller to its UltraChip sibling.
   switch (BoardConfig::ACTIVE.displayController) {
-    case BoardConfig::DisplayController::SSD1677:
-      BoardConfig::ACTIVE.displayController = BoardConfig::DisplayController::UC8179;
-      if (Serial) Serial.printf("[%lu] [XTDET] promoted SSD1677 -> UC8179\n", millis());
+    case BoardConfig::DisplayController::SSD1677: {
+      // X4-family boards can carry either UltraChip part; VER byte2 (LUT_VER)
+      // tells them apart per the vendor reference: 0x01 = UC8179, 0x02/0x68 =
+      // UC8279 (800x480 variant), 0x69 = reserved UC8279. Anything else is
+      // unrecognized — take the UC8179 driver, the variant every unit benched
+      // so far has carried (observed VER=00 00 01 FF FF).
+      const uint8_t lutVer = ver[2];
+      g_probeDiag.promoted = true;
+      if (lutVer == 0x02 || lutVer == 0x68 || lutVer == 0x69) {
+        BoardConfig::ACTIVE.displayController = BoardConfig::DisplayController::UC8279;
+        BoardConfig::ACTIVE.displayControllerVariant = lutVer;
+        if (Serial)
+          Serial.printf("[%lu] [XTDET] promoted SSD1677 -> UC8279 800x480 (LUT_VER=%02X%s)\n", millis(), lutVer,
+                        lutVer == 0x69 ? ", reserved" : "");
+      } else {
+        BoardConfig::ACTIVE.displayController = BoardConfig::DisplayController::UC8179;
+        BoardConfig::ACTIVE.displayControllerVariant = lutVer;
+        if (Serial)
+          Serial.printf("[%lu] [XTDET] promoted SSD1677 -> UC8179 (LUT_VER=%02X%s)\n", millis(), lutVer,
+                        lutVer == 0x01 ? "" : ", unrecognized -> UC8179 default");
+      }
       return true;
+    }
     case BoardConfig::DisplayController::UC8253:
       BoardConfig::ACTIVE.displayController = BoardConfig::DisplayController::UC8279;
+      g_probeDiag.promoted = true;
       if (Serial) Serial.printf("[%lu] [XTDET] promoted UC8253 -> UC8279\n", millis());
       return true;
     default:
@@ -240,6 +366,11 @@ DisplayControllerVerdict detectXteinkDisplayController(uint8_t verBytes[5], uint
   return DisplayControllerVerdict::PrimaryAssumed;
 }
 bool applyXteinkDisplayController() { return false; }
+
+const XteinkDisplayProbeDiag& getXteinkDisplayProbeDiag() {
+  static const XteinkDisplayProbeDiag empty;
+  return empty;
+}
 
 #endif  // FREEINK_XTEINK_DISPLAY_PROBE
 

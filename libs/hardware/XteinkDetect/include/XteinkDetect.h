@@ -75,19 +75,40 @@ enum class DisplayControllerVerdict : uint8_t { PrimaryAssumed, Uc81xxConfirmed,
 
 DisplayControllerVerdict detectXteinkDisplayController(uint8_t verBytes[5] = nullptr, uint8_t* flg = nullptr);
 
+// Diagnostics snapshot of the most recent display-controller probe, for
+// firmware to persist somewhere a user can retrieve WITHOUT serial access
+// (locked units): e.g. a file on the SD card. Populated by
+// detectXteinkDisplayController() / applyXteinkDisplayController(); zeroed
+// until a probe has run (`valid` false).
+struct XteinkDisplayProbeDiag {
+  bool valid = false;        // a probe has run this boot
+  uint8_t ver[5] = {0};      // VER (0x70) bytes from the authoritative pass
+  uint8_t flg = 0;           // FLG (0x71) status byte from pass 1
+  uint8_t verdict = 0;       // DisplayControllerVerdict as its raw value
+  bool promoted = false;     // applyXteinkDisplayController() switched drivers
+  // First 48 bytes of the controller MTP via RMTP (0xA2), captured on a
+  // confirmed UltraChip part: [0x000] = 0xA5 refresh-enable key, 0x001-0x016 =
+  // factory Command Default Setting (real PSR/TRES/GSST/CDI/TCON), 0x017-0x019
+  // product ID, 0x01A-0x027 LUT version, 0x028+ temperature boundaries. This
+  // is the ground truth for what a field module expects — readable even when
+  // the panel shows nothing.
+  bool mtpValid = false;
+  uint8_t mtp[48] = {0};
+};
+const XteinkDisplayProbeDiag& getXteinkDisplayProbeDiag();
+
 // Convenience: resolve which panel controller this unit carries and, when it is
 // the UltraChip sibling, promote BoardConfig::ACTIVE.displayController to it
 // (SSD1677 -> UC8179, UC8253 -> UC8279) so FreeInkDisplay::begin() selects the
-// matching driver. Resolution order:
-//   1. The OEM factory value in NVS (namespace hw_calib, key screenType) — never
-//      rewritten by the factory, so authoritative when present; the bus probe is
-//      skipped entirely.
-//   2. Otherwise the display-bus probe (detectXteinkDisplayController()).
-// Leaves the profile's default controller in place otherwise (a valid non-
-// UltraChip factory value, or an Inconclusive probe, never switches — a flaky
-// boot falls back to the shipping controller). Returns true iff the controller
-// was promoted. Call before FreeInkDisplay::begin(). In builds without a
-// probe-capable profile this is a no-op returning false.
+// matching driver. The decision is made from the live display-bus probe
+// (detectXteinkDisplayController()) — the ground truth for what silicon is
+// actually present. The OEM NVS value (hw_calib/screenType) is read only for
+// diagnostics and logged for cross-reference; it is NOT used to decide, because
+// it is unreliable in the field (a full-flash from another unit overwrites that
+// namespace and can name the wrong panel). Leaves the profile's default
+// controller in place when the probe doesn't confirm an UltraChip part. Returns
+// true iff the controller was promoted. Call before FreeInkDisplay::begin(). In
+// builds without a probe-capable profile this is a no-op returning false.
 bool applyXteinkDisplayController();
 
 // Convenience: run detectXteinkIsX3(), set BoardConfig::ACTIVE to the matching

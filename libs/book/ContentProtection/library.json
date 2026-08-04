@@ -1,0 +1,15 @@
+{
+  "name": "ContentProtection",
+  "version": "0.1.0",
+  "description": "Content-protection read path for FreeInk: rights parsing, content-key unwrap, and decrypt-on-read for protected EPUBs. Parser-agnostic (works with CrossPoint's Epub or FreeInkBook). Legitimate client behavior only: books stay encrypted at rest, decryption is on-read into memory, loan expiry enforced. Opt-in crypto backend via -DFREEINK_CONTENT_WOLFSSL=1 plus a wolfSSL lib_dep.",
+  "keywords": "epub, ebook, decrypt, rights, protected, lcp",
+  "authors": [{"name": "FreeInk SDK Contributors"}],
+  "dependencies": {},
+  "platforms": "*",
+  "frameworks": "*",
+  "build": {
+    "flags": ["-I third_party/miniz"]
+  },
+  "export": {"exclude": ["test"]},
+  "notes": "Inflate provider: define CONTENT_EXTERNAL_MINIZ to bind to the host application's already-linked miniz (no second copy in the image); omit it to compile the vendored content_-prefixed copy for standalone host tests."
+}

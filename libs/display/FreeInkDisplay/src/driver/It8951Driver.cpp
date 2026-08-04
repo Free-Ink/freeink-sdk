@@ -219,8 +219,11 @@ void It8951Driver::loadImageFull(const uint8_t* fb) {
   writeData(_fbW);  // w (image space)
   writeData(_fbH);  // h
 
-  const uint16_t rowOutBytes = _fbW / 2;  // 4bpp -> 2 px per byte
-  static uint8_t rowBuf[960 / 2];         // sized to the widest supported row (960 px)
+  static uint8_t rowBuf[960 / 2];  // sized to the widest supported row (960 px, M5Paper)
+  // Guard: clamp to the buffer so a wider injected geometry truncates the row
+  // instead of overrunning the static buffer (each src byte -> 4 output bytes).
+  const uint16_t maxXb = _fbWb <= sizeof(rowBuf) / 4 ? _fbWb : static_cast<uint16_t>(sizeof(rowBuf) / 4);
+  const uint16_t rowOutBytes = static_cast<uint16_t>(maxXb * 4);  // 4bpp -> 2 px per byte
 
   waitReady();
   _spi.beginTransaction(SPISettings(_cfg.spiHz, MSBFIRST, SPI_MODE0));
@@ -229,7 +232,7 @@ void It8951Driver::loadImageFull(const uint8_t* fb) {
   for (uint16_t y = 0; y < _fbH; y++) {
     const uint8_t* src = fb + static_cast<uint32_t>(y) * _fbWb;
     uint16_t o = 0;
-    for (uint16_t xb = 0; xb < _fbWb; xb++) {
+    for (uint16_t xb = 0; xb < maxXb; xb++) {
       const uint8_t b = src[xb];
       rowBuf[o++] = static_cast<uint8_t>(((b & 0x80) ? 0xF0 : 0x00) | ((b & 0x40) ? 0x0F : 0x00));
       rowBuf[o++] = static_cast<uint8_t>(((b & 0x20) ? 0xF0 : 0x00) | ((b & 0x10) ? 0x0F : 0x00));
@@ -262,8 +265,11 @@ void It8951Driver::loadImageGray(const uint8_t* base) {
   writeData(_fbH);  // h
 
   const bool haveGray = _gLsb && _gMsb;
-  const uint16_t rowOutBytes = _fbW / 2;
-  static uint8_t rowBuf[960 / 2];
+  static uint8_t rowBuf[960 / 2];  // sized to the widest supported row (960 px, M5Paper)
+  // Guard: clamp to the buffer so a wider injected geometry truncates the row
+  // instead of overrunning the static buffer (each src byte -> 4 output bytes).
+  const uint16_t maxXb = _fbWb <= sizeof(rowBuf) / 4 ? _fbWb : static_cast<uint16_t>(sizeof(rowBuf) / 4);
+  const uint16_t rowOutBytes = static_cast<uint16_t>(maxXb * 4);
 
   waitReady();
   _spi.beginTransaction(SPISettings(_cfg.spiHz, MSBFIRST, SPI_MODE0));
@@ -275,7 +281,7 @@ void It8951Driver::loadImageGray(const uint8_t* base) {
     const uint8_t* lrow = haveGray ? _gLsb + rowOff : nullptr;
     const uint8_t* mrow = haveGray ? _gMsb + rowOff : nullptr;
     uint16_t o = 0;
-    for (uint16_t xb = 0; xb < _fbWb; xb++) {
+    for (uint16_t xb = 0; xb < maxXb; xb++) {
       const uint8_t bb = brow[xb];
       const uint8_t lb = haveGray ? lrow[xb] : 0;
       const uint8_t mb = haveGray ? mrow[xb] : 0;

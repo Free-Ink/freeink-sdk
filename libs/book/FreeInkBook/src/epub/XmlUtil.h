@@ -98,9 +98,8 @@ struct TextCapture {
 
 // META-INF/encryption.xml does NOT always mean DRM: retail EPUBs routinely
 // declare only obfuscated embedded fonts (IDPF or Adobe mangling), which the
-// engine never reads anyway. Only actual content encryption (ADEPT, LCP --
-// anything beyond the two font-obfuscation algorithms) makes a book
-// unreadable.
+// engine never reads anyway. Anything beyond the two font-obfuscation
+// algorithms is actual content encryption and makes a book unreadable.
 class EncryptionScan : public XmlHandler {
  public:
   void onStartElement(const char* name, const char** atts) override {

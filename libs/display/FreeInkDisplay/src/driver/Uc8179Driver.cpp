@@ -11,7 +11,7 @@ namespace {
 // UC8179 command set (UC8179 datasheet + OEM UC8179_800x480 stream, via Ghidra).
 constexpr uint8_t CMD_PANEL_SETTING = 0x00;       // PSR
 constexpr uint8_t CMD_POWER_OFF = 0x02;           // POF
-constexpr uint8_t CMD_PLL = 0x03;                 // PLL/OSC control
+constexpr uint8_t CMD_PFS = 0x03;                 // PFS (power-off sequence; PLL is 0x30)
 constexpr uint8_t CMD_POWER_ON = 0x04;            // PON
 constexpr uint8_t CMD_BOOSTER_SOFT_START = 0x06;  // BTST
 constexpr uint8_t CMD_DEEP_SLEEP = 0x07;          // DSLP (check code 0xA5)
@@ -22,12 +22,32 @@ constexpr uint8_t CMD_PARTIAL_IN = 0x91;          // PTIN (partial refresh in)
 constexpr uint8_t CMD_PARTIAL_OUT = 0x92;         // PTOUT (partial refresh out)
 constexpr uint8_t CMD_VCOM_DATA_INTERVAL = 0x50;  // CDI
 constexpr uint8_t CMD_RESOLUTION = 0x61;          // TRES
-constexpr uint8_t CMD_GATE_SOURCE_START = 0x65;   // GSST
-constexpr uint8_t CMD_E0 = 0xE0;                  // power/analog control
-constexpr uint8_t CMD_E1 = 0xE1;                  // power/analog control
-constexpr uint8_t CMD_VCOM_DC = 0xE5;             // VDCS (VCOM_DC)
+constexpr uint8_t CMD_GATE_SOURCE_START = 0x65;   // GSST (4 data bytes)
+constexpr uint8_t CMD_CCSET = 0xE0;               // CCSET (cascade/output enable)
+constexpr uint8_t CMD_GATE_SCAN = 0xE1;           // gate-scan selection
+constexpr uint8_t CMD_TSSET = 0xE5;               // TSSET (forced temperature; frame-rate lever)
 
 constexpr uint8_t CDI_INTERVAL = 0x07;  // CDI byte1, constant
+
+// 4-level grayscale (AA) waveform LUTs — stock's REAL grayscale set (the short
+// 2-frame LUTs FUN_4214ebd0 actually uploads @app1 DROM 0x3c5d8994..), uploaded
+// in custom-LUT mode (PSR REG=1). NOTE: unlike the (dead, grainy) gray_full set,
+// here the register command is sent SEPARATELY — blob byte0 is DATA, not the cmd.
+// Each LUT is 42 (0x2A) data bytes; only the first ~12 are non-zero. Level select
+// by (old=0x10/LSB, new=0x13/MSB): (0,0)=LUTKK black, (0,1)=LUTKW, (1,0)=LUTWK,
+// (1,1)=LUTWW white.
+constexpr uint8_t GRAY_LUT_LEN = 42;  // 0x2A data bytes, command sent separately
+struct GrayLut {
+  uint8_t cmd;
+  uint8_t data[GRAY_LUT_LEN];
+};
+const GrayLut kGrayLuts[5] = {
+    {0x20, {0x00, 0x02, 0x02, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01}},  // LUTC / VCOM
+    {0x21, {0x08, 0x02, 0x02, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01}},  // LUTWW (white)
+    {0x22, {0x20, 0x02, 0x02, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01}},  // LUTKW
+    {0x23, {0x20, 0x02, 0x02, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01}},  // LUTWK
+    {0x24, {0x00, 0x02, 0x02, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01}},  // LUTKK (black)
+};
 }  // namespace
 
 const Uc8179Config& uc8179DefaultConfig() {
@@ -35,12 +55,12 @@ const Uc8179Config& uc8179DefaultConfig() {
       0x3F,                      // psr0 (init): 0x3B + SHL bit2 set (mirror-X in hardware);
                                  // refresh re-asserts psr0 & 0xDF = 0x1F (OTP + SHL)
       0x0A,                      // psr1
-      0x20,                      // pll (0x03)
+      0x20,                      // pfs (0x03 power-off sequence)
       {0x25, 0x25, 0x3C, 0x25},  // btst (0x06 booster soft-start)
-      0x02,                      // e1 (0xE1)
-      0x02,                      // e0 (0xE0)
-      0x1E,                      // vcomDc (0xE5) full refresh (frame-rate/temp value)
-      0x5A,                      // vcomDcFast (0xE5) fast refresh — REQUIRED: this is the
+      0x02,                      // gateScan (0xE1)
+      0x02,                      // ccset (0xE0)
+      0x1E,                      // tsset (0xE5) full refresh (forced-temperature value)
+      0x5A,                      // tssetFast (0xE5) fast refresh — REQUIRED: this is the
                                  // frame-rate lever that makes the partial shorter (per RE)
       0x29,                      // cdiActive (0x50, during refresh)
       0xA9,                      // cdiIdle (0x50, restored after)
@@ -65,7 +85,7 @@ uint32_t Uc8179Driver::spiHz() const {
 
 PanelGeometry Uc8179Driver::geometry() const { return {_w, _h, _wb, _bufferSize}; }
 
-// The OEM init (FUN_4214dff8): PSR, TRES (800x600), GSST, PLL, BTST, E1. No plane
+// The OEM init (FUN_4214dff8): PSR, TRES (800x600), GSST, PFS, BTST, E1. No plane
 // fill, no CDI/VCOM here — those are (re)asserted per refresh. OTP waveforms
 // (PSR REG bit cleared at refresh), so no LUT upload.
 void Uc8179Driver::initController(EpdBus& bus) {
@@ -81,12 +101,16 @@ void Uc8179Driver::initController(EpdBus& bus) {
   bus.data(static_cast<uint8_t>((_tresH >> 8) & 0xFF));
   bus.data(static_cast<uint8_t>(_tresH & 0xFF));
 
+  // GSST is a 4-byte register (S_START, banks, G_START x2); the vendor reference
+  // writes all four zero bytes.
   bus.cmd(CMD_GATE_SOURCE_START);
   bus.data(0x00);
   bus.data(0x00);
+  bus.data(0x00);
+  bus.data(0x00);
 
-  bus.cmd(CMD_PLL);
-  bus.data(_cfg.pll);
+  bus.cmd(CMD_PFS);
+  bus.data(_cfg.pfs);
 
   bus.cmd(CMD_BOOSTER_SOFT_START);
   bus.data(_cfg.btst[0]);
@@ -94,10 +118,11 @@ void Uc8179Driver::initController(EpdBus& bus) {
   bus.data(_cfg.btst[2]);
   bus.data(_cfg.btst[3]);
 
-  bus.cmd(CMD_E1);
-  bus.data(_cfg.e1);
+  bus.cmd(CMD_GATE_SCAN);
+  bus.data(_cfg.gateScan);
 
   _isScreenOn = false;
+  _grayRefreshedOnce = false;
 }
 
 void Uc8179Driver::begin(EpdBus& bus) {
@@ -152,20 +177,20 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
   bus.cmd(CMD_VCOM_DATA_INTERVAL);
   bus.data(_cfg.cdiActive);  // 0x29
   bus.data(CDI_INTERVAL);
-  bus.cmd(CMD_E0);
-  bus.data(_cfg.e0);  // 0x02
-  bus.cmd(CMD_VCOM_DC);
-  bus.data(fast ? _cfg.vcomDcFast : _cfg.vcomDc);  // fast 0x5A (frame lever) / full 0x1E
+  bus.cmd(CMD_CCSET);
+  bus.data(_cfg.ccset);  // 0x02
+  bus.cmd(CMD_TSSET);
+  bus.data(fast ? _cfg.tssetFast : _cfg.tsset);  // fast 0x5A (frame lever) / full 0x1E
   bus.cmd(CMD_PANEL_SETTING);
   bus.data(static_cast<uint8_t>(_cfg.psr0 & 0xDF));  // REG bit cleared -> OTP
   bus.data(_cfg.psr1);
   if (fast) {
-    // Fast-only: PFS/gate + cascade/active-temp. Full omits these; without them
-    // the OTP waveform runs at the full frame count (same duration + garbled).
-    bus.cmd(CMD_PLL);
-    bus.data(_cfg.pll);  // 0x03 <- 0x20
-    bus.cmd(CMD_E1);
-    bus.data(_cfg.e1);  // 0xE1 <- 0x02
+    // Fast-only: PFS/gate-scan re-assert. Full omits these; without them the OTP
+    // waveform runs at the full frame count (same duration + garbled).
+    bus.cmd(CMD_PFS);
+    bus.data(_cfg.pfs);  // 0x03 <- 0x20
+    bus.cmd(CMD_GATE_SCAN);
+    bus.data(_cfg.gateScan);  // 0xE1 <- 0x02
   }
 
   if (!_isScreenOn) {
@@ -190,7 +215,6 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
 }
 
 void Uc8179Driver::displayFinish(EpdBus& bus, const uint8_t* fb) {
-  (void)fb;
   if (!_pendingRefresh) return;
   _pendingRefresh = false;
 
@@ -234,9 +258,10 @@ void Uc8179Driver::deepSleep(EpdBus& bus) {
 
 // --- 4-level grayscale (anti-aliasing) --------------------------------------
 // Load the two bitplanes (oriented + padded like the B/W path) into controller
-// RAM; displayGray() then triggers the OTP gray waveform. LSB -> 0x10 ("old"),
-// MSB -> 0x13 ("new"). If the two mid grays come out swapped on hardware, swap
-// the LSB/MSB plane assignment here.
+// RAM; displayGray() then runs the custom-LUT grayscale waveform. LSB -> 0x10
+// ("old"), MSB -> 0x13 ("new"); the (old,new) pair selects the WW/KW/WK/KK LUT
+// per pixel for the 4 levels. If the two mid greys come out swapped on hardware,
+// swap the LSB/MSB plane assignment here.
 void Uc8179Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
   if (lsb) streamPlane(bus, CMD_DTM1, lsb);  // 0x10 = LSB / "old" plane
 }
@@ -247,22 +272,30 @@ void Uc8179Driver::copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
 
 void Uc8179Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut,
                                bool factoryMode) {
-  (void)fb;           // the two planes are already loaded (copyGrayscaleLsb/Msb)
-  (void)lut;          // OTP gray waveform — no custom LUT (matches stock gray_full)
+  // fb = the reader's current frame; used to re-seed the B/W baseline below.
+  (void)lut;          // waveform comes from the built-in gray LUT set (kGrayLuts)
   (void)factoryMode;  // 4-level is absolute (defined by the planes)
+  (void)turnOff;      // gray_aa always powers off at the end (stock cleanup)
 
-  // OEM gray_full stream: E0/E5 (frame value 0x5A) + CDI 0x29 + PSR (OTP) then
-  // PON/DRF over the loaded planes. TRES/PLL/BTST were set at begin().
-  bus.cmd(CMD_E0);
-  bus.data(_cfg.e0);  // 0x02
-  bus.cmd(CMD_VCOM_DC);
-  bus.data(_cfg.vcomDcFast);  // 0x5A gray frame value
-  bus.cmd(CMD_VCOM_DATA_INTERVAL);
-  bus.data(_cfg.cdiActive);  // 0x29
-  bus.data(CDI_INTERVAL);
+  // Custom-LUT 4-level grayscale — the EXACT stock gray_aa stream (FUN_4214ec2c),
+  // byte-for-byte: PSR unmasked (0x3F => REG bit5=1 custom LUT, + SHL mirror-X;
+  // the B/W path masks to 0x1F/OTP) -> upload the 5 short LUTs (command sent
+  // separately, 42 data bytes each) -> CDI 0x29/07 -> PON -> DRF -> POF. Stock
+  // sends NO E0/E5/booster here (those belong to the grainy prebw/gray_full
+  // paths); adding them scattered the background.
   bus.cmd(CMD_PANEL_SETTING);
-  bus.data(static_cast<uint8_t>(_cfg.psr0 & 0xDF));  // OTP (bit5=0) + SHL mirror-X
+  bus.data(_cfg.psr0);  // 0x3F: REG=1 (custom LUT) + KW + SHL mirror-X
   bus.data(_cfg.psr1);
+  for (const auto& l : kGrayLuts) {
+    bus.cmd(l.cmd);
+    bus.data(l.data, GRAY_LUT_LEN);
+  }
+  // Vendor reference: the FIRST AA refresh after init drives the border (0x29);
+  // later AA refreshes hold it (0xA9) so the border doesn't flash on every page.
+  bus.cmd(CMD_VCOM_DATA_INTERVAL);
+  bus.data(_grayRefreshedOnce ? _cfg.cdiIdle : _cfg.cdiActive);  // first 0x29, later 0xA9
+  bus.data(CDI_INTERVAL);
+  _grayRefreshedOnce = true;
 
   if (!_isScreenOn) {
     bus.cmd(CMD_POWER_ON);
@@ -271,28 +304,41 @@ void Uc8179Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, con
   }
   bus.cmd(CMD_DISPLAY_REFRESH);
   bus.waitBusy(" 8179_gray");
-  bus.cmd(CMD_VCOM_DATA_INTERVAL);
-  bus.data(_cfg.cdiIdle);  // 0xA9 restore
-  bus.data(CDI_INTERVAL);
+  bus.cmd(CMD_POWER_OFF);  // stock gray_aa cleanup
+  bus.waitBusy(" 8179_gray_POF");
+  _isScreenOn = false;
 
-  if (turnOff) {
-    bus.cmd(CMD_POWER_OFF);
-    bus.waitBusy(" 8179_gray_POF");
-    _isScreenOn = false;
+  // Re-seed the OLD plane (0x10) with this frame so the NEXT B/W page turn runs a
+  // fast differential instead of a forced full flash — otherwise the gray LSB
+  // plane left in 0x10 makes every AA page turn black-clear. (The reader's
+  // non-tiled path never calls cleanupGrayscaleBuffers(), so we seed here; the
+  // tiled path refines it later with the exact B/W baseline.) RAM write only —
+  // the panel is powered off, which is fine.
+  if (fb) {
+    streamPlane(bus, CMD_DTM1, fb);
+    _oldPlaneValid = true;
+    _needFullClear = false;
+  } else {
+    _needFullClear = true;
+    _oldPlaneValid = false;
   }
-  // The panel now holds grayscale planes; the next B/W refresh must be a full
-  // flash (a partial diff can't run against gray plane content).
-  _needFullClear = true;
-  _oldPlaneValid = false;
 }
 
 void Uc8179Driver::cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) {
-  (void)bus;
-  (void)bw;
-  // Gray overwrote both planes, so the differential baseline is gone — force the
-  // next B/W refresh to a full flash (which reseeds the old plane).
-  _needFullClear = true;
-  _oldPlaneValid = false;
+  if (!bw) {
+    // No baseline provided — fall back to a full flash on the next B/W refresh.
+    _needFullClear = true;
+    _oldPlaneValid = false;
+    return;
+  }
+  // Re-seed the OLD plane (0x10) with the clean B/W frame the reader restored, so
+  // the NEXT B/W page turn runs a fast differential against a real baseline
+  // instead of a forced full flash. The gray refresh left the LSB gray plane in
+  // 0x10; without this the next base frame full-flashes (the black clear seen on
+  // AA page turns). Mirrors the SSD1677 driver's post-grayscale RED-RAM resync.
+  streamPlane(bus, CMD_DTM1, bw);
+  _oldPlaneValid = true;
+  _needFullClear = false;
 }
 
 // Per-board config injection, same idiom as the other drivers: define

@@ -87,7 +87,6 @@ class Uc8253MurphyDriver : public PanelDriver {
   void initControllerAlt(EpdBus& bus);  // OEM data-driven init variant (partial path)
   void loadLut(EpdBus& bus, const Uc8253MurphyLutBank& bank, const Uc8253MurphyLutLens& lens);
   void writePlane(EpdBus& bus, uint8_t command, const uint8_t* fb);  // rotates 416x240 fb -> 240x416 RAM
-  void fillPlane(EpdBus& bus, uint8_t command, uint8_t fillByte);
   void triggerRefresh(EpdBus& bus, bool turnOff);
   void triggerRefreshAlt(EpdBus& bus);  // OEM 0x17/0xA5 auto sequence (partial path)
 

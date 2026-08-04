@@ -604,6 +604,64 @@ Lucide is vendored as a **git submodule** at `libs/assets/Icons/lucide` (run
 `libs/assets/Icons/lucide/icons/*.svg` — reference any by filename (minus `.svg`) in
 a manifest. Lucide is MIT-licensed (`libs/assets/Icons/lucide/LICENSE`).
 
+## Memory reclaim (`MemoryManager`)
+
+`libs/hardware/MemoryManager` is an on-demand RAM-reclaim helper: a small,
+priority-ordered registry of evictable **cache sinks** plus heap reporting, over
+the ESP-IDF heap-capabilities allocator. It lets a consumer free memory on
+demand — a control-center "clear caches"/"boost" action — or under pressure,
+without the SDK needing to know what any given app caches. (The pattern mirrors
+the cache-sink manager e-reader firmware typically uses: a set of rebuildable
+caches asked to shrink, measured against free heap.)
+
+**Model.** Any component that holds a rebuildable RAM cache — rendered pages,
+decoded images, glyph atlases, parsed-document buffers, PSRAM pools — registers a
+`CacheSink` once. A sink is a name, a **priority** (lower is evicted first, so
+cheap-to-rebuild caches go low), and an `evict(bytesRequested)` callback that
+frees memory and returns the bytes it released (`bytesRequested == 0` means "free
+everything"). `MemoryManager` is a singleton, so sinks can register from anywhere
+and any code can trigger a reclaim.
+
+```cpp
+#include <MemoryManager.h>
+using freeink::MemoryManager;
+
+// Register once (e.g. in each cache owner's begin()):
+MemoryManager::instance().registerSink({"font.glyphs",  20, [&](size_t n){ return glyphs.evict(n); }});
+MemoryManager::instance().registerSink({"render.pages", 40, [&](size_t n){ return pages.evict(n); }});
+MemoryManager::instance().registerSink({"image.decode", 30, [&](size_t n){ return imgPool.evict(n); }});
+```
+
+**Reclaim.**
+
+```cpp
+// "Boost": purge everything and get the honest, heap-measured free delta to
+// show the user (e.g. a "Freed 1.8 MB" toast). Logs under [MEM] with -DENABLE_SERIAL_LOG.
+size_t before = 0, after = 0;
+size_t freed = MemoryManager::instance().boost(&before, &after);
+
+// Or free just enough to satisfy a target, lowest-priority caches first:
+MemoryManager::instance().clearCaches(256 * 1024);   // free ~256 KB; 0 = purge all
+```
+
+**Reporting** (for a "memory" read-out, or to gate work on available RAM):
+
+```cpp
+using freeink::MemPool;   // Internal | Psram | Default
+size_t freeInternal = MemoryManager::instance().freeBytes(MemPool::Internal);
+size_t freePsram    = MemoryManager::instance().freeBytes(MemPool::Psram);      // 0 without PSRAM
+size_t biggestBlock = MemoryManager::instance().largestFreeBlock(MemPool::Internal);
+size_t lowWater     = MemoryManager::instance().minEverFree(MemPool::Internal); // min-ever-free
+```
+
+`clearCaches()` walks the registered sinks lowest-priority first, passing each the
+remaining shortfall and stopping once the target is met (or after all sinks when
+the target is `0`). `boost()` wraps that with a before/after heap measurement so
+the number you display is what the allocator actually reclaimed, not what the
+sinks estimated. It is momentary and touches no NVS — purely a RAM operation.
+Up to `MemoryManager::kMaxSinks` (12) caches can be registered; re-registering a
+name replaces the existing sink.
+
 ## Using FreeInk from PlatformIO
 
 See **[`platformio.sample.ini`](platformio.sample.ini)** for a complete, ready-to-copy
@@ -719,6 +777,7 @@ libs/
   hardware/BatteryMonitor/  ADC battery + optional charge-sense
   hardware/SDCardManager/   SD storage (SdFat-over-SPI or native SDMMC)
   hardware/PowerManager/    per-SoC deep-sleep wake-on-power-button
+  hardware/MemoryManager/   on-demand cache-sink reclaim + heap reporting
   hardware/FrontlightManager/  PWM frontlight (de-link)
   hardware/LedManager/      addressable RGB LEDs (M5 PaperColor)
   hardware/AudioManager/    I2S codec WAV playback (Murphy, M5 PaperColor)

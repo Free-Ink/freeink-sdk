@@ -94,10 +94,6 @@ class EpdBus {
   // instead of polling, without the SDK knowing the wake mechanics.
   void setBusyWaitSliceHook(bool (*sliceHook)(int8_t busyPin, uint8_t busyLevel)) { _busyWaitSliceHook = sliceHook; }
 
-  // Stream `plane` bottom-to-top (gates are physically reversed), widthBytes per
-  // row, optionally bit-inverting. Replaces the per-driver mirror lambdas.
-  void writeMirroredPlane(const uint8_t* plane, uint16_t height, uint16_t widthBytes, bool invert);
-
   // Send `ramCmd` then `plane` Y-flipped (gate order, bottom row first) as ONE
   // CS-low data burst — required by UC8253 DTM writes which must not toggle CS
   // mid-stream. (cmd uses its own CS pulse, matching the OEM sequence.)

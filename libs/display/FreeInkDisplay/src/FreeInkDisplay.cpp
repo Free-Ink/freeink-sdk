@@ -934,15 +934,9 @@ uint16_t FreeInkDisplay::fastRefreshCutoffMs() const {
 }
 
 void FreeInkDisplay::grayscaleRevert() {
-<<<<<<< HEAD
-  if (_inverted) return;
-  DisplayPmLock pmLock;
-  if (_driver) _driver->grayscaleRevert(_bus, frameBuffer);
-=======
   if (_inverted || !_driver) return;
   DisplayPmLock pmLock;
   _driver->grayscaleRevert(_bus, frameBuffer);
->>>>>>> 80c9f4f808c6e68fd5a4dc3d6ef026f7c4289396
 }
 
 void FreeInkDisplay::setCustomLUT(bool enabled, const unsigned char* lutData) {

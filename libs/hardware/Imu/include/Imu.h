@@ -1,6 +1,7 @@
 #pragma once
 
-// FreeInk inertial measurement unit (ST LSM6DS3TR-C, 6-axis accel + gyro).
+// FreeInk inertial measurement unit (LSM6DS3TR-C or QMI8658, 6-axis accel +
+// gyro).
 //
 // Reads acceleration (g) and angular rate (deg/s) from the I2C IMU described by
 // BoardConfig::ACTIVE.sensors (imuAddr / sensor bus). Dependency-free Wire
@@ -20,7 +21,7 @@ class Imu {
     float gx, gy, gz;  // angular rate, degrees/second
   };
 
-  // Verifies WHO_AM_I and configures accel (±2 g) + gyro (±245 dps) at 104 Hz.
+  // Verifies WHO_AM_I and configures accel + gyro for the active board.
   // Returns false when the active board has no IMU or the part doesn't identify.
   bool begin();
   bool present() const { return begun_; }
@@ -28,8 +29,21 @@ class Imu {
   // Reads one accel + gyro sample. Returns false on I2C error.
   bool read(Sample& out);
 
+  // Puts the sensors into hardware standby / power-down. Config registers are
+  // retained, so wake() restores sampling without a full begin(). Returns
+  // false when the IMU is absent or on I2C error.
+  bool sleep();
+
+  // Restarts sampling after sleep(). Returns false when absent or on I2C
+  // error; allow for a settling transient before trusting samples.
+  bool wake();
+
  private:
   bool begun_ = false;
+  // The QMI8658 can legally appear at 0x6A or 0x6B depending on its SA0
+  // strap. Keep the address found by begin() instead of repeatedly using the
+  // board profile's preferred address.
+  uint8_t addr_ = 0;
 };
 
 }  // namespace freeink

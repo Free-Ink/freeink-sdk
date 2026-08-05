@@ -115,6 +115,10 @@ void EpdBus::begin(const EpdPins& pins, uint32_t spiHz, BusyPolarity busy, int8_
 
   pinMode(pins.cs, OUTPUT);
   pinMode(pins.dc, OUTPUT);
+  // Release any deep-sleep hold on RST (powerDownRailsForSleep() holds it HIGH so
+  // the UC8179 stays in DSLP); the hold survives the wake reset and would make the
+  // reset pulse below bounce off the latch.
+  gpio_hold_dis(static_cast<gpio_num_t>(pins.rst));
   pinMode(pins.rst, OUTPUT);
   pinMode(pins.busy, busy == BusyPolarity::ActiveLow ? INPUT_PULLUP : INPUT);
   if (_coCs >= 0) {
@@ -318,21 +322,6 @@ void EpdBus::waitRefreshComplete(const char* tag) {
   }
 }
 
-void EpdBus::writeMirroredPlane(const uint8_t* plane, uint16_t height, uint16_t widthBytes, bool invert) {
-  uint8_t row[128];
-  if (widthBytes > sizeof(row)) {
-    widthBytes = sizeof(row);
-  }
-  for (uint16_t y = 0; y < height; y++) {
-    const uint16_t srcY = static_cast<uint16_t>(height - 1 - y);
-    const uint8_t* src = plane + static_cast<uint32_t>(srcY) * widthBytes;
-    for (uint16_t x = 0; x < widthBytes; x++) {
-      row[x] = invert ? static_cast<uint8_t>(~src[x]) : src[x];
-    }
-    data(row, widthBytes);
-  }
-}
-
 void EpdBus::sendPlaneFlipped(uint8_t ramCmd, const uint8_t* plane, uint16_t height, uint16_t widthBytes) {
   cmd(ramCmd);  // own CS pulse
   auto txn = beginTxn();  // single CS-low burst for the whole plane
@@ -342,13 +331,19 @@ void EpdBus::sendPlaneFlipped(uint8_t ramCmd, const uint8_t* plane, uint16_t hei
 }
 
 void EpdBus::fillPlane(uint8_t ramCmd, uint8_t fillByte, uint16_t height, uint16_t widthBytes) {
-  uint8_t row[128];
-  if (widthBytes > sizeof(row)) widthBytes = sizeof(row);
-  memset(row, fillByte, widthBytes);
+  // Reusable constant-fill chunk; wide rows are written in multiple bursts so a
+  // widthBytes larger than the chunk is streamed in full (no silent truncation).
+  uint8_t chunk[128];
+  memset(chunk, fillByte, sizeof(chunk));
   cmd(ramCmd);
   auto txn = beginTxn();
   for (uint16_t y = 0; y < height; y++) {
-    txn.writeBytes(row, widthBytes);
+    uint16_t remaining = widthBytes;
+    while (remaining) {
+      const uint16_t n = remaining < sizeof(chunk) ? remaining : static_cast<uint16_t>(sizeof(chunk));
+      txn.writeBytes(chunk, n);
+      remaining = static_cast<uint16_t>(remaining - n);
+    }
   }
 }
 

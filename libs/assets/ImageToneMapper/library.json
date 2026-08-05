@@ -1,0 +1,10 @@
+{
+  "name": "ImageToneMapper",
+  "version": "0.1.0",
+  "description": "FreeInk image tone mapper: streaming area-average downscale + Floyd-Steinberg error diffusion that turns 8-bit grayscale image rows into low-bit-depth (e.g. 2-bit) e-ink output. Decoder-agnostic; feed it source rows from any JPEG/PNG decoder. Replaces nearest-neighbour scaling and ordered (Bayer) dithering for photographic-quality images on e-paper.",
+  "keywords": "image, dither, floyd-steinberg, error-diffusion, downscale, eink, grayscale",
+  "authors": [{"name": "FreeInk SDK Contributors"}],
+  "dependencies": {},
+  "platforms": "espressif32",
+  "frameworks": ["arduino"]
+}

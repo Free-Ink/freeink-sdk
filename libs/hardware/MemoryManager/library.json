@@ -1,0 +1,10 @@
+{
+  "name": "MemoryManager",
+  "version": "1.0.0",
+  "description": "FreeInk on-demand memory/cache reclaim: a priority-ordered registry of evictable cache sinks plus heap reporting, over the ESP-IDF heap-capabilities allocator. Consumers register rebuildable RAM caches (rendered pages, glyphs, decoded images, PSRAM pools) and call clearCaches()/boost() to free RAM on demand or under pressure.",
+  "keywords": "memory, heap, cache, psram, reclaim, boost",
+  "authors": [{"name": "FreeInk SDK Contributors"}],
+  "dependencies": {},
+  "platforms": "espressif32",
+  "frameworks": ["arduino"]
+}

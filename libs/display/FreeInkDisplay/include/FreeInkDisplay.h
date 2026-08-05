@@ -67,6 +67,14 @@ class FreeInkDisplay {
   void clearScreen(uint8_t color = 0xFF) const;
   void drawImage(const uint8_t* imageData, uint16_t x, uint16_t y, uint16_t w, uint16_t h, bool fromProgmem = false) const;
   void drawImageTransparent(const uint8_t* imageData, uint16_t x, uint16_t y, uint16_t w, uint16_t h, bool fromProgmem = false) const;
+  // Persistent black/white output inversion. Framebuffers remain in their
+  // normal logical colors, so callers keep drawing exactly as before; the
+  // facade transforms frames only while sending them to the panel. The first
+  // refresh after a mode change is automatically promoted from FAST to HALF
+  // so single-buffer differential panels cannot compare opposite polarities.
+  void setInverted(bool inverted);
+  bool toggleInverted();
+  bool isInverted() const { return _inverted; }
 #ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
   void swapBuffers();
 #endif
@@ -300,6 +308,23 @@ class FreeInkDisplay {
 
   // Returns true if the secondary buffer is currently allocated.
   bool hasSecondaryBuffer() const;
+
+  // Lend the secondary buffer's memory to the host WITHOUT freeing it: the
+  // display drops to single-buffer mode exactly like releaseSecondaryBuffer()
+  // (same fast-diff/refresh semantics apply), but the block stays owned here
+  // and is handed to the caller for scratch use (e.g. a section-build arena).
+  // Unlike release/realloc, the memory never enters the heap, so nothing can
+  // allocate inside it and returnSecondaryBuffer() CANNOT fail — the
+  // realloc-failure / fragmented-hole class of bugs is impossible by
+  // construction. Returns nullptr if there is no secondary buffer or it is
+  // already lent. *size receives the block size.
+  uint8_t* borrowSecondaryBuffer(size_t* size);
+
+  // Take the lent block back and restore dual-buffer mode. Seeds the buffer
+  // from the live framebuffer and arms the one-shot RED-baseline handling,
+  // identical to reallocSecondaryBuffer() (the build clobbered the contents).
+  // Returns false only if nothing was lent.
+  bool returnSecondaryBuffer();
 #endif  // !EINK_DISPLAY_SINGLE_BUFFER_MODE
 
   // Save the current framebuffer to a PBM file (desktop/test builds only)
@@ -307,14 +332,20 @@ class FreeInkDisplay {
 
  private:
   void selectDriver();
+  // Shared body of drawImage()/drawImageTransparent(). transparent=true ANDs
+  // (black-only); false overwrites. Handles non-byte-aligned x per-pixel.
+  void blitImage(const uint8_t* imageData, uint16_t x, uint16_t y, uint16_t w, uint16_t h, bool fromProgmem,
+                 bool transparent) const;
   // Block until a pending async refresh completes (no-op when none is).
   // Every blocking panel operation calls this before touching the bus.
   void syncPendingAsync();
   // Shared body of displayBufferAsync() / triggerDisplayAsync(): fire the
   // update and return while the waveform runs (_asyncPending set).
   void displayAsyncImpl(RefreshMode mode, bool turnOffScreen, bool noShadow = false);
-  // One framebuffer-sized heap block: PSRAM-first where available.
-  static uint8_t* allocFrameBufferStorage();
+  // One framebuffer-sized heap block (runtime panel's bufferSize, not
+  // MAX_BUFFER_SIZE): PSRAM-first where available. Valid only after begin()
+  // has seeded geometry / panel selection is final.
+  uint8_t* allocFrameBufferStorage() const;
 #ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
   // Downgrade a FAST request to HALF when the secondary (previous-frame) buffer is
   // released and the caller hasn't opted into single-buffer fast-diff — mirrors the
@@ -339,6 +370,10 @@ class FreeInkDisplay {
   bool _buildLent = false;  // framebuffer storage lent to a build (see lendBuildStorage)
 
 #ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
+  // Secondary buffer lent to the host (see borrowSecondaryBuffer): the block
+  // this points at is still owned by frameBuffer0/1; frameBufferActive is null
+  // while lent so all released-mode display semantics apply unchanged.
+  uint8_t* _secondaryLent = nullptr;
   // One-shot, armed by reallocSecondaryBuffer(): the controller's RED RAM still
   // holds the on-screen frame (host allocation never touches controller RAM),
   // while the fresh secondary may not — the host may have scribbled or cleared
@@ -366,6 +401,8 @@ class FreeInkDisplay {
   bool _redRamSynced = false;
   bool _singleBufferFastDiff = false;
   bool _fastGrayscaleLut = false;
+  bool _inverted = false;
+  bool _inversionDirty = false;
 
   // Runtime display geometry (seeded from the driver at begin()).
   uint16_t displayWidth = DISPLAY_WIDTH;

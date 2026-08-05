@@ -1,0 +1,10 @@
+{
+  "name": "UsbMassStorage",
+  "version": "1.0.0",
+  "description": "USB Mass Storage ('USB Transfer' mode) — exposes the SD card block device to a host over USB-MSC via arduino-esp32's USBMSC class. Opt-in per board (FREEINK_CAP_USB_MSC); links a no-op stub and pulls in no TinyUSB code when disabled.",
+  "keywords": "usb, msc, mass storage, tinyusb, sdcard, otg",
+  "authors": [{"name": "FreeInk SDK Contributors"}],
+  "dependencies": {},
+  "platforms": "espressif32",
+  "frameworks": ["arduino"]
+}

@@ -67,6 +67,119 @@ bool readReg8(uint8_t addr, uint8_t reg, uint8_t& out) {
   return true;
 }
 
+bool writeReg8(uint8_t addr, uint8_t reg, uint8_t val) {
+  if (addr == 0) return false;
+  ensureWire();
+  TwoWire& w = gaugeWire();
+  w.beginTransmission(addr);
+  w.write(reg);
+  w.write(val);
+  return w.endTransmission(true) == 0;
+}
+
+// --- CW2017 (CellWise) fuel gauge -------------------------------------------
+// Register map + init recovered from the Xteink X4 Pro OEM firmware (the
+// XTEink::Cw2017PowerHal class in app1) via Ghidra. Unlike the BQ27220, the CW2017
+// reports 0% until a matching 80-byte BATINFO battery profile is resident, so init
+// must verify/upload one before SoC reads mean anything.
+constexpr uint8_t CW2017_REG_VERSION = 0x00;  // running state in (ver & 0xFD) == 0x0D
+constexpr uint8_t CW2017_REG_VCELL_H = 0x02;  // 14-bit VCELL, big-endian over 0x02/0x03
+constexpr uint8_t CW2017_REG_SOC = 0x04;      // integer percent (0x05 = fraction, unused)
+constexpr uint8_t CW2017_REG_MODE = 0x08;     // soft-reset / sleep control
+constexpr uint8_t CW2017_REG_CONFIG = 0x0B;   // bit7 = profile-loaded / update-enable
+constexpr uint8_t CW2017_REG_BATINFO = 0x10;  // 80-byte profile spans 0x10..0x5F
+
+// The exact BATINFO profile the OEM uploads (app1 table @ DROM 0x3c5d8d00). This is
+// battery-model-specific; it is the profile for the X4 Pro's cell.
+constexpr uint8_t CW2017_BATINFO[80] = {
+    0x50, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xaa, 0xbf, 0xb5, 0xb4, 0xa4, 0x9c, 0xeb, 0xe2,
+    0xdf, 0xe5, 0xca, 0xa0, 0x8a, 0x62, 0x53, 0x48, 0x40, 0x3a, 0x32, 0xb1, 0xae, 0xda, 0xb5, 0xff,
+    0xff, 0xff, 0xe8, 0xdb, 0xd9, 0xd6, 0xd4, 0xd2, 0xd0, 0xcb, 0xc3, 0xbc, 0x9e, 0x87, 0x7b, 0x71,
+    0x72, 0x7c, 0x8c, 0xa3, 0xb7, 0xc8, 0xa5, 0x4f, 0x00, 0x00, 0xab, 0x02, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x23};
+
+// Soft-reset: MODE 0xF0 -> 0x30 -> 0x00, 20 ms apart (OEM FUN_4215042c).
+void cw2017Reset(uint8_t addr) {
+  writeReg8(addr, CW2017_REG_MODE, 0xF0);
+  delay(20);
+  writeReg8(addr, CW2017_REG_MODE, 0x30);
+  delay(20);
+  writeReg8(addr, CW2017_REG_MODE, 0x00);
+  delay(20);
+}
+
+// One-shot: make sure a valid BATINFO profile is loaded. Wakes/resets the gauge if it
+// isn't running, then uploads+enables the profile only if the resident bytes don't
+// already match (the OEM leaves it resident across warm boots, so this is usually a
+// verify-only no-op). Bounded polling so a cold gauge can't stall boot.
+void cw2017EnsureProfile(uint8_t addr) {
+  uint8_t ver = 0;
+  if (!readReg8(addr, CW2017_REG_VERSION, ver)) return;  // gauge absent; nothing to do
+  if ((ver & 0xFD) != 0x0D) cw2017Reset(addr);
+
+  uint8_t cfg = 0;
+  if (readReg8(addr, CW2017_REG_CONFIG, cfg) && (cfg & 0x80)) {
+    bool match = true;
+    for (uint8_t i = 0; i < sizeof(CW2017_BATINFO); ++i) {
+      uint8_t b = 0;
+      if (!readReg8(addr, static_cast<uint8_t>(CW2017_REG_BATINFO + i), b) || b != CW2017_BATINFO[i]) {
+        match = false;
+        break;
+      }
+    }
+    if (match) return;  // correct profile already loaded
+  }
+
+  for (uint8_t i = 0; i < sizeof(CW2017_BATINFO); ++i) {
+    writeReg8(addr, static_cast<uint8_t>(CW2017_REG_BATINFO + i), CW2017_BATINFO[i]);
+  }
+  writeReg8(addr, CW2017_REG_CONFIG, 0x80);  // update-enable (bit7); alert threshold = 0
+  delay(20);
+  cw2017Reset(addr);
+  for (int i = 0; i < 50; ++i) {  // ~1 s cap for the SoC to become valid
+    uint8_t soc = 0;
+    if (readReg8(addr, CW2017_REG_SOC, soc) && soc <= 100) break;
+    delay(20);
+  }
+}
+
+// SoC (0..100) from the active gauge, dispatched by type. false on I2C failure.
+bool readGaugeSoc(uint16_t& out) {
+  const auto& g = BoardConfig::ACTIVE.batteryGauge;
+  if (g.gaugeType == BoardConfig::GaugeType::Cw2017) {
+    static bool inited = false;
+    if (!inited) {
+      cw2017EnsureProfile(g.gaugeAddr);
+      inited = true;
+    }
+    uint8_t soc = 0;
+    if (!readReg8(g.gaugeAddr, CW2017_REG_SOC, soc)) return false;
+    out = soc > 100 ? 100 : soc;
+    return true;
+  }
+  uint16_t soc = 0;
+  if (!readReg16(g.gaugeAddr, BQ27220_STATE_OF_CHARGE, soc)) return false;
+  out = soc > 100 ? 100 : soc;
+  return true;
+}
+
+// Battery voltage (mV) from the active gauge, dispatched by type. false on failure.
+bool readGaugeMillivolts(uint16_t& out) {
+  const auto& g = BoardConfig::ACTIVE.batteryGauge;
+  if (g.gaugeType == BoardConfig::GaugeType::Cw2017) {
+    uint8_t hi = 0, lo = 0;
+    if (!readReg8(g.gaugeAddr, CW2017_REG_VCELL_H, hi)) return false;
+    if (!readReg8(g.gaugeAddr, static_cast<uint8_t>(CW2017_REG_VCELL_H + 1), lo)) return false;
+    const uint16_t raw14 = static_cast<uint16_t>((hi & 0x3F) << 8) | lo;
+    out = static_cast<uint16_t>((raw14 * 5 + 8) >> 4);  // OEM formula (~0.3125 mV/LSB, rounded)
+    return true;
+  }
+  uint16_t mv = 0;
+  if (!readReg16(g.gaugeAddr, BQ27220_VOLTAGE, mv)) return false;
+  out = mv;
+  return true;
+}
+
 // Charging state for an I2C-gauge board, from the active board's gauge config.
 // Two sources, in order of preference:
 //   1. A dedicated charger IC (BQ25896): CHRG_STAT in REG0B[4:3] — 01 pre-charge
@@ -80,6 +193,12 @@ bool readReg8(uint8_t addr, uint8_t reg, uint8_t& out) {
 // a board with neither gaugeAddr nor chargerAddr).
 bool readGaugeCharging(bool& known) {
   const auto& g = BoardConfig::ACTIVE.batteryGauge;
+  // CW2017 has no current register and the X4 Pro has no charger IC on this bus, so
+  // charging state is not observable from the gauge (the OEM infers it elsewhere).
+  if (g.gaugeType == BoardConfig::GaugeType::Cw2017) {
+    known = false;
+    return false;
+  }
   if (g.chargerAddr != 0) {
     uint8_t status = 0;
     if (readReg8(g.chargerAddr, BQ25896_REG_STATUS, status)) {
@@ -143,12 +262,12 @@ bool BatteryMonitor::hasM5Pm1Backend() const {
 
 uint16_t BatteryMonitor::readPercentage() const {
 #if FREEINK_BATTERY_I2C_GAUGE
-  // Runtime, per active profile: gauge boards (X3, LilyGo) read SoC over I2C; ADC
-  // boards (X4) in the same binary fall through to the divider path below.
+  // Runtime, per active profile: gauge boards (X3, LilyGo, X4 Pro) read SoC over I2C;
+  // ADC boards (X4) in the same binary fall through to the divider path below.
   if (BoardConfig::ACTIVE.batteryGauge.gaugeAddr != 0) {
     uint16_t soc = 0;
-    if (!readReg16(BoardConfig::ACTIVE.batteryGauge.gaugeAddr, BQ27220_STATE_OF_CHARGE, soc)) return 0;
-    return soc > 100 ? 100 : soc;
+    if (!readGaugeSoc(soc)) return 0;
+    return soc;
   }
 #endif
   if (hasM5Pm1Backend()) {
@@ -164,8 +283,8 @@ bool BatteryMonitor::readPercentageChecked(uint16_t& out) const {
 #if FREEINK_BATTERY_I2C_GAUGE
   if (BoardConfig::ACTIVE.batteryGauge.gaugeAddr != 0) {
     uint16_t soc = 0;
-    if (!readReg16(BoardConfig::ACTIVE.batteryGauge.gaugeAddr, BQ27220_STATE_OF_CHARGE, soc)) return false;
-    out = soc > 100 ? 100 : soc;
+    if (!readGaugeSoc(soc)) return false;
+    out = soc;
     return true;
   }
 #endif
@@ -187,12 +306,12 @@ BatteryMonitor::Status BatteryMonitor::readStatus() const {
   if (BoardConfig::ACTIVE.batteryGauge.gaugeAddr != 0) {
     status.supported = true;
     uint16_t soc = 0;
-    if (readReg16(BoardConfig::ACTIVE.batteryGauge.gaugeAddr, BQ27220_STATE_OF_CHARGE, soc)) {
+    if (readGaugeSoc(soc)) {
       status.percentageKnown = true;
-      status.percentage = soc > 100 ? 100 : soc;
+      status.percentage = soc;
     }
     uint16_t mv = 0;
-    if (readReg16(BoardConfig::ACTIVE.batteryGauge.gaugeAddr, BQ27220_VOLTAGE, mv)) {
+    if (readGaugeMillivolts(mv)) {
       status.millivoltsKnown = true;
       status.millivolts = mv;
     }
@@ -231,7 +350,7 @@ uint16_t BatteryMonitor::readMillivolts() const {
 #if FREEINK_BATTERY_I2C_GAUGE
   if (BoardConfig::ACTIVE.batteryGauge.gaugeAddr != 0) {
     uint16_t gaugeMv = 0;
-    readReg16(BoardConfig::ACTIVE.batteryGauge.gaugeAddr, BQ27220_VOLTAGE, gaugeMv);
+    readGaugeMillivolts(gaugeMv);
     return gaugeMv;  // gauge reports true battery mV (no divider)
   }
 #endif

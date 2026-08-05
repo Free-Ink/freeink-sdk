@@ -102,16 +102,20 @@ void parseReportMapHints(const uint8_t* map, size_t len) {
 // slot decode did not handle (consumer / compact / non-standard layouts). Prefers
 // the report-map-hinted byte, else the first meaningful non-zero byte. Returns 0
 // when the report carries no code (a release frame).
-uint8_t extractPrimaryCode(const uint8_t* p, size_t n) {
+uint8_t extractPrimaryCode(const uint8_t* p, size_t n, size_t* codeIdx = nullptr) {
   const size_t lim = n < 8 ? n : 8;
   // NOTE: do NOT skip 0x01 here. In a keyboard report 0x01 is ErrorRollOver, but in
   // a consumer / vendor report it is a valid button code (e.g. a 3-byte page-turner
   // report of "01 00 00" on press, "00 00 00" on release). Only zero means "no code".
   if (g_preferredByteIndex != 0xFF && g_preferredByteIndex < n && p[g_preferredByteIndex] != 0) {
+    if (codeIdx) *codeIdx = g_preferredByteIndex;
     return p[g_preferredByteIndex];
   }
   for (size_t i = 0; i < lim; ++i) {
-    if (p[i] != 0) return p[i];
+    if (p[i] != 0) {
+      if (codeIdx) *codeIdx = i;
+      return p[i];
+    }
   }
   return 0;
 }
@@ -401,6 +405,17 @@ bool BleKeyboardHost::begin(const char* hostName) {
     return false;
   }
   g_client->setConnectTimeout(kConnectTimeoutMs);
+  // Widen the link supervision timeout. The host runs on a single RISC-V core and
+  // some operations block it for several seconds (e.g. the reader rebuilding a whole
+  // chapter to reach its last page on a backward page turn across a section boundary).
+  // NimBLE's default supervision timeout is only 2.56s, so those long renders overrun
+  // it and the controller drops the link — the peripheral then fails to re-encrypt on
+  // auto-reconnect (HCI 0x08 "Connection Timeout" -> BLE_HS err 520). Request a low
+  // interval for keypress responsiveness with an 8s supervision timeout (units:
+  // interval 1.25ms, timeout 10ms) so a slow page render can't sever the connection.
+  // Peripheral-initiated updates are still rejected (see onConnParamsUpdateRequest), so
+  // these host-chosen params hold for the life of the link.
+  g_client->setConnectionParams(/*minInterval=*/12, /*maxInterval=*/24, /*latency=*/0, /*timeout=*/800);
   g_client->setClientCallbacks(&g_clientCb, false);
 
   xTaskCreate(connTaskFn, "ble-conn", 4096, nullptr, 3, &g_connTask);
@@ -747,8 +762,52 @@ void BleKeyboardHost::onReportIngest(const uint8_t* data, size_t len) {
   // representative code and surface it (edge-detected so one press == one event).
   const bool tryGeneric = !emittedKb && (g_hasConsumerPage || !g_hasKeyboardPage || n < 7);
   if (tryGeneric) {
-    const uint8_t code = extractPrimaryCode(p, n);
-    if (code != 0 && code != g_lastGenericCode) emitUsage(code, 0);
+    size_t codeIdx = 0;
+    const uint8_t code = extractPrimaryCode(p, n, &codeIdx);
+    // Gamepad-style modes keep constant bits in the button byte and only clear
+    // the pressed bit on release (ino gamebrick mode T: 0x13 pressed -> 0x12
+    // released, bit0 is the button). "code changed" alone emits a phantom
+    // second press on that release frame. A press must SET at least one bit
+    // the previous code didn't have; a bit-subset of the previous code is a
+    // (partial) release, never a new press. Value-coded remotes are unaffected
+    // in practice: their release frame is all-zero (code 0), and the 150 ms
+    // stale-release timeout in poll() zeroes g_lastGenericCode between any two
+    // human-separated presses.
+    const bool pressEdge = code != 0 && code != g_lastGenericCode && (code & ~g_lastGenericCode) != 0;
+    const bool releaseEdge = code != 0 && code != g_lastGenericCode && (code & ~g_lastGenericCode) == 0;
+    if (codeIdx == 0 && n >= 5) {
+      // Gamepad/axis-pair mode (ino gamebrick T): byte 0 is a status byte whose
+      // bit0 is "pressed" (0x13 press -> 0x12 release), bytes 1-4 are two 16-bit
+      // LE axes centered at ~2000. Every button raises the same pressed bit; the
+      // identity lives in where the axes sit. The FIRST press frame is not
+      // trustworthy (a direction press starts near center and ramps toward its
+      // extreme over several frames), but the release frame still carries the
+      // final held values ("12 D0 07 84 03" = up, "12 D0 07 10 0E" = down,
+      // "12 B8 0B D0 07" = A, "12 B8 0B C4 09" = B). So classify on the release
+      // edge: quantize each axis into low/center/high and emit a synthetic code
+      // from the zone pair. Both-axes-centered carries no identity (bare
+      // release) and emits nothing.
+      if (releaseEdge) {
+        uint16_t axis1, axis2;  // memcpy: p may be unaligned (RISC-V faults on unaligned loads)
+        memcpy(&axis1, p + 1, sizeof(axis1));
+        memcpy(&axis2, p + 3, sizeof(axis2));
+        constexpr uint16_t kAxisCenter = 2000;
+        constexpr uint16_t kAxisDeadband = 300;  // B rests at center+500; center noise stays inside +/-300
+        const auto zone = [](uint16_t v) -> uint8_t {
+          if (v < kAxisCenter - kAxisDeadband) return 0;
+          if (v > kAxisCenter + kAxisDeadband) return 2;
+          return 1;
+        };
+        const uint8_t zonePair = zone(axis1) * 3 + zone(axis2);
+        if (zonePair != 4) {  // 4 = both centered: nothing to bind
+          emitUsage(0x40 + zonePair, 0);
+        }
+      }
+    } else if (pressEdge) {
+      // Value-coded remotes (e.g. "01 00 00" press, all-zero release): the code
+      // byte IS the identity; emit on the press edge as before.
+      emitUsage(code, 0);
+    }
     g_lastGenericCode = code;
   } else if (emittedKb) {
     g_lastGenericCode = 0;

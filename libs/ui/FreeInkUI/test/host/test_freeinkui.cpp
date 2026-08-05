@@ -556,6 +556,39 @@ void testListClampsBadTopIndex() {
   CHECK_EQ(interactions.data()[3].value, 5);
 }
 
+void testListCanUseFullTitleWidthWithShortValue() {
+  ListItem item{};
+  item.label = "This filename is deliberately long enough to require a two-line wrapped title";
+  item.value = ".epub";
+
+  ListProps props;
+  props.items = &item;
+  props.count = 1;
+  props.rowHeight = 48;
+  props.labelText.maxLines = 2;
+
+  FakeDrawTarget balancedDraw;
+  DeviceContext device = makeDevice();
+  InputSnapshot input;
+  InteractionBuffer<4> balancedInteractions;
+  Frame<4> balancedFrame(balancedDraw, device, input, balancedInteractions);
+  list(balancedFrame, Rect{0, 0, 480, 48}, props);
+
+  // Fill, value, then label. The default balanced layout limits a wrapping
+  // title to 60% of the row's text band.
+  CHECK_EQ(balancedDraw.ops[2].rect.width, 278);
+
+  props.balanceWrappedLabelWithValue = false;
+  FakeDrawTarget fullWidthDraw;
+  InteractionBuffer<4> fullWidthInteractions;
+  Frame<4> fullWidthFrame(fullWidthDraw, device, input, fullWidthInteractions);
+  list(fullWidthFrame, Rect{0, 0, 480, 48}, props);
+
+  // Only the extension and its normal gap are reserved, so the title can use
+  // the remaining width before the value.
+  CHECK_EQ(fullWidthDraw.ops[2].rect.width, 424);
+}
+
 void testButtonRegistersExpandedHit() {
   FakeDrawTarget draw;
   DeviceContext device = makeDevice();
@@ -2519,6 +2552,7 @@ int main() {
   testListHelpers();
   testListVirtualization();
   testListClampsBadTopIndex();
+  testListCanUseFullTitleWidthWithShortValue();
   testButtonRegistersExpandedHit();
   testProgressBarClamps();
   testBatteryIndicator();

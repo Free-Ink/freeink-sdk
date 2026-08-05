@@ -37,14 +37,21 @@ constexpr uint8_t QMI8658_REG_CTRL3 = 0x04;
 constexpr uint8_t QMI8658_REG_CTRL7 = 0x08;
 constexpr uint8_t QMI8658_REG_AX_L = 0x35;
 constexpr uint8_t QMI8658_REG_GX_L = 0x3B;
+constexpr uint8_t QMI8658_ADDR_6A = 0x6A;
+constexpr uint8_t QMI8658_ADDR_6B = 0x6B;
 constexpr uint8_t QMI8658_CTRL1_BIG_ENDIAN = 1U << 5;
 constexpr uint8_t QMI8658_CTRL1_AUTO_INC = 1U << 6;
+constexpr uint8_t QMI8658_CTRL1_SENSOR_DISABLE = 1U << 0;
 constexpr uint8_t QMI8658_CTRL1_BASE = QMI8658_CTRL1_AUTO_INC | QMI8658_CTRL1_BIG_ENDIAN;
 constexpr uint8_t QMI8658_CTRL2_FS_2G = 0U << 4;
 constexpr uint8_t QMI8658_CTRL2_ODR_28HZ = 0x08;
 constexpr uint8_t QMI8658_CTRL3_FS_512DPS = 0b101U << 4;
 constexpr uint8_t QMI8658_CTRL3_ODR_28HZ = 0x08;
 constexpr uint8_t QMI8658_CTRL7_ACC_GYRO_ENABLE = 0x03;
+constexpr uint8_t QMI8658_CTRL7_DISABLE_ALL = 0x00;
+// LSM6DS3: ODR bits [7:4] = 0000b powers the sensor down; full-scale bits are
+// retained, so restoring the configured CTRL value resumes sampling.
+constexpr uint8_t CTRL_ODR_POWER_DOWN = 0x00;
 constexpr float QMI8658_ACCEL_G_PER_LSB = 1.0f / 16384.0f;  // ±2 g
 constexpr float QMI8658_GYRO_DPS_PER_LSB = 1.0f / 64.0f;    // ±512 dps
 
@@ -92,30 +99,70 @@ bool readRegs(uint8_t addr, uint8_t reg, uint8_t* dst, uint8_t len) {
   return true;
 }
 
+bool qmi8658PresentAt(uint8_t addr) {
+  uint8_t who = 0;
+  return readRegs(addr, QMI8658_REG_WHO_AM_I, &who, 1) && who == QMI8658_WHO_AM_I_VALUE;
+}
+
+bool powerDownQmi8658(uint8_t addr) {
+  // Do not short-circuit these writes: even if disabling the sensor engines
+  // fails, still try to stop the internal oscillator. This is also used as the
+  // cleanup path after a partially failed begin().
+  const bool sensorsDisabled = writeReg(addr, QMI8658_REG_CTRL7, QMI8658_CTRL7_DISABLE_ALL);
+  const bool oscillatorDisabled =
+      writeReg(addr, QMI8658_REG_CTRL1, QMI8658_CTRL1_BASE | QMI8658_CTRL1_SENSOR_DISABLE);
+  return sensorsDisabled && oscillatorDisabled;
+}
+
 }  // namespace
 
 bool Imu::begin() {
-  const uint8_t addr = BoardConfig::ACTIVE.sensors.imuAddr;
-  if (addr == 0) return false;
+  begun_ = false;
+  addr_ = 0;
+
   const auto& s = BoardConfig::ACTIVE.sensors;
+  const uint8_t configuredAddr = s.imuAddr;
+  if (configuredAddr == 0) return false;
   if (s.i2cSda < 0 || s.i2cScl < 0 || s.i2cHz == 0) return false;
   ensureWire();
   uint8_t who = 0;
   switch (s.imuType) {
     case BoardConfig::ImuType::Lsm6ds3:
-      if (!readRegs(addr, REG_WHO_AM_I, &who, 1) || who != WHO_AM_I_VALUE) return false;
-      if (!writeReg(addr, REG_CTRL3_C, CTRL3_C_BDU_IF_INC)) return false;
-      if (!writeReg(addr, REG_CTRL1_XL, CTRL1_XL_104HZ_2G)) return false;
-      if (!writeReg(addr, REG_CTRL2_G, CTRL2_G_104HZ_245DPS)) return false;
+      if (!readRegs(configuredAddr, REG_WHO_AM_I, &who, 1) || who != WHO_AM_I_VALUE) return false;
+      if (!writeReg(configuredAddr, REG_CTRL3_C, CTRL3_C_BDU_IF_INC)) return false;
+      if (!writeReg(configuredAddr, REG_CTRL1_XL, CTRL1_XL_104HZ_2G)) return false;
+      if (!writeReg(configuredAddr, REG_CTRL2_G, CTRL2_G_104HZ_245DPS)) return false;
+      addr_ = configuredAddr;
       break;
-    case BoardConfig::ImuType::Qmi8658:
-      if (!readRegs(addr, QMI8658_REG_WHO_AM_I, &who, 1) || who != QMI8658_WHO_AM_I_VALUE) return false;
-      if (!writeReg(addr, QMI8658_REG_CTRL7, 0x00)) return false;
-      if (!writeReg(addr, QMI8658_REG_CTRL1, QMI8658_CTRL1_BASE)) return false;
-      if (!writeReg(addr, QMI8658_REG_CTRL2, QMI8658_CTRL2_FS_2G | QMI8658_CTRL2_ODR_28HZ)) return false;
-      if (!writeReg(addr, QMI8658_REG_CTRL3, QMI8658_CTRL3_FS_512DPS | QMI8658_CTRL3_ODR_28HZ)) return false;
-      if (!writeReg(addr, QMI8658_REG_CTRL7, QMI8658_CTRL7_ACC_GYRO_ENABLE)) return false;
+    case BoardConfig::ImuType::Qmi8658: {
+      // SA0 selects between 0x6A and 0x6B. X3 production revisions have used
+      // both, so treat the profile address as a preference rather than a
+      // guarantee. This restores the fallback used by the pre-SDK X3 driver.
+      const uint8_t alternateAddr =
+          configuredAddr == QMI8658_ADDR_6A ? QMI8658_ADDR_6B : QMI8658_ADDR_6A;
+      if (qmi8658PresentAt(configuredAddr)) {
+        addr_ = configuredAddr;
+      } else if (qmi8658PresentAt(alternateAddr)) {
+        addr_ = alternateAddr;
+      } else {
+        return false;
+      }
+
+      const bool configured =
+          writeReg(addr_, QMI8658_REG_CTRL7, QMI8658_CTRL7_DISABLE_ALL) &&
+          writeReg(addr_, QMI8658_REG_CTRL1, QMI8658_CTRL1_BASE) &&
+          writeReg(addr_, QMI8658_REG_CTRL2, QMI8658_CTRL2_FS_2G | QMI8658_CTRL2_ODR_28HZ) &&
+          writeReg(addr_, QMI8658_REG_CTRL3, QMI8658_CTRL3_FS_512DPS | QMI8658_CTRL3_ODR_28HZ) &&
+          writeReg(addr_, QMI8658_REG_CTRL7, QMI8658_CTRL7_ACC_GYRO_ENABLE);
+      if (!configured) {
+        // A failed setup must not strand a previously running sensor in its
+        // multi-milliamp active mode. The digital interface remains available
+        // in QMI8658 power-down, so this cleanup is safe to attempt here.
+        powerDownQmi8658(addr_);
+        return false;
+      }
       break;
+    }
     case BoardConfig::ImuType::None:
       return false;
   }
@@ -124,7 +171,7 @@ bool Imu::begin() {
 }
 
 bool Imu::read(Sample& out) {
-  const uint8_t addr = BoardConfig::ACTIVE.sensors.imuAddr;
+  const uint8_t addr = addr_;
   if (!begun_ || addr == 0) return false;
   const auto& s = BoardConfig::ACTIVE.sensors;
   uint8_t g[6] = {};
@@ -157,6 +204,38 @@ bool Imu::read(Sample& out) {
   return true;
 }
 
+bool Imu::sleep() {
+  const uint8_t addr = addr_;
+  if (!begun_ || addr == 0) return false;
+  switch (BoardConfig::ACTIVE.sensors.imuType) {
+    case BoardConfig::ImuType::Lsm6ds3:
+      return writeReg(addr, REG_CTRL1_XL, CTRL_ODR_POWER_DOWN) && writeReg(addr, REG_CTRL2_G, CTRL_ODR_POWER_DOWN);
+    case BoardConfig::ImuType::Qmi8658:
+      // CTRL7 only disables sampling; the internal oscillator keeps running.
+      // SensorDisable is required for the QMI8658's full power-down mode.
+      return powerDownQmi8658(addr);
+    case BoardConfig::ImuType::None:
+      return false;
+  }
+  return false;
+}
+
+bool Imu::wake() {
+  const uint8_t addr = addr_;
+  if (!begun_ || addr == 0) return false;
+  switch (BoardConfig::ACTIVE.sensors.imuType) {
+    case BoardConfig::ImuType::Lsm6ds3:
+      return writeReg(addr, REG_CTRL1_XL, CTRL1_XL_104HZ_2G) && writeReg(addr, REG_CTRL2_G, CTRL2_G_104HZ_245DPS);
+    case BoardConfig::ImuType::Qmi8658:
+      // Re-enable the internal oscillator before restarting the sensors.
+      return writeReg(addr, QMI8658_REG_CTRL1, QMI8658_CTRL1_BASE) &&
+             writeReg(addr, QMI8658_REG_CTRL7, QMI8658_CTRL7_ACC_GYRO_ENABLE);
+    case BoardConfig::ImuType::None:
+      return false;
+  }
+  return false;
+}
+
 }  // namespace freeink
 
 #else  // FREEINK_CAP_IMU — IMU absent.
@@ -164,6 +243,8 @@ bool Imu::read(Sample& out) {
 namespace freeink {
 bool Imu::begin() { return false; }
 bool Imu::read(Sample&) { return false; }
+bool Imu::sleep() { return false; }
+bool Imu::wake() { return false; }
 }  // namespace freeink
 
 #endif  // FREEINK_CAP_IMU

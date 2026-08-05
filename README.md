@@ -125,6 +125,7 @@ so the SD manager itself stays device-agnostic.
 | **LilyGo T5 S3** | ESP32-S3 | ED047TC1 (raw parallel) | 960×540 16-gray | LovyanGFX EPD driver with 16-gray, GT911 touch, PWM backlight, BQ27220/BQ25896 I²C battery |
 | **M5Paper v1.1** | ESP32 (classic) | IT8951E | 540×960 16-gray ED047TC1 | hand-rolled IT8951 driver (own SPI, 1bpp→4bpp load, GC16/DU/A2 modes, auto rotation onto the portrait panel), GT911 touch, GPIO35 ADC battery |
 | **Sticky** (Upcoming Device) | ESP32-S3 | SSD1677 | 3.97" 800×480 B/W | reuses the SSD1677 driver (X4-class), GT911 touch, PDM microphone (Microphone lib), BQ27220 I²C battery gauge, PCF8563 RTC + SHT40 temp/humidity + LSM6DS3TR-C IMU (Rtc / EnvironmentSensor / Imu libs), SPI MicroSD (shares the display bus), LEDC buzzer (Buzzer lib); orientation/SD-sharing pending hardware validation |
+| **Xteink X4 Pro** | ESP32-S3 | SSD1677 **or** UC8179 (per batch) | 800×480 B/W | GT911 touch, dual warm/cold frontlight, native 1-bit SDMMC, BM8563 RTC, CW2017 battery gauge; controller auto-detected at boot |
 
 X3 and X4 share the ESP32-C3 and a pinout, so **one firmware binary drives both**:
 it carries both board profiles (`XTEINK_X4` and `XTEINK_X3`) and picks one at
@@ -135,10 +136,49 @@ X3-only peripherals (BQ27220 gauge, DS3231 RTC, QMI8658 IMU on SDA20/SCL0),
 calls `BoardConfig::selectDevice()` for the match, and returns whether an X3 was
 found so the caller can `display.setDisplayX3()`. Call it before
 `SDCardManager::begin()` and `FreeInkDisplay::begin()` so both read the right
-profile. Devices on a different MCU build their own binary, selected with a
+profile. In builds without an Xteink profile the helpers compile to no-ops that
+return false without touching any pins, so an unconditional call is safe on
+every device. Devices on a different MCU build their own binary, selected with a
 `-DFREEINK_DEVICE_*` flag. A build targets exactly one of the three MCU families — ESP32-C3 (X3/X4),
-ESP32-S3 (de-link/PaperColor/Murphy/LilyGo/Sticky), or classic ESP32 (M5Paper);
+ESP32-S3 (de-link/PaperColor/Murphy/LilyGo/Sticky/X4 Pro), or classic ESP32 (M5Paper);
 `BoardConfig` rejects mixing families at compile time.
+
+#### Per-batch panel controllers (`applyXteinkDisplayController()`)
+
+Several Xteink panels ship a **different display controller depending on the
+production batch**, on the same board and pinout: the X3 moved from **UC8253** to
+**UC8279d**, and the X4 / X4 Pro from **SSD1677** to **UC8179** (both UltraChip
+parts). A binary hardcoded to one controller shows a blank screen on the other
+batch. `XteinkDetect` resolves which silicon a unit carries at boot:
+
+```cpp
+#include <XteinkDetect.h>
+
+// Before FreeInkDisplay::begin() — promotes BoardConfig::ACTIVE.displayController
+// to the UltraChip sibling when this unit carries it, so begin() selects the
+// matching driver. No-op (returns false) on builds without a probe-capable device.
+freeink::applyXteinkDisplayController();
+display.begin();
+```
+
+Resolution order:
+
+1. **OEM factory value in NVS** — namespace `hw_calib`, key `screenType` (u8:
+   `1`/`0x0B` = UC8179, `2`/`0x0C` = UC8279, else the shipping SSD-family / UC8253
+   part). The factory writes it once and never rewrites it, so it survives a
+   reflash and is authoritative; the bus probe is then skipped entirely.
+2. **Display-bus probe** (`detectXteinkDisplayController()`) — only when NVS has no
+   value (erased/absent). It bit-bangs a half-duplex read of the UC81xx **VER
+   (`0x70`)** / **FLG (`0x71`)** registers on the active display pins; the
+   SSD-family and UC8253 don't answer `0x70` the same way, so a matching signature
+   in two agreeing passes confirms the UltraChip sibling. It reads pins from
+   `BoardConfig::ACTIVE`, so it is safe on the S3 (unlike the C3-only I²C
+   fingerprint above). It can't false-positive a working SSD1677 unit (that bus
+   floats to `0xFF`), so a wrong guess only ever leaves the shipping controller.
+
+`detectXteinkDisplayController(verBytes, flg)` exposes the raw probe bytes and a
+verdict for bring-up logging; `applyXteinkDisplayController()` is the one-call
+convenience most consumers want. Both are no-ops on non-Xteink builds.
 
 Every SDK library compiles on ESP32-C3, ESP32-S3, and the classic ESP32.
 Chip-specific code in a consumer's *own* layer (deep-sleep wakeup, panic
@@ -564,6 +604,64 @@ Lucide is vendored as a **git submodule** at `libs/assets/Icons/lucide` (run
 `libs/assets/Icons/lucide/icons/*.svg` — reference any by filename (minus `.svg`) in
 a manifest. Lucide is MIT-licensed (`libs/assets/Icons/lucide/LICENSE`).
 
+## Memory reclaim (`MemoryManager`)
+
+`libs/hardware/MemoryManager` is an on-demand RAM-reclaim helper: a small,
+priority-ordered registry of evictable **cache sinks** plus heap reporting, over
+the ESP-IDF heap-capabilities allocator. It lets a consumer free memory on
+demand — a control-center "clear caches"/"boost" action — or under pressure,
+without the SDK needing to know what any given app caches. (The pattern mirrors
+the cache-sink manager e-reader firmware typically uses: a set of rebuildable
+caches asked to shrink, measured against free heap.)
+
+**Model.** Any component that holds a rebuildable RAM cache — rendered pages,
+decoded images, glyph atlases, parsed-document buffers, PSRAM pools — registers a
+`CacheSink` once. A sink is a name, a **priority** (lower is evicted first, so
+cheap-to-rebuild caches go low), and an `evict(bytesRequested)` callback that
+frees memory and returns the bytes it released (`bytesRequested == 0` means "free
+everything"). `MemoryManager` is a singleton, so sinks can register from anywhere
+and any code can trigger a reclaim.
+
+```cpp
+#include <MemoryManager.h>
+using freeink::MemoryManager;
+
+// Register once (e.g. in each cache owner's begin()):
+MemoryManager::instance().registerSink({"font.glyphs",  20, [&](size_t n){ return glyphs.evict(n); }});
+MemoryManager::instance().registerSink({"render.pages", 40, [&](size_t n){ return pages.evict(n); }});
+MemoryManager::instance().registerSink({"image.decode", 30, [&](size_t n){ return imgPool.evict(n); }});
+```
+
+**Reclaim.**
+
+```cpp
+// "Boost": purge everything and get the honest, heap-measured free delta to
+// show the user (e.g. a "Freed 1.8 MB" toast). Logs under [MEM] with -DENABLE_SERIAL_LOG.
+size_t before = 0, after = 0;
+size_t freed = MemoryManager::instance().boost(&before, &after);
+
+// Or free just enough to satisfy a target, lowest-priority caches first:
+MemoryManager::instance().clearCaches(256 * 1024);   // free ~256 KB; 0 = purge all
+```
+
+**Reporting** (for a "memory" read-out, or to gate work on available RAM):
+
+```cpp
+using freeink::MemPool;   // Internal | Psram | Default
+size_t freeInternal = MemoryManager::instance().freeBytes(MemPool::Internal);
+size_t freePsram    = MemoryManager::instance().freeBytes(MemPool::Psram);      // 0 without PSRAM
+size_t biggestBlock = MemoryManager::instance().largestFreeBlock(MemPool::Internal);
+size_t lowWater     = MemoryManager::instance().minEverFree(MemPool::Internal); // min-ever-free
+```
+
+`clearCaches()` walks the registered sinks lowest-priority first, passing each the
+remaining shortfall and stopping once the target is met (or after all sinks when
+the target is `0`). `boost()` wraps that with a before/after heap measurement so
+the number you display is what the allocator actually reclaimed, not what the
+sinks estimated. It is momentary and touches no NVS — purely a RAM operation.
+Up to `MemoryManager::kMaxSinks` (12) caches can be registered; re-registering a
+name replaces the existing sink.
+
 ## Using FreeInk from PlatformIO
 
 See **[`platformio.sample.ini`](platformio.sample.ini)** for a complete, ready-to-copy
@@ -679,6 +777,7 @@ libs/
   hardware/BatteryMonitor/  ADC battery + optional charge-sense
   hardware/SDCardManager/   SD storage (SdFat-over-SPI or native SDMMC)
   hardware/PowerManager/    per-SoC deep-sleep wake-on-power-button
+  hardware/MemoryManager/   on-demand cache-sink reclaim + heap reporting
   hardware/FrontlightManager/  PWM frontlight (de-link)
   hardware/LedManager/      addressable RGB LEDs (M5 PaperColor)
   hardware/AudioManager/    I2S codec WAV playback (Murphy, M5 PaperColor)

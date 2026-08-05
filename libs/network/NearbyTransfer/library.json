@@ -1,0 +1,9 @@
+{
+  "name": "NearbyTransfer",
+  "version": "1.0.0",
+  "description": "Low-memory ESP-NOW transport and reliable file-transfer session primitives for FreeInk devices.",
+  "keywords": "esp-now, transfer, peer-to-peer, network",
+  "authors": [{"name": "FreeInk SDK Contributors"}],
+  "dependencies": {},
+  "frameworks": ["arduino", "native"]
+}

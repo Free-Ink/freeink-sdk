@@ -12,6 +12,10 @@ struct QwertyKeyboardProps {
   ActionId modeAction = NO_ACTION;
   ActionId deleteAction = NO_ACTION;
   ActionId okAction = NO_ACTION;
+  // Optional localized labels for Ok/Shift/Mode keys (see KeyboardProps::okLabel).
+  const char* okLabel = nullptr;
+  const char* shiftLabel = nullptr;
+  const char* modeLabel = nullptr;
   uint16_t inputMask = InputDefault;
   int16_t selectedIndex = -1;
   TextStyle labelText{};
@@ -46,6 +50,9 @@ void qwertyKeyboard(Frame<MaxInteractions>& frame, Rect rect, const QwertyKeyboa
   keyboardProps.modeAction = props.modeAction;
   keyboardProps.deleteAction = props.deleteAction;
   keyboardProps.okAction = props.okAction;
+  keyboardProps.okLabel = props.okLabel;
+  keyboardProps.shiftLabel = props.shiftLabel;
+  keyboardProps.modeLabel = props.modeLabel;
   keyboardProps.inputMask = props.inputMask;
   keyboardProps.selectedIndex = props.selectedIndex;
   keyboardProps.labelText = props.labelText;

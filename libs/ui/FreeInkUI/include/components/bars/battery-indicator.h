@@ -180,8 +180,18 @@ void batteryIndicator(Frame<MaxInteractions>& frame, Rect rect,
       }
     }
   } else {
-    const int16_t fillW = static_cast<int16_t>(
+    int16_t fillW = static_cast<int16_t>(
         (static_cast<int32_t>(cavity.width) * percent) / 100);
+    // The charging bolt draws in the inverse color over the fill; guarantee
+    // enough fill under it to stay visible at low charge (the bolt is
+    // centered, so cover past the cavity midpoint plus the bolt half-width).
+    if (props.charging && !props.chargingIcon) {
+      const int16_t boltHalf =
+          static_cast<int16_t>(((cavity.height - 2) / 2 > 2 ? (cavity.height - 2) / 2 : 2));
+      int16_t minFill = static_cast<int16_t>(cavity.width / 2 + boltHalf + 1);
+      if (minFill > cavity.width) minFill = cavity.width;
+      if (fillW < minFill) fillW = minFill;
+    }
     if (fillW > 0) {
       frame.target().fill(Rect{cavity.x, cavity.y, fillW, cavity.height}, ink);
     }

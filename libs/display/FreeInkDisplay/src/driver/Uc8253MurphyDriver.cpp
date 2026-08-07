@@ -4,6 +4,14 @@
 
 #include "../lut/Uc8253MurphyLuts.h"
 
+// OEM alternate/partial refresh package for RefreshMode::Fast: data-driven init
+// variant + ALT LUT bank + 0x17/0xA5 trigger (see display() below). Default ON;
+// build with -DFREEINK_MURPHY_OEM_PARTIAL=0 to restore the previous synthetic
+// destination-drive FAST bank under the mode-0 init if the port misbehaves.
+#ifndef FREEINK_MURPHY_OEM_PARTIAL
+#define FREEINK_MURPHY_OEM_PARTIAL 1
+#endif
+
 namespace freeink {
 namespace {
 // UC8253 command set (shared with the X3 panel; Murphy uses a different init,
@@ -34,14 +42,67 @@ constexpr uint8_t CMD_VCOM_DC = 0x82;
 constexpr uint16_t CTRL_W = 240;
 constexpr uint16_t CTRL_H = 416;
 constexpr uint16_t CTRL_WB = CTRL_W / 8;  // 30
+
+#if FREEINK_MURPHY_OEM_PARTIAL
+// OEM auto-refresh trigger used by the alternate/partial mode instead of 0x12.
+// Ghidra FUN_42038f74/FUN_42038fa4 else-branch: FUN_420384e8(obj, 0x17, 0xA5) —
+// command 0x17 with the single data byte 0xA5, then a BUSY wait. No window
+// coordinate bytes exist anywhere in the decompiled trigger or init path; the
+// refresh covers whatever the DTM planes hold (we always write the full
+// 240x416 frame). On the UC8151/UC8253 family 0x17 is the AUTO register and
+// 0xA5 runs the PON -> DRF -> POF sequence internally — consistent with the
+// OEM alt init never issuing 0x04 (power on) itself.
+constexpr uint8_t CMD_AUTO_SEQUENCE = 0x17;
+constexpr uint8_t AUTO_PON_DRF_POF = 0xA5;
+
+// ALT bank register mapping, per the Ghidra LUT loader FUN_42038b60 else
+// branch. The loader keys on a one-shot RTC flag (boot value 0, cleared again
+// after any use), so the boot-default steady state loads:
+//   0x20 <- MURPHY_LUT_20_ALT   (56 B)   0x21 <- MURPHY_LUT_21_ALT   (42 B)
+//   0x22 <- MURPHY_LUT_23_ALT_B (56 B)   0x23 <- MURPHY_LUT_22_ALT_A (42 B)
+//   0x24 <- MURPHY_LUT_24_ALT   (42 B)
+// i.e. the "22_A"/"23_B" array names from the findings doc are CROSSED over
+// registers 0x22/0x23 here. That steady-state mapping is also the physically
+// consistent one under the doc's voltage-code decode (0x8F = VSL/to-white bit,
+// 0x4F = VSH/to-black bit): BW (0x22) ends on a to-white kick (0f 8f 0f) and
+// WB (0x23) on a to-black kick (4f 8f 4f).
+// FIXME(doc ambiguity): with the one-shot flag SET the OEM loads the swapped
+// arrangement (0x22 <- 22_ALT_A @42, 0x23 <- 23_ALT_B @56) for exactly one
+// refresh — the arrangement the findings-doc array names suggest. No writer of
+// that flag appears in the reverse-engineering docs, so the swap's purpose is
+// unknown; we ship the boot-default steady-state mapping only.
+constexpr Uc8253MurphyLutBank ALT_BANK = {
+    MURPHY_LUT_20_ALT,    // vcom 0x20
+    MURPHY_LUT_21_ALT,    // ww   0x21
+    MURPHY_LUT_23_ALT_B,  // bw   0x22  (56 B — see mapping note above)
+    MURPHY_LUT_22_ALT_A,  // wb   0x23  (42 B)
+    MURPHY_LUT_24_ALT,    // bb   0x24
+};
+constexpr Uc8253MurphyLutLens ALT_LENS = {
+    sizeof(MURPHY_LUT_20_ALT),    // 56 (loader writes 0x38)
+    sizeof(MURPHY_LUT_21_ALT),    // 42 (0x2a)
+    sizeof(MURPHY_LUT_23_ALT_B),  // 56 (0x38)
+    sizeof(MURPHY_LUT_22_ALT_A),  // 42 (0x2a)
+    sizeof(MURPHY_LUT_24_ALT),    // 42 (0x2a)
+};
+#endif  // FREEINK_MURPHY_OEM_PARTIAL
 }  // namespace
 
 const Uc8253MurphyConfig& uc8253MurphyDefaultConfig() {
   static const Uc8253MurphyConfig cfg = {
       {MURPHY_LUT_20_DEFAULT, MURPHY_LUT_21_DEFAULT, MURPHY_LUT_22_DEFAULT, MURPHY_LUT_23_DEFAULT, MURPHY_LUT_24_DEFAULT},
       {MURPHY_LUT_20_FAST, MURPHY_LUT_21_FAST, MURPHY_LUT_22_FAST, MURPHY_LUT_23_FAST, MURPHY_LUT_24_FAST},
-      {MURPHY_LUT_LEN_VCOM, MURPHY_LUT_LEN_WW, MURPHY_LUT_LEN_BW, MURPHY_LUT_LEN_WB, MURPHY_LUT_LEN_BB},  // 56/42/56/42/42
-      8,  // promote FAST -> full every 8 refreshes
+      {MURPHY_LUT_LEN_VCOM, MURPHY_LUT_LEN_WW, MURPHY_LUT_LEN_BW, MURPHY_LUT_LEN_WB, MURPHY_LUT_LEN_BB},  // 42 each (OEM writes ten 42-byte payloads)
+      // Non-flashing FAST refreshes are allowed to run this many times in a row
+      // before one is promoted to the OEM three-phase GC bank (the inversion
+      // flash that clears accumulated residue). Applies to both FAST flavors:
+      // the OEM partial kicks (FREEINK_MURPHY_OEM_PARTIAL, single short kick
+      // per pixel) and the synthetic destination-drive bank (flag=0) are
+      // DC-unbalanced per refresh, so the cadence is the anti-ghosting story:
+      // lower = cleaner, higher = fewer flashes. 4 after hardware feedback
+      // (6 left a distracting residue while reading).
+      // (Interval semantics: N fast refreshes pass, the N+1th promotes.)
+      4,
   };
   return cfg;
 }
@@ -60,12 +121,12 @@ PanelGeometry Uc8253MurphyDriver::geometry() const {
   return {_fbW, _fbH, _fbWb, static_cast<uint32_t>(_fbWb) * _fbH};
 }
 
-void Uc8253MurphyDriver::loadLut(EpdBus& bus, const Uc8253MurphyLutBank& bank) {
-  bus.cmdData(CMD_LUT_VCOM, bank.vcom, _cfg.lens.vcom);
-  bus.cmdData(CMD_LUT_WW, bank.ww, _cfg.lens.ww);
-  bus.cmdData(CMD_LUT_BW, bank.bw, _cfg.lens.bw);
-  bus.cmdData(CMD_LUT_WB, bank.wb, _cfg.lens.wb);
-  bus.cmdData(CMD_LUT_BB, bank.bb, _cfg.lens.bb);
+void Uc8253MurphyDriver::loadLut(EpdBus& bus, const Uc8253MurphyLutBank& bank, const Uc8253MurphyLutLens& lens) {
+  bus.cmdData(CMD_LUT_VCOM, bank.vcom, lens.vcom);
+  bus.cmdData(CMD_LUT_WW, bank.ww, lens.ww);
+  bus.cmdData(CMD_LUT_BW, bank.bw, lens.bw);
+  bus.cmdData(CMD_LUT_WB, bank.wb, lens.wb);
+  bus.cmdData(CMD_LUT_BB, bank.bb, lens.bb);
 }
 
 // Rotate the landscape framebuffer (416x240) into the controller's portrait RAM
@@ -131,6 +192,51 @@ void Uc8253MurphyDriver::initController(EpdBus& bus) {
 
 }
 
+#if FREEINK_MURPHY_OEM_PARTIAL
+// OEM data-driven init variant — Ghidra FUN_420389ec else-branch, byte-exact,
+// in OEM command order (0x00, 0x01, 0x06, 0x30, 0x82, 0x61, 0x50). The single
+// data bytes 0x30=0x09, 0x82=0x07, 0x50=0xD7 are immediate in the decompile;
+// the 0x00/0x01/0x06/0x61 payloads are pointer-fed (lengths 2/5/3/3). The
+// findings doc spells out only the 0x01 payload ("03 10 3F 3F 03", extracted
+// at 0x3c236ca3 — display_driver.md line 93-97); the other three were read
+// from the doc's cited device dump (app0_seg0_3c190020.bin) by resolving the
+// literal pool FUN_420389ec loads from (seg3+0x2274..0x2280): the pointers are
+// contiguous — 0x00 @0x3c236ca1 = FF 01, 0x01 @0x3c236ca3 = 03 10 3F 3F 03
+// (matches the doc byte-for-byte, anchoring the extraction), 0x06 @0x3c236ca8
+// = 17 37 3D, 0x61 @0x3c236cab = F0 01 A0. The same 13-byte block appears
+// verbatim in the upstream OEM touch v525 firmware at file offset 0xab5e1.
+// Unlike the mode-0 init there is NO power-on (0x04) here: the 0x17/0xA5 auto
+// trigger powers the panel itself (see triggerRefreshAlt).
+void Uc8253MurphyDriver::initControllerAlt(EpdBus& bus) {
+  static constexpr uint8_t PSR_ALT[2] = {0xFF, 0x01};
+  static constexpr uint8_t PWR_ALT[5] = {0x03, 0x10, 0x3F, 0x3F, 0x03};
+  static constexpr uint8_t BTST_ALT[3] = {0x17, 0x37, 0x3D};
+  static constexpr uint8_t RES_ALT[3] = {0xF0, 0x01, 0xA0};  // 240 x 416, same as mode-0
+  bus.cmdData(CMD_PANEL_SETTING, PSR_ALT, sizeof(PSR_ALT));
+  bus.cmdData(CMD_POWER_SETTING, PWR_ALT, sizeof(PWR_ALT));
+  bus.cmdData(CMD_BOOSTER_SOFT_START, BTST_ALT, sizeof(BTST_ALT));
+  bus.cmd(CMD_PLL_CONTROL);
+  bus.data(0x09);
+  bus.cmd(CMD_VCOM_DC);
+  bus.data(0x07);
+  bus.cmdData(CMD_RESOLUTION, RES_ALT, sizeof(RES_ALT));
+  bus.cmd(CMD_VCOM_DATA_INTERVAL);
+  bus.data(0xD7);
+}
+
+// OEM alternate refresh trigger: 0x17 with data 0xA5, then BUSY wait (Ghidra
+// FUN_42038f74 else-branch). 0xA5 auto-sequences PON -> DRF -> POF inside the
+// controller, so no explicit 0x04 before or 0x02 after — matching the OEM,
+// whose power-off helper is a no-op in this mode (its powered flag is only set
+// by an explicit 0x04). The panel is therefore always off after this returns.
+void Uc8253MurphyDriver::triggerRefreshAlt(EpdBus& bus) {
+  bus.cmd(CMD_AUTO_SEQUENCE);
+  bus.data(AUTO_PON_DRF_POF);
+  bus.waitBusy(" M3_AUTO");
+  _isScreenOn = false;
+}
+#endif  // FREEINK_MURPHY_OEM_PARTIAL
+
 void Uc8253MurphyDriver::begin(EpdBus& bus) {
   bus.reset(200);  // Murphy panel wants a long post-reset settle
   _isScreenOn = false;
@@ -145,10 +251,9 @@ void Uc8253MurphyDriver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* 
   // without settling). A fresh reset+init each time clears that residue.
   bus.reset(200);
   _isScreenOn = false;
-  initController(bus);
 
-  // FAST (DU) ghosts over time, so promote to a full (GC) refresh every
-  // ghostClearInterval refreshes.
+  // FAST ghosts over time (both the OEM partial kicks and the synthetic DU
+  // bank), so promote to a full (GC) refresh every ghostClearInterval refreshes.
   bool useFast = (mode == RefreshMode::Fast);
   if (useFast) {
     if (_cfg.ghostClearInterval != 0 && _fastRefreshCount >= _cfg.ghostClearInterval) {
@@ -161,20 +266,42 @@ void Uc8253MurphyDriver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* 
     _fastRefreshCount = 0;
   }
 
-  loadLut(bus, useFast ? _cfg.fast : _cfg.def);
-
-  // Full (GC) refresh writes the new frame to BOTH planes, so only WW/BB fire and
-  // every pixel is fully driven to its target — clean, no half-flipped pixels.
-  // FAST (DU) refresh is differential: old frame -> DTM1, new -> DTM2, so unchanged
-  // pixels take WW/BB and changed pixels take the quick BW/WB transition kicks.
-  // Without a previous frame (single-buffer builds) fall back to both-planes-new.
-  if (useFast && prev != nullptr) {
-    writePlane(bus, CMD_DTM1, prev);
+#if FREEINK_MURPHY_OEM_PARTIAL
+  if (useFast) {
+    // OEM alternate/partial package: data-driven init + ALT bank + 0x17/0xA5.
+    // This path is differential — the ALT bank's BW/WB kicks exist to fire on
+    // DTM1 != DTM2 (display_driver.md: "LUTBW/LUTWB exist for the alternate
+    // 0x17/0xA5 partial-refresh path and only do a short kick"): old frame ->
+    // DTM1, new frame -> DTM2, OEM plane order (0x10 then 0x13). On
+    // single-buffer builds the facade passes prev == nullptr; fall back to the
+    // same buffer in both planes, which degrades gracefully to the gentle
+    // same-state WW/BB kicks only (changed pixels then rely on the next
+    // full/promoted refresh — nothing mis-drives).
+    initControllerAlt(bus);
+    loadLut(bus, ALT_BANK, ALT_LENS);
+    writePlane(bus, CMD_DTM1, prev != nullptr ? prev : fb);
     writePlane(bus, CMD_DTM2, fb);
-  } else {
-    writePlane(bus, CMD_DTM1, fb);
-    writePlane(bus, CMD_DTM2, fb);
+    // 0xA5 auto-sequences PON -> DRF -> POF, so the panel ends powered off no
+    // matter what turnOff asked for; the next display() re-inits from reset
+    // anyway, so an unused-on flag is never left dangling.
+    (void)turnOff;
+    triggerRefreshAlt(bus);
+    return;
   }
+#endif
+
+  initController(bus);
+  loadLut(bus, useFast ? _cfg.fast : _cfg.def, _cfg.lens);
+
+  // OEM full-refresh scheme: the SAME buffer goes to both planes, always — only
+  // WW/BB fire and every pixel is driven straight to its target. A real
+  // differential (old->DTM1, new->DTM2) through the DEFAULT/FAST LUTs leaves
+  // pixels half-flipped (verified empirically, see the Murphy repo display
+  // findings), so it is deliberately not attempted even when a previous frame
+  // exists.
+  (void)prev;
+  writePlane(bus, CMD_DTM1, fb);
+  writePlane(bus, CMD_DTM2, fb);
 
   triggerRefresh(bus, turnOff);
 }

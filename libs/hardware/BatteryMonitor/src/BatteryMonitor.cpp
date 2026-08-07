@@ -342,6 +342,12 @@ BatteryMonitor::Status BatteryMonitor::readStatus() const {
       status.chargingKnown = true;
       status.charging = digitalRead(_chargeStatusPin) == LOW;
     }
+#if FREEINK_USB_PRESENCE_AS_CHARGING
+    else {
+      status.chargingKnown = true;
+      status.charging = freeink::usbHostPresent();
+    }
+#endif
   }
   return status;
 }
@@ -394,7 +400,12 @@ bool BatteryMonitor::isCharging() const {
     return readM5Pm1Status(status) && status.chargingKnown && status.charging;
   }
   if (_chargeStatusPin < 0) {
+#if FREEINK_USB_PRESENCE_AS_CHARGING
+    // No status GPIO exists on this board — report USB presence instead.
+    return freeink::usbHostPresent();
+#else
     return false;
+#endif
   }
   // MCP73832-style /STAT: LOW while charging.
   return digitalRead(_chargeStatusPin) == LOW;

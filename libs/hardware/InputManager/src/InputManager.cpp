@@ -353,7 +353,7 @@ void InputManager::updateConfirmPowerHold(const unsigned long currentTime) {
   if (pressed && s_sharedConfirmPowerShortPressEmitsPower) {
     nextState |= (1 << BTN_POWER);
   } else if (pressed &&
-             currentTime - confirmPowerPressStart >= CONFIRM_POWER_HOLD_MS) {
+             currentTime - confirmPowerPressStart >= BoardConfig::ACTIVE.confirmPowerHoldMs) {
     confirmPowerLongPressActive = true;
     nextState |= (1 << BTN_POWER);
   }
@@ -629,7 +629,8 @@ bool InputManager::wasSwipe(float &nxStart, float &nyStart, float &nxEnd,
       static_cast<int>(touchUpPoint.y) - static_cast<int>(touchDownPoint.y);
   const int adx = absInt(dx);
   const int ady = absInt(dy);
-  if (adx < TOUCH_SWIPE_MIN_PX && ady < TOUCH_SWIPE_MIN_PX)
+  const int swipeMin = touchSwipeMinPx();
+  if (adx < swipeMin && ady < swipeMin)
     return false;
   const auto &t = BoardConfig::ACTIVE.touch;
   const uint16_t w = (t.rawMaxX > t.rawMinX)
@@ -669,6 +670,18 @@ void InputManager::beginTouch() {
   if (t.controller == BoardConfig::TouchController::None) {
     return;
   }
+  // Power the touch rail first, for every controller type (boards that gate it:
+  // Sticky's active-high TOUCH_EN, X4 Pro's active-low GPIO2, Murphy M3's
+  // active-low GPIO45 CH442E switch). Active level + settle before any reset
+  // dance or I2C probe. No-op when unassigned. gpio_hold_dis first: the sleep
+  // path holds this pin at its OFF level and the hold survives the deep-sleep
+  // wake reset; the ON write is a no-op until it is released.
+  if (t.powerEnable >= 0) {
+    gpio_hold_dis(static_cast<gpio_num_t>(t.powerEnable));
+    pinMode(t.powerEnable, OUTPUT);
+    digitalWrite(t.powerEnable, t.powerEnableActiveHigh ? HIGH : LOW);
+    delay(50);
+  }
   if (t.controller == BoardConfig::TouchController::Gt911) {
     beginGt911();
     return;
@@ -678,7 +691,9 @@ void InputManager::beginTouch() {
   // instead (see decodeChsc6xFrame / updateTouchFromIrq).
   if (t.sda >= 0 && t.scl >= 0 && t.i2cAddress != 0) {
     Wire.begin(t.sda, t.scl, 100000);
-    Wire.setTimeOut(4);
+    // 10 ms: a 16-byte frame at 100 kHz is ~1.7 ms on the wire; 4 ms left no
+    // headroom for clock stretching on the shared (rail-gated) Murphy bus.
+    Wire.setTimeOut(10);
     touchDataEnabled = true;
   }
 #endif
@@ -737,7 +752,8 @@ void InputManager::updateTouchFromIrq(const unsigned long now,
                        static_cast<int>(touchDownPoint.x);
         const int dy = static_cast<int>(touchUpPoint.y) -
                        static_cast<int>(touchDownPoint.y);
-        if (absInt(dx) > TOUCH_TAP_SLOP_PX || absInt(dy) > TOUCH_TAP_SLOP_PX) {
+        const int slop = touchTapSlopPx();
+        if (absInt(dx) > slop || absInt(dy) > slop) {
           touchMovedBeyondTapSlop = true;
         }
       }
@@ -748,7 +764,12 @@ void InputManager::updateTouchFromIrq(const unsigned long now,
   if (touchPressed && now >= touchReleaseAt) {
     touchPressed = false;
     touchReleasedEvent = true;
-    lastTouchHeldDurationMs = now - touchDownPoint.timestamp;
+    // Measure to the last REAL sample (touchUpPoint), not to this expiry —
+    // the TOUCH_IRQ_PULSE_MS hold-over otherwise inflates every contact by
+    // ~120ms, which eats into the swipe time window and long-press thresholds.
+    lastTouchHeldDurationMs = (touchUpPoint.timestamp >= touchDownPoint.timestamp)
+                                  ? touchUpPoint.timestamp - touchDownPoint.timestamp
+                                  : now - touchDownPoint.timestamp;
   }
 }
 
@@ -756,7 +777,11 @@ bool InputManager::readChsc6xPoint(TouchPoint &point) {
   const uint8_t addr = BoardConfig::ACTIVE.touch.i2cAddress;
   Wire.beginTransmission(addr);
   Wire.write(TOUCH_READ_COMMAND);
-  if (Wire.endTransmission(false) != 0) {
+  // Full STOP between the command write and the read: the Murphy M3's CHSC6x
+  // (and its ES8388 bus-mate) NACK repeated-start reads — hardware-probed; a
+  // stop-separated read works. The controller keeps its register pointer across
+  // the stop, so this is safe for the frame read.
+  if (Wire.endTransmission(true) != 0) {
     return false;
   }
 
@@ -796,13 +821,49 @@ bool InputManager::decodeChsc6xFrame(const uint8_t *data, const size_t len,
   }
   const auto &t = BoardConfig::ACTIVE.touch;
   point.valid = true;
-  // Panel-native coordinates (the calibrated raw range, in the touch panel's
-  // own orientation); the app maps to its display/logical frame. See the touch
-  // note in the README.
-  point.x = mapTouchAxis(rawX, t.rawMinX, t.rawMaxX, t.rawMaxX - t.rawMinX);
-  point.y = mapTouchAxis(rawY, t.rawMinY, t.rawMaxY, t.rawMaxY - t.rawMinY);
+  // Digitizer mount correction, same scheme as the GT911 path: swap axes first
+  // (rotated sensor), then map with the panel-axis ranges (rawMin/Max describe
+  // the POST-swap axes), then per-axis flip. Previously this decoder ignored
+  // swapXY/flipX/flipY entirely — Murphy is the only CHSC6x board, so the gap
+  // went unnoticed until its transposed taps surfaced on hardware.
+  const uint16_t sx = t.swapXY ? rawY : rawX;
+  const uint16_t sy = t.swapXY ? rawX : rawY;
+  point.x = mapTouchAxis(sx, t.rawMinX, t.rawMaxX, t.rawMaxX - t.rawMinX);
+  point.y = mapTouchAxis(sy, t.rawMinY, t.rawMaxY, t.rawMaxY - t.rawMinY);
+  if (t.flipX)
+    point.x = static_cast<uint16_t>((t.rawMaxX - t.rawMinX) - point.x);
+  if (t.flipY)
+    point.y = static_cast<uint16_t>((t.rawMaxY - t.rawMinY) - point.y);
   point.timestamp = millis();
   return true;
+}
+
+// Gesture thresholds (TOUCH_TAP_SLOP_PX / TOUCH_SWIPE_MIN_PX) are tuned in the
+// mapped units of the GT911 boards. On a small digitizer like the Murphy's
+// (200x374, average span 287) the same pixel numbers demand 3-4x the physical
+// finger travel, which swallows swipes into taps. Scale by the active
+// digitizer's average span so gestures need the same physical fraction of the
+// panel — but CAP at the tuned value so this never RAISES the threshold on a
+// larger existing panel (e.g. the 960x540 GT911, span 749, which would
+// otherwise jump +17%). Existing boards keep their tuned feel; only smaller
+// panels scale down.
+int InputManager::touchAxisSpanAvg() const {
+  const auto &t = BoardConfig::ACTIVE.touch;
+  const int xs = (t.rawMaxX > t.rawMinX) ? t.rawMaxX - t.rawMinX : 1;
+  const int ys = (t.rawMaxY > t.rawMinY) ? t.rawMaxY - t.rawMinY : 1;
+  return (xs + ys) / 2;
+}
+
+int InputManager::touchTapSlopPx() const {
+  const int v = TOUCH_TAP_SLOP_PX * touchAxisSpanAvg() / GT911_REFERENCE_SPAN;
+  const int capped = v < TOUCH_TAP_SLOP_PX ? v : TOUCH_TAP_SLOP_PX;
+  return capped < 8 ? 8 : capped;
+}
+
+int InputManager::touchSwipeMinPx() const {
+  const int v = TOUCH_SWIPE_MIN_PX * touchAxisSpanAvg() / GT911_REFERENCE_SPAN;
+  const int capped = v < TOUCH_SWIPE_MIN_PX ? v : TOUCH_SWIPE_MIN_PX;
+  return capped < 16 ? 16 : capped;
 }
 
 uint16_t InputManager::mapTouchAxis(uint16_t raw, const uint16_t rawMin,
@@ -820,21 +881,7 @@ uint16_t InputManager::mapTouchAxis(uint16_t raw, const uint16_t rawMin,
 void InputManager::beginGt911() {
   const auto &t = BoardConfig::ACTIVE.touch;
 
-  // Power the touch rail first (boards that gate it, e.g. Sticky's TOUCH_EN on
-  // GPIO42). Active-high + settle, before the reset dance and I2C probe;
-  // without this the GT911 never ACKs and touch is reported absent. No-op when
-  // unassigned. gpio_hold_dis first: the sleep path holds this pin LOW and the
-  // hold survives the deep-sleep wake reset; the HIGH write is a no-op until it
-  // is released.
-  if (t.powerEnable >= 0) {
-    gpio_hold_dis(static_cast<gpio_num_t>(t.powerEnable));
-    pinMode(t.powerEnable, OUTPUT);
-    // ON level: HIGH for active-high enables (Sticky), LOW for active-low (X4
-    // Pro GPIO2).
-    digitalWrite(t.powerEnable, t.powerEnableActiveHigh ? HIGH : LOW);
-    delay(50);
-  }
-
+  // Touch rail power is asserted by beginTouch() before this runs.
   if (t.sda >= 0 && t.scl >= 0) {
     Wire.begin(t.sda, t.scl, 400000);
     Wire.setTimeOut(10);
@@ -998,7 +1045,7 @@ void InputManager::pollGt911(const unsigned long now) {
           static_cast<int>(touchUpPoint.x) - static_cast<int>(touchDownPoint.x);
       const int dy =
           static_cast<int>(touchUpPoint.y) - static_cast<int>(touchDownPoint.y);
-      if (absInt(dx) > TOUCH_TAP_SLOP_PX || absInt(dy) > TOUCH_TAP_SLOP_PX) {
+      if (absInt(dx) > touchTapSlopPx() || absInt(dy) > touchTapSlopPx()) {
         touchMovedBeyondTapSlop = true;
       }
 #ifdef TOUCH_PROBE_DEBUG

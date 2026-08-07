@@ -269,7 +269,46 @@
 // must define USE_BLOCK_DEVICE_INTERFACE=1 for the SdFat FsVolume these mount on.
 // Override with -DFREEINK_SD_SDMMC=0/1.
 #ifndef FREEINK_SD_SDMMC
-#define FREEINK_SD_SDMMC (FREEINK_DEVICE_DELINK || FREEINK_DEVICE_X4PRO)
+#define FREEINK_SD_SDMMC (FREEINK_DEVICE_DELINK || FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_MURPHY)
+#endif
+
+// Boards with no charger-status GPIO at all (Murphy M3: the TP4054's CHRG pin
+// drives only its LED) can report "USB host present" as the charging state —
+// the native USB-Serial/JTAG peripheral's SOF frame counter advances only
+// while a host is attached, so it needs no wiring. Only used when
+// batteryChargeStatus is PIN_UNASSIGNED. Override with 0/1 per build.
+#ifndef FREEINK_USB_PRESENCE_AS_CHARGING
+#define FREEINK_USB_PRESENCE_AS_CHARGING (FREEINK_DEVICE_MURPHY)
+#endif
+
+#if FREEINK_USB_PRESENCE_AS_CHARGING
+#include "soc/usb_serial_jtag_reg.h"
+namespace freeink {
+// USB host presence via SOF activity: the USB-Serial/JTAG frame counter
+// advances at 1 kHz only while a host is attached. First call records a
+// baseline and reports absent; any later call that sees the counter move marks
+// presence, decaying after 1s without movement (covers detach). Shared by
+// BatteryMonitor::isCharging() and consumer firmware's USB-connected checks.
+inline bool usbHostPresent() {
+  static uint32_t lastFram = 0;
+  static unsigned long lastChangeMs = 0;
+  static bool baselineSet = false;
+  static bool changeSeen = false;
+  const uint32_t fram = REG_READ(USB_SERIAL_JTAG_FRAM_NUM_REG);
+  const unsigned long now = millis();
+  if (!baselineSet) {
+    baselineSet = true;
+    lastFram = fram;
+    return false;
+  }
+  if (fram != lastFram) {
+    lastFram = fram;
+    lastChangeMs = now;
+    changeSeen = true;
+  }
+  return changeSeen && (now - lastChangeMs) < 1000;
+}
+}  // namespace freeink
 #endif
 
 // Serial log transport hint for consumer firmware. Boards can share the same MCU
@@ -596,6 +635,12 @@ struct BoardProfile {
   // Power-rail latch pins (see PowerConfig). Defaulted so existing profiles
   // need no change; a board with a latch sets it.
   PowerConfig power = {};
+  // Hold time (ms) on the shared confirm/power button before a press means
+  // POWER (sleep). Defaulted so existing profiles need no change; boards where
+  // that pin is also the primary select button (e.g. Murphy M3's middle key)
+  // set a longer hold so deliberate selects don't trip sleep. Kept ahead of
+  // displayControllerVariant so Murphy's positional trailing 1500 maps here.
+  unsigned long confirmPowerHoldMs = 400;
   // Panel-controller variant byte, filled in at boot by the display probe when it
   // matters (UC8279 800x480: VER byte2 LUT_VER, 0x02 vs 0x68 — selects which AA
   // waveform table the driver uploads). 0 = not probed / not applicable.
@@ -834,22 +879,51 @@ constexpr BoardProfile MURPHY_M3 = {
     240,
     {4, 3, 5, 6, 7, 8, PIN_UNASSIGNED},
     0,  // displaySpiHz: 0 -> Murphy UC8253 driver default (4 MHz)
-    {39, 13, 40, 10, PIN_UNASSIGNED, true, 0},
+    // SD is native 4-bit SDMMC (stock firmware uses SD_MMC.setPins; wiring
+    // confirmed by the reverse schematic: D1=14 D0=15 CLK=16 CMD=17 D3=18
+    // D2=21). This SdPins entry carries only powerEnable=GPIO10, which gates
+    // the card rail through an AO3401 P-FET and is ACTIVE-LOW (drive LOW to
+    // power the card) — the sdmmc field below owns the bus.
+    {PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, 10, false, 0, false},
     {PIN_UNASSIGNED, 0, PIN_UNASSIGNED, PIN_UNASSIGNED, 1, 2, 0, false},
     9,               // batteryAdc: stock firmware samples analogRead(9) for battery voltage
-    PIN_UNASSIGNED,  // batteryChargeStatus: not identified
-    3.030303f,       // stock firmware scales ADC by 0.0016 / 0.33, implying a 1:0.33 divider
+    PIN_UNASSIGNED,  // batteryChargeStatus: none — TP4054 CHRG drives only its LED (GPIO47
+                     // probe-verified static across plug/unplug); see FREEINK_USB_PRESENCE_AS_CHARGING
+    // VBAT divider is 680k/680k (reverse schematic) = x2.0. Hardware-verified:
+    // the pin reads ~2.07V with a charging pack (x2 = 4.15V, plausible; the old
+    // 3.030303 stock-firmware-derived guess yielded an impossible 6.3V).
+    2.0f,
     PIN_UNASSIGNED,
-    {TouchController::Chsc6x, 13, 12, 44, 45, 0x2e, 24, 224, 24, 398, false, 0, true, false},
+    // Touch: CHSC6x-class at 0x2e. GPIO45 is NOT a controller reset — it gates the
+    // touch rail through a CH442E analog switch + AO3401 P-FET, ACTIVE-LOW (probing
+    // confirmed: with GPIO45 HIGH both touch AND the ES8388 vanish from the I2C
+    // bus). Carried as powerEnable with powerEnableActiveHigh=false.
+    // Mount: the digitizer reports raw x over the SHORT axis (24..224) and raw y
+    // over the LONG axis (24..398), but the framebuffer is landscape 416x240 —
+    // swapXY=true so mapped x tracks the long axis; ranges are POST-swap
+    // (x: 24/398 long, y: 24/224 short). flipY from the corner-tap test.
+    {TouchController::Chsc6x, 13, 12, 44, PIN_UNASSIGNED, 0x2e, 24, 398, 24, 224, false, 0, true,
+     false, /*powerEnable=*/45, /*swapXY=*/true, false, /*flipY=*/true, false,
+     /*powerEnableActiveHigh=*/false},
     {48, 25000, 10, true},
-    // NOTE: the SPI SD pin guess above (39/13/40) predates the OEM firmware
-    // audio recovery and conflicts with the proven I2S pins (39/40/41/42) and
-    // shared I2C (13). Audio is the verified owner of those pins.
     MURPHY_AUDIO,
     NO_LEDS,
     NO_FLIP,
-    NO_SDMMC,
-    NO_GAUGE};
+    {16, 17, 15, 14, 21, 18, 4},  // 4-bit SDMMC: CLK=16 CMD=17 D0=15 D1=14 D2=21 D3=18
+    NO_GAUGE,
+    NO_MIC,
+    // RX8010SJ RTC (0x32) + AHT30 (0x38) share the I2C bus but have no SDK driver
+    // types yet (RtcType covers PCF8563/DS3231; temp path expects SHT40), so the
+    // sensors block stays empty until those drivers exist.
+    NO_SENSORS,
+    0.6f,  // uiScale: 240x416 logical canvas @ ~130 PPI — half the X4 canvas, ~0.6x its PPI.
+           // (Advisory: CrossPoint implements density via its compile-time kUiDensityScale.)
+    // GPIO43 gates the ENTIRE I2C bus rail (touch, ES8388, RX8010, AHT30) through a
+    // dedicated LDO — probing confirmed the bus scans empty with it low. The OEM
+    // firmware drives it HIGH at boot. Carried as power.latch0 so holdPowerRails()
+    // asserts it before any I2C user comes up.
+    {43, PIN_UNASSIGNED},
+    1500};  // confirmPowerHoldMs: GPIO0 middle key doubles as power — long hold to avoid stray sleeps
 
 // --- de-link (X4-class GDEQ0426T82 panel on ESP32-S3) — SSD1677 + frontlight ---
 // Reuses the SSD1677 driver (same controller/panel as X4); differs at the board

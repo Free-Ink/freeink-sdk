@@ -221,6 +221,9 @@ private:
   bool readChsc6xPoint(TouchPoint &point);
   bool decodeChsc6xFrame(const uint8_t *data, size_t len,
                          TouchPoint &point) const;
+  int touchAxisSpanAvg() const;  // mean of the active digitizer's raw X/Y spans
+  int touchTapSlopPx() const;
+  int touchSwipeMinPx() const;
   uint16_t mapTouchAxis(uint16_t raw, uint16_t rawMin, uint16_t rawMax,
                         uint16_t outMax) const;
   void beginGt911();
@@ -280,15 +283,23 @@ private:
   static constexpr int ADC_NO_BUTTON = 3900;
   static constexpr unsigned long DEBOUNCE_DELAY = 5;
   static constexpr unsigned long CONFIRM_BACK_HOLD_MS = 650;
-  static constexpr unsigned long CONFIRM_POWER_HOLD_MS = 400;
+  // Hold time before the shared confirm/power pin means POWER (sleep) is a
+  // per-board value: BoardProfile::confirmPowerHoldMs. Boards where that pin is
+  // also the primary select button want a longer hold so deliberate selects
+  // don't trip sleep.
 
   // Touch timing / protocol constants (ported from the Murphy M3 CHSC6x
   // driver).
   static constexpr unsigned long TOUCH_IRQ_PULSE_MS =
       120; // release hold-over after last valid read
   static constexpr unsigned long TOUCH_SAMPLE_DELAY_MS = 8; // I2C poll cadence
+  // Baseline values in GT911 (800x480-class) mapped units; consumed via
+  // touchTapSlopPx()/touchSwipeMinPx(), which scale them DOWN for digitizers
+  // smaller than the reference span (never up — larger existing panels keep
+  // these tuned values), so small panels need the same physical finger travel.
   static constexpr int TOUCH_TAP_SLOP_PX = 28;
   static constexpr int TOUCH_SWIPE_MIN_PX = 60;
+  static constexpr int GT911_REFERENCE_SPAN = 640;  // avg raw-axis span these were tuned at
   static constexpr unsigned long TOUCH_SWIPE_MAX_MS = 700;
   static constexpr uint8_t TOUCH_READ_COMMAND = 0x00;
   static constexpr uint8_t TOUCH_FRAME_SIZE = 16;

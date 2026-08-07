@@ -54,7 +54,7 @@ class Ed2208M5Driver : public PanelDriver {
   void initController(EpdBus& bus);
   void waitBusy(EpdBus& bus);
   void writeFrame(EpdBus& bus, const uint8_t* fb);
-  void setPartialWindow(EpdBus& bus, uint16_t x, uint16_t y, uint16_t w, uint16_t h);
+  void setPartialWindow(EpdBus::Transaction& txn, uint16_t x, uint16_t y, uint16_t w, uint16_t h);
   void powerOn(EpdBus& bus);
   void powerOff(EpdBus& bus);
   void interruptRefresh(EpdBus& bus);

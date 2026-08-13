@@ -29,7 +29,8 @@ public:
         bool externalPower = false;
         // Raw M5PM1 telemetry for diagnostics; -1 when not read (non-PM1 boards
         // or failed I/O). VIN is the DC input rail, 5VINOUT the bidirectional
-        // USB-C rail, powerSource the PM1's PWR_SRC report (reg 0x04 [2:0]).
+        // USB-C rail, powerSource the PM1's PWR_SRC bitmap (reg 0x04 [2:0]:
+        // bit0=5VIN, bit1=5VINOUT, bit2=BAT).
         int32_t pm1VinMv = -1;
         int32_t pm1VinOutMv = -1;
         int16_t pm1PowerSource = -1;
@@ -70,8 +71,17 @@ public:
     //     a board with a gauge but no charger IC (e.g. X3) still reports it.
     bool isCharging() const;
 
-    // Percentage (0-100) from a millivolt value
+    // Percentage from a millivolt value, off a standard 1S Li-ion discharge
+    // curve. The result is always a multiple of 10: voltage cannot resolve a
+    // Li-ion pack any finer than that, and pretending otherwise just produces a
+    // number that wanders while the battery sits still. 0 mV (a failed read)
+    // maps to 0%, not 100%.
     static uint16_t percentageFromMillivolts(uint16_t millivolts);
+
+    // Same lookup, with a deadband around the notch boundaries so a reading that
+    // hovers on a boundary keeps reporting `previousPercent` instead of
+    // oscillating. Pass the last value this returned; pass > 100 for no history.
+    static uint16_t percentageFromMillivolts(uint16_t millivolts, uint16_t previousPercent);
 
 private:
     bool hasAdcBackend() const;

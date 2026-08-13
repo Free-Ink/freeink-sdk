@@ -43,10 +43,6 @@ const Uc8253X3Config& uc8253X3DefaultConfig() {
       {lut_x3_vcom_gc, lut_x3_ww_gc, lut_x3_bw_gc, lut_x3_wb_gc, lut_x3_bb_gc},
       {lut_x3_vcom_aa_pre_bw_mid, lut_x3_ww_aa_pre_bw_mid, lut_x3_bw_aa_pre_bw_mid, lut_x3_wb_aa_pre_bw_mid,
        lut_x3_bb_aa_pre_bw_mid},
-      {lut_x3_vcom_factory_p1, lut_x3_ww_factory_p1, lut_x3_bw_factory_p1, lut_x3_wb_factory_p1,
-       lut_x3_bb_factory_p1},
-      {lut_x3_vcom_factory_p2, lut_x3_ww_factory_p2, lut_x3_bw_factory_p2, lut_x3_wb_factory_p2,
-       lut_x3_bb_factory_p2},
       42,  // controller accepts 42 bytes of each 43-byte array
   };
   return cfg;
@@ -144,7 +140,15 @@ void Uc8253X3Driver::initController(EpdBus& bus) {
 void Uc8253X3Driver::begin(EpdBus& bus) {
   bus.reset(50);  // X3 needs an extra settle after reset
   _redRamSynced = false;
-  _initialFullSyncsRemaining = 2;
+  // One forced clean after begin(), matching the UC8279/SSD1677 siblings' one-shot
+  // _needFullClear. This was 2, which made the paint AFTER the first one a full sync too,
+  // whatever mode it asked for (see the doFullSync condition in displayStart). On a
+  // consumer that boots into a splash that is measurable: the splash consumed sync #1 and
+  // the first real screen still paid sync #2, so a FAST refresh that costs 435 ms once
+  // warm cost 2989 ms — the X4 running the identical boot paid 526 ms for the same paint.
+  // The remaining sync still clears whatever the panel physically held (the sleep screen),
+  // which is what the initial forced clean is for.
+  _initialFullSyncsRemaining = 1;
   _forceFullSyncNext = false;
   _forcedConditionPassesNext = 0;
   _inGrayscaleMode = false;
@@ -187,6 +191,18 @@ bool Uc8253X3Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t*
   } else {
     // _fast turbo differential; DTM1 retains the previous frame.
     loadBankCdi(bus, 0x29, 0x07, _cfg.fast);
+    if (_darkBackground) {
+      // Inverted content: a differential fast idles unchanged pixels, so the
+      // light residue of every white->black transition parks in the black
+      // background and accumulates between full syncs. Rewrite DTM1 as the
+      // complement of the target: every pixel classifies as changed and is
+      // re-driven toward its target — optically invisible on pixels already at
+      // their endpoint. displayFinish()'s DTM1 resync restores the true
+      // baseline afterwards. Same mechanism as the SSD1677/Paper Mono drivers'
+      // dark-background paths.
+      bus.sendPlaneFlippedInverted(CMD_DTM1, fb, _h, _wb);
+      bus.cmd(CMD_DATA_STOP);
+    }
     bus.sendPlaneFlipped(CMD_DTM2, fb, _h, _wb);
   }
 
@@ -417,11 +433,9 @@ void Uc8253X3Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, c
   // revert first; factory absolute mode self-cleans.
   _inGrayscaleMode = !factoryMode;
   if (factoryMode) {
-    // NOT the OEM standalone grayscale: stock's "X3灰阶" banks (factoryP1/P2)
-    // require a dedicated grayscale panel init (PSR 3F 4A, PWR 43 00 78 78 17,
-    // VCOM 0x26 — different rails from the B/W init) plus their own DTM data
-    // framing. Running them on the B/W-mode rails washes the panel gray.
-    // Until that mode switch is ported, factory mode stays on the _full bank.
+    // No dedicated absolute-grayscale bank on this driver — the OEM standalone
+    // "X3灰阶" flow needs a different panel init (PSR/PWR/VCOM rails) and DTM
+    // framing that isn't ported. Factory mode reuses the _full B/W bank.
     loadBankCdi(bus, 0x29, 0x07, _cfg.full);
   } else {
     loadBankCdi(bus, 0x29, 0x07, _cfg.gc);  // OEM 4-level nudge bank

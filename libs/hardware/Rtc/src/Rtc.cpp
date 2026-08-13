@@ -26,6 +26,12 @@ constexpr uint8_t DS3231_REG_STATUS = 0x0F;
 constexpr uint8_t DS3231_CONTROL_INTCN = 0x04;
 constexpr uint8_t DS3231_STATUS_OSF = 0x80;
 
+// RX8130CE register map (Paper Mono / PaperS3).
+constexpr uint8_t RX8130_REG_TIME = 0x10;
+constexpr uint8_t RX8130_REG_CONTROL0 = 0x1D;
+constexpr uint8_t RX8130_POR_FLAG = 0x80;
+constexpr uint8_t RX8130_STOP = 0x01;
+
 bool g_wireReady[2] = {false, false};
 TwoWire& sensorWire() {
   const auto& s = BoardConfig::ACTIVE.sensors;
@@ -91,6 +97,9 @@ bool Rtc::begin() {
       if (!readRegs(addr, DS3231_REG_STATUS, &status, 1)) return false;
       writeReg(addr, DS3231_REG_CONTROL, DS3231_CONTROL_INTCN);  // disable square-wave output
       break;
+    case BoardConfig::RtcType::Rx8130:
+      if (!readRegs(addr, RX8130_REG_CONTROL0, &status, 1)) return false;
+      break;
     case BoardConfig::RtcType::None:
       return false;
   }
@@ -136,6 +145,24 @@ bool Rtc::now(DateTime& out) {
       out.year = static_cast<uint16_t>(2000 + bcdToDec(raw[6]));
       return true;
     }
+    case BoardConfig::RtcType::Rx8130: {
+      if (!readRegs(addr, RX8130_REG_TIME, raw, sizeof(raw))) return false;
+      if (raw[0] & RX8130_POR_FLAG) return false;
+      out.second = bcdToDec(raw[0] & 0x7FU);
+      out.minute = bcdToDec(raw[1] & 0x7FU);
+      out.hour = bcdToDec(raw[2] & 0x3FU);
+      out.weekday = 0;
+      for (uint8_t i = 0; i < 7; ++i) {
+        if (raw[3] & (1u << i)) {
+          out.weekday = i;
+          break;
+        }
+      }
+      out.day = bcdToDec(raw[4] & 0x3FU);
+      out.month = bcdToDec(raw[5] & 0x1FU);
+      out.year = static_cast<uint16_t>(2000 + bcdToDec(raw[6]));
+      return true;
+    }
     case BoardConfig::RtcType::None:
       return false;
   }
@@ -150,6 +177,25 @@ bool Rtc::set(const DateTime& dt) {
   ensureWire();
   auto& wire = sensorWire();
   if (s.rtcType == BoardConfig::RtcType::None) return false;
+  if (s.rtcType == BoardConfig::RtcType::Rx8130) {
+    uint8_t control = 0;
+    if (!readRegs(addr, RX8130_REG_CONTROL0, &control, 1) ||
+        !writeReg(addr, RX8130_REG_CONTROL0, static_cast<uint8_t>(control | RX8130_STOP))) {
+      return false;
+    }
+    wire.beginTransmission(addr);
+    wire.write(RX8130_REG_TIME);
+    wire.write(decToBcd(dt.second));
+    wire.write(decToBcd(dt.minute));
+    wire.write(decToBcd(dt.hour));
+    wire.write(static_cast<uint8_t>(1u << (dt.weekday % 7u)));
+    wire.write(decToBcd(dt.day));
+    wire.write(decToBcd(dt.month));
+    wire.write(decToBcd(static_cast<uint8_t>(dt.year % 100)));
+    const bool written = wire.endTransmission() == 0;
+    const bool restarted = writeReg(addr, RX8130_REG_CONTROL0, static_cast<uint8_t>(control & ~RX8130_STOP));
+    return written && restarted;
+  }
   wire.beginTransmission(addr);
   wire.write(s.rtcType == BoardConfig::RtcType::Pcf8563 ? PCF8563_REG_TIME : DS3231_REG_TIME);
   wire.write(decToBcd(dt.second));  // also clears VL once a valid time is written

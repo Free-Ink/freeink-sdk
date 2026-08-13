@@ -72,7 +72,10 @@ class TtfFont : public RenderFont {
     GlyphBitmap glyph{};
   };
 
-  int32_t glyphIndexFor(uint32_t codepoint);
+  // const so the const hasGlyph() can route through the same cache. It mutates
+  // only through advances_, which a const method may do — the pointer is const,
+  // the slots it addresses are not.
+  int32_t glyphIndexFor(uint32_t codepoint) const;
   void flushGlyphs();
   float scaleFor(uint16_t sizePx) const;
 

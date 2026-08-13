@@ -461,6 +461,59 @@ void testEdgeButtonsAndSwipes() {
   CHECK_EQ(buffer.route(input).action, 5);
 }
 
+// Cross-task double-buffer contract (added for the render-task-vs-loop-task
+// interaction table race): publishedCount()/publishedData()/routePublished()
+// must keep reporting the previous generation for as long as a new one is
+// being built via beginPublishCycle()/clear()/addInteraction(), and only
+// switch over atomically once publish() is called -- never a mix of the two.
+// A caller that never opts in must see the exact single-buffer behavior this
+// whole file's other tests rely on.
+void testPublishCycleIsolatesReaders() {
+  InteractionBuffer<8> buffer;
+
+  // Establish a known "old" generation and publish it.
+  buffer.addInteraction(Interaction{Rect{0, 0, 10, 10}, 1, 0, InputTouch, StateNormal, 0});
+  buffer.publish();
+  CHECK_EQ(buffer.publishedCount(), 1u);
+  CHECK_EQ(buffer.publishedData()[0].action, 1);
+
+  // Start building the next generation. A concurrent reader (publishedCount/
+  // publishedData/routePublished) must still see the OLD generation,
+  // untouched, for as long as this isn't published yet.
+  buffer.beginPublishCycle();
+  buffer.clear();
+  buffer.addInteraction(Interaction{Rect{0, 0, 10, 10}, 2, 0, InputTouch, StateNormal, 0});
+  buffer.addInteraction(Interaction{Rect{10, 0, 10, 10}, 3, 0, InputTouch, StateNormal, 0});
+  CHECK_EQ(buffer.publishedCount(), 1u);
+  CHECK_EQ(buffer.publishedData()[0].action, 1);
+  // The generation being built (what Frame uses during layout) already
+  // reflects the new rects.
+  CHECK_EQ(buffer.count(), 2u);
+  CHECK_EQ(buffer.data()[1].action, 3);
+
+  // Publish: readers now atomically see the complete new generation.
+  buffer.publish();
+  CHECK_EQ(buffer.publishedCount(), 2u);
+  CHECK_EQ(buffer.publishedData()[0].action, 2);
+  CHECK_EQ(buffer.publishedData()[1].action, 3);
+
+  InputSnapshot tap;
+  tap.touchReleased = true;
+  tap.touchX = 5;
+  tap.touchY = 5;
+  CHECK_EQ(buffer.routePublished(tap).action, 2);
+
+  // A caller that never calls beginPublishCycle()/publish() at all (every
+  // other test in this file, and every existing single-task consumer) keeps
+  // behaving exactly like the pre-double-buffer design.
+  InteractionBuffer<8> plain;
+  plain.addInteraction(Interaction{Rect{0, 0, 10, 10}, 9, 0, InputTouch, StateNormal, 0});
+  plain.clear();
+  plain.addInteraction(Interaction{Rect{0, 0, 10, 10}, 10, 0, InputTouch, StateNormal, 0});
+  CHECK_EQ(plain.count(), 1u);
+  CHECK_EQ(plain.data()[0].action, 10);
+}
+
 void testListHelpers() {
   CHECK_EQ(listVisibleRows(Rect{0, 0, 100, 360}, 36, 0), 10);
   CHECK_EQ(listVisibleRows(Rect{0, 0, 100, 359}, 36, 0), 9);
@@ -1012,6 +1065,43 @@ void testInteractionOverflowFlag() {
   CHECK(!buffer.overflowed());
 }
 
+void testContentWidthTabBarLayout() {
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice();
+  InputSnapshot input;
+  InteractionBuffer<8> interactions;
+  Frame<8> frame(draw, device, input, interactions);
+
+  TabItem tabs[2];
+  tabs[0].label = "One";
+  tabs[0].value = 10;
+  tabs[0].selected = true;
+  tabs[1].label = "Longer";
+  tabs[1].value = 20;
+  TabBarProps bar;
+  bar.tabs = tabs;
+  bar.count = 2;
+  bar.action = 60;
+  bar.layout = TabBarLayout::ContentWidth;
+  bar.leadingInset = 20;
+  bar.gap = 8;
+  bar.tabInset = Insets{2, 0, 4, 0};
+  bar.contentInset = Insets{2, 8, 2, 8};
+  tabBar(frame, Rect{0, 0, 480, 40}, bar);
+
+  CHECK_EQ(interactions.count(), 2u);
+  // Monospace labels are 18px and 36px wide. With 8px content padding,
+  // pills start at x=20 and x=62 instead of being centered in 240px slots.
+  CHECK_EQ(draw.ops[0].rect.x, 20);
+  CHECK_EQ(draw.ops[0].rect.width, 34);
+  CHECK_EQ(draw.ops[2].rect.x, 62);
+  CHECK_EQ(draw.ops[2].rect.width, 52);
+  InputSnapshot tap;
+  tap.touchReleased = true;
+  tap.touchX = 70;
+  tap.touchY = 20;
+  CHECK_EQ(interactions.route(tap).value, 20);
+}
 
 void testRoundedRaffSurfaces() {
   // Mirrors the retired RoundedRaffTheme: pill settings tabs with a bottom
@@ -2029,6 +2119,68 @@ void testKeyboardAltCaseFlip() {
   CHECK(keyboardAltOutputFor(en, QWERTY_KEY_BACKSPACE) == nullptr);
 }
 
+void testTouchTapQueue() {
+  TouchTapQueue<2> taps;
+  CHECK(taps.empty());
+  CHECK(taps.push(10, 20));
+  CHECK(taps.push(30, 40));
+  CHECK_EQ(taps.size(), 2u);
+
+  // Full queues retain current input and report that the oldest tap dropped.
+  CHECK(!taps.push(50, 60));
+  CHECK(taps.overflowed());
+  int16_t x = 0;
+  int16_t y = 0;
+  CHECK(taps.pop(x, y));
+  CHECK_EQ(x, 30);
+  CHECK_EQ(y, 40);
+  CHECK(taps.pop(x, y));
+  CHECK_EQ(x, 50);
+  CHECK_EQ(y, 60);
+  CHECK(!taps.pop(x, y));
+
+  taps.clear();
+  CHECK(taps.empty());
+  CHECK(!taps.overflowed());
+}
+
+void testKeyboardNavigatorAndActivation() {
+  const KeyboardLayout& layout = builtinKeyboardLayout(KeyboardLayoutId::QwertyEn, false, false, true);
+  KeyboardNavigator nav;
+  CHECK_EQ(nav.logicalIndex(layout), 0);
+  CHECK_EQ(nav.selected(layout)->value, '1');
+
+  nav.moveCol(layout, -1);
+  CHECK_EQ(nav.col(), 9);  // wraps within the ten-key digit row
+  nav.moveRow(layout, 1);
+  CHECK_EQ(nav.row(), 1);
+  CHECK_EQ(nav.col(), 9);  // same-width row preserves the column
+  nav.moveRow(layout, 1);
+  CHECK_EQ(nav.row(), 2);
+  CHECK_EQ(nav.col(), 8);  // proportional mapping: ten columns -> nine
+  CHECK(nav.syncToValue(layout, QWERTY_KEY_SPACE));
+  CHECK_EQ(nav.selected(layout)->kind, KeyKind::Space);
+  CHECK(nav.logicalIndex(layout) >= 0);
+
+  KeyboardActivation activation = keyboardActivationFor(layout, 'q');
+  CHECK_EQ(activation.kind, KeyboardActivationKind::Text);
+  CHECK(std::strcmp(activation.text, "q") == 0);
+  activation = keyboardActivationFor(layout, 'q', /*longPress=*/true);
+  CHECK_EQ(activation.kind, KeyboardActivationKind::Text);
+  CHECK(std::strcmp(activation.text, "Q") == 0);
+  CHECK_EQ(keyboardActivationFor(layout, QWERTY_KEY_SHIFT).kind, KeyboardActivationKind::Shift);
+  CHECK_EQ(keyboardActivationFor(layout, QWERTY_KEY_MODE).kind, KeyboardActivationKind::Mode);
+  CHECK_EQ(keyboardActivationFor(layout, QWERTY_KEY_BACKSPACE).kind, KeyboardActivationKind::Delete);
+  CHECK_EQ(keyboardActivationFor(layout, QWERTY_KEY_ENTER).kind, KeyboardActivationKind::Submit);
+  CHECK_EQ(keyboardActivationFor(layout, 32000).kind, KeyboardActivationKind::None);
+
+  const char utf8[] = "a\xc3\xb1z";
+  CHECK_EQ(utf8NextBoundary(utf8, 4, 0), 1u);
+  CHECK_EQ(utf8NextBoundary(utf8, 4, 1), 3u);
+  CHECK_EQ(utf8PreviousBoundary(utf8, 4, 3), 1u);
+  CHECK_EQ(utf8PreviousBoundary(utf8, 4, 4), 3u);
+}
+
 void testTouchHoldRouter() {
   InteractionBuffer<8> interactions;
   const auto rebuild = [&] {
@@ -2049,6 +2201,20 @@ void testTouchHoldRouter() {
   r = router.update(interactions, false, 0, 0, true, 20, 20, false, 1100);
   CHECK_EQ(r.event.value, 'q');
   CHECK(!r.event.longPress);
+
+  // A touch-down repaint can start rebuilding the next frame before the
+  // finger releases. The release must continue routing against the complete
+  // published table while that rebuild is in progress; callers should not
+  // disable input between beginPublishCycle() and publish().
+  interactions.publish();
+  r = router.update(interactions, true, 20, 20, false, 0, 0, true, 1200);
+  CHECK(r.activeChanged);
+  interactions.beginPublishCycle();
+  rebuild();
+  r = router.update(interactions, false, 0, 0, true, 20, 20, false, 1300);
+  CHECK_EQ(r.event.value, 'q');
+  CHECK(!r.event.longPress);
+  interactions.publish();
 
   // Hold past the threshold: long-press fires exactly once at threshold and
   // the timer must NOT re-arm on later frames (the repeat bug), and the real
@@ -2475,6 +2641,38 @@ void testFreeInkAppHandlerOverflowFlag() {
   CHECK(app.handlerOverflowed());
 }
 
+// setThemeRef() takes a pointer to a caller-owned atomic cell (not a raw
+// ThemeTokens*) so a caller can atomically swap which instance it points at
+// -- every app sharing the cell must pick up the change on its very next
+// theme() call, with no re-call to setThemeRef() needed. This is the
+// property the fix (avoiding an in-place struct overwrite a render task
+// could read mid-write) must preserve.
+void testFreeInkAppSharedThemeRefFollowsAtomicSwap() {
+  FakeDrawTarget draw;
+  DeviceContext device{100, 100};
+  FreeInkApp<4, 1> app(draw, device);
+
+  ThemeTokens tokensA;
+  tokensA.rowHeight = 30;
+  ThemeTokens tokensB;
+  tokensB.rowHeight = 60;
+
+  std::atomic<const ThemeTokens *> themeRef{&tokensA};
+  app.setThemeRef(&themeRef);
+  CHECK_EQ(app.theme().rowHeight, 30);
+
+  // Swap which instance the cell points at (as applySharedUiTheme() does:
+  // build the new tokens into a fresh instance, then one atomic store) --
+  // no second setThemeRef() call.
+  themeRef.store(&tokensB, std::memory_order_release);
+  CHECK_EQ(app.theme().rowHeight, 60);
+
+  // nullptr reverts to the owned/default tokens.
+  app.setThemeRef(nullptr);
+  CHECK(&app.theme() != &tokensA);
+  CHECK(&app.theme() != &tokensB);
+}
+
 // Editor canvas: wrapping, caret-line tracking, scroll helpers, and the render
 // window. FakeDrawTarget is monospace (charWidth 6, lineH 12), so widths are
 // exactly 6*strlen — easy to reason about.
@@ -2549,6 +2747,7 @@ int main() {
   testConfirmIgnoresStaleFocus();
   testConfirmRespectsInputMask();
   testEdgeButtonsAndSwipes();
+  testPublishCycleIsolatesReaders();
   testListHelpers();
   testListVirtualization();
   testListClampsBadTopIndex();
@@ -2563,6 +2762,7 @@ int main() {
   testCrossInkReaderMenuList();
   testCrossInkReadingStatsSurfaces();
   testInteractionOverflowFlag();
+  testContentWidthTabBarLayout();
   testRoundedRaffSurfaces();
   testThemePrimitiveParity();
   testRotationAndBitmapSampling();
@@ -2585,6 +2785,8 @@ int main() {
   testNumberRowLayouts();
   testKeyboardEntryLongPressAlt();
   testKeyboardAltCaseFlip();
+  testTouchTapQueue();
+  testKeyboardNavigatorAndActivation();
   testTouchHoldRouter();
   testKeyboardBottomHitOverflow();
   testHeaderLeadingButton();
@@ -2596,6 +2798,7 @@ int main() {
   testScreenAnchoredLayout();
   testFreeInkAppDispatchesScreenActions();
   testFreeInkAppHandlerOverflowFlag();
+  testFreeInkAppSharedThemeRefFollowsAtomicSwap();
   testTextArea();
 
   std::printf("%d checks, %d failed\n", checksRun, checksFailed);

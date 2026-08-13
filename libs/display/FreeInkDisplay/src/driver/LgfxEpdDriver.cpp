@@ -23,7 +23,10 @@ const LgfxEpdPowerHooks* g_hooks = nullptr;
 
 // Bus subclass that defers the board's power topology to injected hooks. Matches
 // the two override points LovyanGFX exposes: init() (pin setup) and
-// powerControl() (rail up/down), guarding the _pwr_on state itself.
+// powerControl() (rail up/down), guarding the _pwr_on state itself. A board
+// whose rails are plain GPIOs (pinOe/pinPwr/pinSpv, e.g. M5Stack PaperS3) leaves
+// the corresponding hook null and gets Bus_EPD's stock power sequence instead;
+// a board with external power silicon (LilyGo's TPS65185 + PCA9535) hooks it.
 class FreeInkBusEPD : public lgfx::Bus_EPD {
  public:
   bool init() override {
@@ -33,13 +36,15 @@ class FreeInkBusEPD : public lgfx::Bus_EPD {
 
   bool powerControl(const bool powerOn) override {
     if (_pwr_on == powerOn) return true;
+    const bool hooked = g_hooks && (powerOn ? g_hooks->powerOn != nullptr : g_hooks->powerOff != nullptr);
+    if (!hooked) return lgfx::Bus_EPD::powerControl(powerOn);
     wait();
     if (powerOn) {
-      if (g_hooks && g_hooks->powerOn && !g_hooks->powerOn()) return false;
+      if (!g_hooks->powerOn()) return false;
       _pwr_on = true;
       return true;
     }
-    if (g_hooks && g_hooks->powerOff) g_hooks->powerOff();
+    g_hooks->powerOff();
     _pwr_on = false;
     return true;
   }
@@ -298,12 +303,19 @@ void LgfxEpdDriver::deepSleep(EpdBus& bus) {
 // Per-board config injection. This driver has NO universal default — the bus pins
 // and power hooks are entirely board-specific — so a LilyGo-class board defines
 // `const LgfxEpdConfig& yourConfig();` in namespace freeink and builds with
-// -DFREEINK_LGFX_EPD_CONFIG=yourConfig. The SDK's LilyGo board-support library
-// provides the default config for FREEINK_DEVICE_LILYGO builds.
+// -DFREEINK_LGFX_EPD_CONFIG=yourConfig. The SDK's board-support libraries provide
+// the default configs for FREEINK_DEVICE_LILYGO (BoardT5S3) and
+// FREEINK_DEVICE_PAPERS3 (BoardPaperS3) builds.
 #if FREEINK_DEVICE_LILYGO
 const LgfxEpdConfig& lilygoT5S3LgfxConfig();
 PanelDriver& lgfxEpdDriver() {
   static LgfxEpdDriver instance(lilygoT5S3LgfxConfig());
+  return instance;
+}
+#elif FREEINK_DEVICE_PAPERS3 && !defined(FREEINK_LGFX_EPD_CONFIG)
+const LgfxEpdConfig& m5PaperS3LgfxConfig();
+PanelDriver& lgfxEpdDriver() {
+  static LgfxEpdDriver instance(m5PaperS3LgfxConfig());
   return instance;
 }
 #elif defined(FREEINK_LGFX_EPD_CONFIG)

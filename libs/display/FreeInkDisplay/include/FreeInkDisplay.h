@@ -97,7 +97,12 @@ class FreeInkDisplay {
   void copyGrayscaleMsbBuffers(const uint8_t* msbBuffer);
   enum GrayPlane { GRAY_PLANE_LSB, GRAY_PLANE_MSB };
   void writeGrayscalePlaneStrip(GrayPlane plane, const uint8_t* rows, uint16_t yStart, uint16_t numRows);
+  bool supportsBusyGrayscaleStaging() const;
+  void prepareGrayscaleTarget();
   bool supportsStripGrayscale() const;
+  // True when displayGrayscaleBase() defers the base activation so the gray
+  // planes join it in one waveform (Paper Mono) - see PanelDriver.
+  bool combinesGrayscaleBase() const;
   // Restore controller RAM and frameBuffer to the given BW baseline after
   // grayscale. Available in both buffer modes (CrossPoint's dual-buffer HAL
   // wraps it directly).
@@ -216,12 +221,23 @@ class FreeInkDisplay {
   // EXPERIMENTAL: Windowed update - display only a rectangular region
   void displayWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t h, bool turnOffScreen = false);
   void displayGrayBuffer(bool turnOffScreen = false, const unsigned char* lut = nullptr, bool factoryMode = false);
+  void displayGrayCalibration(uint16_t customX, uint16_t customY, uint16_t customW, uint16_t customH);
 
   void refreshDisplay(RefreshMode mode = FAST_REFRESH, bool turnOffScreen = false);
 
   // Hint the X3 policy to run a one-shot full resync on next update.
   void requestResync(uint8_t settlePasses = 0);
   void skipInitialResync();
+  void beginDisplayWork();
+  void abortPostRefresh();
+  bool postRefreshAborted() const;
+  // True when the last display sequence actually reached the panel. Panels
+  // which paint synchronously always report true, so refresh-cadence callers
+  // behave exactly as before on them.
+  bool displayCommitted() const;
+  void runMaintenance();
+  bool hasPendingMaintenance() const;
+  void controllerIdle();
 
   // debug function
   void grayscaleRevert();

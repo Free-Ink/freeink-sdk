@@ -35,7 +35,10 @@ class FrontlightManager {
 
   bool present() const {
 #if FREEINK_CAP_FRONTLIGHT
-    return BoardConfig::ACTIVE.frontlight.gpio != BoardConfig::PIN_UNASSIGNED;
+    // A PMIC-driven frontlight (Paper Mono: PM1 PWM0 -> AW9967) has no ESP
+    // GPIO, so viaPm1Pwm counts as present alongside the LEDC-pin boards.
+    return BoardConfig::ACTIVE.frontlight.gpio != BoardConfig::PIN_UNASSIGNED ||
+           BoardConfig::ACTIVE.frontlight.viaPm1Pwm;
 #else
     return false;  // frontlight code not compiled in (FREEINK_CAP_FRONTLIGHT=0)
 #endif
@@ -44,11 +47,11 @@ class FrontlightManager {
   // True when the board wires a second (warm) channel, so setColorTemperature() does
   // something. False on single-channel frontlights and on boards with none.
   bool hasColorTemperature() const {
-#if FREEINK_CAP_FRONTLIGHT
+#if FREEINK_CAP_WARMLIGHT
     return BoardConfig::ACTIVE.frontlight.gpio != BoardConfig::PIN_UNASSIGNED &&
            BoardConfig::ACTIVE.frontlight.gpioWarm != BoardConfig::PIN_UNASSIGNED;
 #else
-    return false;
+    return false;  // no warm-channel board in this build (FREEINK_CAP_WARMLIGHT=0)
 #endif
   }
 

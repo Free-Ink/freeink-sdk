@@ -26,6 +26,11 @@ inline TabItem tabItem(const int value, const bool selected = false, const bool 
 
 using TabIconPainter = bool (*)(DrawTarget& target, Rect rect, const TabItem& tab, uint8_t index, void* userData);
 
+enum class TabBarLayout : uint8_t {
+  EqualWidth,
+  ContentWidth,
+};
+
 struct TabBarProps {
   const TabItem* tabs = nullptr;
   uint8_t count = 0;
@@ -38,6 +43,11 @@ struct TabBarProps {
   Insets tabInset{4, 4, 8, 4};
   // Padding inside the tab pill before laying out icon/label.
   Insets contentInset{4, 4, 4, 4};
+  // EqualWidth divides the full bar into slots. ContentWidth places natural-
+  // width tabs from the leading edge, falling back to EqualWidth if they do
+  // not fit inside the bar.
+  TabBarLayout layout = TabBarLayout::EqualWidth;
+  int16_t leadingInset = 0;
   int16_t gap = 0;
   int16_t iconSize = 0;
   int16_t minTouchSize = 44;
@@ -66,13 +76,49 @@ void tabBar(Frame<MaxInteractions>& frame, Rect rect, const TabBarProps& props) 
 
   const int16_t dividerH = props.divider ? 1 : 0;
   const int16_t gap = props.gap > 0 ? props.gap : 0;
-  const int16_t slotW = static_cast<int16_t>((rect.width - gap * (props.count - 1)) / props.count);
+  const int16_t slotH = static_cast<int16_t>(rect.height - dividerH);
+  const int16_t leadingInset = props.leadingInset > 0 ? props.leadingInset : 0;
+  bool contentWidthLayout = props.layout == TabBarLayout::ContentWidth;
+  const auto contentSlotWidth = [&](const TabItem& tab) {
+    const int16_t labelW = tab.label && tab.label[0] != '\0'
+                               ? frame.target().measureText(props.text.font, tab.label, props.text).width
+                               : 0;
+    const BitmapRef measuredIcon = tab.icon ? tab.icon : resolveBitmap(frame.assets(), tab.iconAsset);
+    const bool hasMeasuredIcon = measuredIcon || props.iconPainter != nullptr;
+    const int16_t iconW = hasMeasuredIcon ? (props.iconSize > 0 ? props.iconSize
+                                                                : static_cast<int16_t>(measuredIcon ? measuredIcon.width : 16))
+                                          : 0;
+    const int16_t contentW = labelW > iconW ? labelW : iconW;
+    const int16_t minPillWidth =
+        static_cast<int16_t>(slotH > props.tabInset.top + props.tabInset.bottom
+                                 ? slotH - props.tabInset.top - props.tabInset.bottom
+                                 : 0);
+    int16_t pillW = static_cast<int16_t>(contentW + props.contentInset.left + props.contentInset.right);
+    if (pillW < minPillWidth) pillW = minPillWidth;
+    return static_cast<int16_t>(pillW + props.tabInset.left + props.tabInset.right);
+  };
+  int32_t naturalWidth = leadingInset + static_cast<int32_t>(gap) * (props.count - 1);
+  if (contentWidthLayout) {
+    for (uint8_t i = 0; i < props.count; ++i) {
+      naturalWidth += contentSlotWidth(props.tabs[i]);
+    }
+    // A content-width bar must stay inside its parent. Equal-width slots are
+    // the safe fallback for long labels or narrow screens.
+    if (naturalWidth > rect.width) contentWidthLayout = false;
+  }
+  const int16_t slotGap = !contentWidthLayout && props.layout == TabBarLayout::ContentWidth ? 0 : gap;
+  const int16_t equalSlotW =
+      static_cast<int16_t>((rect.width - static_cast<int32_t>(slotGap) * (props.count - 1)) / props.count);
+  int16_t nextSlotX = static_cast<int16_t>(rect.x + (contentWidthLayout ? leadingInset : 0));
   for (uint8_t i = 0; i < props.count; ++i) {
     const TabItem& tab = props.tabs[i];
-    const int16_t slotX = static_cast<int16_t>(rect.x + i * (slotW + gap));
+    const int16_t slotW = contentWidthLayout ? contentSlotWidth(tab) : equalSlotW;
+    const int16_t slotX = contentWidthLayout
+                              ? nextSlotX
+                              : static_cast<int16_t>(rect.x + static_cast<int32_t>(i) * (equalSlotW + slotGap));
+    if (contentWidthLayout) nextSlotX = static_cast<int16_t>(slotX + slotW + slotGap);
     Rect slot{slotX, rect.y,
-              static_cast<int16_t>(i == props.count - 1 ? rect.right() - slotX : slotW),
-              static_cast<int16_t>(rect.height - dividerH)};
+              static_cast<int16_t>(!contentWidthLayout && i == props.count - 1 ? rect.right() - slotX : slotW), slotH};
     Rect pill = slot.inset(props.tabInset);
     if (props.contentInset.left > 0 || props.contentInset.right > 0) {
       const int16_t labelW = tab.label && tab.label[0] != '\0'

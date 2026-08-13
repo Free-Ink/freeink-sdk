@@ -1,0 +1,13 @@
+{
+  "name": "BoardPaperS3",
+  "version": "0.1.0",
+  "description": "FreeInk board support for M5Stack PaperS3: parallel-EPD pins (LgfxEpdConfig), power-off pulse, status LED.",
+  "keywords": "m5stack, papers3, epaper, board",
+  "authors": [{"name": "FreeInk SDK Contributors"}],
+  "dependencies": {
+    "BoardConfig": "*",
+    "EInkDisplay": "*"
+  },
+  "platforms": "espressif32",
+  "frameworks": ["arduino"]
+}

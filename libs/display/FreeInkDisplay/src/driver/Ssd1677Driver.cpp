@@ -2,6 +2,7 @@
 
 #include <BoardConfig.h>
 
+#include <algorithm>
 #include <vector>
 
 #include "../lut/Ssd1677Luts.h"
@@ -162,6 +163,10 @@ void Ssd1677Driver::initController(EpdBus& bus) {
   constexpr uint8_t TEMP_SENSOR_INTERNAL = 0x80;
 
   bus.cmd(CMD_SOFT_RESET);
+  // The X4 Pro production sequence requires a fixed 10 ms settle after
+  // SWRESET. Active-high BUSY may not have asserted by the first GPIO sample,
+  // so waitBusy() alone is not a substitute for this delay.
+  delay(10);
   bus.waitBusy(" CMD_SOFT_RESET");
 
   bus.cmd(CMD_TEMP_SENSOR_CONTROL);
@@ -243,7 +248,18 @@ void Ssd1677Driver::writeRam(EpdBus& bus, uint8_t ramCmd, const uint8_t* data, u
   bus.data(data, static_cast<uint16_t>(size));
 }
 
+void Ssd1677Driver::writeRamInverted(EpdBus& bus, uint8_t ramCmd, const uint8_t* data, uint32_t size) {
+  uint8_t chunk[128];
+  bus.cmd(ramCmd);
+  for (uint32_t offset = 0; offset < size; offset += sizeof(chunk)) {
+    const uint32_t n = std::min<uint32_t>(sizeof(chunk), size - offset);
+    for (uint32_t i = 0; i < n; ++i) chunk[i] = static_cast<uint8_t>(~data[offset + i]);
+    bus.data(chunk, static_cast<uint16_t>(n));
+  }
+}
+
 void Ssd1677Driver::refresh(EpdBus& bus, RefreshMode mode, bool turnOff, bool async) {
+  _pendingPowerOff = false;
 #if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
   const uint32_t dbgStart = millis();
   const char* dbgMode = (mode == RefreshMode::Full) ? "FULL" : (mode == RefreshMode::Half) ? "HALF" : "FAST";
@@ -281,14 +297,17 @@ void Ssd1677Driver::refresh(EpdBus& bus, RefreshMode mode, bool turnOff, bool as
     bus.data(seqOverride);
     bus.cmd(CMD_MASTER_ACTIVATION);
     if (!async) bus.waitRefreshComplete("refresh");
-    // The sequence powered the panel down at the end, but keep the flag truthful
-    // to intent: leave it "on" between active updates so display() doesn't force a
-    // full HALF refresh next time (which would defeat fast refresh). turnOff marks
-    // it off for the sleep path. The vendor sequences self-cycle power: if they
-    // include the disable bits (0x03) the panel is OFF afterward — track that so the
-    // next refresh (e.g. the custom-LUT grayscale path) powers it back on instead of
-    // issuing a display command against a powered-down panel (which hangs BUSY).
-    _isScreenOn = (seqOverride & 0x03) ? false : !turnOff;
+    // Only sequences carrying the low two disable bits physically power down.
+    // X4 Pro DU (0xFC) does not, so a turnOff request must run the documented
+    // 0x3C=0x80, 0x22=0x03, 0x20 sequence after the waveform completes instead
+    // of merely changing the software flag.
+    const bool sequencePowersOff = (seqOverride & 0x03) != 0;
+    _isScreenOn = !sequencePowersOff;
+    if (turnOff && !sequencePowersOff) {
+      // Defer until displayImpl/displayWindow has completed any post-refresh RAM
+      // rewire. Async updates consume the same flag in displayFinish().
+      _pendingPowerOff = true;
+    }
 #if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
     esp_rom_printf("[SSD1677] %s refresh %ums (ctrl2=0x%x, seq)\n", dbgMode, (unsigned)(millis() - dbgStart),
                    seqOverride);
@@ -345,6 +364,20 @@ void Ssd1677Driver::powerOn(EpdBus& bus) {
   _isScreenOn = true;
 }
 
+void Ssd1677Driver::powerOffController(EpdBus& bus) {
+  if (!_isScreenOn) return;
+  bus.cmd(CMD_BORDER_WAVEFORM);
+  bus.data(_cfg.borderWaveformInit);  // X4 Pro: 0x80
+  bus.cmd(CMD_DISPLAY_UPDATE_CTRL2);
+  bus.data(0x03);  // ANALOG_OFF_PHASE | CLOCK_OFF
+  bus.cmd(CMD_MASTER_ACTIVATION);
+  // Production X4 Pro power-off time. If BUSY remains asserted after the fixed
+  // interval, wait out the remainder before changing the state flag.
+  delay(200);
+  bus.waitBusy(" display power-down");
+  _isScreenOn = false;
+}
+
 void Ssd1677Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
   displayImpl(bus, fb, prev, mode, turnOff, /*async=*/false);
 }
@@ -362,6 +395,10 @@ bool Ssd1677Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* 
 void Ssd1677Driver::displayFinish(EpdBus& bus, const uint8_t* fb) {
   (void)fb;  // X4 post-waveform needs nothing from the host frame
   bus.waitRefreshComplete("refresh");
+  if (_pendingPowerOff) {
+    _pendingPowerOff = false;
+    powerOffController(bus);
+  }
 }
 
 void Ssd1677Driver::displayImpl(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff,
@@ -413,9 +450,22 @@ void Ssd1677Driver::displayImpl(EpdBus& bus, const uint8_t* fb, const uint8_t* p
     writeRam(bus, CMD_WRITE_RAM_RED, fb, _bufferSize);
   } else {
     writeRam(bus, CMD_WRITE_RAM_BW, fb, _bufferSize);
-    // Dual-buffer: RED holds the previous frame for the differential compare.
-    // Single-buffer (prev == nullptr): RED already holds it from last refresh.
-    if (prev != nullptr) {
+    if (_darkBackground) {
+      // Inverted content: the DU compare idles unchanged pixels, so the light
+      // residue of every white->black transition parks in the black background
+      // and accumulates between absolute cleans. Write RED as the complement of
+      // the target instead of the previous frame: every pixel then classifies
+      // as changed-toward-target and is re-driven — re-blackening the
+      // background (and re-whitening standing text) on every page turn, which
+      // is optically invisible on pixels already at their endpoint. Scan time
+      // is unchanged (the DU waveform length does not depend on how many
+      // pixels drive). Works identically in single-buffer mode, where no host
+      // copy of the previous frame exists. Same mechanism as the Paper Mono
+      // driver's dark-background selector and its forceAll corrective.
+      writeRamInverted(bus, CMD_WRITE_RAM_RED, fb, _bufferSize);
+    } else if (prev != nullptr) {
+      // Dual-buffer: RED holds the previous frame for the differential compare.
+      // Single-buffer (prev == nullptr): RED already holds it from last refresh.
       writeRam(bus, CMD_WRITE_RAM_RED, prev, _bufferSize);
     }
   }
@@ -431,6 +481,10 @@ void Ssd1677Driver::displayImpl(EpdBus& bus, const uint8_t* fb, const uint8_t* p
     setRamArea(bus, 0, 0, _w, _h);
     writeRam(bus, CMD_WRITE_RAM_BW, fb, _bufferSize);
     writeRam(bus, CMD_WRITE_RAM_RED, fb, _bufferSize);
+  }
+  if (!async && _pendingPowerOff) {
+    _pendingPowerOff = false;
+    powerOffController(bus);
   }
 }
 
@@ -463,7 +517,19 @@ void Ssd1677Driver::displayWindow(EpdBus& bus, const uint8_t* fb, const uint8_t*
   setRamArea(bus, x, y, w, h);
   writeRam(bus, CMD_WRITE_RAM_BW, windowBuffer.data(), windowBufferSize);
 
-  if (prev != nullptr) {
+  if (_darkBackground) {
+    // Inverted content: same as displayImpl()'s dark path — write the window's
+    // "old" plane as the complement of its target so every pixel in the window
+    // is re-driven toward its target. Without this, dismissing an overlay
+    // diffs against the true previous frame, the window's black background
+    // idles, and the overlay's light residue stays parked there (with nothing
+    // repainting afterwards to fade it).
+    std::vector<uint8_t> invertedWindow(windowBufferSize);
+    for (uint32_t i = 0; i < windowBufferSize; i++) {
+      invertedWindow[i] = static_cast<uint8_t>(~windowBuffer[i]);
+    }
+    writeRam(bus, CMD_WRITE_RAM_RED, invertedWindow.data(), windowBufferSize);
+  } else if (prev != nullptr) {
     std::vector<uint8_t> previousWindow(windowBufferSize);
     for (uint16_t row = 0; row < h; row++) {
       const uint16_t srcY = y + row;
@@ -480,6 +546,10 @@ void Ssd1677Driver::displayWindow(EpdBus& bus, const uint8_t* fb, const uint8_t*
     setRamArea(bus, x, y, w, h);
     writeRam(bus, CMD_WRITE_RAM_BW, windowBuffer.data(), windowBufferSize);
     writeRam(bus, CMD_WRITE_RAM_RED, windowBuffer.data(), windowBufferSize);
+  }
+  if (_pendingPowerOff) {
+    _pendingPowerOff = false;
+    powerOffController(bus);
   }
 }
 
@@ -600,15 +670,7 @@ void Ssd1677Driver::deepSleep(EpdBus& bus) {
   // Stock parity (_powerOff): park the border at its init value so it is not left
   // driven with the full-refresh waveform through deep sleep, then power down
   // analog/clock. Stock does not touch CTRL1 here.
-  if (_isScreenOn) {
-    bus.cmd(CMD_BORDER_WAVEFORM);
-    bus.data(_cfg.borderWaveformInit);
-    bus.cmd(CMD_DISPLAY_UPDATE_CTRL2);
-    bus.data(0x03);  // ANALOG_OFF_PHASE | CLOCK_OFF
-    bus.cmd(CMD_MASTER_ACTIVATION);
-    bus.waitBusy(" display power-down");
-    _isScreenOn = false;
-  }
+  powerOffController(bus);
   // Stock parity: deep sleep mode 2 (0x03) discards controller RAM. Nothing may
   // treat RAM as a valid diff baseline after wake — initController() re-arms
   // _needsInitialFull, so the first paint is an absolute clean anyway.

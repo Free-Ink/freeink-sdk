@@ -139,6 +139,15 @@ bool Uc8279Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
   if (!_oldPlaneValid) {
     bus.fillPlane(CMD_DTM1, 0xFF, _h, _wb);
     bus.cmd(CMD_DATA_STOP);
+  } else if (_darkBackground && !useGc) {
+    // Inverted content: a DU fast idles unchanged pixels, so the light residue
+    // of every white->black transition parks in the black background and
+    // accumulates between GC passes. Rewrite the OLD plane as the complement
+    // of the target: every pixel classifies as changed and is re-driven toward
+    // its target — optically invisible on pixels already at their endpoint.
+    // displayFinish()'s DTM1 sync restores the true baseline afterwards.
+    bus.sendPlaneFlippedInverted(CMD_DTM1, fb, _h, _wb);
+    bus.cmd(CMD_DATA_STOP);
   }
   bus.sendPlaneFlipped(CMD_DTM2, fb, _h, _wb);
   bus.cmd(CMD_DATA_STOP);

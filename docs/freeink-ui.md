@@ -704,6 +704,38 @@ kb.mode();            // enter/leave the symbol layers
 freeink::ui::applyEntry(keys, kb);
 ```
 
+Apps with cursor editing or their own text container can reuse the controller
+pieces without adopting `KeyboardEntry`'s fixed buffer:
+
+- `keyboardActivationFor(layout, value, longPress)` resolves a rendered key to
+  text, Shift, mode, language, delete, or submit semantics.
+- `utf8PreviousBoundary()` / `utf8NextBoundary()` move a byte cursor without
+  splitting a UTF-8 code point.
+- `KeyboardNavigator` owns row/column selection for irregular keyboard grids,
+  including wrapping and proportional movement between differently sized rows.
+
+When input and rendering run on different tasks, capture completed one-shot
+taps before testing whether the interaction table is available. `TouchTapQueue`
+is a fixed-capacity, allocation-free queue for that boundary:
+
+```cpp
+freeink::ui::TouchTapQueue<16> pendingTaps;
+int16_t tapX = 0;
+int16_t tapY = 0;
+
+// Every input update, even while a renderer rebuilds hit targets:
+if (tapCompleted) pendingTaps.push(tapX, tapY);
+
+// Once the last complete interaction table is safe to route against:
+while (interactionsReady && pendingTaps.pop(tapX, tapY)) {
+  freeink::ui::InputSnapshot tap;
+  tap.touchReleased = true;
+  tap.touchX = tapX;
+  tap.touchY = tapY;
+  interactions.route(tap);
+}
+```
+
 For custom or app-provided layouts, pass `KeyboardProps` directly:
 
 ```cpp

@@ -6,6 +6,10 @@
 
 #include "SdmmcBlockDevice.h"  // no-op unless FREEINK_SD_SDMMC
 
+#if FREEINK_DEVICE_PAPERMONO
+#include <PaperMonoBoard.h>
+#endif
+
 SDCardManager SDCardManager::instance;
 
 #if FREEINK_SD_SDMMC
@@ -16,6 +20,12 @@ bool SDCardManager::begin() {
   // SDMMC block device. FsFile from this volume is the same type the SPI path
   // returns, so the public API and consumers are unchanged.
   if (_powerHook) _powerHook();  // board brings up its SD rail (e.g. PMIC) if needed
+#if FREEINK_DEVICE_PAPERMONO
+  // Paper Mono's TF rail is switched by the IOE1 expander (PYB_TF_EN), not an
+  // ESP GPIO, and the boot bring-up leaves it LOW. Direct call rather than the
+  // weak-ref consumer hook, same as EpdBus's Paper Mono path.
+  freeink::papermono::setSdPower(true);
+#endif
   // The SD power-enable (sd.powerEnable) is driven by SdmmcBlockDevice itself, which
   // reproduces the OEM's timed HIGH->LOW power-cycle around each mount attempt — do
   // NOT assert it here (holding it HIGH going in breaks that reset sequence).

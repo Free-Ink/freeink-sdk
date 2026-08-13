@@ -114,6 +114,18 @@ public:
   // panel's native frame; callers map orientation and check this before tap.
   bool wasSwipe(float &nxStart, float &nyStart, float &nxEnd,
                 float &nyEnd) const;
+  // One-shot long-press: fires WHILE the finger is still down, once a
+  // stationary contact (within tap slop) has been held TOUCH_LONG_PRESS_MS.
+  // Position is the touch-down point, normalized like wasTouchTap. Fires at
+  // most once per contact. Detection alone has no side effects; callers that
+  // act on it should call suppressTouchContact() so the eventual lift cannot
+  // also tap. Cleared each #update().
+  bool wasTouchLongPress(float &nx, float &ny) const;
+  // Ignore the remainder of the current contact: tap, swipe, release,
+  // tap-candidate and held queries report nothing until the finger lifts and
+  // the release edge has passed, then a fresh contact is delivered normally.
+  // Self-clears; the async tap/swipe queues are gated by the same latch.
+  void suppressTouchContact();
   // True if a touch press or release happened this frame. Coarse "the user
   // touched the screen" signal (the touch analogue of wasAnyPressed/Released)
   // for resetting idle/sleep timers and restoring CPU frequency. False on
@@ -209,15 +221,20 @@ private:
   uint8_t getDigitalState() const;
   void updateConfirmBackHold(unsigned long currentTime);
   void updateConfirmPowerHold(unsigned long currentTime);
+  void updateDigitalTwoButton(unsigned long currentTime);
   void applyStateChange(uint8_t state, unsigned long currentTime);
 
   // Touch backend. Compiled only when FREEINK_CAP_TOUCH is set; dispatches on
-  // BoardConfig::ACTIVE.touch.controller (CHSC6x IRQ-driven, GT911 polled).
+  // BoardConfig::ACTIVE.touch.controller (CHSC6x, GT911, or FT5x06/FT6336).
   void beginTouch();
   uint8_t serviceTouch(); // runs the machine; returns synthesized button mask
   void updateTouchFromIrq(unsigned long now,
                           int irqRaw); // CHSC6x I2C poll + touch-bit gate
   void pollGt911(unsigned long now);   // GT911 polled read
+  void beginFt5x06();
+  void pollFt5x06(unsigned long now);
+  bool ft5x06WriteReg(uint8_t reg, uint8_t value);
+  bool ft5x06ReadReg(uint8_t reg, uint8_t* buf, uint8_t len);
   bool readChsc6xPoint(TouchPoint &point);
   bool decodeChsc6xFrame(const uint8_t *data, size_t len,
                          TouchPoint &point) const;
@@ -242,6 +259,9 @@ private:
   unsigned long confirmPowerPressStart;
   bool confirmPowerPhysicalPressed;
   bool confirmPowerLongPressActive;
+  uint8_t twoButtonPhysicalState;
+  unsigned long twoButtonPressStart;
+  bool twoButtonLongPressActive;
 
   bool touchDataEnabled = false; // I2C up, controller present
   uint8_t gt911Addr = 0;         // resolved GT911 address (0 until probed)
@@ -269,7 +289,15 @@ private:
   unsigned long lastTouchHeldDurationMs =
       0; // contact duration, latched at release
   bool touchMovedBeyondTapSlop =
-      false; // suppresses tap activation after a drag/scroll
+      false; // cancels stationary hold/long-press classification
+  bool touchMovedBeyondTapReleaseSlop =
+      false; // cancels tap-on-release once motion reaches swipe distance
+  bool touchLongPressEvent = false; // one-shot, mirrors touchHomeKeyLongEvent
+  bool touchLongPressFired =
+      false; // latched for the current contact so long-press fires once
+  bool touchSuppressed = false; // suppressTouchContact() latch; holds through
+                                // the release-edge frame, cleared in
+                                // serviceTouch() once the contact is over
 
   static constexpr int NUM_BUTTONS_1 = 4;
   static const int ADC_RANGES_1[];
@@ -281,6 +309,7 @@ private:
   static constexpr unsigned long DEBOUNCE_DELAY = 5;
   static constexpr unsigned long CONFIRM_BACK_HOLD_MS = 650;
   static constexpr unsigned long CONFIRM_POWER_HOLD_MS = 400;
+  static constexpr unsigned long TWO_BUTTON_HOLD_MS = 650;
 
   // Touch timing / protocol constants (ported from the Murphy M3 CHSC6x
   // driver).
@@ -289,7 +318,12 @@ private:
   static constexpr unsigned long TOUCH_SAMPLE_DELAY_MS = 8; // I2C poll cadence
   static constexpr int TOUCH_TAP_SLOP_PX = 28;
   static constexpr int TOUCH_SWIPE_MIN_PX = 60;
+  static constexpr int TOUCH_TAP_RELEASE_SLOP_PX =
+      TOUCH_SWIPE_MIN_PX - 1;
   static constexpr unsigned long TOUCH_SWIPE_MAX_MS = 700;
+  static constexpr unsigned long TOUCH_LONG_PRESS_MS =
+      500; // shorter than HOME_KEY_LONG_PRESS_MS: a screen hold has no button
+           // travel to absorb
   static constexpr uint8_t TOUCH_READ_COMMAND = 0x00;
   static constexpr uint8_t TOUCH_FRAME_SIZE = 16;
 

@@ -1,8 +1,8 @@
 {
   "name": "MemoryManager",
   "version": "1.0.0",
-  "description": "FreeInk on-demand memory/cache reclaim: a priority-ordered registry of evictable cache sinks plus heap reporting, over the ESP-IDF heap-capabilities allocator. Consumers register rebuildable RAM caches (rendered pages, glyphs, decoded images, PSRAM pools) and call clearCaches()/boost() to free RAM on demand or under pressure.",
-  "keywords": "memory, heap, cache, psram, reclaim, boost",
+  "description": "FreeInk on-demand memory/cache reclaim: a priority-ordered registry of evictable cache sinks plus heap reporting, over the ESP-IDF heap-capabilities allocator. Consumers register rebuildable RAM caches (rendered pages, glyphs, decoded images, PSRAM pools) and call clearCaches()/boost() to free RAM on demand or under pressure. Also provides soft/hard heap-pressure watermarks, borrowable static task-stack slots for transient big-stack tasks, fixed bump arenas, and a reboot-flavored boost.",
+  "keywords": "memory, heap, cache, psram, reclaim, boost, watermark, arena, task-stack",
   "authors": [{"name": "FreeInk SDK Contributors"}],
   "dependencies": {},
   "platforms": "espressif32",

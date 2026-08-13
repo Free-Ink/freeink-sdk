@@ -2,6 +2,7 @@
 
 #if FREEINK_CAP_LED
 
+#include <M5Ioe1.h>
 #include <M5Pm1.h>
 #include <esp_cpu.h>
 #include <soc/gpio_struct.h>
@@ -45,9 +46,23 @@ inline void IRAM_ATTR gpioLow(uint8_t pin) {
   }
 }
 
+// Paper Mono discrete RGB LED: red = M5PM1 LED output (PWR_CFG bit 4),
+// green/blue = M5IOE1 IO8/IO9. On/off per channel, no per-channel intensity —
+// a scaled channel value of 128+ counts as lit, so global brightness below 50%
+// dims by dropping channels rather than fading.
+constexpr uint8_t DISCRETE_ON_THRESHOLD = 128;
+
+void writeDiscreteRgb(LedColor color) {
+  m5pm1::updateReg(m5pm1::REG_PWR_CFG, color.r >= DISCRETE_ON_THRESHOLD ? 0 : m5pm1::LED_R_EN,
+                   color.r >= DISCRETE_ON_THRESHOLD ? m5pm1::LED_R_EN : 0);
+  m5ioe1::write(m5ioe1::PIN_LED_GREEN, color.g >= DISCRETE_ON_THRESHOLD);
+  m5ioe1::write(m5ioe1::PIN_LED_BLUE, color.b >= DISCRETE_ON_THRESHOLD);
+}
+
 }  // namespace
 
 bool LedManager::present() const {
+  if (BoardConfig::ACTIVE.leds.paperMonoDiscrete) return true;
   return BoardConfig::ACTIVE.leds.data != BoardConfig::PIN_UNASSIGNED && BoardConfig::ACTIVE.leds.count > 0;
 }
 
@@ -75,6 +90,20 @@ void LedManager::disablePower() {
 bool LedManager::begin() {
   if (begun_) return true;
   if (!present()) return false;
+
+  if (BoardConfig::ACTIVE.leds.paperMonoDiscrete) {
+    // Red lives on the PM1 (push-pull, off); green/blue on the IOE1, whose
+    // boot-time output setup (all rails/LEDs low) is idempotent with the
+    // consumer's board bring-up.
+    m5pm1::beginBus();
+    m5pm1::updateReg(m5pm1::REG_GPIO_DRV, 1u << 5, 0);
+    m5pm1::updateReg(m5pm1::REG_PWR_CFG, m5pm1::LED_R_EN, 0);
+    m5ioe1::write(m5ioe1::PIN_LED_GREEN, false);
+    m5ioe1::write(m5ioe1::PIN_LED_BLUE, false);
+    m5ioe1::updateReg16(m5ioe1::REG_GPIO_MODE_L, 0, m5ioe1::PIN_LED_GREEN | m5ioe1::PIN_LED_BLUE);
+    begun_ = true;
+    return true;
+  }
 
   pinMode(BoardConfig::ACTIVE.leds.data, OUTPUT);
   digitalWrite(BoardConfig::ACTIVE.leds.data, LOW);
@@ -147,6 +176,11 @@ static void IRAM_ATTR sendFrame(uint8_t pin, const uint8_t* bytes, uint32_t len,
 
 void LedManager::writePixels(const LedColor* colors, uint8_t count) {
   if (!begun_ || !colors || count == 0) return;
+
+  if (BoardConfig::ACTIVE.leds.paperMonoDiscrete) {
+    writeDiscreteRgb(scaled(colors[0]));
+    return;
+  }
 
   bool anyLit = false;
   for (uint8_t i = 0; i < count && i < MAX_LEDS; ++i) {

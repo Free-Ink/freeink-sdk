@@ -67,6 +67,8 @@ int SecureClient::connectWithMethod(const char* host, uint16_t port, void* metho
 #endif
   const uint32_t started = millis();
   stop();
+  const uint32_t timeoutMs = getTimeout();
+  _transport.setConnectionTimeout(timeoutMs);
   if (!_transport.connect(host, port)) {
     if (Serial) Serial.printf("[SecureClient] TCP connect failed (%s): %s:%u\n", label, host, port);
     return 0;
@@ -122,7 +124,7 @@ int SecureClient::connectWithMethod(const char* host, uint16_t port, void* metho
   // The recv callback is non-blocking (returns WANT_READ when no bytes are
   // buffered), so wolfSSL_connect must be retried across handshake round-trips
   // rather than called once.
-  const uint32_t deadline = millis() + 15000;
+  const uint32_t deadline = millis() + timeoutMs;
   int ret;
   while ((ret = wolfSSL_connect(ssl)) != WOLFSSL_SUCCESS) {
     const int err = wolfSSL_get_error(ssl, ret);

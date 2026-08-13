@@ -115,6 +115,71 @@ struct ListProps {
   bool headerUnderline = true;
 };
 
+// Stateful companion to the immediate-mode list helpers in FreeInkUICore.h:
+// the selection-vs-viewport protocol most list screens want on e-paper.
+// Drag/swipe scrolling moves the viewport (top) WITHOUT moving the selection —
+// the selection may scroll off-screen; key/button navigation moves the
+// selection and the caller re-follows (follow()) so the viewport is pulled the
+// minimal amount to keep it visible. The first syncToProps() after reset()
+// snaps the viewport to the selection (a list can open on an entry past the
+// first page). How the selection index itself moves (wrap, paging) stays with
+// the caller.
+struct ListNav {
+  int selected = 0;
+  int top = 0;
+  int visibleRows = 1; // measured by syncToProps(); 1 until the first build
+  bool followOnBuild = true;
+
+  void reset(const int selectedIndex = 0) {
+    selected = selectedIndex;
+    top = 0;
+    visibleRows = 1;
+    followOnBuild = true;
+  }
+
+  // Scroll the viewport by deltaRows, clamped to the valid range; the
+  // selection stays put. Returns true when the viewport actually moved.
+  bool scrollBy(const int deltaRows, const int count) {
+    int maxTop = count - visibleRows;
+    if (maxTop < 0)
+      maxTop = 0;
+    int next = top + deltaRows;
+    if (next > maxTop)
+      next = maxTop;
+    if (next < 0)
+      next = 0;
+    if (next == top)
+      return false;
+    top = next;
+    return true;
+  }
+
+  // Pull the viewport the minimal amount so the selection is visible.
+  void follow(const int count) {
+    const uint16_t rows =
+        visibleRows > 0 ? static_cast<uint16_t>(visibleRows) : 1;
+    top = listTopIndexFor(static_cast<int16_t>(selected),
+                          static_cast<uint16_t>(top < 0 ? 0 : top), rows,
+                          static_cast<uint16_t>(count < 0 ? 0 : count));
+  }
+
+  // Screen-build sync: measure the rows that fit the band, apply the one-shot
+  // follow-on-build, clamp the viewport, and write selection/viewport into the
+  // props. Call from the screen builder right before list().
+  void syncToProps(const Rect body, const int16_t rowHeight,
+                   const int16_t rowGap, const int count, ListProps &props) {
+    const uint16_t rows = listVisibleRows(body, rowHeight, rowGap);
+    visibleRows = rows > 0 ? rows : 1;
+    if (followOnBuild) {
+      followOnBuild = false;
+      follow(count);
+    }
+    scrollBy(0, count); // clamp to range
+    props.selectedIndex = static_cast<int16_t>(selected);
+    props.topIndex = static_cast<uint16_t>(top);
+  }
+};
+
 inline void drawListScrollIndicator(DrawTarget &target, const Rect rect,
                                     const uint32_t count,
                                     const uint32_t visible,
@@ -215,12 +280,70 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
       cursorY = static_cast<int16_t>(cursorY + headerH + rowGap);
       continue;
     }
-    if (static_cast<int16_t>(cursorY + rowH) > rowArea.bottom() ||
+    // Per-item height: a label or subtitle whose style allows wrapping
+    // (maxLines > 1) and that overflows its slot grows the row by exactly its
+    // extra text lines, keeping the vertical padding a single-line row carries.
+    // Every other row keeps the uniform rowH (styles default to maxLines == 1,
+    // so touch-sized rows are unaffected).
+    int16_t itemH = rowH;
+    int16_t subH = 0;
+    const int16_t labelLh = frame.target().lineHeight(props.labelText.font);
+    // Width the wrapped text is laid out in, shared by this sizing pass and the
+    // draw below: the row content minus the leading icon.
+    int16_t contentAvail = static_cast<int16_t>(rowArea.width - sidePad * 2);
+    if (item.icon || item.iconAsset) {
+      const BitmapRef ic =
+          item.icon ? item.icon : resolveBitmap(frame.assets(), item.iconAsset);
+      const int16_t iconSize = props.iconSize > 0
+                                   ? props.iconSize
+                                   : static_cast<int16_t>(ic.width);
+      contentAvail =
+          static_cast<int16_t>(contentAvail - iconSize - props.textGap);
+    }
+    if (item.subtitle) {
+      // The subtitle owns its own line(s) under the label, spanning the full
+      // content width. A maxLines > 1 subtitle reserves its wrapped height so
+      // the row grows to fit the extra lines; the default single-line case
+      // keeps the old lineHeight fast path and leaves rowH unchanged.
+      const int16_t subLh = frame.target().lineHeight(props.subtitleText.font);
+      subH = props.subtitleText.maxLines > 1
+                 ? measureWrappedText(frame.target(), item.subtitle,
+                                      props.subtitleText, contentAvail)
+                       .height
+                 : subLh;
+      const int16_t basePad = static_cast<int16_t>(rowH - labelLh - subLh);
+      const int16_t needed = static_cast<int16_t>(
+          labelLh + subH + (basePad > 0 ? basePad : 0));
+      if (needed > rowH)
+        itemH = needed;
+    } else if (item.label && props.labelText.maxLines > 1 &&
+               static_cast<int16_t>(labelLh * props.labelText.maxLines) > rowH) {
+      int16_t labelAvail = contentAvail;
+      if (item.toggle) {
+        labelAvail = static_cast<int16_t>(
+            labelAvail - (props.toggleWidth < 18 ? 18 : props.toggleWidth) -
+            props.valueInset - props.textGap);
+      } else if (item.value) {
+        labelAvail = static_cast<int16_t>(
+            labelAvail -
+            frame.target()
+                .measureText(props.valueText.font, item.value, props.valueText)
+                .width -
+            props.valueInset - props.textGap);
+      }
+      if (frame.target()
+              .measureText(props.labelText.font, item.label, props.labelText)
+              .width > labelAvail) {
+        itemH =
+            static_cast<int16_t>(rowH + labelLh * (props.labelText.maxLines - 1));
+      }
+    }
+    if (static_cast<int16_t>(cursorY + itemH) > rowArea.bottom() ||
         drawnRows >= visible || i >= end)
       break;
     ++drawnRows;
-    Rect row{rowArea.x, cursorY, rowArea.width, rowH};
-    cursorY = static_cast<int16_t>(cursorY + rowH + rowGap);
+    Rect row{rowArea.x, cursorY, rowArea.width, itemH};
+    cursorY = static_cast<int16_t>(cursorY + itemH + rowGap);
     if (props.hugContents && item.label) {
       // Hug-content rows shrink to the label width plus padding so the
       // selection pill wraps the text instead of spanning the rect.
@@ -267,8 +390,6 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
     TextStyle labelStyle =
         textStyleWithForeground(props.labelText, style.foreground);
     const int16_t labelH = frame.target().lineHeight(labelStyle.font);
-    const int16_t subH =
-        item.subtitle ? frame.target().lineHeight(props.subtitleText.font) : 0;
     Rect band = content;
     if (item.subtitle) {
       int16_t bandTop = static_cast<int16_t>(

@@ -102,5 +102,33 @@ inline InputSnapshot snapshotFrom(const InputManager& input, const DeviceContext
   return snapshot;
 }
 
+// Long-press-aware variant: when the InputManager's classifier fires a
+// long-press (WHILE the finger is still down — the hold-to-act feel on
+// e-paper, where waiting for the lift reads as lag), this delivers it as a
+// touchReleased + longPress snapshot at the contact point; routing matches it
+// against InputLongPress-masked interactions. Acting on the long-press
+// suppresses the remainder of the contact (hence the non-const InputManager)
+// so the eventual lift can't also tap whatever the action opened. All other
+// frames behave exactly like the orientation-aware variant above.
+inline InputSnapshot snapshotFrom(InputManager& input, const DeviceContext& device, const bool withLongPress,
+                                  const bool touchFlipX = false, const bool touchFlipY = false,
+                                  const ButtonBindings& bindings = ButtonBindings{}) {
+  float nx = 0.0f;
+  float ny = 0.0f;
+  if (withLongPress && input.hasTouch() && input.wasTouchLongPress(nx, ny)) {
+    input.suppressTouchContact();
+    InputSnapshot snapshot = snapshotFrom(input, bindings);  // keep this frame's button edges
+    const Point p = touchToLogical(device, nx, ny, touchFlipX, touchFlipY);
+    snapshot.touchPressed = false;
+    snapshot.touchHeld = false;
+    snapshot.touchReleased = true;
+    snapshot.longPress = true;
+    snapshot.touchX = p.x;
+    snapshot.touchY = p.y;
+    return snapshot;
+  }
+  return snapshotFrom(static_cast<const InputManager&>(input), device, touchFlipX, touchFlipY, bindings);
+}
+
 }  // namespace ui
 }  // namespace freeink

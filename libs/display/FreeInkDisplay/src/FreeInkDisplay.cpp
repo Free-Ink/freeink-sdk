@@ -54,6 +54,9 @@
 #if FREEINK_DRIVER_IT8951
 #include "driver/It8951Driver.h"
 #endif
+#if FREEINK_DRIVER_PAPER_MONO
+#include "driver/PaperMonoDriver.h"
+#endif
 
 namespace freeink {
 namespace {
@@ -201,6 +204,8 @@ void FreeInkDisplay::selectDriver() {
 #endif
 #if FREEINK_DRIVER_SSD1677
       _driver = &ssd1677Driver();
+#elif FREEINK_DRIVER_PAPER_MONO
+      _driver = &paperMonoDriver();
 #elif FREEINK_DRIVER_UC8253_MURPHY
       _driver = &uc8253MurphyDriver();
 #elif FREEINK_DRIVER_M5_OFFICIAL
@@ -216,6 +221,9 @@ void FreeInkDisplay::selectDriver() {
 #endif
       break;
   }
+  // A driver chosen after setInverted() (begin(), setDisplayX3()) must still
+  // learn the standing content polarity.
+  if (_driver) _driver->setBackgroundHint(_inverted);
 }
 
 void FreeInkDisplay::begin() {
@@ -357,6 +365,7 @@ void FreeInkDisplay::setInverted(const bool inverted) {
   _inversionDirty = true;
   _shadowValid = false;
   _redRamSynced = false;
+  if (_driver) _driver->setBackgroundHint(inverted);
 }
 
 bool FreeInkDisplay::toggleInverted() {
@@ -828,6 +837,14 @@ void FreeInkDisplay::displayGrayBuffer(bool turnOffScreen, const unsigned char* 
   _driver->displayGray(_bus, frameBuffer, turnOffScreen, lut, factoryMode);
 }
 
+void FreeInkDisplay::displayGrayCalibration(uint16_t customX, uint16_t customY, uint16_t customW, uint16_t customH) {
+  if (_inverted) return;
+  syncPendingAsync();
+  _shadowValid = false;
+  _redRamSynced = false;
+  _driver->displayGrayCalibration(_bus, frameBuffer, customX, customY, customW, customH);
+}
+
 void FreeInkDisplay::refreshDisplay(RefreshMode mode, bool turnOffScreen) { displayBuffer(mode, turnOffScreen); }
 
 void FreeInkDisplay::copyGrayscaleBuffers(const uint8_t* lsbBuffer, const uint8_t* msbBuffer) {
@@ -881,14 +898,29 @@ void FreeInkDisplay::writeGrayscalePlaneStrip(GrayPlane plane, const uint8_t* ro
                                               uint16_t numRows) {
   if (_inverted) return;
   DisplayPmLock pmLock;
-  syncPendingAsync();  // no-op in the reader flow (it waits first); guards misuse
+  // Paper Mono retains these bytes in PSRAM and performs no bus access here, so
+  // staging can overlap the B/W waveform. Other drivers may write controller
+  // RAM and must drain the pending refresh first.
+  if (!_driver->supportsBusyGrayscaleStaging()) syncPendingAsync();
   _driver->writeGrayscalePlaneStrip(_bus, plane == GRAY_PLANE_LSB ? freeink::GrayPlane::Lsb : freeink::GrayPlane::Msb,
                                     rows, yStart, numRows);
+}
+
+bool FreeInkDisplay::supportsBusyGrayscaleStaging() const {
+  return !_inverted && _driver && _driver->supportsBusyGrayscaleStaging();
+}
+
+void FreeInkDisplay::prepareGrayscaleTarget() {
+  if (!_inverted && _driver && _driver->supportsBusyGrayscaleStaging()) {
+    _driver->prepareGrayscaleTarget(frameBuffer);
+  }
 }
 
 bool FreeInkDisplay::supportsStripGrayscale() const {
   return !_inverted && _driver && _driver->supportsStripGrayscale();
 }
+
+bool FreeInkDisplay::combinesGrayscaleBase() const { return _driver && _driver->combinesGrayscaleBase(); }
 
 void FreeInkDisplay::cleanupGrayscaleBuffers(const uint8_t* bwBuffer) {
   DisplayPmLock pmLock;
@@ -919,6 +951,38 @@ void FreeInkDisplay::requestResync(uint8_t settlePasses) {
 
 void FreeInkDisplay::skipInitialResync() {
   if (_driver) _driver->skipInitialResync();
+}
+
+void FreeInkDisplay::beginDisplayWork() {
+  if (_driver) _driver->beginDisplayWork();
+}
+
+void FreeInkDisplay::abortPostRefresh() {
+  if (_driver) _driver->abortPostRefresh();
+}
+
+bool FreeInkDisplay::postRefreshAborted() const {
+  return _driver && _driver->postRefreshAborted();
+}
+
+bool FreeInkDisplay::displayCommitted() const {
+  return !_driver || _driver->displayCommitted();
+}
+
+void FreeInkDisplay::runMaintenance() {
+  if (!_driver) return;
+  syncPendingAsync();
+  _driver->runMaintenance(_bus);
+}
+
+bool FreeInkDisplay::hasPendingMaintenance() const {
+  return _driver && _driver->hasPendingMaintenance();
+}
+
+void FreeInkDisplay::controllerIdle() {
+  if (!_driver) return;
+  syncPendingAsync();
+  _driver->controllerIdle(_bus);
 }
 
 void FreeInkDisplay::requestCompleteWaveformNextRefresh() {

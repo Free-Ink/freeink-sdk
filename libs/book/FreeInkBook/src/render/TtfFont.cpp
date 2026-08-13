@@ -62,7 +62,7 @@ float TtfFont::scaleFor(uint16_t sizePx) const {
   return stbtt_ScaleForPixelHeight(fontOf(fontInfo_), static_cast<float>(sizePx));
 }
 
-int32_t TtfFont::glyphIndexFor(uint32_t codepoint) {
+int32_t TtfFont::glyphIndexFor(uint32_t codepoint) const {
   const uint32_t slot = codepoint % kAdvanceSlots;
   if (advances_[slot].key != codepoint) {
     const int glyph = stbtt_FindGlyphIndex(fontOf(fontInfo_), static_cast<int>(codepoint));
@@ -75,8 +75,11 @@ int32_t TtfFont::glyphIndexFor(uint32_t codepoint) {
 }
 
 bool TtfFont::hasGlyph(uint32_t codepoint) const {
-  return ready_ &&
-         stbtt_FindGlyphIndex(fontOf(fontInfo_), static_cast<int>(codepoint)) != 0;
+  // Through the advance cache, not a bare stbtt_FindGlyphIndex: every glyph on a
+  // page hits this (FlashTtfFont::loadGlyph and covers() both call it), and an
+  // uncached cmap binary search per call was the single most repeated piece of
+  // work in a CJK page render.
+  return ready_ && glyphIndexFor(codepoint) != 0;
 }
 
 int16_t TtfFont::advance(uint32_t codepoint, uint16_t sizePx, uint8_t styleFlags) {
@@ -137,7 +140,9 @@ const GlyphBitmap* TtfFont::rasterize(uint32_t codepoint, uint16_t sizePx) {
   GlyphSlot& slot = glyphs_[(codepoint * 31 + sizePx) % kGlyphSlots];
   if (slot.key == key) return &slot.glyph;
 
-  const int glyph = stbtt_FindGlyphIndex(fontOf(fontInfo_), static_cast<int>(codepoint));
+  // Shares the advance cache with hasGlyph()/advance(), so the cmap lookup that
+  // hasGlyph() just performed for this codepoint is not repeated here.
+  const int glyph = glyphIndexFor(codepoint);
   if (glyph == 0) return nullptr;
   const float scale = scaleFor(sizePx);
 
@@ -160,9 +165,10 @@ const GlyphBitmap* TtfFont::rasterize(uint32_t codepoint, uint16_t sizePx) {
     stbtt_MakeGlyphBitmap(fontOf(fontInfo_), pixels, w, h, w, scale, scale, glyph);
   }
 
-  int adv = 0;
-  int lsb = 0;
-  stbtt_GetGlyphHMetrics(fontOf(fontInfo_), glyph, &adv, &lsb);
+  // glyphIndexFor() above already read hmtx for this codepoint and cached the
+  // unscaled advance. flushGlyphs() only clears glyphs_, so the advance slot is
+  // still the one just filled even if the arena recycled mid-rasterize.
+  const int32_t adv = advances_[codepoint % kAdvanceSlots].unscaledAdvance;
 
   slot.key = key;
   slot.glyph.pixels = pixels;

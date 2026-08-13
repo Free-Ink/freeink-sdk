@@ -43,7 +43,10 @@ class PowerManager {
   // deep sleep — milliamps of standby drain. No-op on boards whose rails are
   // PIN_UNASSIGNED (X4/X3). Call after the display driver's deep-sleep command
   // and before deepSleep(); wake is a chip reset, so rails re-enable in the
-  // normal init path. NOTE: cutting the touch rail forfeits touch-to-wake.
+  // normal init path. Display RESET is held LOW when its rail is cut (avoids
+  // back-powering an unpowered controller) and HIGH when its rail remains on
+  // (keeps deep-sleep state stable). NOTE: cutting the touch rail forfeits
+  // touch-to-wake.
   static void powerDownRailsForSleep();
 
   // Isolate floating GPIOs to cut sleep current, then enter deep sleep. Does not

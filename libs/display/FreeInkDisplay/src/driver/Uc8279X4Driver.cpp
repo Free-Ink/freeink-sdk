@@ -187,7 +187,18 @@ bool Uc8279X4Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t*
     memset(whiteRow, 0xFF, wb);
     bus.cmd(CMD_DTM1);
     for (uint16_t y = 0; y < _tresH; y++) bus.data(whiteRow, wb);
+  } else if (_darkBackground || _redriveAfterGray) {
+    // Inverted content: the KW differential idles unchanged pixels, so the
+    // light residue of every white->black transition parks in the black
+    // background and accumulates between full flashes. Rewrite the OLD plane
+    // as the complement of the target: every pixel classifies as changed and
+    // is re-driven toward its target — optically invisible on pixels already
+    // at their endpoint. displayFinish()'s DTM1 sync restores the baseline.
+    streamPlane(bus, CMD_DTM1, fb, /*invert=*/true);
   }
+  // Consumed: the white-seed (!fast) or the re-drive above already scrubbed any
+  // post-AA gray residue for this frame.
+  _redriveAfterGray = false;
 
   // Built-in refresh setup per the reference (GC / DU tables; no CDI write —
   // the 1-byte CDI is only asserted by the AA path):
@@ -287,7 +298,7 @@ void Uc8279X4Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, c
     bus.data(luts[i].data, GRAY_LUT_LEN);
   }
   bus.cmd(CMD_VCOM_DATA_INTERVAL);
-  bus.data(_grayRefreshedOnce ? _cfg.cdiAaLater : _cfg.cdiAaFirst);  // single byte
+  bus.data(_grayRefreshedOnce ? _cfg.cdiAaLater : _cfg.cdiAaFirst);  // first 0x97, later 0xD7
   _grayRefreshedOnce = true;
 
   powerOnIfNeeded(bus, " 8279x4_gray_PON");
@@ -307,17 +318,16 @@ void Uc8279X4Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, c
     _isScreenOn = false;
   }
 
-  // Re-seed the OLD plane with this frame (B/W polarity, non-inverted) so the
-  // next B/W page turn runs a fast differential instead of a forced full flash —
-  // the gray plane left in 0x10 is not a valid baseline.
-  if (fb) {
-    streamPlane(bus, CMD_DTM1, fb);
-    _oldPlaneValid = true;
-    _needFullClear = false;
-  } else {
-    _needFullClear = true;
-    _oldPlaneValid = false;
-  }
+  // Do NOT reseed the OLD plane (0x10) from `fb` here — on the non-tiled path `fb`
+  // holds the MSB gray plane, not the B/W frame. The caller's
+  // cleanupGrayscaleBuffers(bw) restores the true B/W baseline. What we DO need:
+  // the AA overlay leaves gray edge charge on the panel that a plain B/W fast diff
+  // can't scrub (the B/W baseline records those pixels as white), so under rapid
+  // page turns it accumulates into garble (slow turns settle/clear; fast don't).
+  // Flag the next B/W page to re-drive every pixel to its target (see
+  // displayStart), scrubbing the residue each page with a cheap DU — no GC flash.
+  (void)fb;
+  _redriveAfterGray = true;
 }
 
 void Uc8279X4Driver::cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) {

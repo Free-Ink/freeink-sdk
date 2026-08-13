@@ -413,12 +413,13 @@ class SecureHttpClient {
       } else if (_rootCA) {
         _secure.setCACert(_rootCA);
       }
-      _secure.setTimeout(_timeoutMs / 1000);
+      _secure.setTimeout(_timeoutMs);
       if (!_secure.connect(_host.c_str(), _port)) return false;
       _conn = &_secure;
       _connHttps = true;
     } else {
-      _plain.setTimeout(_timeoutMs / 1000);
+      _plain.setTimeout(_timeoutMs);
+      _plain.setConnectionTimeout(_timeoutMs);
       if (!_plain.connect(_host.c_str(), _port)) return false;
       _conn = &_plain;
       _connHttps = false;

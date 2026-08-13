@@ -12,8 +12,7 @@
 // Grayscale: `_gc` 4-level nudge (reader AA/cover) or `_full` (factory
 // absolute), reverted via the `_half` scrub bank. DTM1/DTM2 are the
 // controller's old/new RAM planes; CDI (cmd 0x50) selects differential (0x29)
-// vs absolute (0xA9). The recovered OEM standalone banks (factoryP1/P2) are
-// NOT wired up: they need the OEM's grayscale panel init (see Uc8253X3Luts.h).
+// vs absolute (0xA9).
 //
 // X3TwoPhase BUSY; SPI clock board-overridable (default 16 MHz).
 
@@ -37,12 +36,7 @@ struct Uc8253X3Config {
   Uc8253LutBank full;    // OEM full / factory (CDI 0x29)
   Uc8253LutBank gc;        // OEM 4-level grayscale nudge (CDI 0x29)
   Uc8253LutBank preBwMid;  // OEM grayscale preconditioning settle (CDI 0xA9)
-  // OEM standalone grayscale banks (partial long / full short). Reference only,
-  // NOT used yet: they require the OEM grayscale panel init (different PSR/PWR/
-  // VCOM rails) and its DTM data framing — see the note in Uc8253X3Luts.h.
-  Uc8253LutBank factoryP1;  // OEM standalone gray, long bank (stock partial, CDI 0xD7)
-  Uc8253LutBank factoryP2;  // OEM standalone gray, short bank (stock full, CDI 0x97)
-  uint8_t lutLen;           // bytes per LUT sent to the controller (42)
+  uint8_t lutLen;          // bytes per LUT sent to the controller (42)
 };
 
 const Uc8253X3Config& uc8253X3DefaultConfig();
@@ -80,6 +74,10 @@ class Uc8253X3Driver : public PanelDriver {
 
   void requestResync(uint8_t settlePasses) override;
   void skipInitialResync() override;
+  // Inverted (dark-background) content: fast refreshes rewrite DTM1 ("old")
+  // as the complement of the target so every pixel is re-driven toward its
+  // target each update. See displayStart().
+  void setBackgroundHint(bool darkBackground) override { _darkBackground = darkBackground; }
 
  private:
   void initController(EpdBus& bus);
@@ -97,6 +95,7 @@ class Uc8253X3Driver : public PanelDriver {
   bool _isScreenOn = false;
   bool _redRamSynced = false;
   bool _inGrayscaleMode = false;
+  bool _darkBackground = false;
   uint8_t _initialFullSyncsRemaining = 0;
   bool _forceFullSyncNext = false;
   uint8_t _forcedConditionPassesNext = 0;

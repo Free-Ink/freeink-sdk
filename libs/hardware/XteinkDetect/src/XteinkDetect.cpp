@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <BoardConfig.h>
 #include <Wire.h>
+#include <driver/gpio.h>
 
 #include <string.h>
 
@@ -137,6 +138,11 @@ bool runDisplayProbePass(const EpdProbePins& p, uint8_t ver[5], uint8_t* flg, ui
   // so we don't gate on BUSY; a flat delay covers every UC81xx power-up. The
   // panel driver's own begin() resets again afterwards, so this leaves no state.
   if (p.rst >= 0) {
+    // The sleep path holds RESET at a board-safe level and that per-pin hold
+    // survives the wake reset. Controller detection runs before EpdBus::begin(),
+    // so it must release the hold itself or every digitalWrite below silently
+    // bounces off the retained latch and the probe can select the wrong driver.
+    gpio_hold_dis(static_cast<gpio_num_t>(p.rst));
     pinMode(p.rst, OUTPUT);
     digitalWrite(p.rst, HIGH);
     delay(2);

@@ -135,6 +135,159 @@ const char* keyboardOutputFor(const KeyboardLayout& layout, int16_t value);
 // and consume before the next call.
 const char* keyboardAltOutputFor(const KeyboardLayout& layout, int16_t value);
 
+enum class KeyboardActivationKind : uint8_t {
+  None,
+  Text,
+  Shift,
+  Mode,
+  Language,
+  Delete,
+  Submit,
+};
+
+// Resolve a rendered key value into the semantic operation it represents.
+// Text points into the layout (or keyboardAltOutputFor's short-lived static
+// buffer) and must be consumed before the next alternate-output lookup.
+struct KeyboardActivation {
+  KeyboardActivationKind kind = KeyboardActivationKind::None;
+  const char* text = nullptr;
+  int16_t value = 0;
+  bool longPress = false;
+
+  explicit operator bool() const { return kind != KeyboardActivationKind::None; }
+};
+
+inline KeyboardActivation keyboardActivationFor(const KeyboardLayout& layout, const int16_t value,
+                                                 const bool longPress = false) {
+  for (uint8_t row = 0; row < layout.rowCount; ++row) {
+    for (uint8_t col = 0; col < layout.rows[row].count; ++col) {
+      const KeyboardKey& key = layout.rows[row].keys[col];
+      if (key.value != value || !key.enabled || key.kind == KeyKind::Disabled) continue;
+      switch (key.kind) {
+        case KeyKind::Normal:
+        case KeyKind::Space: {
+          const char* text = longPress ? keyboardAltOutputFor(layout, value) : nullptr;
+          if (!text) text = keyboardOutputFor(layout, value);
+          return KeyboardActivation{text ? KeyboardActivationKind::Text : KeyboardActivationKind::None,
+                                    text, value, longPress};
+        }
+        case KeyKind::Shift:
+          return KeyboardActivation{KeyboardActivationKind::Shift, nullptr, value, longPress};
+        case KeyKind::Mode:
+          return KeyboardActivation{KeyboardActivationKind::Mode, nullptr, value, longPress};
+        case KeyKind::Lang:
+          return KeyboardActivation{KeyboardActivationKind::Language, nullptr, value, longPress};
+        case KeyKind::Delete:
+          return KeyboardActivation{KeyboardActivationKind::Delete, nullptr, value, longPress};
+        case KeyKind::Ok:
+          return KeyboardActivation{KeyboardActivationKind::Submit, nullptr, value, longPress};
+        case KeyKind::Disabled:
+          break;
+      }
+    }
+  }
+  return KeyboardActivation{};
+}
+
+// Row/column focus model for irregular keyboard grids. Vertical movement maps
+// the column proportionally between rows with different key counts; horizontal
+// movement wraps within the current row.
+class KeyboardNavigator {
+ public:
+  void reset(const int16_t row = 0, const int16_t col = 0) {
+    row_ = row;
+    col_ = col;
+  }
+
+  void clamp(const KeyboardLayout& layout) {
+    if (!layout.rows || layout.rowCount == 0) {
+      reset();
+      return;
+    }
+    if (row_ < 0) row_ = 0;
+    if (row_ >= layout.rowCount) row_ = static_cast<int16_t>(layout.rowCount - 1);
+    const int16_t cols = layout.rows[row_].count;
+    if (col_ < 0) col_ = 0;
+    if (col_ >= cols) col_ = cols > 0 ? static_cast<int16_t>(cols - 1) : 0;
+  }
+
+  void moveRow(const KeyboardLayout& layout, const int16_t delta) {
+    if (!layout.rows || layout.rowCount == 0) return;
+    clamp(layout);
+    const int16_t oldCols = layout.rows[row_].count;
+    int16_t next = static_cast<int16_t>((row_ + delta) % layout.rowCount);
+    if (next < 0) next = static_cast<int16_t>(next + layout.rowCount);
+    row_ = next;
+    const int16_t newCols = layout.rows[row_].count;
+    if (oldCols > 0 && newCols > 0 && oldCols != newCols) {
+      col_ = static_cast<int16_t>(col_ * newCols / oldCols);
+    }
+    clamp(layout);
+  }
+
+  void moveCol(const KeyboardLayout& layout, const int16_t delta) {
+    if (!layout.rows || layout.rowCount == 0) return;
+    clamp(layout);
+    const int16_t cols = layout.rows[row_].count;
+    if (cols <= 0) return;
+    int16_t next = static_cast<int16_t>((col_ + delta) % cols);
+    if (next < 0) next = static_cast<int16_t>(next + cols);
+    col_ = next;
+  }
+
+  bool syncToValue(const KeyboardLayout& layout, const int16_t value) {
+    if (!layout.rows) return false;
+    for (uint8_t rowIndex = 0; rowIndex < layout.rowCount; ++rowIndex) {
+      for (uint8_t colIndex = 0; colIndex < layout.rows[rowIndex].count; ++colIndex) {
+        if (layout.rows[rowIndex].keys[colIndex].value == value) {
+          row_ = rowIndex;
+          col_ = colIndex;
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  const KeyboardKey* selected(const KeyboardLayout& layout) const {
+    if (!layout.rows || row_ < 0 || row_ >= layout.rowCount) return nullptr;
+    const KeyboardRow& selectedRow = layout.rows[row_];
+    if (!selectedRow.keys || col_ < 0 || col_ >= selectedRow.count) return nullptr;
+    return &selectedRow.keys[col_];
+  }
+
+  int16_t logicalIndex(const KeyboardLayout& layout) const {
+    if (!selected(layout)) return -1;
+    int16_t index = 0;
+    for (int16_t rowIndex = 0; rowIndex < row_; ++rowIndex) {
+      index = static_cast<int16_t>(index + layout.rows[rowIndex].count);
+    }
+    return static_cast<int16_t>(index + col_);
+  }
+
+  int16_t row() const { return row_; }
+  int16_t col() const { return col_; }
+
+ private:
+  int16_t row_ = 0;
+  int16_t col_ = 0;
+};
+
+inline size_t utf8PreviousBoundary(const char* text, const size_t length, size_t position) {
+  if (!text || position == 0) return 0;
+  if (position > length) position = length;
+  --position;
+  while (position > 0 && (static_cast<uint8_t>(text[position]) & 0xC0) == 0x80) --position;
+  return position;
+}
+
+inline size_t utf8NextBoundary(const char* text, const size_t length, size_t position) {
+  if (!text || position >= length) return length;
+  ++position;
+  while (position < length && (static_cast<uint8_t>(text[position]) & 0xC0) == 0x80) ++position;
+  return position;
+}
+
 // Touch hold routing for e-paper keyboards: fires the long-press at the
 // threshold while the finger is still down (waiting for the release feels
 // broken next to a 1s panel refresh) and swallows the eventual release.
@@ -164,6 +317,14 @@ class TouchHoldRouter {
     explicit operator bool() const { return static_cast<bool>(event); }
   };
 
+  // Reads via routePublished()/publishedData() rather than route()/data():
+  // for a caller that never opts into InteractionBuffer's publish cycle
+  // (beginPublishCycle()/publish()), published_ stays pinned at the same
+  // generation building_ does, so this is behaviourally identical to the
+  // plain route()/data() calls it replaces. For a caller that does opt in
+  // (a render task rebuilding the table on one task while this update() runs
+  // on another), it reads the last complete, published generation instead
+  // of one that may be mid-rebuild.
   template <size_t MaxInteractions>
   Result update(InteractionBuffer<MaxInteractions>& interactions, const bool pressedDown, const int16_t px,
                 const int16_t py, const bool tapped, const int16_t tx, const int16_t ty, const bool inContact,
@@ -182,13 +343,13 @@ class TouchHoldRouter {
         release.touchReleased = true;
         release.touchX = tx;
         release.touchY = ty;
-        result.event = interactions.route(release);
+        result.event = interactions.routePublished(release);
         // Tap slop means the release can land off the pressed key (fingers
         // occlude and slide low on e-paper). A tap is bounded by the slop
         // radius, so dispatching the key the press landed on is what the
         // user meant — a >slop drag is a swipe and never reaches here.
         if (!result.event && heldActive >= 0) {
-          const Interaction& held = interactions.data()[heldActive];
+          const Interaction& held = interactions.publishedData()[heldActive];
           if (!hasState(held.state, StateDisabled) && acceptsInput(held.inputMask, InputTouch)) {
             result.event = ActionEvent{held.action, held.value, held.state};
           }
@@ -208,7 +369,7 @@ class TouchHoldRouter {
       press.touchPressed = true;
       press.touchX = px;
       press.touchY = py;
-      interactions.route(press);
+      interactions.routePublished(press);
       const int16_t active = interactions.activeIndex();
 
       // New contact, or the finger slid onto a different key: restart the
@@ -220,7 +381,8 @@ class TouchHoldRouter {
       }
 
       if (active >= 0) {
-        const uint32_t threshold = interactions.data()[active].value == overrideValue ? overrideHoldMs : holdMs;
+        const uint32_t threshold =
+            interactions.publishedData()[active].value == overrideValue ? overrideHoldMs : holdMs;
         if (nowMs - startMs_ >= threshold) {
           longFired_ = true;
           InputSnapshot release{};
@@ -228,7 +390,7 @@ class TouchHoldRouter {
           release.longPress = true;
           release.touchX = px;
           release.touchY = py;
-          result.event = interactions.route(release);
+          result.event = interactions.routePublished(release);
         }
       }
       return result;
@@ -243,7 +405,7 @@ class TouchHoldRouter {
       longFired_ = false;
       InputSnapshot cancel{};
       cancel.touchReleased = true;
-      interactions.route(cancel);
+      interactions.routePublished(cancel);
       result.activeChanged = true;
     }
     return result;
@@ -294,8 +456,8 @@ class KeyboardEntry {
   // one (falls back to the normal output otherwise).
   bool key(int16_t value, bool longPress = false) {
     const KeyboardLayout& current = builtinKeyboardLayout(layout, shifted, symbols, numberRow);
-    const char* out = longPress ? keyboardAltOutputFor(current, value) : nullptr;
-    if (!out) out = keyboardOutputFor(current, value);
+    const KeyboardActivation activation = keyboardActivationFor(current, value, longPress);
+    const char* out = activation.kind == KeyboardActivationKind::Text ? activation.text : nullptr;
     if (!symbols) shifted = false;
     if (!out || !buf_) return false;
     size_t n = 0;
@@ -310,8 +472,7 @@ class KeyboardEntry {
   // Remove the last character (one code point, not one byte).
   bool backspace() {
     if (!buf_ || len_ == 0) return false;
-    --len_;
-    while (len_ > 0 && (static_cast<uint8_t>(buf_[len_]) & 0xC0) == 0x80) --len_;
+    len_ = utf8PreviousBoundary(buf_, len_, len_);
     buf_[len_] = 0;
     return true;
   }

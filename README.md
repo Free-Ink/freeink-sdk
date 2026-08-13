@@ -15,8 +15,8 @@ API: switching to FreeInk is a matter of repointing the library path.
 
 ## What's included
 
-- **Display facade and panel drivers** for SSD1677, UC8253, ED2208, IT8951, and
-  external-library-backed panels.
+- **Display facade and panel drivers** for SSD1677, UC8179, UC8253, UC8279,
+  ED2208, IT8951, and external-library-backed panels.
 - **Board profiles and capability gates** for display, input, touch, SD,
   frontlight, audio, microphone, RTC, sensors, buzzer, LEDs, and TLS networking.
 - **Device managers** that keep firmware code stable across different boards:
@@ -43,6 +43,9 @@ register sequences and waveform LUTs for the SSD1677 and UC8253 panels are
 reverse-engineered independently — so the community's panel tuning is preserved.
 Attribution is in `NOTICE`. Huge thanks to everyone who reverse-engineered and
 tuned those panels.
+
+See [display driver reference coverage](docs/display-driver-references.md) for
+the source hierarchy and the limits of matching GxEPD2 implementations.
 
 What FreeInk changes is the **structure**, not the panel work: where the upstream
 interleaves every device in one monolithic driver, FreeInk splits each controller
@@ -125,7 +128,9 @@ so the SD manager itself stays device-agnostic.
 | **LilyGo T5 S3** | ESP32-S3 | ED047TC1 (raw parallel) | 960×540 16-gray | LovyanGFX EPD driver with 16-gray, GT911 touch, PWM backlight, BQ27220/BQ25896 I²C battery |
 | **M5Paper v1.1** | ESP32 (classic) | IT8951E | 540×960 16-gray ED047TC1 | hand-rolled IT8951 driver (own SPI, 1bpp→4bpp load, GC16/DU/A2 modes, auto rotation onto the portrait panel), GT911 touch, GPIO35 ADC battery |
 | **Sticky** (Upcoming Device) | ESP32-S3 | SSD1677 | 3.97" 800×480 B/W | reuses the SSD1677 driver (X4-class), GT911 touch, PDM microphone (Microphone lib), BQ27220 I²C battery gauge, PCF8563 RTC + SHT40 temp/humidity + LSM6DS3TR-C IMU (Rtc / EnvironmentSensor / Imu libs), SPI MicroSD (shares the display bus), LEDC buzzer (Buzzer lib); orientation/SD-sharing pending hardware validation |
-| **Xteink X4 Pro** | ESP32-S3 | SSD1677 **or** UC8179 (per batch) | 800×480 B/W | GT911 touch, dual warm/cold frontlight, native 1-bit SDMMC, BM8563 RTC, CW2017 battery gauge; controller auto-detected at boot |
+| **Xteink X4 Pro** | ESP32-S3 | SSD1677, UC8179, **or UC8279** (per batch) | 800×480 B/W | GT911 touch, dual warm/cold frontlight, native 1-bit SDMMC, BM8563 RTC, CW2017 battery gauge; controller auto-detected at boot |
+| **M5Stack Paper Mono** | ESP32-S3 | SSD1677 | 800×480 B/W | non-flashing fast refresh + 3-level grayscale (host-authored LUTs), FT6336 touch, PMIC-PWM frontlight (AW9967), RX8130 RTC, PDM microphone, LEDC buzzer, discrete RGB LED, native 1-bit SDMMC, M5PM1 battery/charging telemetry; power/reset rails sequenced through the on-board M5PM1 PMIC + M5IOE1 expander |
+| **M5Stack PaperS3** | ESP32-S3 | ED047TC1 (raw parallel) | 960×540 16-gray | same LovyanGFX EPD driver class as the LilyGo T5 S3 (plain-GPIO EPD rails, no PMIC), GT911 touch (touch-only navigation — no GPIO buttons), BM8563 RTC, GPIO3 ADC battery, LEDC buzzer, SPI MicroSD; power-off is a GPIO44 pulse to the PMS150G latch (`BoardPaperS3::powerOff()`); rotation/touch-flip pending hardware validation |
 
 X3 and X4 share the ESP32-C3 and a pinout, so **one firmware binary drives both**:
 it carries both board profiles (`XTEINK_X4` and `XTEINK_X3`) and picks one at
@@ -140,15 +145,15 @@ profile. In builds without an Xteink profile the helpers compile to no-ops that
 return false without touching any pins, so an unconditional call is safe on
 every device. Devices on a different MCU build their own binary, selected with a
 `-DFREEINK_DEVICE_*` flag. A build targets exactly one of the three MCU families — ESP32-C3 (X3/X4),
-ESP32-S3 (de-link/PaperColor/Murphy/LilyGo/Sticky/X4 Pro), or classic ESP32 (M5Paper);
+ESP32-S3 (de-link/PaperColor/Murphy/LilyGo/Sticky/X4 Pro/Paper Mono/PaperS3), or classic ESP32 (M5Paper);
 `BoardConfig` rejects mixing families at compile time.
 
 #### Per-batch panel controllers (`applyXteinkDisplayController()`)
 
 Several Xteink panels ship a **different display controller depending on the
 production batch**, on the same board and pinout: the X3 moved from **UC8253** to
-**UC8279d**, and the X4 / X4 Pro from **SSD1677** to **UC8179** (both UltraChip
-parts). A binary hardcoded to one controller shows a blank screen on the other
+**UC8279d**, while X4-family units may carry **SSD1677**, **UC8179**, or
+**UC8279**. A binary hardcoded to one controller shows a blank screen on another
 batch. `XteinkDetect` resolves which silicon a unit carries at boot:
 
 ```cpp
@@ -230,10 +235,45 @@ void loop() {
 }
 ```
 
-**Capacitive touch** (gated by `FREEINK_CAP_TOUCH`) covers two controllers:
-**CHSC6x** (Murphy M3 — IRQ-driven) and **GT911** (LilyGo T5 S3 and M5Paper v1.1 —
+### M5Stack Paper Mono board support
+
+The Paper Mono routes most of its power and reset plumbing through two PY32
+helper chips on the system I²C bus instead of ESP GPIOs: the **M5PM1 PMIC**
+(battery telemetry, charging, power button, frontlight PWM, red LED leg) and the
+**M5IOE1 I/O expander** (EPD power + reset, touch power + reset, TF-card rail,
+PDM-mic rail, green/blue LED legs). The SDK sequences all of it itself —
+`PaperMonoBoard.h` is the single owner of the bring-up, and the hardware
+managers call into it as needed (`EpdBus` for the EPD rail/reset, `InputManager`
+for the touch rail and the PMIC power button, `LedManager` /
+`FrontlightManager` via their configs) — so consumer firmware normally never
+touches the PMIC or expander directly. The one exception is the PDM microphone
+rail: a consumer that captures audio raises `m5ioe1::PIN_MIC_POWER` in its own
+bring-up before recording.
+
+Notable behaviors on this board:
+
+- **Refresh model.** Binary UI paints use the Paper Mono SSD1677's internal non-flashing
+  waveform; grayscale paints run host-authored LUTs whose 3-level target is
+  batched in host RAM before the waveform starts. The facade's
+  `displayCommitted()` / `runMaintenance()` / `controllerIdle()` hooks let
+  firmware distinguish a frame that actually reached the panel from one that was
+  superseded, and schedule the panel's non-flashing ghost-cleanup pass.
+- **Input.** Two physical buttons (`DigitalTwoButton` input style): short
+  presses page up/down, holds synthesize back/confirm, and the power button
+  arrives as ordinary `BTN_POWER` events polled from the PMIC (its single-click
+  hardware reset is disabled at boot; its long-hold download escape stays).
+- **Frontlight.** The PWM lives in the PMIC (12-bit, driving an AW9967 boost
+  LED driver fed from the EPD rail), so the light only runs while EPD power is
+  on. `FrontlightManager`'s normal API applies unchanged.
+- **Framebuffer.** `FREEINK_FB_PSRAM` defaults on — the grayscale target planes
+  are batched in host RAM alongside the framebuffer, so the build needs
+  `-DBOARD_HAS_PSRAM`.
+
+**Capacitive touch** (gated by `FREEINK_CAP_TOUCH`) covers three controllers:
+**CHSC6x** (Murphy M3 — IRQ-driven), **GT911** (LilyGo T5 S3 and M5Paper v1.1 —
 polled, raw register reads + the reset/address dance, including the capacitive home
-key). The InputManager exposes `hasTouch/isTouchPressed/wasTouchPressed/
+key), and the **FT5x06 family** (Paper Mono's FT6336 — polled point reads gated on
+the active-low IRQ line). The InputManager exposes `hasTouch/isTouchPressed/wasTouchPressed/
 wasTouchReleased/getTouchPoint`; it delivers coordinates raw-panel-oriented and the
 app owns rotation. The GT911 boards set their `TouchConfig` in the board profile
 (e.g. `BoardConfig::LILYGO_T5_PRO_GT911`).
@@ -256,6 +296,9 @@ MCU (a C3-vs-S3 mix is a compile error):
 | `-DFREEINK_DEVICE_MURPHY` | Murphy M3 (S3, UC8253 + touch + frontlight) |
 | `-DFREEINK_DEVICE_LILYGO` | LilyGo T5 S3 (S3, ED047TC1 raw-parallel EPD via LovyanGFX) |
 | `-DFREEINK_DEVICE_STICKY` | Sticky (S3, SSD1677 800×480 + GT911 touch + PDM mic) |
+| `-DFREEINK_DEVICE_X4PRO` | Xteink X4 Pro (S3, SSD1677/UC8179/UC8279 auto-detect + GT911 touch + SDMMC) |
+| `-DFREEINK_DEVICE_PAPERMONO` | M5Stack Paper Mono (S3, SSD1677 + FT6336 touch + PMIC frontlight) |
+| `-DFREEINK_DEVICE_PAPERS3` | M5Stack PaperS3 (S3, ED047TC1 raw-parallel EPD via LovyanGFX + GT911 touch) |
 | *(none)* | **compile error** — a build must select at least one device |
 
 Multiple **different-pinout** devices on one MCU are runtime-selected: `ACTIVE`
@@ -272,12 +315,12 @@ tight. Each defaults on when an included device needs it; force with `=0`/`=1`:
 | `FREEINK_CAP_FRONTLIGHT` | PWM frontlight (FrontlightManager) | on if a device has a frontlight |
 | `FREEINK_CAP_COLOR` | color panel code | on for M5 |
 | `FREEINK_CAP_AUDIO` | audio output (AudioManager: ES8388/ES8311 codec + I2S WAV playback) | on for Murphy and M5 |
-| `FREEINK_CAP_MIC` | microphone capture (Microphone lib: PDM mic → 16-bit PCM via i2s_pdm RX) | on for Sticky |
-| `FREEINK_CAP_RTC` | real-time clock (Rtc lib: PCF8563 over I²C) | on for Sticky |
+| `FREEINK_CAP_MIC` | microphone capture (Microphone lib: PDM mic → 16-bit PCM via i2s_pdm RX) | on for Sticky and Paper Mono |
+| `FREEINK_CAP_RTC` | real-time clock (Rtc lib: PCF8563 / DS3231 / RX8130 over I²C, per profile) | on for X3, Sticky, X4 Pro, and Paper Mono |
 | `FREEINK_CAP_TEMP_HUMIDITY` | temperature + humidity (EnvironmentSensor lib: SHT40 over I²C) | on for Sticky |
 | `FREEINK_CAP_IMU` | 6-axis IMU (Imu lib: LSM6DS3TR-C over I²C) | on for Sticky |
-| `FREEINK_CAP_BUZZER` | LEDC PWM tone buzzer (Buzzer lib: tone/beep on `audio.buzzer`) | on for Sticky and Murphy |
-| `FREEINK_CAP_LED` | addressable RGB LEDs (LedManager) | on for M5 |
+| `FREEINK_CAP_BUZZER` | LEDC PWM tone buzzer (Buzzer lib: tone/beep on `audio.buzzer`) | on for Sticky, Murphy, and Paper Mono |
+| `FREEINK_CAP_LED` | RGB LEDs (LedManager: addressable chains, or the Paper Mono's discrete PMIC/expander-driven LED) | on for M5 and Paper Mono |
 | `FREEINK_CAP_NET_TLS13` | wolfSSL TLS 1.3 (≡ `FREEINK_NET_WOLFSSL`) | off |
 
 **Other flags:**
@@ -285,10 +328,10 @@ tight. Each defaults on when an included device needs it; force with `=0`/`=1`:
 | Flag | Effect |
 |---|---|
 | `-DFREEINK_DISPLAY_FLIPPED` (or `-DFLIPPED`) | back-compat alias for `BoardProfile.orientation = MIRROR_Y` on SSD1677 |
-| `-DFREEINK_SD_SDMMC=1` | use the native 4-bit SDMMC backend (needs `-DUSE_BLOCK_DEVICE_INTERFACE=1`); auto-on for de-link |
+| `-DFREEINK_SD_SDMMC=1` | use the native SDMMC backend — 4-bit or 1-bit per profile (needs `-DUSE_BLOCK_DEVICE_INTERFACE=1`); auto-on for de-link, X4 Pro, and Paper Mono |
 | `-DFREEINK_BATTERY_I2C_GAUGE=1` | compile the I²C fuel-gauge backend (BQ27220/BQ25896); auto-on for X3, LilyGo, and Sticky. Gauge-vs-ADC is then runtime per profile, so X3 (gauge) + X4 (ADC) coexist in one binary |
 | `-DEINK_DISPLAY_SINGLE_BUFFER_MODE=1` | single framebuffer (uses controller RAM as previous frame) |
-| `-DFREEINK_FB_PSRAM=1` | place the facade framebuffer(s) in PSRAM heap (`MALLOC_CAP_SPIRAM`, allocated in `begin()`) instead of static DRAM `.bss`; auto-on for M5Paper, off everywhere else |
+| `-DFREEINK_FB_PSRAM=1` | place the facade framebuffer(s) in PSRAM heap (`MALLOC_CAP_SPIRAM`, allocated in `begin()`) instead of static DRAM `.bss`; auto-on for M5Paper and Paper Mono, off everywhere else |
 | `-DFREEINK_NET_WOLFSSL=1` | enable the wolfSSL TLS 1.3 transport in `SecureNet` |
 
 Panel **orientation/mirroring** is per-board data, not a flag: set `BoardProfile.orientation`
@@ -302,8 +345,9 @@ The facade's framebuffer(s) sit in static DRAM `.bss` by default — fastest, an
 panel sizes fit comfortably on the C3/S3 parts (the largest, 960×540, is ~63 KB).
 M5Paper v1.1 is the exception: the classic ESP32 shares ~300 KB of DRAM with the
 IDF/WiFi stacks and the firmware's own buffers, so that 63 KB framebuffer in `.bss`
-overflows internal RAM. For M5Paper, `FREEINK_FB_PSRAM` defaults on and the
-framebuffer is heap-allocated in PSRAM (`heap_caps_malloc(MALLOC_CAP_SPIRAM)`, once,
+overflows internal RAM. For M5Paper (and the Paper Mono, whose display driver
+additionally batches full grayscale target planes in host RAM),
+`FREEINK_FB_PSRAM` defaults on and the framebuffer is heap-allocated in PSRAM (`heap_caps_malloc(MALLOC_CAP_SPIRAM)`, once,
 in `begin()`, with a DRAM `malloc` fallback). DRAM is faster than cache-backed PSRAM
 and the framebuffer is touched heavily during composition, so it stays off for every
 other device — but any DRAM-tight build (e.g. a feature-heavy LilyGo T5 S3, same
@@ -667,8 +711,8 @@ name replaces the existing sink.
 See **[`platformio.sample.ini`](platformio.sample.ini)** for a complete, ready-to-copy
 configuration — it mirrors the toolchain/flags verified against the CrossPoint
 firmware and includes per-device build envs (`xteink`, `xteink_x4`, `m5paper`,
-`delink`, `murphy`, `m5paper_v11`, `sticky`) wired with the right
-`FREEINK_DEVICE_*` flags.
+`delink`, `murphy`, `m5paper_v11`, `sticky`, `x4pro`, `papermono`) wired with the
+right `FREEINK_DEVICE_*` flags.
 
 Already on CrossPoint? **[`platformio.crosspoint.sample.ini`](platformio.crosspoint.sample.ini)**
 mirrors the exact working setup: drop it into the CrossPoint repo as
@@ -773,13 +817,13 @@ libs/
   assets/Icons/             freeink::Icon format + vendored Lucide SVGs + generator
   display/FreeInkDisplay/   facade + EInkDisplay shim + per-controller drivers + LUTs
   hardware/BoardConfig/     board profiles & capability descriptors
-  hardware/InputManager/    buttons + capacitive touch (CHSC6x, GT911)
+  hardware/InputManager/    buttons + capacitive touch (CHSC6x, GT911, FT5x06)
   hardware/BatteryMonitor/  ADC battery + optional charge-sense
   hardware/SDCardManager/   SD storage (SdFat-over-SPI or native SDMMC)
   hardware/PowerManager/    per-SoC deep-sleep wake-on-power-button
   hardware/MemoryManager/   on-demand cache-sink reclaim + heap reporting
-  hardware/FrontlightManager/  PWM frontlight (de-link)
-  hardware/LedManager/      addressable RGB LEDs (M5 PaperColor)
+  hardware/FrontlightManager/  PWM frontlight (LEDC or PMIC-PWM)
+  hardware/LedManager/      RGB LEDs (M5 PaperColor addressable, Paper Mono discrete)
   hardware/AudioManager/    I2S codec WAV playback (Murphy, M5 PaperColor)
   network/SecureNet/        wolfSSL TLS 1.3 client + HTTP shim (opt-in)
 ```

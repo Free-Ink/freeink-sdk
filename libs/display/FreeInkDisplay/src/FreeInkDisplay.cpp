@@ -824,13 +824,13 @@ void FreeInkDisplay::displayWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t 
 }
 
 void FreeInkDisplay::displayGrayBuffer(bool turnOffScreen, const unsigned char* lut, bool factoryMode) {
-  DisplayPmLock pmLock;
 #if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
   Serial.printf("[EPD] displayGrayBuffer\n");
 #endif
   // Inverted mode deliberately renders a crisp BW page. Writing normal
   // grayscale planes afterward would partially undo the output inversion.
   if (_inverted) return;
+  DisplayPmLock pmLock;
   syncPendingAsync();
   _shadowValid = false;
   _redRamSynced = false;  // grayscale leaves RED holding a gray plane, not the BW baseline
@@ -839,6 +839,7 @@ void FreeInkDisplay::displayGrayBuffer(bool turnOffScreen, const unsigned char* 
 
 void FreeInkDisplay::displayGrayCalibration(uint16_t customX, uint16_t customY, uint16_t customW, uint16_t customH) {
   if (_inverted) return;
+  DisplayPmLock pmLock;
   syncPendingAsync();
   _shadowValid = false;
   _redRamSynced = false;
@@ -935,9 +936,9 @@ void FreeInkDisplay::cleanupGrayscaleBuffers(const uint8_t* bwBuffer) {
 }
 #ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
 void FreeInkDisplay::cleanupGrayscaleWithPreviousBuffer() {
-  DisplayPmLock pmLock;
   const uint8_t* baseline = frameBufferActive ? frameBufferActive : frameBuffer;
   if (!_inverted) {
+    DisplayPmLock pmLock;
     _driver->cleanupGrayscaleBuffers(_bus, baseline);
   }
   if (frameBuffer && baseline && frameBuffer != baseline)
@@ -971,6 +972,7 @@ bool FreeInkDisplay::displayCommitted() const {
 
 void FreeInkDisplay::runMaintenance() {
   if (!_driver) return;
+  DisplayPmLock pmLock;
   syncPendingAsync();
   _driver->runMaintenance(_bus);
 }
@@ -981,6 +983,7 @@ bool FreeInkDisplay::hasPendingMaintenance() const {
 
 void FreeInkDisplay::controllerIdle() {
   if (!_driver) return;
+  DisplayPmLock pmLock;
   syncPendingAsync();
   _driver->controllerIdle(_bus);
 }
@@ -1004,8 +1007,9 @@ void FreeInkDisplay::grayscaleRevert() {
 }
 
 void FreeInkDisplay::setCustomLUT(bool enabled, const unsigned char* lutData) {
+  if (!_driver) return;
   DisplayPmLock pmLock;
-  if (_driver) _driver->setCustomLut(_bus, enabled, lutData);
+  _driver->setCustomLut(_bus, enabled, lutData);
 }
 
 void FreeInkDisplay::deepSleep() {

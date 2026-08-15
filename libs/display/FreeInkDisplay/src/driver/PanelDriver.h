@@ -111,6 +111,11 @@ class PanelDriver {
   // grayscale pass. Drivers with a dedicated grayscale-base waveform must
   // override this even when their normal display path supports deferral.
   virtual bool supportsAsyncGrayscaleBase() const { return false; }
+
+  // True when this controller accepts absolute selector planes via displayGrayAbsolute()
+  // This is a runtime capability because one firmware image may include several drivers
+  // and driver configurations and select the controller during boot.
+  virtual bool supportsAbsoluteGrayscale() const { return false; }
   // True when displayGrayscaleBase() DEFERS the base activation so the gray
   // planes join it in a single waveform (Paper Mono). Hosts should then route the
   // grayscale base through displayGrayscaleBase() instead of display(): a
@@ -162,6 +167,10 @@ class PanelDriver {
     (void)lut;
     (void)factoryMode;
     display(bus, fb, nullptr, RefreshMode::Fast, turnOff);
+  }
+  virtual void displayGrayAbsolute(EpdBus& bus, const uint8_t* fb, bool turnOff)
+  {
+    displayGray(bus, fb, turnOff, nullptr, false);
   }
   // Diagnostic four-gray comparison. The full frame is first rendered with
   // the controller's flashing OTP waveform; `custom*` is then rebuilt with the

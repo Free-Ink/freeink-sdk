@@ -140,6 +140,11 @@ class InputManager {
   // (~700 ms), while still down — a hold shortcut (e.g. open the reader menu).
   // Cleared each #update().
   bool wasHomeKeyLongPressed() const;
+  // Home key currently held (level, not an edge). A motionless hold produces
+  // no new-data frames, so its long-press threshold is timed by #update()
+  // against the wall clock — a host that stops polling while this is true
+  // stretches that threshold by however long it stayed away.
+  bool isHomeKeyDown() const;
 
   // Touch INT line usable as a light-sleep wake source, or -1. A host can only
   // wake from light sleep on a GPIO LEVEL (the edge detector is clock-gated
@@ -150,7 +155,9 @@ class InputManager {
   // FREEINK_GT911_INT_WAKE not built, or the controller refused the mode);
   // callers must keep polling in that case.
   int8_t touchWakeIrqPin() const;
-  // Asserted level of #touchWakeIrqPin (true = LOW).
+  // Asserted level of #touchWakeIrqPin (true = LOW), from the board profile's
+  // TouchConfig::irqActiveLow. The driver only ever programs a low-level hold,
+  // and refuses to report the pin at all on a profile that claims otherwise.
   bool touchWakeIrqActiveLow() const;
 
   // Optional board hook for buttons that aren't direct GPIOs — e.g. a key
@@ -160,6 +167,10 @@ class InputManager {
   // none.
   using ButtonHook = uint8_t (*)();
   static void setButtonHook(ButtonHook hook) { s_buttonHook = hook; }
+  // True once a board has installed such a hook. Lets a host tell that some of
+  // its buttons are NOT readable as GPIO levels — e.g. a GPIO-interrupt idle
+  // wait cannot see them and must keep polling instead.
+  static bool hasButtonHook() { return s_buttonHook != nullptr; }
 
   // Boards such as Sticky wire OK/confirm and power/wake to the same GPIO. By
   // default a short click emits CONFIRM and a hold emits POWER. Apps that

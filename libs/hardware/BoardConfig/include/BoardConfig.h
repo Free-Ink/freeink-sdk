@@ -490,7 +490,11 @@ struct TouchConfig {
   uint16_t rawMinY, rawMaxY;
   bool synthesizeConfirm;  // emit a CONFIRM button event on tap
   uint8_t i2cAddressAlt;   // alternate I2C address to probe (GT911 0x14; 0 = none)
-  bool irqActiveLow;       // touch IRQ asserted LOW (CHSC6x)
+  // Asserted level of the irq pin (true = LOW). Reported by
+  // InputManager::touchWakeIrqActiveLow() so a host can arm the right level as a
+  // light-sleep wake source; the GT911 INT-wake path also refuses to configure a
+  // profile that claims active-high, since it only programs a low-level hold.
+  bool irqActiveLow;
   // GT911 point-frame layout: false = datasheet standard (track-id at 0x8150, so
   // coords start at byte 1); true = coords start at byte 0 (no track-id), as seen
   // on M5Paper's GT911 which boots without a reset/config dance. Ignored (CHSC6x).
@@ -1406,6 +1410,8 @@ constexpr BoardProfile XTEINK_X4_PRO = {
     // internal config on the standard reset dance — no host config upload needed. Mounted PORTRAIT
     // (reports X:0..480, Y:0..800) on the 800x480 landscape panel → swapXY=true; rawMax describe the
     // post-swap panel axes. Coords start at byte 0 of the 0x8150 read → gt911CoordsAtByte0=true.
+    // irqActiveLow=true: the GT911 INT asserts LOW in the low-level hold mode the driver programs
+    // for wake (FREEINK_GT911_INT_WAKE) and idles HIGH on its pull-up between report frames.
     // flipX/flipY pending a corner-tap test. {ctrl,sda,scl,irq,rst,addr,rawMinX,rawMaxX,rawMinY,rawMaxY,
     //  synthConfirm,altAddr,irqActiveLow,coordsAtByte0,powerEnable,swapXY,flipX,flipY,hasHomeKey,pwrActiveHigh}
     {TouchController::Gt911,
@@ -1420,7 +1426,7 @@ constexpr BoardProfile XTEINK_X4_PRO = {
      479,
      false,
      0x14,
-     false,
+     true,
      true,
      2,
      true,
@@ -1463,8 +1469,9 @@ constexpr BoardProfile XTEINK_X4_PRO = {
     // board_begin at IROM 0x420a23dc). Carried as power.latch0 so holdPowerRails() asserts it
     // early — without it the panel rail and the SD slot both stay unpowered (the bring-up
     // symptom: EPD BUSY never asserts, SD returns 0xFF). GPIO2 is a second board-init output
-    // driven LOW (role unknown); not modeled here. NOTE: GPIO1/GPIO2 are therefore NOT the ADC
-    // button ladder — that earlier assumption was wrong; the ladder pins remain unconfirmed.
+    // driven LOW: the touch controller's active-LOW rail, modeled above as the TouchConfig
+    // powerEnable=2 / powerEnableActiveHigh=false pair. NOTE: GPIO1/GPIO2 are therefore NOT the
+    // ADC button ladder — that earlier assumption was wrong; the ladder pins remain unconfirmed.
     {1},
     0,  // displayControllerVariant: filled by the boot probe
     // Bezel overlap: the panel sits recessed, and 7px is the empirically-tuned

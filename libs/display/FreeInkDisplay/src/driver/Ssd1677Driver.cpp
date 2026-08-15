@@ -635,6 +635,11 @@ void Ssd1677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
   setCustomLut(bus, false, nullptr);
 }
 
+void Ssd1677Driver::displayGrayAbsolute(EpdBus& bus, const uint8_t* fb, bool turnOff)
+{
+  displayGray(bus, fb, turnOff, lut_factory_quality, true);
+}
+
 void Ssd1677Driver::cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) {
   if (!bw) return;
   setRamArea(bus, 0, 0, _w, _h);

@@ -129,6 +129,8 @@ class FreeInkDisplay {
   bool supportsBusyGrayscaleStaging() const;
   void prepareGrayscaleTarget();
   bool supportsStripGrayscale() const;
+  // True only when the runtime-selected panel driver accepts absolute LUT plane encoding.
+  bool supportsAbsoluteGrayscale() const;
   // True when displayGrayscaleBase() defers the base activation so the gray
   // planes join it in one waveform (Paper Mono) - see PanelDriver.
   bool combinesGrayscaleBase() const;
@@ -250,6 +252,7 @@ class FreeInkDisplay {
   // EXPERIMENTAL: Windowed update - display only a rectangular region
   void displayWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t h, bool turnOffScreen = false);
   void displayGrayBuffer(bool turnOffScreen = false, const unsigned char* lut = nullptr, bool factoryMode = false);
+  void displayAbsoluteGrayBuffer(bool turnOffScreen = false);
   void displayGrayCalibration(uint16_t customX, uint16_t customY, uint16_t customW, uint16_t customH);
 
   void refreshDisplay(RefreshMode mode = FAST_REFRESH, bool turnOffScreen = false);

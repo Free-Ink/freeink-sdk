@@ -53,6 +53,7 @@ struct Ssd1677Config {
   // collapsing toward B/W). The X4 keeps the panel powered between fast
   // refreshes, so it never needs this and keeps stock behavior.
   bool grayPowerUpFirst = false;
+  bool enableAbsoluteLut = false;
 };
 
 // Standard config (Xteink X4 / GDEQ0426T82). Panel mounting (mirror/180°) is NOT
@@ -85,7 +86,7 @@ class Ssd1677Driver : public PanelDriver {
   void seedPreviousFrame(EpdBus& bus, const uint8_t* buf) override;
 
   bool supportsStripGrayscale() const override { return true; }
-  bool supportsAbsoluteGrayscale() const override { return true; }
+  bool supportsAbsoluteGrayscale() const override { return _cfg.enableAbsoluteLut; }
   void copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) override;
   void copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) override;
   void writeGrayscalePlaneStrip(EpdBus& bus, GrayPlane plane, const uint8_t* rows, uint16_t yStart,

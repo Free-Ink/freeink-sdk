@@ -65,6 +65,8 @@ const Ssd1677Config& ssd1677DefaultConfig() {
       0xC0,  // borderWaveformGray: written explicitly with the external AA LUT (vendor
              // reference stage 2); same value the B/W paths leave in the register, so
              // the wire state is unchanged — just no longer relying on carry-over
+      false, // grayPowerUpFirst
+      true,  // enableAbsoluteLut
   };
   return cfg;
 }

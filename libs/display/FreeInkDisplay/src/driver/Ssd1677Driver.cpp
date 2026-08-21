@@ -66,6 +66,8 @@ const Ssd1677Config& ssd1677DefaultConfig() {
       0xC0,  // borderWaveformGray: written explicitly with the external AA LUT (vendor
              // reference stage 2); same value the B/W paths leave in the register, so
              // the wire state is unchanged — just no longer relying on carry-over
+      false, // grayPowerUpFirst
+      true,  // enableAbsoluteLut
   };
   return cfg;
 }
@@ -633,6 +635,11 @@ void Ssd1677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
   }
 
   setCustomLut(bus, false, nullptr);
+}
+
+void Ssd1677Driver::displayGrayAbsolute(EpdBus& bus, const uint8_t* fb, bool turnOff)
+{
+  displayGray(bus, fb, turnOff, lut_factory_quality, true);
 }
 
 void Ssd1677Driver::cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) {

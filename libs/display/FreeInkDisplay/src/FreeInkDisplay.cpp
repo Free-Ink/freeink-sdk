@@ -783,6 +783,19 @@ void FreeInkDisplay::displayGrayBuffer(bool turnOffScreen, const unsigned char* 
   _driver->displayGray(_bus, frameBuffer, turnOffScreen, lut, factoryMode);
 }
 
+void FreeInkDisplay::displayAbsoluteGrayBuffer(bool turnOffScreen) {
+#if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
+  Serial.printf("[EPD] displayAbsoluteGrayBuffer\n");
+#endif
+  // Inverted mode deliberately renders a crisp BW page. Writing normal
+  // grayscale planes afterward would partially undo the output inversion.
+  if (_inverted) return;
+  syncPendingAsync();
+  _shadowValid = false;
+  _redRamSynced = false;  // grayscale leaves RED holding a gray plane, not the BW baseline
+  _driver->displayGrayAbsolute(_bus, frameBuffer, turnOffScreen);
+}
+
 void FreeInkDisplay::displayGrayCalibration(uint16_t customX, uint16_t customY, uint16_t customW, uint16_t customH) {
   if (_inverted) return;
   syncPendingAsync();
@@ -857,6 +870,10 @@ void FreeInkDisplay::prepareGrayscaleTarget() {
 
 bool FreeInkDisplay::supportsStripGrayscale() const {
   return !_inverted && _driver && _driver->supportsStripGrayscale();
+}
+
+bool FreeInkDisplay::supportsAbsoluteGrayscale() const {
+  return !_inverted && _driver && _driver->supportsAbsoluteGrayscale();
 }
 
 bool FreeInkDisplay::combinesGrayscaleBase() const { return _driver && _driver->combinesGrayscaleBase(); }

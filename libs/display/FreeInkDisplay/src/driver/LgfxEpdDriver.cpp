@@ -122,7 +122,11 @@ uint8_t* g_lsb = nullptr;
 uint8_t* g_msb = nullptr;
 uint16_t g_w = 0, g_h = 0, g_wb = 0;
 
-constexpr uint8_t kGrayBlack = 0x00, kGrayDark = 0x55, kGrayLight = 0xAA, kGrayWhite = 0xFF;
+// 0x00 and 0xFF survive Panel_EPD's quantiser at both rails whatever the Bayer
+// cell (it clamps), so the two rails need no board input. The greys do -- see
+// LgfxEpdConfig::grayDark.
+constexpr uint8_t kGrayBlack = 0x00, kGrayWhite = 0xFF;
+uint8_t g_grayDark = 0, g_grayLight = 0;
 
 void allocCanvas(uint16_t w, uint16_t h) {
   g_w = w;
@@ -184,7 +188,7 @@ void overlayCanvasGray() {
         const uint8_t mask = 0x80 >> bit;
         const bool lb = (l & mask) != 0, mb = (m & mask) != 0;
         if (!lb && !mb) continue;
-        drow[bx * 8 + bit] = mb && !lb ? kGrayLight : kGrayDark;
+        drow[bx * 8 + bit] = (mb && !lb) ? g_grayLight : g_grayDark;
       }
     }
   }
@@ -197,12 +201,62 @@ void overlayCanvasGray() {
 // page refreshed with those modes flashed when its AA pass ran.
 lgfx::epd_mode::epd_mode_t g_lastBaseEpdMode = lgfx::epd_mode::epd_fast;
 
+// Wait out a refresh this driver just queued.
+//
+// waitDisplay() alone can return before the refresh has begun: Panel_EPD's
+// display() raises _display_busy, yields (vTaskDelay(1)), and only then posts
+// the job. The yield lets the panel task reach the top of its loop, where it
+// assigns _display_busy = remain unconditionally -- false on an idle panel --
+// clearing the flag the caller just raised, then blocking on a queue the job
+// has not reached. Between xQueueSend() returning and the task waking, the flag
+// reads false for a refresh that has not started, so a caller that trusts it
+// walks straight into the panel task's diff copy and tears it. Torn step state
+// is how a pixel ends up with a step index that never terminates, `remain`
+// never clears, and the next waitDisplay() blocks forever -- the reader frozen
+// with input still alive.
+//
+// Yielding first lets the panel task ingest the job and re-raise the flag; the
+// wait after it then means what it says. (1.5.16 shipped this, 1.5.17 reverted
+// it on a ghosting suspicion; the ghosting survived the revert, which clears
+// this guard of that charge.)
+void settleDisplay() {
+  vTaskDelay(pdMS_TO_TICKS(2));
+  g_dev.waitDisplay();
+}
+
 void pushCanvas(lgfx::epd_mode::epd_mode_t epdMode) {
   if (!g_canvas) return;
   g_dev.waitDisplay();
   g_dev.setEpdMode(epdMode);
   g_canvas->pushSprite(0, 0);  // commits to the panel; Panel_EPD runs the refresh
+  settleDisplay();
+}
+
+// Push the canvas keeping its grey levels, then refresh through the differential
+// bank.
+//
+// Panel_EPD reads the epd_mode twice, at two different moments, and they do not
+// have to agree. _draw_pixels() reads it while the sprite is being copied into
+// the panel's 4bpp buffer, and in epd_fast/epd_fastest it Bayer-dithers every
+// pixel to one of the two rails there and then -- that is what turned the AA
+// greys into hard black speckle along glyph edges. task_update() reads it again
+// when the refresh is queued, and only the fast modes skip lut_eraser, the
+// preliminary pass that drives everything toward mid grey and shows as a flash.
+//
+// Splitting auto-display lets each read see the mode it should: quality while the
+// pixels land (16 levels, no dither), fast when the refresh goes out (no eraser,
+// and the same LUT bank the B/W base used, so Panel_EPD's per-pixel diff still
+// skips everything that did not change).
+void pushCanvasGraded(lgfx::epd_mode::epd_mode_t refreshMode) {
+  if (!g_canvas) return;
   g_dev.waitDisplay();
+  g_dev.setEpdMode(lgfx::epd_mode::epd_quality);
+  g_dev.setAutoDisplay(false);
+  g_canvas->pushSprite(0, 0);  // writes the panel buffer, queues no refresh
+  g_dev.setAutoDisplay(true);
+  g_dev.setEpdMode(refreshMode);
+  g_dev.display();  // covers the rect pushSprite accumulated
+  settleDisplay();
 }
 
 }  // namespace
@@ -225,6 +279,8 @@ void LgfxEpdDriver::begin(EpdBus& bus) {
   g_dev.init();
   g_dev.setRotation(_cfg.rotation);
   g_dev.setEpdMode(lgfx::epd_mode::epd_fast);
+  g_grayDark = _cfg.grayDark;
+  g_grayLight = _cfg.grayLight;
   allocCanvas(BoardConfig::ACTIVE.displayWidth, BoardConfig::ACTIVE.displayHeight);
 #endif
 }
@@ -236,6 +292,42 @@ void LgfxEpdDriver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev,
   fillCanvasBW(fb);  // expand the 1-bpp frame into the gray canvas
   g_lastBaseEpdMode = epdModeFor(mode);
   pushCanvas(g_lastBaseEpdMode);
+  if (turnOff) g_dev.sleep();
+#else
+  (void)fb;
+  (void)mode;
+  (void)turnOff;
+#endif
+}
+
+// One render, one push: the whole page -- text and its anti-aliasing greys --
+// reaches the panel as a single waveform.
+//
+// The two-push flow this replaces (B/W base, then a grey overlay push) existed
+// to normalize fringe pixels to black before a from-black grey nudge, because a
+// destination-indexed LUT cannot see where a pixel came from. The fast bank's
+// grey columns are now self-normalizing (saturate at the white rail, then walk
+// down to the level), so the base pass has nothing left to do and the page has
+// no intermediate state to show: it arrives finished, or it has not arrived.
+//
+// The charge story rides on the same property. Under the old flow every fringe
+// pixel swung black-to-grey through two pushes on every page turn, with a net
+// drive imbalance each time; under one push, Panel_EPD's diff drives a pixel
+// only when its target changes, and every grey drive begins with a saturating
+// rail visit that erases accumulated bias.
+void LgfxEpdDriver::displayGrayFrame(EpdBus& bus, const uint8_t* fb, RefreshMode mode, bool turnOff) {
+  (void)bus;
+#if FREEINK_DRIVER_LGFX_EPD
+  if (!fb) return;
+  g_dev.waitDisplay();  // never write the canvas while a refresh may be in flight
+  fillCanvasBW(fb);
+  overlayCanvasGray();
+  // HALF/FULL map to the GC16-style clean bank, whose columns land every level
+  // exactly, so the periodic scrub page carries its greys too. FAST takes the
+  // differential bank. Either way the write itself must be graded -- a fast-mode
+  // write Bayer-dithers the greys to the rails before any LUT is consulted.
+  g_lastBaseEpdMode = epdModeFor(mode);
+  pushCanvasGraded(g_lastBaseEpdMode);
   if (turnOff) g_dev.sleep();
 #else
   (void)fb;
@@ -286,12 +378,20 @@ void LgfxEpdDriver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
 #if FREEINK_DRIVER_LGFX_EPD
   (void)fb;             // the canvas from the base push IS the base; see overlayCanvasGray()
   overlayCanvasGray();  // darken only the pixels the planes select
-  // Same mode as the B/W base push, and now actually the same: Panel_EPD's
-  // per-pixel diff keys on the epd_mode LUT offset, so switching modes here
-  // re-drives every pixel (full-screen flash). This was hardcoded to epd_fast
-  // while display() maps HALF/FULL to epd_text, so a page refreshed with either
-  // of those flashed when its AA pass ran.
-  pushCanvas(g_lastBaseEpdMode);
+  // Refresh under the mode the base push used. Panel_EPD's per-pixel diff keys
+  // on the epd_mode LUT offset, so switching modes here re-drives every pixel --
+  // a full-screen flash on any page the host refreshed with HALF or FULL.
+  //
+  // The pixel write is a separate question from the refresh, and on a board
+  // whose fast bank carries grey columns it must not go out under a fast mode:
+  // _draw_pixels() Bayer-dithers to the two rails there, which is what turned
+  // the greys into black speckle. pushCanvasGraded() writes under a graded mode
+  // and refreshes under this one.
+  if (_cfg.grayNudgeInFastBank) {
+    pushCanvasGraded(g_lastBaseEpdMode);
+  } else {
+    pushCanvas(g_lastBaseEpdMode);
+  }
   if (turnOff) g_dev.sleep();
 #else
   (void)fb;

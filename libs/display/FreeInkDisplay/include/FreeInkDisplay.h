@@ -244,6 +244,12 @@ class FreeInkDisplay {
   // EXPERIMENTAL: Windowed update - display only a rectangular region
   void displayWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t h, bool turnOffScreen = false);
   void displayGrayBuffer(bool turnOffScreen = false, const unsigned char* lut = nullptr, bool factoryMode = false);
+  // Single-push grayscale: composes the framebuffer (B/W) with the staged
+  // LSB/MSB planes and displays them as one waveform. Falls back to a plain
+  // B/W displayBuffer() when the driver cannot (or the output is inverted --
+  // the planes' meaning does not survive inversion).
+  bool supportsGrayFrame() const;
+  void displayGrayscaleFrame(RefreshMode mode, bool turnOffScreen = false);
   void displayGrayCalibration(uint16_t customX, uint16_t customY, uint16_t customW, uint16_t customH);
 
   void refreshDisplay(RefreshMode mode = FAST_REFRESH, bool turnOffScreen = false);

@@ -82,12 +82,18 @@ bool writeReg8(uint8_t addr, uint8_t reg, uint8_t val) {
 // XTEink::Cw2017PowerHal class in app1) via Ghidra. Unlike the BQ27220, the CW2017
 // reports 0% until a matching 80-byte BATINFO battery profile is resident, so init
 // must verify/upload one before SoC reads mean anything.
-constexpr uint8_t CW2017_REG_VERSION = 0x00;  // running state in (ver & 0xFD) == 0x0D
-constexpr uint8_t CW2017_REG_VCELL_H = 0x02;  // 14-bit VCELL, big-endian over 0x02/0x03
-constexpr uint8_t CW2017_REG_SOC = 0x04;      // integer percent (0x05 = fraction, unused)
-constexpr uint8_t CW2017_REG_MODE = 0x08;     // soft-reset / sleep control
-constexpr uint8_t CW2017_REG_CONFIG = 0x0B;   // bit7 = profile-loaded / update-enable
-constexpr uint8_t CW2017_REG_BATINFO = 0x10;  // 80-byte profile spans 0x10..0x5F
+constexpr uint8_t CW2017_REG_VERSION = 0x00;    // 0xA0 while starting; running versions match 0x0D/0x0F
+constexpr uint8_t CW2017_REG_VCELL_H = 0x02;    // 14-bit VCELL, big-endian over 0x02/0x03
+constexpr uint8_t CW2017_REG_SOC = 0x04;        // integer percent (0x05 = fraction, unused)
+constexpr uint8_t CW2017_REG_MODE = 0x08;       // soft-reset / sleep control
+constexpr uint8_t CW2017_REG_SOC_ALERT = 0x0B;  // bit7 = profile-loaded / update-enable
+constexpr uint8_t CW2017_REG_BATINFO = 0x10;    // 80-byte profile spans 0x10..0x5F
+
+constexpr uint8_t CW2017_MODE_NORMAL = 0x00;
+constexpr uint8_t CW2017_MODE_RESTART = 0x30;
+constexpr uint8_t CW2017_MODE_DEFAULT = 0xF0;
+constexpr uint8_t CW2017_UPDATE_FLAG = 0x80;
+constexpr unsigned long CW2017_INIT_RETRY_MS = 1000;
 
 // The exact BATINFO profile the OEM uploads (app1 table @ DROM 0x3c5d8d00). This is
 // battery-model-specific; it is the profile for the X4 Pro's cell.
@@ -98,63 +104,132 @@ constexpr uint8_t CW2017_BATINFO[80] = {
     0x72, 0x7c, 0x8c, 0xa3, 0xb7, 0xc8, 0xa5, 0x4f, 0x00, 0x00, 0xab, 0x02, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x23};
 
+bool cw2017VersionIsRunning(const uint8_t version) { return (version & 0xFD) == 0x0D; }
+
 // Soft-reset: MODE 0xF0 -> 0x30 -> 0x00, 20 ms apart (OEM FUN_4215042c).
-void cw2017Reset(uint8_t addr) {
-  writeReg8(addr, CW2017_REG_MODE, 0xF0);
+bool cw2017Reset(const uint8_t addr) {
+  if (!writeReg8(addr, CW2017_REG_MODE, CW2017_MODE_DEFAULT)) return false;
   delay(20);
-  writeReg8(addr, CW2017_REG_MODE, 0x30);
+  if (!writeReg8(addr, CW2017_REG_MODE, CW2017_MODE_RESTART)) return false;
   delay(20);
-  writeReg8(addr, CW2017_REG_MODE, 0x00);
+  if (!writeReg8(addr, CW2017_REG_MODE, CW2017_MODE_NORMAL)) return false;
   delay(20);
+  return true;
 }
 
-// One-shot: make sure a valid BATINFO profile is loaded. Wakes/resets the gauge if it
-// isn't running, then uploads+enables the profile only if the resident bytes don't
-// already match (the OEM leaves it resident across warm boots, so this is usually a
-// verify-only no-op). Bounded polling so a cold gauge can't stall boot.
-void cw2017EnsureProfile(uint8_t addr) {
-  uint8_t ver = 0;
-  if (!readReg8(addr, CW2017_REG_VERSION, ver)) return;  // gauge absent; nothing to do
-  if ((ver & 0xFD) != 0x0D) cw2017Reset(addr);
-
-  uint8_t cfg = 0;
-  if (readReg8(addr, CW2017_REG_CONFIG, cfg) && (cfg & 0x80)) {
-    bool match = true;
-    for (uint8_t i = 0; i < sizeof(CW2017_BATINFO); ++i) {
-      uint8_t b = 0;
-      if (!readReg8(addr, static_cast<uint8_t>(CW2017_REG_BATINFO + i), b) || b != CW2017_BATINFO[i]) {
-        match = false;
-        break;
-      }
+// Wait for the calculation engine to leave its 0xA0 startup state, then for a
+// valid SoC. The bounds mirror the vendor drivers: roughly 1 s for VERSION and
+// 3 s for SoC, but this path only runs after a reset/profile update.
+bool cw2017WaitUntilReady(const uint8_t addr) {
+  bool versionReady = false;
+  for (int i = 0; i < 50; ++i) {
+    uint8_t version = 0;
+    if (readReg8(addr, CW2017_REG_VERSION, version) && cw2017VersionIsRunning(version)) {
+      versionReady = true;
+      break;
     }
-    if (match) return;  // correct profile already loaded
+    delay(20);
+  }
+  if (!versionReady) return false;
+
+  for (int i = 0; i < 30; ++i) {
+    uint8_t soc = 0;
+    if (readReg8(addr, CW2017_REG_SOC, soc) && soc <= 100) return true;
+    delay(100);
+  }
+  return false;
+}
+
+// Check the update flag and compare every resident BATINFO byte. An I2C error is
+// kept distinct from a real mismatch so a transient bus failure never triggers
+// a partial profile rewrite.
+bool cw2017ProfileMatches(const uint8_t addr, bool& matches) {
+  uint8_t config = 0;
+  if (!readReg8(addr, CW2017_REG_SOC_ALERT, config)) return false;
+  if ((config & CW2017_UPDATE_FLAG) == 0) {
+    matches = false;
+    return true;
   }
 
   for (uint8_t i = 0; i < sizeof(CW2017_BATINFO); ++i) {
-    writeReg8(addr, static_cast<uint8_t>(CW2017_REG_BATINFO + i), CW2017_BATINFO[i]);
+    uint8_t stored = 0;
+    if (!readReg8(addr, static_cast<uint8_t>(CW2017_REG_BATINFO + i), stored)) return false;
+    if (stored != CW2017_BATINFO[i]) {
+      matches = false;
+      return true;
+    }
   }
-  writeReg8(addr, CW2017_REG_CONFIG, 0x80);  // update-enable (bit7); alert threshold = 0
-  delay(20);
-  cw2017Reset(addr);
-  for (int i = 0; i < 50; ++i) {  // ~1 s cap for the SoC to become valid
-    uint8_t soc = 0;
-    if (readReg8(addr, CW2017_REG_SOC, soc) && soc <= 100) break;
+
+  matches = true;
+  return true;
+}
+
+// Make sure the gauge is running with the correct profile. Every failure is
+// propagated so callers can retry instead of permanently accepting a failed
+// first attempt. This matters on the X4 Pro because the gauge shares Wire with
+// the GT911 and an early transient I2C error is otherwise easy to cache forever.
+bool cw2017EnsureProfile(const uint8_t addr) {
+  uint8_t mode = 0;
+  uint8_t version = 0;
+  if (!readReg8(addr, CW2017_REG_MODE, mode)) return false;
+  if (!readReg8(addr, CW2017_REG_VERSION, version)) return false;
+
+  bool profileMatches = false;
+  if (!cw2017ProfileMatches(addr, profileMatches)) return false;
+
+  bool restartRequired = mode != CW2017_MODE_NORMAL || !cw2017VersionIsRunning(version);
+  if (!profileMatches) {
+    for (uint8_t i = 0; i < sizeof(CW2017_BATINFO); ++i) {
+      if (!writeReg8(addr, static_cast<uint8_t>(CW2017_REG_BATINFO + i), CW2017_BATINFO[i])) return false;
+    }
+    if (!writeReg8(addr, CW2017_REG_SOC_ALERT, CW2017_UPDATE_FLAG)) return false;
     delay(20);
+    restartRequired = true;
   }
+
+  if (restartRequired) {
+    if (!cw2017Reset(addr)) return false;
+    return cw2017WaitUntilReady(addr);
+  }
+
+  uint8_t soc = 0;
+  if (!readReg8(addr, CW2017_REG_SOC, soc)) return false;
+  if (soc <= 100) return true;
+
+  // A running gauge should never expose an invalid integer SoC. Give it one
+  // controlled restart rather than marking initialization successful forever.
+  if (!cw2017Reset(addr)) return false;
+  return cw2017WaitUntilReady(addr);
 }
 
 // SoC (0..100) from the active gauge, dispatched by type. false on I2C failure.
 bool readGaugeSoc(uint16_t& out) {
   const auto& g = BoardConfig::ACTIVE.batteryGauge;
   if (g.gaugeType == BoardConfig::GaugeType::Cw2017) {
-    static bool inited = false;
-    if (!inited) {
-      cw2017EnsureProfile(g.gaugeAddr);
-      inited = true;
+    static bool initialized = false;
+    static unsigned long lastInitAttemptMs = 0;
+
+    const unsigned long now = millis();
+    if (!initialized) {
+      if (lastInitAttemptMs != 0 && (now - lastInitAttemptMs) < CW2017_INIT_RETRY_MS) return false;
+      lastInitAttemptMs = now;
+      initialized = cw2017EnsureProfile(g.gaugeAddr);
+      if (!initialized) return false;
     }
+
+    // Do not treat an acknowledged but sleeping/not-ready gauge as a fresh SoC
+    // source. Clearing initialized makes the next call run the bounded recovery.
+    uint8_t mode = 0;
+    uint8_t version = 0;
     uint8_t soc = 0;
-    if (!readReg8(g.gaugeAddr, CW2017_REG_SOC, soc)) return false;
-    out = soc > 100 ? 100 : soc;
+    if (!readReg8(g.gaugeAddr, CW2017_REG_MODE, mode) || mode != CW2017_MODE_NORMAL ||
+        !readReg8(g.gaugeAddr, CW2017_REG_VERSION, version) || !cw2017VersionIsRunning(version) ||
+        !readReg8(g.gaugeAddr, CW2017_REG_SOC, soc) || soc > 100) {
+      initialized = false;
+      return false;
+    }
+
+    out = soc;
     return true;
   }
   uint16_t soc = 0;

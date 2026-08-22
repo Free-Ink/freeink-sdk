@@ -65,6 +65,16 @@ bool SDCardManager::begin() {
   return initialized;
 }
 
+void SDCardManager::prepareForSleep() {
+  if (!initialized) return;
+  _vol.end();  // flush the FAT/directory cache, then drop the mount
+  if (_dev) _dev->end();
+  initialized = false;
+  cachedTotalBytes = 0;
+  cachedUsedBytes = 0;
+  cachedUsedBytesValid = false;
+}
+
 FsBlockDeviceInterface* SDCardManager::detachFilesystemForRawAccess() {
   if (!initialized || !_dev) return nullptr;
   _vol.end();
@@ -126,6 +136,12 @@ bool SDCardManager::begin() {
     digitalWrite(BoardConfig::ACTIVE.display.cs, HIGH);
   }
 
+  // The sleep path latches CS deasserted on boards with no SD rail, and the hold
+  // survives the deep-sleep wake reset. Release it before SdFat claims the pin,
+  // or CS is stuck HIGH and the card is never selected — mount fails on every
+  // boot that follows a sleep.
+  gpio_hold_dis(static_cast<gpio_num_t>(SD_CS));
+
   if (SD_SCLK >= 0 && SD_MOSI >= 0 && SD_MISO >= 0) {
     SPI.begin(SD_SCLK, SD_MISO, SD_MOSI, SD_CS);
   }
@@ -146,6 +162,15 @@ bool SDCardManager::begin() {
   }
 
   return initialized;
+}
+
+void SDCardManager::prepareForSleep() {
+  if (!initialized) return;
+  sd.end();  // FsVolume::end() (flush FAT/dir cache) + card session end
+  initialized = false;
+  cachedTotalBytes = 0;
+  cachedUsedBytes = 0;
+  cachedUsedBytesValid = false;
 }
 #endif
 

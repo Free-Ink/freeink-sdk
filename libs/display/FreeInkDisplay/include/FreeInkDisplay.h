@@ -17,6 +17,7 @@
 #include <SPI.h>
 
 #include "../src/bus/EpdBus.h"
+#include "FreeInkDisplayTypes.h"
 
 namespace freeink {
 
@@ -64,6 +65,15 @@ class FreeInkDisplay {
   void setFastRefreshCutoffMs(uint16_t ms);
   uint16_t fastRefreshCutoffMs() const;
 
+  // Select an alternate FAST waveform without changing FULL/HALF behavior.
+  // Unsupported panels retain their default profile. TerminalInteractive is an
+  // intentionally aggressive SSD1677 experiment; TerminalSettle uses the
+  // controller's normal DU waveform while forcing the selected pixels to their
+  // endpoints. Both must be restored when their owning activity exits.
+  void setFastRefreshProfile(FastRefreshProfile profile);
+  FastRefreshProfile fastRefreshProfile() const;
+  RefreshTiming getLastRefreshTiming() const { return _lastRefreshTiming; }
+
   void begin();
 
   // Legacy compile-time dimensions kept for compatibility.
@@ -88,8 +98,10 @@ class FreeInkDisplay {
 
   // Frame buffer operations
   void clearScreen(uint8_t color = 0xFF) const;
-  void drawImage(const uint8_t* imageData, uint16_t x, uint16_t y, uint16_t w, uint16_t h, bool fromProgmem = false) const;
-  void drawImageTransparent(const uint8_t* imageData, uint16_t x, uint16_t y, uint16_t w, uint16_t h, bool fromProgmem = false) const;
+  void drawImage(const uint8_t* imageData, uint16_t x, uint16_t y, uint16_t w, uint16_t h,
+                 bool fromProgmem = false) const;
+  void drawImageTransparent(const uint8_t* imageData, uint16_t x, uint16_t y, uint16_t w, uint16_t h,
+                            bool fromProgmem = false) const;
   // Persistent black/white output inversion. Framebuffers remain in their
   // normal logical colors, so callers keep drawing exactly as before; the
   // facade transforms frames only while sending them to the panel. The first
@@ -243,6 +255,11 @@ class FreeInkDisplay {
 
   // EXPERIMENTAL: Windowed update - display only a rectangular region
   void displayWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t h, bool turnOffScreen = false);
+  // X4-only bounded deferred update. `packed` contains the concatenated bytes
+  // described by `regions` and must remain unchanged until
+  // waitRefreshComplete(). Returns false without painting when unsupported.
+  bool displayPackedWindowsAsync(const uint8_t* packed, size_t packedSize, const PackedWindowRegion* regions,
+                                 size_t regionCount, bool turnOffScreen = false);
   void displayGrayBuffer(bool turnOffScreen = false, const unsigned char* lut = nullptr, bool factoryMode = false);
   void displayGrayCalibration(uint16_t customX, uint16_t customY, uint16_t customW, uint16_t customH);
 
@@ -404,6 +421,8 @@ class FreeInkDisplay {
   // One pending flag for every deferred refresh (X4 async fire, X3 split);
   // drained by syncPendingAsync() through the driver's displayFinish().
   bool _refreshPending = false;
+  uint32_t _pendingRefreshStartedAtUs = 0;
+  bool _pendingRefreshWindowed = false;
   uint8_t* _asyncShadow = nullptr;
   bool _shadowValid = false;
   bool _buildLent = false;  // framebuffer storage lent to a build (see lendBuildStorage)
@@ -442,6 +461,9 @@ class FreeInkDisplay {
   bool _fastGrayscaleLut = false;
   bool _inverted = false;
   bool _inversionDirty = false;
+  RefreshTiming _lastRefreshTiming{};
+
+  void recordRefreshTiming(uint32_t startedAtUs, bool windowed, bool deferred = false);
 
   // Runtime display geometry (seeded from the driver at begin()).
   uint16_t displayWidth = DISPLAY_WIDTH;

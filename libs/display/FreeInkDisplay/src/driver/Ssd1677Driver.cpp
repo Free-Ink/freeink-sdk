@@ -7,6 +7,22 @@
 
 #include "../lut/Ssd1677Luts.h"
 
+#if defined(FREEINK_X4_TERMINAL_WAVEFORM_100MS) && defined(FREEINK_X4_OVERCLOCK_SPI)
+#error "The 100 ms terminal waveform experiment must use the specified 20 MHz SPI clock"
+#endif
+
+#if defined(FREEINK_X4_TERMINAL_WAVEFORM_100MS_SUSTAIN) && !defined(FREEINK_X4_TERMINAL_WAVEFORM_100MS)
+#error "The sustain waveform must extend the 100 ms terminal profile"
+#endif
+
+#if defined(FREEINK_X4_SSD1677_MODE2_PINGPONG) && !defined(EINK_DISPLAY_SINGLE_BUFFER_MODE)
+#error "The SSD1677 Mode 2 ping-pong experiment requires the bounded single-buffer path"
+#endif
+
+#if defined(FREEINK_X4_SSD1677_MODE2_PINGPONG) && !defined(FREEINK_X4_TERMINAL_WAVEFORM_100MS_SUSTAIN)
+#error "The SSD1677 Mode 2 ping-pong experiment is isolated to the accepted W100 Sustain profile"
+#endif
+
 namespace freeink {
 namespace {
 
@@ -36,6 +52,16 @@ constexpr uint8_t CMD_SOURCE_VOLTAGE = 0x04;
 constexpr uint8_t CMD_WRITE_VCOM = 0x2C;
 constexpr uint8_t CMD_WRITE_TEMP = 0x1A;
 constexpr uint8_t CMD_DEEP_SLEEP = 0x10;
+#ifdef FREEINK_X4_SSD1677_MODE2_PINGPONG
+constexpr uint8_t CMD_WRITE_DISPLAY_OPTION = 0x37;
+// SSD1677 Rev 1.0, R37h: B..F select Display Mode 2 for WS0..35 and
+// F6 enables volatile RAM ping-pong. A keeps VCOM OTP selection at zero;
+// G..J are the module/waveform-version selection bytes. This experiment uses
+// the external LUT already loaded by TerminalInteractive and resets the
+// controller before any OTP-backed path. Never send Program OTP Selection
+// (0x36).
+constexpr uint8_t MODE2_PING_PONG_OPTIONS[10] = {0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0x4F, 0xFF, 0xFF, 0xFF, 0xFF};
+#endif
 
 constexpr uint8_t DRIVER_OUTPUT_SCAN = 0x02;  // SM=1 interlaced, TB=0 (base)
 constexpr uint8_t SCAN_TB_FLIP = 0x01;        // OR into the scan byte for mirrorY
@@ -82,20 +108,20 @@ static const Ssd1677Config& ssd1677StickyConfig() {
   static const Ssd1677Config cfg = {
       {0xAE, 0xC7, 0xC3, 0xC0, 0x80},  // booster soft-start (matches Seeed's panel driver)
       DRIVER_OUTPUT_SCAN,
-      0x01,  // borderWaveformInit: vendor FULL/partial-clear border
-      0x5A,  // halfRefreshTemp (unused once fullSeqOverride loads temperature itself)
+      0x01,                  // borderWaveformInit: vendor FULL/partial-clear border
+      0x5A,                  // halfRefreshTemp (unused once fullSeqOverride loads temperature itself)
       lut_grayscale_sticky,  // own copy: voltage tail is per-module, tune there
                              // (see Ssd1677Luts.h), never in the shared X4 LUT
-      0xF7,  // fullSeqOverride: vendor FULL update sequence
-      0xFF,  // fastSeqOverride: vendor PARTIAL/DU update sequence (the actual fast path)
-      0x00,  // halfSeqOverride: use fullSeqOverride
-      0x01,  // borderWaveformFull: vendor FULL/partial-clear border
-      0x80,  // borderWaveformFast: vendor PARTIAL/DU border (stops the dark edge ring)
-      0x00,  // borderWaveformHalf: use borderWaveformFull
-      0x80,  // borderWaveformGray: hold at VCOM; follow-LUT (0x01) drives the border
-             // black under the grayscale LUT (black frame on every AA/cover refresh)
-      true,  // grayPowerUpFirst: vendor sequences power down after every refresh, so
-             // settle the rails before the short gray LUT phases (see Ssd1677Config)
+      0xF7,                  // fullSeqOverride: vendor FULL update sequence
+      0xFF,                  // fastSeqOverride: vendor PARTIAL/DU update sequence (the actual fast path)
+      0x00,                  // halfSeqOverride: use fullSeqOverride
+      0x01,                  // borderWaveformFull: vendor FULL/partial-clear border
+      0x80,                  // borderWaveformFast: vendor PARTIAL/DU border (stops the dark edge ring)
+      0x00,                  // borderWaveformHalf: use borderWaveformFull
+      0x80,                  // borderWaveformGray: hold at VCOM; follow-LUT (0x01) drives the border
+                             // black under the grayscale LUT (black frame on every AA/cover refresh)
+      true,                  // grayPowerUpFirst: vendor sequences power down after every refresh, so
+                             // settle the rails before the short gray LUT phases (see Ssd1677Config)
   };
   return cfg;
 }
@@ -158,9 +184,17 @@ Ssd1677Driver::Ssd1677Driver(const Ssd1677Config& cfg)
       _bufferSize(static_cast<uint32_t>(BoardConfig::ACTIVE.displayWidth / 8) * BoardConfig::ACTIVE.displayHeight),
       _mirrorX(BoardConfig::ACTIVE.orientation.mirrorX),
 #if defined(FREEINK_DISPLAY_FLIPPED) || defined(FLIPPED)
-      _mirrorY(true) {}  // FREEINK_DISPLAY_FLIPPED maps to mirrorY
+      _mirrorY(true) {
+#ifdef FREEINK_X4_SSD1677_MODE2_PINGPONG
+  _mode2State.setAvailable(BoardConfig::ACTIVE.board == BoardConfig::Board::XteinkX4);
+#endif
+}  // FREEINK_DISPLAY_FLIPPED maps to mirrorY
 #else
-      _mirrorY(BoardConfig::ACTIVE.orientation.mirrorY) {}
+      _mirrorY(BoardConfig::ACTIVE.orientation.mirrorY) {
+#ifdef FREEINK_X4_SSD1677_MODE2_PINGPONG
+  _mode2State.setAvailable(BoardConfig::ACTIVE.board == BoardConfig::Board::XteinkX4);
+#endif
+}
 #endif
 
 uint32_t Ssd1677Driver::spiHz() const {
@@ -178,6 +212,11 @@ void Ssd1677Driver::initController(EpdBus& bus) {
   constexpr uint8_t TEMP_SENSOR_INTERNAL = 0x80;
 
   bus.cmd(CMD_SOFT_RESET);
+  _customLutActive = false;
+  _residentCustomLut = nullptr;
+#ifdef FREEINK_X4_SSD1677_MODE2_PINGPONG
+  _mode2State.controllerReset();
+#endif
   // The X4 Pro production sequence requires a fixed 10 ms settle after
   // SWRESET. Active-high BUSY may not have asserted by the first GPIO sample,
   // so waitBusy() alone is not a substitute for this delay.
@@ -219,6 +258,28 @@ void Ssd1677Driver::initController(EpdBus& bus) {
   // refresh for the first paint — it clears the boot screen and seeds the baseline.
   _needsInitialFull = (_cfg.fullSeqOverride != 0);
 }
+
+#ifdef FREEINK_X4_SSD1677_MODE2_PINGPONG
+bool Ssd1677Driver::mode2Compatible(const RefreshMode mode, const bool turnOff) const {
+  return _mode2State.available() && mode == RefreshMode::Fast && !turnOff && !_darkBackground &&
+         _fastRefreshProfile == FastRefreshProfile::TerminalInteractive && !_inGrayscaleMode;
+}
+
+void Ssd1677Driver::enableMode2PingPong(EpdBus& bus) {
+  if (_mode2State.phase() != Ssd1677Mode2State::Phase::Seeded) return;
+  bus.cmd(CMD_WRITE_DISPLAY_OPTION);
+  bus.data(MODE2_PING_PONG_OPTIONS, sizeof(MODE2_PING_PONG_OPTIONS));
+  _mode2State.enabled();
+}
+
+void Ssd1677Driver::resetMode2PingPong(EpdBus& bus) {
+  if (!_mode2State.active()) return;
+  // R37h is volatile. A controller reset reloads the panel's OTP options and
+  // discards the ambiguous ping-pong bank roles. initController() fills both
+  // RAMs white; the caller immediately follows with an absolute HALF target.
+  initController(bus);
+}
+#endif
 
 void Ssd1677Driver::setRamArea(EpdBus& bus, uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
   // Data-entry bit0 = X direction (1=increment, 0=decrement); bit1 = Y (0=dec).
@@ -282,24 +343,38 @@ void Ssd1677Driver::refresh(EpdBus& bus, RefreshMode mode, bool turnOff, bool as
   bus.cmd(CMD_DISPLAY_UPDATE_CTRL1);
   bus.data((mode == RefreshMode::Fast) ? CTRL1_NORMAL : CTRL1_BYPASS_RED);
 
+  const bool terminalInteractive =
+      mode == RefreshMode::Fast && _fastRefreshProfile == FastRefreshProfile::TerminalInteractive;
+  if (terminalInteractive) {
+#ifdef FREEINK_X4_TERMINAL_WAVEFORM_100MS_SUSTAIN
+    setCustomLut(bus, true, lut_terminal_100ms_sustain);
+#elif defined(FREEINK_X4_TERMINAL_WAVEFORM_100MS)
+    setCustomLut(bus, true, lut_terminal_100ms);
+#else
+    setCustomLut(bus, true, lut_terminal_turbo);
+#endif
+    // The grayscale border setting follows a LUT entry on some X4 configs.
+    // Hold it at VCOM for this monochrome differential waveform instead.
+    bus.cmd(CMD_BORDER_WAVEFORM);
+    bus.data(0x80);
+  }
+
   // Per-board absolute update sequence (vendor 0x22 values). When set, it selects
   // the panel's waveform directly — including load-temperature and the partial/DU
   // display mode — and self-cycles power. The X4's incremental bit assembly below
   // doesn't trigger some panels' DU waveform (they then run the full waveform on
   // every "fast" refresh); these values fix that. Skipped while a custom grayscale
   // LUT is active (that path needs the 0x0C sequence with the loaded LUT).
-  const uint8_t seqOverride = (mode == RefreshMode::Fast) ? _cfg.fastSeqOverride
-                              : (mode == RefreshMode::Half && _cfg.halfSeqOverride != 0)
-                                  ? _cfg.halfSeqOverride
-                                  : _cfg.fullSeqOverride;
+  const uint8_t seqOverride = (mode == RefreshMode::Fast)                                ? _cfg.fastSeqOverride
+                              : (mode == RefreshMode::Half && _cfg.halfSeqOverride != 0) ? _cfg.halfSeqOverride
+                                                                                         : _cfg.fullSeqOverride;
   if (seqOverride != 0 && !_customLutActive) {
     // Track the border waveform to the refresh mode (vendor parity): a partial/DU
     // (fast) refresh leaves the border driven dark if it keeps the full-refresh
     // border, producing a black ring around the page. 0 = leave the init value.
-    const uint8_t border = (mode == RefreshMode::Fast) ? _cfg.borderWaveformFast
-                           : (mode == RefreshMode::Half && _cfg.borderWaveformHalf != 0)
-                               ? _cfg.borderWaveformHalf
-                               : _cfg.borderWaveformFull;
+    const uint8_t border = (mode == RefreshMode::Fast)                                   ? _cfg.borderWaveformFast
+                           : (mode == RefreshMode::Half && _cfg.borderWaveformHalf != 0) ? _cfg.borderWaveformHalf
+                                                                                         : _cfg.borderWaveformFull;
     if (border != 0) {
       bus.cmd(CMD_BORDER_WAVEFORM);
       bus.data(border);
@@ -311,7 +386,13 @@ void Ssd1677Driver::refresh(EpdBus& bus, RefreshMode mode, bool turnOff, bool as
     bus.cmd(CMD_DISPLAY_UPDATE_CTRL2);
     bus.data(seqOverride);
     bus.cmd(CMD_MASTER_ACTIVATION);
-    if (!async) bus.waitRefreshComplete("refresh");
+    _activationStartedAtUs = micros();
+    if (!async) {
+      bus.waitRefreshComplete("refresh");
+      _lastRefreshTiming.presentedAtUs = micros();
+      _lastRefreshTiming.activationToBusyUs = _lastRefreshTiming.presentedAtUs - _activationStartedAtUs;
+    }
+    _residentCustomLut = nullptr;
     // Only sequences carrying the low two disable bits physically power down.
     // X4 Pro DU (0xFC) does not, so a turnOff request must run the documented
     // 0x3C=0x80, 0x22=0x03, 0x20 sequence after the waveform completes instead
@@ -330,6 +411,7 @@ void Ssd1677Driver::refresh(EpdBus& bus, RefreshMode mode, bool turnOff, bool as
     return;
   }
 
+  const bool screenWasOn = _isScreenOn;
   uint8_t displayMode = 0x00;
   if (!_isScreenOn) {
     _isScreenOn = true;
@@ -353,9 +435,9 @@ void Ssd1677Driver::refresh(EpdBus& bus, RefreshMode mode, bool turnOff, bool as
     // (the usual X4 case, where stage 1 left them on), and required when they are
     // not, so 0xCC is correct in both states. The production driver marks power OFF
     // after this pass; mirror that so the next refresh re-enables the rails.
-    displayMode = 0xCC;
+    displayMode = terminalInteractive && screenWasOn ? 0x0C : 0xCC;
     if (turnOff) displayMode |= 0x03;
-    _isScreenOn = false;
+    _isScreenOn = terminalInteractive && !turnOff;
   } else {  // Fast
     displayMode |= 0x1C;
   }
@@ -363,7 +445,24 @@ void Ssd1677Driver::refresh(EpdBus& bus, RefreshMode mode, bool turnOff, bool as
   bus.cmd(CMD_DISPLAY_UPDATE_CTRL2);
   bus.data(displayMode);
   bus.cmd(CMD_MASTER_ACTIVATION);
-  if (!async) bus.waitRefreshComplete("refresh");
+  _activationStartedAtUs = micros();
+  if (!async) {
+    bus.waitRefreshComplete("refresh");
+    _lastRefreshTiming.presentedAtUs = micros();
+    _lastRefreshTiming.activationToBusyUs = _lastRefreshTiming.presentedAtUs - _activationStartedAtUs;
+  }
+  // The loaded waveform remains in controller RAM until an OTP-loading update,
+  // but it is a per-refresh choice in the driver. Clearing the logical flag is
+  // essential: a later HALF/FULL refresh (including CrossPoint after Terminal
+  // exits) must take its normal absolute update path.
+  if (terminalInteractive) {
+    // Keep the uploaded table resident between burst updates. Only its logical
+    // selection is per-refresh; OTP/default activations below invalidate the
+    // resident marker because they may replace controller LUT RAM.
+    setCustomLut(bus, false, nullptr);
+  } else {
+    _residentCustomLut = nullptr;
+  }
 #if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
   // esp_rom_printf hits the always-on IDF console; Serial (HWCDC) drops on S3.
   esp_rom_printf("[SSD1677] %s refresh %ums (ctrl2=0x%x)\n", dbgMode, (unsigned)(millis() - dbgStart), displayMode);
@@ -401,8 +500,9 @@ void Ssd1677Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev,
 // Skips the single-buffer post-refresh baseline resync — the facade supplies
 // `prev` (its shadow) on shadowed updates, and the no-shadow/grayscale flow
 // re-seeds the baseline itself (cleanupGrayscaleBuffers).
-bool Ssd1677Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode,
-                                 bool turnOff) {
+bool Ssd1677Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
+  _pendingPackedWindowData = nullptr;
+  _pendingPackedWindowCount = 0;
   displayImpl(bus, fb, prev, mode, turnOff, /*async=*/true);
   return true;
 }
@@ -410,14 +510,82 @@ bool Ssd1677Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* 
 void Ssd1677Driver::displayFinish(EpdBus& bus, const uint8_t* fb) {
   (void)fb;  // X4 post-waveform needs nothing from the host frame
   bus.waitRefreshComplete("refresh");
+  _lastRefreshTiming.presentedAtUs = micros();
+  _lastRefreshTiming.activationToBusyUs = _lastRefreshTiming.presentedAtUs - _activationStartedAtUs;
+  if (_pendingPackedWindowData != nullptr && _pendingPackedWindowCount != 0) {
+    const uint32_t baselineStartedAtUs = micros();
+    for (size_t index = 0; index < _pendingPackedWindowCount; ++index) {
+      const PackedWindowRegion& region = _pendingPackedWindows[index];
+      const uint32_t bytes = static_cast<uint32_t>(region.width / 8) * region.height;
+      const uint8_t* source = _pendingPackedWindowData + region.offset;
+      setRamArea(bus, region.x, region.y, region.width, region.height);
+      writeRam(bus, CMD_WRITE_RAM_BW, source, bytes);
+      writeRam(bus, CMD_WRITE_RAM_RED, source, bytes);
+    }
+    _lastRefreshTiming.baselineUs = micros() - baselineStartedAtUs;
+    _pendingPackedWindowData = nullptr;
+    _pendingPackedWindowCount = 0;
+  }
   if (_pendingPowerOff) {
     _pendingPowerOff = false;
+    const uint32_t powerOffStartedAtUs = micros();
     powerOffController(bus);
+    _lastRefreshTiming.powerOffUs += micros() - powerOffStartedAtUs;
   }
+}
+
+bool Ssd1677Driver::displayPackedWindowsStart(EpdBus& bus, const uint8_t* packed, const size_t packedSize,
+                                              const PackedWindowRegion* regions, const size_t regionCount,
+                                              const bool turnOff) {
+  if (packed == nullptr || regions == nullptr || regionCount == 0 || regionCount > MAX_PACKED_WINDOW_REGIONS ||
+      _inGrayscaleMode) {
+    return false;
+  }
+#ifdef FREEINK_X4_SSD1677_MODE2_PINGPONG
+  // This experiment deliberately retains the ordinary explicit BW/RED
+  // baseline contract; never combine it with volatile whole-bank swapping.
+  if (_mode2State.active()) return false;
+#endif
+
+  for (size_t index = 0; index < regionCount; ++index) {
+    const PackedWindowRegion& region = regions[index];
+    const uint32_t bytes = static_cast<uint32_t>(region.width / 8) * region.height;
+    if (region.width == 0 || region.height == 0 || (region.x & 7) != 0 || (region.width & 7) != 0 ||
+        static_cast<uint32_t>(region.x) + region.width > _w ||
+        static_cast<uint32_t>(region.y) + region.height > _h || region.offset > packedSize ||
+        bytes > packedSize - region.offset) {
+      return false;
+    }
+  }
+
+  _lastRefreshTiming = {};
+  _activationStartedAtUs = 0;
+  const uint32_t planeStartedAtUs = micros();
+  for (size_t index = 0; index < regionCount; ++index) {
+    const PackedWindowRegion& region = regions[index];
+    const uint32_t bytes = static_cast<uint32_t>(region.width / 8) * region.height;
+    const uint8_t* source = packed + region.offset;
+    setRamArea(bus, region.x, region.y, region.width, region.height);
+    writeRam(bus, CMD_WRITE_RAM_BW, source, bytes);
+    if (_darkBackground || _fastRefreshProfile == FastRefreshProfile::TerminalSettle) {
+      writeRamInverted(bus, CMD_WRITE_RAM_RED, source, bytes);
+    }
+  }
+  _lastRefreshTiming.planeUs = micros() - planeStartedAtUs;
+
+  _pendingPackedWindowData = packed;
+  _pendingPackedWindowCount = regionCount;
+  for (size_t index = 0; index < regionCount; ++index) {
+    _pendingPackedWindows[index] = regions[index];
+  }
+  refresh(bus, RefreshMode::Fast, turnOff, /*async=*/true);
+  return true;
 }
 
 void Ssd1677Driver::displayImpl(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff,
                                 bool async) {
+  _lastRefreshTiming = {};
+  _activationStartedAtUs = 0;
   // The first paint after boot/wake must be an absolute clean, not a partial/DU
   // refresh: a partial only drives pixels that differ from the RED "old" plane, so
   // it can't clear what is physically on the panel at boot (e.g. the sleep screen).
@@ -458,6 +626,37 @@ void Ssd1677Driver::displayImpl(EpdBus& bus, const uint8_t* fb, const uint8_t* p
     }
   }
 
+#ifdef FREEINK_X4_SSD1677_MODE2_PINGPONG
+  // The experiment deliberately covers only blocking, single-buffer,
+  // normal-polarity TerminalInteractive updates. Every other path retains the
+  // legacy RAM contract. If it interrupts active ping-pong, reset the volatile
+  // option and force one absolute target so neither bank role can leak out.
+  bool mode2Update = false;
+  const bool compatibleMode2 = prev == nullptr && !async && mode2Compatible(mode, turnOff);
+  switch (_mode2State.plan(compatibleMode2)) {
+    case Ssd1677Mode2State::Plan::SeedAbsolute:
+      mode = RefreshMode::Half;
+      break;
+    case Ssd1677Mode2State::Plan::EnableAndUpdate:
+      enableMode2PingPong(bus);
+      mode2Update = _mode2State.active();
+      break;
+    case Ssd1677Mode2State::Plan::PingPongUpdate:
+      mode2Update = true;
+      break;
+    case Ssd1677Mode2State::Plan::ResetAndSeedAbsolute:
+      resetMode2PingPong(bus);
+      _needsInitialFull = false;
+      mode = RefreshMode::Half;
+      break;
+    case Ssd1677Mode2State::Plan::Legacy:
+      break;
+  }
+#else
+  constexpr bool mode2Update = false;
+#endif
+
+  const uint32_t planeStartedAtUs = micros();
   setRamArea(bus, 0, 0, _w, _h);
 
   if (mode != RefreshMode::Fast) {
@@ -465,7 +664,11 @@ void Ssd1677Driver::displayImpl(EpdBus& bus, const uint8_t* fb, const uint8_t* p
     writeRam(bus, CMD_WRITE_RAM_RED, fb, _bufferSize);
   } else {
     writeRam(bus, CMD_WRITE_RAM_BW, fb, _bufferSize);
-    if (_darkBackground) {
+    if (mode2Update) {
+      // In RAM ping-pong mode the controller retains the just-presented target
+      // as the old bank and exposes the opposite bank for the next 0x24 write.
+      // Writing 0x26 or re-copying the target after BUSY would defeat the swap.
+    } else if (_darkBackground || _fastRefreshProfile == FastRefreshProfile::TerminalSettle) {
       // Inverted content: the DU compare idles unchanged pixels, so the light
       // residue of every white->black transition parks in the black background
       // and accumulates between absolute cleans. Write RED as the complement of
@@ -485,26 +688,63 @@ void Ssd1677Driver::displayImpl(EpdBus& bus, const uint8_t* fb, const uint8_t* p
     }
   }
 
+  _lastRefreshTiming.planeUs = micros() - planeStartedAtUs;
   refresh(bus, mode, turnOff, async);
+
+#ifdef FREEINK_X4_SSD1677_MODE2_PINGPONG
+  if (mode2Update) {
+    _mode2State.presented();
+    // R37h/F6 swaps complete controller RAM-bank roles, not only the dirty
+    // bytes. Copy the presented target into the newly inactive bank before the
+    // next activation. Without this synchronization, disjoint windows expose
+    // alternating stale content from the untouched parts of each bank.
+    const uint32_t baselineStartedAtUs = micros();
+    setRamArea(bus, 0, 0, _w, _h);
+    writeRam(bus, CMD_WRITE_RAM_BW, fb, _bufferSize);
+    _lastRefreshTiming.baselineUs = micros() - baselineStartedAtUs;
+    _mode2State.resynchronized();
+  }
+#endif
 
   // Stock X4 syncs both controller RAM planes after activation. Do the same in
   // single-buffer mode so the next differential update starts from a matched
   // BW/RED baseline instead of assuming BW survived the refresh unchanged.
   // (Async updates always come with a facade-owned prev, so this never runs
   // while a refresh is still in flight.)
-  if (prev == nullptr && !async) {
+#ifdef FREEINK_X4_SSD1677_MODE2_PINGPONG
+  bool baselineSeeded = mode != RefreshMode::Fast;
+#endif
+  if (prev == nullptr && !async && !mode2Update) {
+    const uint32_t baselineStartedAtUs = micros();
     setRamArea(bus, 0, 0, _w, _h);
     writeRam(bus, CMD_WRITE_RAM_BW, fb, _bufferSize);
     writeRam(bus, CMD_WRITE_RAM_RED, fb, _bufferSize);
+    _lastRefreshTiming.baselineUs = micros() - baselineStartedAtUs;
+#ifdef FREEINK_X4_SSD1677_MODE2_PINGPONG
+    baselineSeeded = true;
+#endif
   }
+#ifdef FREEINK_X4_SSD1677_MODE2_PINGPONG
+  if (!mode2Update) {
+    if (baselineSeeded) {
+      _mode2State.seeded();
+    } else {
+      _mode2State.invalidate();
+    }
+  }
+#endif
   if (!async && _pendingPowerOff) {
     _pendingPowerOff = false;
+    const uint32_t powerOffStartedAtUs = micros();
     powerOffController(bus);
+    _lastRefreshTiming.powerOffUs += micros() - powerOffStartedAtUs;
   }
 }
 
 void Ssd1677Driver::displayWindow(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, uint16_t x, uint16_t y,
                                   uint16_t w, uint16_t h, bool turnOff) {
+  _lastRefreshTiming = {};
+  _activationStartedAtUs = 0;
   if (x + w > _w || y + h > _h) return;
   if (x % 8 != 0 || w % 8 != 0) return;  // window must be byte-aligned
   if (!fb) return;
@@ -518,6 +758,31 @@ void Ssd1677Driver::displayWindow(EpdBus& bus, const uint8_t* fb, const uint8_t*
     return;
   }
 
+#ifdef FREEINK_X4_SSD1677_MODE2_PINGPONG
+  bool mode2Update = false;
+  const bool compatibleMode2 = prev == nullptr && mode2Compatible(RefreshMode::Fast, turnOff);
+  switch (_mode2State.plan(compatibleMode2)) {
+    case Ssd1677Mode2State::Plan::SeedAbsolute:
+    case Ssd1677Mode2State::Plan::ResetAndSeedAbsolute:
+      // A partial region cannot establish the unknown complementary bank.
+      // Paint the requested target as an absolute full-frame seed instead.
+      displayImpl(bus, fb, nullptr, RefreshMode::Half, turnOff, /*async=*/false);
+      return;
+    case Ssd1677Mode2State::Plan::EnableAndUpdate:
+      enableMode2PingPong(bus);
+      mode2Update = _mode2State.active();
+      break;
+    case Ssd1677Mode2State::Plan::PingPongUpdate:
+      mode2Update = true;
+      break;
+    case Ssd1677Mode2State::Plan::Legacy:
+      break;
+  }
+#else
+  constexpr bool mode2Update = false;
+#endif
+
+  const uint32_t planeStartedAtUs = micros();
   const uint16_t windowWidthBytes = w / 8;
   const uint32_t windowBufferSize = static_cast<uint32_t>(windowWidthBytes) * h;
 
@@ -532,7 +797,10 @@ void Ssd1677Driver::displayWindow(EpdBus& bus, const uint8_t* fb, const uint8_t*
   setRamArea(bus, x, y, w, h);
   writeRam(bus, CMD_WRITE_RAM_BW, windowBuffer.data(), windowBufferSize);
 
-  if (_darkBackground) {
+  if (mode2Update) {
+    // The inactive ping-pong bank is the complete old frame except for the
+    // bytes overwritten through this window. No explicit RED write is needed.
+  } else if (_darkBackground || _fastRefreshProfile == FastRefreshProfile::TerminalSettle) {
     // Inverted content: same as displayImpl()'s dark path — write the window's
     // "old" plane as the complement of its target so every pixel in the window
     // is re-driven toward its target. Without this, dismissing an overlay
@@ -555,21 +823,49 @@ void Ssd1677Driver::displayWindow(EpdBus& bus, const uint8_t* fb, const uint8_t*
     writeRam(bus, CMD_WRITE_RAM_RED, previousWindow.data(), windowBufferSize);
   }
 
+  _lastRefreshTiming.planeUs = micros() - planeStartedAtUs;
   refresh(bus, RefreshMode::Fast, turnOff);
 
-  if (prev == nullptr) {
+#ifdef FREEINK_X4_SSD1677_MODE2_PINGPONG
+  if (mode2Update) {
+    _mode2State.presented();
+    // The bank exchange is global even for a window activation. Mirror the
+    // changed window into the newly inactive bank so both complete banks once
+    // again describe the frame that is physically on the panel.
+    const uint32_t baselineStartedAtUs = micros();
+    setRamArea(bus, x, y, w, h);
+    writeRam(bus, CMD_WRITE_RAM_BW, windowBuffer.data(), windowBufferSize);
+    _lastRefreshTiming.baselineUs = micros() - baselineStartedAtUs;
+    _mode2State.resynchronized();
+  }
+#endif
+
+  if (prev == nullptr && !mode2Update) {
+    const uint32_t baselineStartedAtUs = micros();
     setRamArea(bus, x, y, w, h);
     writeRam(bus, CMD_WRITE_RAM_BW, windowBuffer.data(), windowBufferSize);
     writeRam(bus, CMD_WRITE_RAM_RED, windowBuffer.data(), windowBufferSize);
+    _lastRefreshTiming.baselineUs = micros() - baselineStartedAtUs;
+#ifdef FREEINK_X4_SSD1677_MODE2_PINGPONG
+    _mode2State.seeded();
+#endif
   }
+#ifdef FREEINK_X4_SSD1677_MODE2_PINGPONG
+  if (!mode2Update && prev != nullptr) _mode2State.invalidate();
+#endif
   if (_pendingPowerOff) {
     _pendingPowerOff = false;
+    const uint32_t powerOffStartedAtUs = micros();
     powerOffController(bus);
+    _lastRefreshTiming.powerOffUs += micros() - powerOffStartedAtUs;
   }
 }
 
 void Ssd1677Driver::seedPreviousFrame(EpdBus& bus, const uint8_t* buf) {
   if (!buf) return;
+#ifdef FREEINK_X4_SSD1677_MODE2_PINGPONG
+  if (_mode2State.active()) resetMode2PingPong(bus);
+#endif
   // Write the frame into RED (the differential "old frame" plane) with no refresh —
   // identical to the RED write display() does for `prev`, so the next prev==nullptr
   // fast refresh diffs the new frame against this baseline instead of a stale one.
@@ -579,12 +875,18 @@ void Ssd1677Driver::seedPreviousFrame(EpdBus& bus, const uint8_t* buf) {
 
 void Ssd1677Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
   if (!lsb) return;
+#ifdef FREEINK_X4_SSD1677_MODE2_PINGPONG
+  if (_mode2State.active()) resetMode2PingPong(bus);
+#endif
   setRamArea(bus, 0, 0, _w, _h);
   writeRam(bus, CMD_WRITE_RAM_BW, lsb, _bufferSize);
 }
 
 void Ssd1677Driver::copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
   if (!msb) return;
+#ifdef FREEINK_X4_SSD1677_MODE2_PINGPONG
+  if (_mode2State.active()) resetMode2PingPong(bus);
+#endif
   setRamArea(bus, 0, 0, _w, _h);
   writeRam(bus, CMD_WRITE_RAM_RED, msb, _bufferSize);
 }
@@ -592,6 +894,9 @@ void Ssd1677Driver::copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
 void Ssd1677Driver::writeGrayscalePlaneStrip(EpdBus& bus, GrayPlane plane, const uint8_t* rows, uint16_t yStart,
                                              uint16_t numRows) {
   if (!rows || numRows == 0) return;
+#ifdef FREEINK_X4_SSD1677_MODE2_PINGPONG
+  if (_mode2State.active()) resetMode2PingPong(bus);
+#endif
   const uint16_t len = static_cast<uint16_t>(static_cast<uint32_t>(numRows) * _wb);
   const uint8_t ramCmd = (plane == GrayPlane::Lsb) ? CMD_WRITE_RAM_BW : CMD_WRITE_RAM_RED;
   setRamArea(bus, 0, yStart, _w, numRows);
@@ -652,11 +957,18 @@ void Ssd1677Driver::setCustomLut(EpdBus& bus, bool enabled, const unsigned char*
     return;
   }
 
-  // First 105 bytes: VS + TP/RP + frame rate.
-  bus.cmd(CMD_WRITE_LUT);
-  for (uint16_t i = 0; i < 105; i++) {
-    bus.data(pgm_read_byte(&data[i]));
+  if (_residentCustomLut == data) {
+    _customLutActive = true;
+    return;
   }
+
+  const uint32_t lutStartedAtUs = micros();
+  // First 105 bytes: VS + TP/RP + frame rate. Copy out of PROGMEM once and
+  // transfer it under one chip-select assertion instead of 105 SPI transactions.
+  uint8_t lutBytes[105];
+  for (uint16_t i = 0; i < sizeof(lutBytes); ++i) lutBytes[i] = pgm_read_byte(&data[i]);
+  bus.cmd(CMD_WRITE_LUT);
+  bus.data(lutBytes, sizeof(lutBytes));
 
   bus.cmd(CMD_GATE_VOLTAGE);  // VGH
   bus.data(pgm_read_byte(&data[105]));
@@ -679,6 +991,17 @@ void Ssd1677Driver::setCustomLut(EpdBus& bus, bool enabled, const unsigned char*
   }
 
   _customLutActive = true;
+  _residentCustomLut = data;
+  _lastRefreshTiming.lutUs = micros() - lutStartedAtUs;
+}
+
+void Ssd1677Driver::setFastRefreshProfile(const FastRefreshProfile profile) {
+  if (_fastRefreshProfile == profile) return;
+  _fastRefreshProfile = profile;
+  _customLutActive = false;
+  // Conservatively force a reload when a caller returns to an experimental
+  // profile after another owner has used the controller.
+  _residentCustomLut = nullptr;
 }
 
 void Ssd1677Driver::deepSleep(EpdBus& bus) {
@@ -691,6 +1014,9 @@ void Ssd1677Driver::deepSleep(EpdBus& bus) {
   // _needsInitialFull, so the first paint is an absolute clean anyway.
   bus.cmd(CMD_DEEP_SLEEP);
   bus.data(0x03);
+#ifdef FREEINK_X4_SSD1677_MODE2_PINGPONG
+  _mode2State.controllerReset();
+#endif
 }
 
 // Per-board waveform/LUT injection: a board supplies its own SSD1677 config
@@ -707,21 +1033,26 @@ static const Ssd1677Config& ssd1677ActiveConfig() { return FREEINK_SSD1677_CONFI
 // use the X4/GDEQ0426T82 defaults.
 static const Ssd1677Config& ssd1677ActiveConfig() {
   switch (BoardConfig::ACTIVE.board) {
-    case BoardConfig::Board::Sticky: return ssd1677StickyConfig();
+    case BoardConfig::Board::Sticky:
+      return ssd1677StickyConfig();
     // X4 Pro runs on the stock X4/GDEQ0426T82 config — same controller and panel
     // class, confirmed painting on hardware. No custom LUT or drive voltages needed.
     // Layers the fast-DU shortcut only when the build opts in (ssd1677X4ProConfig).
 #ifdef FREEINK_X4PRO_FAST_DU_SHORTCUT
-    case BoardConfig::Board::XteinkX4Pro: return ssd1677X4ProConfig();
+    case BoardConfig::Board::XteinkX4Pro:
+      return ssd1677X4ProConfig();
 #else
-    case BoardConfig::Board::XteinkX4Pro: return ssd1677DefaultConfig();
+    case BoardConfig::Board::XteinkX4Pro:
+      return ssd1677DefaultConfig();
 #endif
     // X4 layers the fast-DU shortcut on the default only when the build has
     // opted in (see ssd1677X4Config); stock 0xFC parity otherwise.
 #ifdef FREEINK_X4_FAST_DU_SHORTCUT
-    case BoardConfig::Board::XteinkX4: return ssd1677X4Config();
+    case BoardConfig::Board::XteinkX4:
+      return ssd1677X4Config();
 #endif
-    default: return ssd1677DefaultConfig();
+    default:
+      return ssd1677DefaultConfig();
   }
 }
 #endif

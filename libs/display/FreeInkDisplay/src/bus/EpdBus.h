@@ -54,8 +54,8 @@ class EpdBus {
   // Grouped transaction primitives (used by multi-step sequences, e.g. M5).
   void beginTxn();
   void endTxn();
-  void rawCmd(uint8_t c);                            // assumes a transaction is open
-  void rawData(uint8_t d);                           // assumes a transaction is open
+  void rawCmd(uint8_t c);                              // assumes a transaction is open
+  void rawData(uint8_t d);                             // assumes a transaction is open
   void rawWriteBytes(const uint8_t* d, uint16_t len);  // bulk data, transaction open
 
   // Wait for a refresh/operation to finish using the configured (or given) polarity.
@@ -67,6 +67,7 @@ class EpdBus {
   // refresh-completion wait: it confirms the waveform is running (short bounded
   // poll) before arming, so it is safe to call right after firing the refresh.
   void waitRefreshComplete(const char* tag = nullptr);
+  uint32_t lastRefreshWaitUs() const { return _lastRefreshWaitUs; }
 
   // Instantaneous BUSY-pin read for non-blocking refresh polling. The UC/X3
   // active-low conventions both terminate HIGH, so LOW reports busy.
@@ -133,6 +134,7 @@ class EpdBus {
   BusyPolarity _busy = BusyPolarity::ActiveHigh;
   uint32_t _spiHz = 40000000;
   int8_t _coCs = -1;
+  uint32_t _lastRefreshWaitUs = 0;
 };
 
 }  // namespace freeink

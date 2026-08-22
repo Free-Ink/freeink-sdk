@@ -295,6 +295,12 @@ void EpdBus::waitBusy(BusyPolarity p, const char* tag) {
 }
 
 void EpdBus::waitRefreshComplete(const char* tag) {
+  struct WaitDurationRecorder {
+    uint32_t startedAt;
+    uint32_t& destination;
+    ~WaitDurationRecorder() { destination = micros() - startedAt; }
+  } recorder{micros(), _lastRefreshWaitUs};
+
   // The X4 Pro UC production wait is level-based, not edge-qualified. Keep the
   // same one-tick/idle-HIGH rule for refresh completion so a missed assertion
   // edge can never make the caller write RAM while the waveform is still busy.
@@ -385,8 +391,7 @@ void EpdBus::sendPlaneFlipped(uint8_t ramCmd, const uint8_t* plane, uint16_t hei
   endTxn();
 }
 
-void EpdBus::sendPlaneFlippedInverted(uint8_t ramCmd, const uint8_t* plane, uint16_t height,
-                                      uint16_t widthBytes) {
+void EpdBus::sendPlaneFlippedInverted(uint8_t ramCmd, const uint8_t* plane, uint16_t height, uint16_t widthBytes) {
   // Streams ~plane[i] row-reversed without a host-side copy of the inverted
   // frame (the C3 boards have no RAM to spare for one). Same single CS-low
   // burst contract as sendPlaneFlipped().

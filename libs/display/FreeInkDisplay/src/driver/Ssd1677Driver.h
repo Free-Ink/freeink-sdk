@@ -12,15 +12,16 @@
 // the firmware just calls the generic EInkDisplay API and gets device behavior.
 
 #include "PanelDriver.h"
+#include "Ssd1677Mode2State.h"
 
 namespace freeink {
 
 // Device-tunable SSD1677 waveform/config. A board overrides only what differs.
 struct Ssd1677Config {
-  uint8_t booster[5];               // booster soft-start (CMD 0x0C)
-  uint8_t driverOutputScan;         // CMD 0x01 base scan byte (0x02); mirrorY ORs TB
-  uint8_t borderWaveformInit;        // CMD 0x3C value written during controller init
-  uint8_t halfRefreshTemp;          // temperature byte written for HALF refresh
+  uint8_t booster[5];            // booster soft-start (CMD 0x0C)
+  uint8_t driverOutputScan;      // CMD 0x01 base scan byte (0x02); mirrorY ORs TB
+  uint8_t borderWaveformInit;    // CMD 0x3C value written during controller init
+  uint8_t halfRefreshTemp;       // temperature byte written for HALF refresh
   const unsigned char* grayLut;  // 110-byte custom LUT for grayscale display
   // Absolute Display Update Control 2 (0x22) sequence values, per refresh type.
   // 0 = use the driver's built-in X4 values (incremental, keeps the panel powered
@@ -81,6 +82,8 @@ class Ssd1677Driver : public PanelDriver {
   bool supportsAsyncDisplay() const override { return true; }
   void displayWindow(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, uint16_t x, uint16_t y, uint16_t w,
                      uint16_t h, bool turnOff) override;
+  bool displayPackedWindowsStart(EpdBus& bus, const uint8_t* packed, size_t packedSize,
+                                 const PackedWindowRegion* regions, size_t regionCount, bool turnOff) override;
 
   void seedPreviousFrame(EpdBus& bus, const uint8_t* buf) override;
 
@@ -96,6 +99,9 @@ class Ssd1677Driver : public PanelDriver {
   // waveform. Grayscale exits via cleanupGrayscaleBuffers (RED resync) or a
   // promoted single-pass HALF clean in displayImpl/displayWindow.
   void setCustomLut(EpdBus& bus, bool enabled, const unsigned char* data) override;
+  void setFastRefreshProfile(FastRefreshProfile profile) override;
+  FastRefreshProfile fastRefreshProfile() const override { return _fastRefreshProfile; }
+  DriverRefreshTiming driverRefreshTiming() const override { return _lastRefreshTiming; }
   // Inverted (dark-background) content: fast refreshes write the RED "old"
   // plane as the complement of the target so every pixel — background included —
   // is re-driven toward its target each update. See displayImpl().
@@ -116,6 +122,11 @@ class Ssd1677Driver : public PanelDriver {
   // when turnOff was requested and by deepSleep().
   void powerOffController(EpdBus& bus);
   void displayImpl(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff, bool async);
+#ifdef FREEINK_X4_SSD1677_MODE2_PINGPONG
+  bool mode2Compatible(RefreshMode mode, bool turnOff) const;
+  void enableMode2PingPong(EpdBus& bus);
+  void resetMode2PingPong(EpdBus& bus);
+#endif
 
   const Ssd1677Config& _cfg;
 
@@ -132,15 +143,25 @@ class Ssd1677Driver : public PanelDriver {
   bool _isScreenOn = false;
   bool _inGrayscaleMode = false;
   bool _customLutActive = false;
+  const unsigned char* _residentCustomLut = nullptr;
+  DriverRefreshTiming _lastRefreshTiming{};
+  uint32_t _activationStartedAtUs = 0;
+  FastRefreshProfile _fastRefreshProfile = FastRefreshProfile::PanelDefault;
   bool _darkBackground = false;
   // Async 0xFC updates cannot issue the separate power-off activation until the
   // display waveform completes; displayFinish() consumes this flag.
   bool _pendingPowerOff = false;
+  const uint8_t* _pendingPackedWindowData = nullptr;
+  size_t _pendingPackedWindowCount = 0;
+  PackedWindowRegion _pendingPackedWindows[MAX_PACKED_WINDOW_REGIONS]{};
   // First paint after begin() (boot or deep-sleep wake) must be a full refresh to
   // clear whatever is physically on the panel (e.g. the black boot screen) and set
   // a clean differential baseline. Only armed for boards whose self-powering fast
   // sequence makes _isScreenOn useless as a cold-start signal (fullSeqOverride set).
   bool _needsInitialFull = false;
+#ifdef FREEINK_X4_SSD1677_MODE2_PINGPONG
+  Ssd1677Mode2State _mode2State;
+#endif
 };
 
 // Singleton accessor (Meyers, zero-heap). Selects the config for the active board.

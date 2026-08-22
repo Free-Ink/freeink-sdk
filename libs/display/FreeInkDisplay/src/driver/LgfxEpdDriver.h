@@ -41,6 +41,12 @@ class LgfxEpdDriver : public PanelDriver {
   // 16-gray path: the facade streams LSB/MSB 1-bpp planes (whole or in strips);
   // displayGray combines them with the B/W base into the panel's 8-bit gray canvas.
   bool supportsStripGrayscale() const override { return true; }
+  // Single-push grayscale: the page and its AA greys go out as one waveform.
+  // Valid because this board's fast bank carries self-normalizing grey columns
+  // (see ED047TC2Waveform.cpp); the generic two-push flow stays available for
+  // callers that do not use it.
+  bool supportsGrayFrame() const override { return true; }
+  void displayGrayFrame(EpdBus& bus, const uint8_t* fb, RefreshMode mode, bool turnOff) override;
   void copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) override;
   void copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) override;
   void writeGrayscalePlaneStrip(EpdBus& bus, GrayPlane plane, const uint8_t* rows, uint16_t yStart,

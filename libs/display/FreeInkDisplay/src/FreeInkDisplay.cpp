@@ -770,6 +770,18 @@ void FreeInkDisplay::displayWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t 
 #endif
 }
 
+bool FreeInkDisplay::supportsGrayFrame() const { return !_inverted && _driver && _driver->supportsGrayFrame(); }
+
+void FreeInkDisplay::displayGrayscaleFrame(RefreshMode mode, bool turnOffScreen) {
+  if (_inverted || _inversionDirty || !_driver || !_driver->supportsGrayFrame()) {
+    displayBuffer(mode, turnOffScreen);
+    return;
+  }
+  syncPendingAsync();
+  _shadowValid = false;
+  _driver->displayGrayFrame(_bus, frameBuffer, toInternal(mode), turnOffScreen);
+}
+
 void FreeInkDisplay::displayGrayBuffer(bool turnOffScreen, const unsigned char* lut, bool factoryMode) {
 #if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
   Serial.printf("[EPD] displayGrayBuffer\n");

@@ -517,6 +517,21 @@ struct TouchConfig {
   // controller). false = active-LOW (drive LOW to power it, e.g. X4 Pro's GPIO2). The
   // reset path drives the ON level; the sleep path drives the OFF level.
   bool powerEnableActiveHigh = true;
+  // Park the controller by holding `reset` asserted (LOW) through deep sleep.
+  // For boards with NO switched touch rail (powerEnable unassigned, e.g. the
+  // LilyGo T5 S3): there is nothing to cut, so without this the digitizer keeps
+  // scanning all through "off" — a GT911 costs several mA there, an order of
+  // magnitude more than everything else on a sleeping board put together.
+  // Held in reset it drops to a few µA.
+  //
+  // Opt-in per board rather than inferred from `powerEnable < 0`, because a pin
+  // called "reset" is not always one: MURPHY_M3's touch pin 45 is an active-LOW
+  // PMOS power gate, so driving it LOW would POWER the controller — the exact
+  // opposite of the intent — on the one board the inference would silently
+  // catch. PowerManager::powerDownRailsForSleep() latches the level with
+  // gpio_hold_en(); the touch bring-up paths in InputManager release the hold
+  // before their reset pulse, or touch is dead after the first wake.
+  bool holdResetInSleep = false;
 };
 
 // PWM frontlight description (gpio == PIN_UNASSIGNED disables it).
@@ -541,6 +556,17 @@ struct FrontlightConfig {
   // on. pwmFrequency still applies (PM1 PWM_FREQ register); resolution is the
   // PM1's fixed 12 bits.
   bool viaPm1Pwm = false;
+  // Boost-driver floors, in permille of full duty. Zero on boards whose LED
+  // hangs directly off the PWM pin. On a board that PWMs a boost converter's
+  // EN pin (LilyGo T5 S3: PT4103 behind GPIO11), an on-time shorter than the
+  // boost's start-up produces NO light rather than dim light, so a perceptual
+  // dimming curve must land its bottom on the boost's floor, not on one LSB.
+  //   minStartPermille: lowest duty the boost reliably IGNITES from cold.
+  //   minHoldPermille:  lowest duty it stays lit at once running (<= start;
+  //                     FrontlightManager bridges the gap with a brief kick at
+  //                     start level when turning on into the hold band).
+  uint16_t minStartPermille = 0;
+  uint16_t minHoldPermille = 0;
 };
 
 // Audio output description (AudioOutput::None disables it).
@@ -701,7 +727,10 @@ constexpr TouchConfig NO_TOUCH = {TouchController::None,
 // with one physical nav key that is a real loss.
 constexpr TouchConfig LILYGO_T5_PRO_GT911 = {
     TouchController::Gt911, 39,   40,    3,    9, 0x5D, 0, 959, 0, 539, false, 0x14, false, true,
-    PIN_UNASSIGNED,         true, false, true, true};  // powerEnable, swapXY, flipX, flipY, hasHomeKey
+    PIN_UNASSIGNED,         true, false, true, true,  // powerEnable, swapXY, flipX, flipY, hasHomeKey
+    true,   // powerEnableActiveHigh: unused (no rail), spelled out to reach the field below
+    true};  // holdResetInSleep: nothing gates this GT911's power, so deep sleep parks it in
+            // reset on T_RST (GPIO9) instead — see TouchConfig::holdResetInSleep
 constexpr FrontlightConfig NO_FRONTLIGHT = {PIN_UNASSIGNED, 0, 0, true};
 constexpr AudioConfig NO_AUDIO = {AudioOutput::None,
                                   PIN_UNASSIGNED,
@@ -1129,13 +1158,40 @@ constexpr BoardProfile LILYGO_T5S3 = {
     0,                                           // displaySpiHz n/a (external bus)
     {14, 21, 13, 12, PIN_UNASSIGNED, false, 0},  // SD over SPI: SCLK14 MISO21 MOSI13 CS12
     {PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, 0,
-     false},         // power=BOOT (GPIO0), active-low
+     false},  // power=BOOT (GPIO0), active-low. Do NOT map IO48 as confirm: on the
+              // Pro Lite it reads spurious active-low pulses (phantom Confirm
+              // presses opened the reader menu by itself) — verify its wiring
+              // on real hardware before mapping it again.
     PIN_UNASSIGNED,  // batteryAdc: none — uses the I2C fuel gauge below
     PIN_UNASSIGNED,
     2.0f,
     PIN_UNASSIGNED,
     LILYGO_T5_PRO_GT911,  // GT911 touch (SDA39 SCL40 INT3 RST9, 0x5D, portrait sensor -> landscape panel)
-    {11, 5000, 8, true},  // backlight: BL_EN GPIO11, PWM 5 kHz / 8-bit, active-high
+    // Frontlight: PT4103 boost EN behind GPIO11, PWM 1 kHz. 12-bit duty so the
+    // perceptual curve has real steps at the dim end (at 8 bits the whole
+    // 1..9% band collapsed into five LSBs) -- and NOT 13 at the old 5 kHz: the
+    // Arduino-3 LEDC path auto-picks its clock, and 5 kHz x 2^13 = 40.96 MHz
+    // overran the 40 MHz XTAL source, failing the attach and leaving the light
+    // COMPLETELY dead (no toggle, no slider). 1 kHz x 2^12 = 4.1 MHz clears
+    // every source the selector can choose by a wide margin.
+    //
+    // What the boost needs is a minimum ON-TIME, not a minimum duty: ~10 us lit
+    // and ~4.4 us did not, measured off 1.5.17/1.5.18. Those microseconds are
+    // what the floors below encode, so the PWM period is the lever on how dim
+    // the light can go. At 5 kHz (200 us period) the 5 us hold floor was 25
+    // permille -- 2.5% duty, already ~18% of perceived full brightness, so 1%
+    // came up too bright and 1% -> 2% moved the duty by 4% (0.2 us), under the
+    // threshold where the boost's output changes at all. At 1 kHz (1000 us
+    // period) the SAME on-times are 10 and 5 permille: 1% lands at 0.5% duty,
+    // five times dimmer, and each LSB is 244 ns instead of 49 ns so 1% -> 2%
+    // is a 19% duty step. Nothing here asks the converter for a pulse shorter
+    // than one already shown to light it.
+    //
+    // 1 kHz is the floor for the frequency itself: IEEE 1789's low-risk flicker
+    // limit is depth < 8% x f_Hz, and these near-floor pulses are ~100% depth.
+    // Going below 1 kHz to chase more dimming range would trade a real
+    // photobiological margin for it.
+    {11, 1000, 12, true, PIN_UNASSIGNED, false, 10, 5},
     NO_AUDIO,
     NO_LEDS,
     NO_FLIP,
@@ -1150,15 +1206,21 @@ constexpr BoardProfile LILYGO_T5S3 = {
     // it whenever power was actually cut rather than merely deep-slept.
     {39, 40, 400000, 0x51, 0, 0, 0, RtcType::Pcf8563, ImuType::None},
     1.2f,  // uiScale: 4.7" 960x540 touch (~234 PPI) — finger-sized chrome, like Sticky
-    // Power latch: main-power MOSFET on GPIO2, driven HIGH first thing in boot
-    // via holdPowerRails() or the board powers off when USB is unplugged.
-    {2},
-    0,  // displayControllerVariant: not probed on this panel
-    // Bezel: this case sits closer over the glass at the sides than the X4's, so
-    // the default 3px leaves the first and last characters of a line hard to
-    // read. Measured by eye on hardware in two passes (3 -> 6 -> 8); top/bottom
-    // are correct at the defaults. Compare the X4 Pro's 7px sides.
-    {9, 8, 3, 8}};
+    // NO power latch. This profile used to carry latch0 = GPIO2 with an M5Paper-style
+    // "main-power MOSFET, hold HIGH or the board dies on USB unplug" comment. GPIO2 is
+    // nothing of the sort here: the T5 E-paper S3 Pro schematic (LILYGO publishes none
+    // for the Lite; the vendor states the variants share the core design) maps ESP32
+    // IO2 to RTC_INT — the PCF8563's open-drain alarm output, pulled up through 10K —
+    // and shows no soft power latch anywhere. Power sequencing is the BQ25896's job,
+    // with its /QON pin on the S4 button straight to ground, no GPIO involved.
+    //
+    // holdPowerRails() drives latch pins as OUTPUT HIGH first thing in setup(), so the
+    // stale entry had the firmware fighting the RTC's open-drain output every time an
+    // alarm asserted. Nothing had noticed because no alarm was armed yet — but the RTC
+    // is wired up now, so alarms and interrupts would simply never have been seen.
+    // (latchConflictsWithBus() cannot catch this: it guards display and SD bus pins,
+    // and SensorsConfig carries no RTC interrupt pin for it to compare against.)
+    {}};  // power: none
 
 // --- M5Paper v1.1 4.7" (ED047TC1 behind an IT8951E controller) — ESP32 --------
 // 540x960 16-gray panel driven through an IT8951E timing controller over SPI
@@ -1701,6 +1763,9 @@ inline void releaseSdRail() {
     digitalWrite(ACTIVE.sd.powerEnable, ACTIVE.sd.powerActiveHigh ? HIGH : LOW);
   }
   if (ACTIVE.sd.cs >= 0) {
+    // On boards with no SD rail the sleep path latches CS deasserted with
+    // gpio_hold_en; the hold survives reset and would swallow the write below.
+    gpio_hold_dis(static_cast<gpio_num_t>(ACTIVE.sd.cs));
     pinMode(ACTIVE.sd.cs, OUTPUT);
     digitalWrite(ACTIVE.sd.cs, HIGH);
   }

@@ -53,10 +53,14 @@ class FakeDrawTarget : public DrawTarget {
 
   Op ops[256]{};
   size_t opCount = 0;
+  mutable bool measuredForbiddenLabel = false;
+  bool drewForbiddenLabel = false;
   int16_t charWidth = 6;
   int16_t lineH = 12;
 
   Size measureText(FontId, const char* text, TextStyle) const override {
+    if (text != nullptr && std::strcmp(text, "must-not-measure") == 0)
+      measuredForbiddenLabel = true;
     return Size{static_cast<int16_t>(charWidth * static_cast<int16_t>(std::strlen(text))), lineH};
   }
   int16_t lineHeight(FontId) const override { return lineH; }
@@ -74,7 +78,9 @@ class FakeDrawTarget : public DrawTarget {
   void triangle(Point a, Point, Point c, Paint paint) override {
     record(Op::Triangle, Rect{a.x, a.y, static_cast<int16_t>(c.x - a.x), static_cast<int16_t>(c.y - a.y)}, paint);
   }
-  void text(Rect rect, const char*, TextStyle style) override {
+  void text(Rect rect, const char* text, TextStyle style) override {
+    if (text != nullptr && std::strcmp(text, "must-not-measure") == 0)
+      drewForbiddenLabel = true;
     record(Op::Text, rect, Paint::solid(style.color), 0, CornersAll, style.rotation);
   }
   void bitmap(Rect rect, BitmapRef, BitmapMode, Paint foreground, Rotation rotation) override {
@@ -607,6 +613,233 @@ void testListClampsBadTopIndex() {
   CHECK_EQ(interactions.count(), 4u);
   CHECK_EQ(interactions.data()[0].value, 2);  // clamped to count - visible
   CHECK_EQ(interactions.data()[3].value, 5);
+}
+
+// items can be a small window around the viewport (itemsWindowFirst) instead
+// of an array of all `count` entries; absolute indexing and interactions stay
+// identical to the full-array form.
+void testListItemsWindow() {
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice();
+  InputSnapshot input;
+  InteractionBuffer<32> interactions;
+  Frame<32> frame(draw, device, input, interactions);
+
+  // Window holds absolute rows 10..17 of a 100-row list.
+  ListItem window[8]{};
+  char labels[8][8];
+  for (int i = 0; i < 8; ++i) {
+    std::snprintf(labels[i], sizeof(labels[i]), "row%d", 10 + i);
+    window[i].label = labels[i];
+    window[i].actionValue = static_cast<int16_t>(10 + i);
+    window[i].enabled = true;
+  }
+
+  ListProps props;
+  props.items = window;
+  props.itemsWindowFirst = 10;
+  props.itemsWindowCount = 8;
+  props.count = 100;
+  props.topIndex = 12;
+  props.selectedIndex = 14;
+  props.action = 9;
+  props.rowHeight = 40;
+  list(frame, Rect{0, 0, 480, 200}, props); // fits 5 rows: absolute 12..16
+
+  CHECK_EQ(interactions.count(), 5u);
+  CHECK_EQ(interactions.data()[0].value, 12);
+  CHECK_EQ(interactions.data()[4].value, 16);
+}
+
+// The virtual window only needs rows that can actually be drawn. In
+// particular, list() must not measure an extra row after the viewport is full:
+// callers often store exactly the visible window, so that read would be past
+// their ListItem array.
+void testListItemsWindowStopsBeforePastEndMeasurement() {
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice();
+  InputSnapshot input;
+  InteractionBuffer<32> interactions;
+  Frame<32> frame(draw, device, input, interactions);
+
+  ListItem window[6]{};
+  for (int i = 0; i < 6; ++i) {
+    window[i].label = i == 5 ? "must-not-measure" : "row";
+    window[i].actionValue = static_cast<int16_t>(10 + i);
+  }
+
+  ListProps props;
+  props.items = window;
+  props.itemsWindowFirst = 10;
+  props.itemsWindowCount = 5;
+  props.count = 100;
+  props.topIndex = 10;
+  props.action = 9;
+  props.rowHeight = 19;
+  list(frame, Rect{0, 0, 480, 95}, props);  // exactly 5 visible rows
+
+  CHECK_EQ(interactions.count(), 5u);
+  CHECK(!draw.measuredForbiddenLabel);
+  CHECK(!draw.drewForbiddenLabel);
+}
+
+void testListItemsWindowSkipsUnavailablePartialPreview() {
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice();
+  InputSnapshot input;
+  InteractionBuffer<32> interactions;
+  Frame<32> frame(draw, device, input, interactions);
+
+  ListItem window[6]{};
+  for (int i = 0; i < 6; ++i) {
+    window[i].label = i == 5 ? "must-not-measure" : "row";
+    window[i].actionValue = static_cast<int16_t>(10 + i);
+  }
+
+  ListProps props;
+  props.items = window;
+  props.itemsWindowFirst = 10;
+  props.itemsWindowCount = 5;
+  props.count = 100;
+  props.topIndex = 10;
+  props.action = 9;
+  props.rowHeight = 20;
+  props.partialTrailingRow = true;
+  list(frame, Rect{0, 0, 480, 118}, props);  // five rows plus an 18px preview
+
+  CHECK_EQ(interactions.count(), 5u);
+  CHECK(!draw.measuredForbiddenLabel);
+  CHECK(!draw.drewForbiddenLabel);
+}
+
+void testListNavLayoutFeedback() {
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice();
+  InputSnapshot input;
+  InteractionBuffer<32> interactions;
+  Frame<32> frame(draw, device, input, interactions);
+
+  ListItem items[20]{};
+  for (int i = 0; i < 20; ++i) {
+    items[i].label = "x";
+    items[i].actionValue = static_cast<int16_t>(i);
+    items[i].enabled = true;
+  }
+
+  // list() reports its layout through props.nav (wired by syncToProps).
+  ListNav nav;
+  nav.reset(12);
+  ListProps props;
+  props.items = items;
+  props.count = 20;
+  props.action = 7;
+  props.rowHeight = 40;
+  const Rect body{0, 0, 480, 200}; // fits 5 fixed-height rows
+  nav.syncToProps(body, 40, 0, 20, props);
+  CHECK(props.nav == &nav);
+  CHECK_EQ(nav.visibleRows, 5);
+  CHECK_EQ(nav.top, 8); // follow-on-build pulled the viewport to 12
+  CHECK(nav.followPending);
+  list(frame, body, props);
+  CHECK_EQ(nav.drawnRows, 5);
+  CHECK(!nav.followPending); // selection drew; follow confirmed
+  CHECK(!nav.rebuildNeeded);
+
+  // Clipped selection: variable-height rows fit only 3 of the estimated 5,
+  // ending short of the selection. The nav advances the viewport minimally
+  // and requests a rebuild; the next pass that draws the selection settles.
+  nav.follow(20);
+  nav.onListRendered(8, 3, /*selectedDrawn=*/false); // drew [8,10], 12 clipped
+  CHECK_EQ(nav.top, 10);                             // 12 - 3 + 1
+  CHECK(nav.consumeRebuildNeeded());
+  CHECK(!nav.rebuildNeeded);
+  nav.onListRendered(10, 3, /*selectedDrawn=*/true); // rebuilt: [10,12]
+  CHECK(!nav.followPending);
+  CHECK(!nav.rebuildNeeded);
+
+  // Swipe scrolling may leave the selection off-screen by design; layout
+  // feedback must not yank the viewport back.
+  nav.scrollBy(5, 20);
+  nav.onListRendered(15, 3, /*selectedDrawn=*/false);
+  CHECK(!nav.rebuildNeeded);
+  CHECK_EQ(nav.top, 15);
+
+  // pageRows() prefers the measured page size over the estimate.
+  CHECK_EQ(nav.pageRows(), 3);
+
+  // Tail of the list: navigating to the last item when wrapped rows mean the
+  // count - visibleRows viewport can't reach it. follow() clamps to the
+  // fixed-height maxTop (15 of 20 with 5 estimated rows), only 4 rows fit, so
+  // the selection (19) is clipped; the feedback pass must advance past the
+  // old clamp (scrollBy's clamp uses the measured page size) and land it.
+  ListNav tail;
+  tail.reset(19);
+  ListProps tailProps;
+  tailProps.items = items;
+  tailProps.count = 20;
+  tailProps.rowHeight = 40;
+  tail.syncToProps(body, 40, 0, 20, tailProps); // follow-on-build
+  CHECK_EQ(tail.top, 15);                       // fixed-height clamp
+  tail.onListRendered(15, 4, /*selectedDrawn=*/false); // only [15,18] fit
+  CHECK(tail.consumeRebuildNeeded());
+  CHECK_EQ(tail.top, 16); // 19 - 4 + 1
+  tail.syncToProps(body, 40, 0, 20, tailProps); // rebuild pass re-syncs
+  CHECK_EQ(tail.top, 16); // measured clamp (20 - 4) keeps the advance
+  tail.onListRendered(16, 4, /*selectedDrawn=*/true); // [16,19] draws it
+  CHECK(!tail.followPending);
+  CHECK(!tail.rebuildNeeded);
+}
+
+// End-to-end tail-clip regression through the REAL list(): every label wraps
+// to two lines (itemH 32 vs rowHeight 20), so only 6 of the 10 estimated rows
+// fit. Following the last item must converge even though list()'s fixed-height
+// top clamp (count - visible) sits below the top the selection needs; the
+// clamp is skipped for nav-managed lists. Mirrors the on-device failure where
+// the rebuild loop oscillated (advance -> clamp) and the last row never drew.
+void testListNavConvergesThroughRealList() {
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice();
+  InputSnapshot input;
+
+  // 80 chars * charWidth 6 = 480px > the ~459px label band: wraps to 2 lines.
+  static const char kLongLabel[] =
+      "wrapping filename that is deliberately long enough to need a second "
+      "display line";
+  ListItem items[12]{};
+  for (int i = 0; i < 12; ++i) {
+    items[i].label = kLongLabel;
+    items[i].actionValue = static_cast<int16_t>(i);
+    items[i].enabled = true;
+  }
+
+  ListNav nav;
+  nav.reset(11); // follow the last item on first build
+  const Rect body{0, 0, 480, 200};
+  bool selectedRegistered = false;
+  int passes = 0;
+  for (; passes < 8; ++passes) {
+    InteractionBuffer<32> interactions;
+    Frame<32> frame(draw, device, input, interactions);
+    ListProps props;
+    props.items = items;
+    props.count = 12;
+    props.action = 7;
+    props.rowHeight = 20;
+    props.labelText.maxLines = 2;
+    nav.syncToProps(body, 20, 0, 12, props);
+    list(frame, body, props);
+    selectedRegistered = false;
+    for (size_t k = 0; k < interactions.count(); ++k) {
+      if (interactions.data()[k].value == 11)
+        selectedRegistered = true;
+    }
+    if (!nav.consumeRebuildNeeded())
+      break;
+  }
+  CHECK(selectedRegistered); // the last row actually drew and registered
+  CHECK(!nav.followPending);
+  CHECK(passes < 8); // converged instead of exhausting the rebuild budget
+  CHECK_EQ(nav.pageRows(), 6);
 }
 
 void testListCanUseFullTitleWidthWithShortValue() {
@@ -1411,6 +1644,130 @@ void testListSectionHeaders() {
   // Second section: header height 16 (12 line + 4 gap) + two 40px rows +
   // 20px section gap puts its underline at 16 + 80 + 20 + 12 + 2 = 130.
   CHECK_EQ(secondHeaderY, 130);
+}
+
+void testListWrappedLabelHeights() {
+  // Per-item height: a wrapping label grows its row by the lines it USES,
+  // not by maxLines; a subtitle follows the wrapped label band; and the
+  // "would maxLines already fit rowH" gate still protects touch-sized rows.
+  DeviceContext device = makeDevice();
+  InputSnapshot input;
+  InteractionBuffer<16> interactions;
+
+  // 480 wide, sidePadding 10 -> 460px of label width; charWidth 6 fits 7
+  // ten-char words per line, so ten words wrap onto exactly two lines.
+  const char* longLabel =
+      "aaaaaaaaa aaaaaaaaa aaaaaaaaa aaaaaaaaa aaaaaaaaa "
+      "aaaaaaaaa aaaaaaaaa aaaaaaaaa aaaaaaaaa aaaaaaaaa";
+
+  // Label-only, dense e-ink row (20px holds one 12px line): two used lines
+  // out of a three-line budget grow the row by ONE line height (32), not two.
+  {
+    FakeDrawTarget draw;
+    Frame<16> frame(draw, device, input, interactions);
+    ListItem items[2]{};
+    items[0].label = longLabel;
+    items[1].label = "short";
+    ListProps props;
+    props.items = items;
+    props.count = 2;
+    props.rowHeight = 20;
+    props.sidePadding = 10;
+    props.labelText.maxLines = 3;
+    list(frame, Rect{0, 0, 480, 400}, props);
+    int16_t row0H = 0;
+    int16_t row1Y = -1;
+    for (size_t i = 0; i < draw.opCount; ++i) {
+      const FakeDrawTarget::Op& op = draw.ops[i];
+      if (op.kind != FakeDrawTarget::Op::Fill || op.rect.width != 480) continue;
+      if (op.rect.y == 0) row0H = op.rect.height;
+      if (op.rect.y > 0 && row1Y < 0) row1Y = op.rect.y;
+    }
+    CHECK_EQ(row0H, 32);  // 20 + one extra 12px line, not 20 + 24
+    CHECK_EQ(row1Y, 32);  // the next row starts right below the grown one
+  }
+
+  // Label + subtitle: the row grows the same way, the label band holds both
+  // lines, and the subtitle sits under the band instead of under line one.
+  {
+    FakeDrawTarget draw;
+    Frame<16> frame(draw, device, input, interactions);
+    ListItem items[2]{};
+    items[0].label = longLabel;
+    items[0].subtitle = "Author";
+    items[1].label = "short";
+    items[1].subtitle = "Author";
+    ListProps props;
+    props.items = items;
+    props.count = 2;
+    props.rowHeight = 40;
+    props.sidePadding = 10;
+    props.labelText.maxLines = 3;
+    list(frame, Rect{0, 0, 480, 400}, props);
+    int16_t row0H = 0;
+    int16_t row1H = 0;
+    for (size_t i = 0; i < draw.opCount; ++i) {
+      const FakeDrawTarget::Op& op = draw.ops[i];
+      if (op.kind != FakeDrawTarget::Op::Fill || op.rect.width != 480) continue;
+      if (op.rect.y == 0) row0H = op.rect.height;
+      if (op.rect.y == 52) row1H = op.rect.height;
+    }
+    CHECK_EQ(row0H, 52);
+    CHECK_EQ(row1H, 40);  // a fitting label keeps the uniform height
+    // Subtitle of the grown row: band is (52 - 24 - 12) / 2 = 8 from the row
+    // top, so the subtitle's 12px line starts at 8 + 24 = 32.
+    bool subtitleAt32 = false;
+    for (size_t i = 0; i < draw.opCount; ++i) {
+      const FakeDrawTarget::Op& op = draw.ops[i];
+      if (op.kind == FakeDrawTarget::Op::Text && op.rect.y == 32 && op.rect.height == 12) subtitleAt32 = true;
+    }
+    CHECK(subtitleAt32);
+  }
+
+  // Wrapped SUBTITLE: a maxLines > 1 subtitle that overflows grows the row by
+  // its own extra lines while the label keeps one (the complementary case).
+  {
+    FakeDrawTarget draw;
+    Frame<16> frame(draw, device, input, interactions);
+    ListItem items[1]{};
+    items[0].label = "short";
+    items[0].subtitle = longLabel;
+    ListProps props;
+    props.items = items;
+    props.count = 1;
+    props.rowHeight = 40;
+    props.sidePadding = 10;
+    props.subtitleText.maxLines = 2;
+    list(frame, Rect{0, 0, 480, 400}, props);
+    int16_t row0H = 0;
+    for (size_t i = 0; i < draw.opCount; ++i) {
+      const FakeDrawTarget::Op& op = draw.ops[i];
+      if (op.kind == FakeDrawTarget::Op::Fill && op.rect.width == 480 && op.rect.y == 0) row0H = op.rect.height;
+    }
+    CHECK_EQ(row0H, 52);  // 12 label + 24 wrapped subtitle + 16 base padding
+  }
+
+  // Touch-sized gate: without a subtitle, a 44px row already fits two 12px
+  // lines, so a wrapping two-line-budget label does not grow it.
+  {
+    FakeDrawTarget draw;
+    Frame<16> frame(draw, device, input, interactions);
+    ListItem items[1]{};
+    items[0].label = longLabel;
+    ListProps props;
+    props.items = items;
+    props.count = 1;
+    props.rowHeight = 44;
+    props.sidePadding = 10;
+    props.labelText.maxLines = 2;
+    list(frame, Rect{0, 0, 480, 400}, props);
+    int16_t row0H = 0;
+    for (size_t i = 0; i < draw.opCount; ++i) {
+      const FakeDrawTarget::Op& op = draw.ops[i];
+      if (op.kind == FakeDrawTarget::Op::Fill && op.rect.width == 480 && op.rect.y == 0) row0H = op.rect.height;
+    }
+    CHECK_EQ(row0H, 44);
+  }
 }
 
 
@@ -2751,6 +3108,11 @@ int main() {
   testListHelpers();
   testListVirtualization();
   testListClampsBadTopIndex();
+  testListItemsWindow();
+  testListItemsWindowStopsBeforePastEndMeasurement();
+  testListItemsWindowSkipsUnavailablePartialPreview();
+  testListNavLayoutFeedback();
+  testListNavConvergesThroughRealList();
   testListCanUseFullTitleWidthWithShortValue();
   testButtonRegistersExpandedHit();
   testProgressBarClamps();
@@ -2767,6 +3129,7 @@ int main() {
   testThemePrimitiveParity();
   testRotationAndBitmapSampling();
   testListSectionHeaders();
+  testListWrappedLabelHeights();
   testCrossInkSleepScreenComposition();
   testCoverCarousel();
   testLayoutTextWrapping();

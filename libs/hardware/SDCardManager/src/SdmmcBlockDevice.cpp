@@ -63,11 +63,13 @@ bool SdmmcBlockDevice::begin(const BoardConfig::SdmmcPins& pins) {
     gpio_hold_dis(static_cast<gpio_num_t>(sdPwr));
     pinMode(sdPwr, OUTPUT);
   }
-  // DMA-capable bounce buffer for the sector-0 validation read. SdFat's own cache may
-  // live in PSRAM / at an unaligned address; a known-good internal-RAM buffer proves
-  // the data path on its own terms.
-  auto* probe = static_cast<uint8_t*>(heap_caps_malloc(512, MALLOC_CAP_DMA | MALLOC_CAP_8BIT));
-  if (!probe) {
+  // Keep one DMA-capable bounce buffer for all block I/O. SdFat's own cache may
+  // live in PSRAM / at an unaligned address, while native SDMMC requires an
+  // internal-RAM DMA buffer. Limiting each transfer to eight sectors keeps the
+  // buffer bounded at 4 KiB and avoids heap churn in the USB-MSC callbacks.
+  _dmaBuffer = static_cast<uint8_t*>(heap_caps_malloc(kSectorSize * kMaxTransferSectors,
+                                                      MALLOC_CAP_DMA | MALLOC_CAP_8BIT));
+  if (!_dmaBuffer) {
     free(card);
     sdmmc_host_deinit();
     return false;
@@ -92,15 +94,15 @@ bool SdmmcBlockDevice::begin(const BoardConfig::SdmmcPins& pins) {
       continue;
     }
     // CSD is valid (capacity known); prove real block I/O before committing.
-    e = sdmmc_read_sectors(card, probe, 0, 1);
+    e = sdmmc_read_sectors(card, _dmaBuffer, 0, 1);
     mountErr = e;
     if (e == ESP_OK) break;
   }
-  heap_caps_free(probe);
-
   if (mountErr != ESP_OK) {
     if (Serial)
       Serial.printf("[%lu] [SD] SDMMC mount failed after retries: %s\n", millis(), esp_err_to_name(mountErr));
+    heap_caps_free(_dmaBuffer);
+    _dmaBuffer = nullptr;
     free(card);
     sdmmc_host_deinit();
     return false;
@@ -115,6 +117,10 @@ void SdmmcBlockDevice::end() {
     _card = nullptr;
     sdmmc_host_deinit();
   }
+  if (_dmaBuffer) {
+    heap_caps_free(_dmaBuffer);
+    _dmaBuffer = nullptr;
+  }
 }
 
 // esp-idf SDMMC uses DMA, which requires the transfer buffer to be in DMA-capable
@@ -122,25 +128,31 @@ void SdmmcBlockDevice::end() {
 // (PSRAM / arbitrary alignment), which makes sdmmc_read/write_sectors fail. Bounce
 // through a DMA-capable buffer. (heap_caps_aligned_alloc via MALLOC_CAP_DMA.)
 bool SdmmcBlockDevice::readSectors(Sector_t sector, uint8_t* dst, size_t ns) {
-  if (!_card) return false;
-  const size_t bytes = ns * 512u;
-  auto* bounce = static_cast<uint8_t*>(heap_caps_malloc(bytes, MALLOC_CAP_DMA | MALLOC_CAP_8BIT));
-  if (!bounce) return false;
-  const esp_err_t e = sdmmc_read_sectors(static_cast<sdmmc_card_t*>(_card), bounce, sector, ns);
-  if (e == ESP_OK) memcpy(dst, bounce, bytes);
-  heap_caps_free(bounce);
-  return e == ESP_OK;
+  if (!_card || !_dmaBuffer || !dst || ns == 0) return false;
+  while (ns > 0) {
+    const size_t count = ns > kMaxTransferSectors ? kMaxTransferSectors : ns;
+    const size_t bytes = count * kSectorSize;
+    if (sdmmc_read_sectors(static_cast<sdmmc_card_t*>(_card), _dmaBuffer, sector, count) != ESP_OK) return false;
+    memcpy(dst, _dmaBuffer, bytes);
+    sector += count;
+    dst += bytes;
+    ns -= count;
+  }
+  return true;
 }
 
 bool SdmmcBlockDevice::writeSectors(Sector_t sector, const uint8_t* src, size_t ns) {
-  if (!_card) return false;
-  const size_t bytes = ns * 512u;
-  auto* bounce = static_cast<uint8_t*>(heap_caps_malloc(bytes, MALLOC_CAP_DMA | MALLOC_CAP_8BIT));
-  if (!bounce) return false;
-  memcpy(bounce, src, bytes);
-  const esp_err_t e = sdmmc_write_sectors(static_cast<sdmmc_card_t*>(_card), bounce, sector, ns);
-  heap_caps_free(bounce);
-  return e == ESP_OK;
+  if (!_card || !_dmaBuffer || !src || ns == 0) return false;
+  while (ns > 0) {
+    const size_t count = ns > kMaxTransferSectors ? kMaxTransferSectors : ns;
+    const size_t bytes = count * kSectorSize;
+    memcpy(_dmaBuffer, src, bytes);
+    if (sdmmc_write_sectors(static_cast<sdmmc_card_t*>(_card), _dmaBuffer, sector, count) != ESP_OK) return false;
+    sector += count;
+    src += bytes;
+    ns -= count;
+  }
+  return true;
 }
 
 Sector_t SdmmcBlockDevice::sectorCount() {

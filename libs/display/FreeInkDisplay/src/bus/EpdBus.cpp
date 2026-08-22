@@ -377,6 +377,20 @@ void EpdBus::waitRefreshComplete(const char* tag) {
   // slice hook already delivers GPIO-precise wake, so the ISR path buys these hosts
   // nothing — fall back to the hooked poll.
   if (_busyWaitSliceHook != nullptr) {
+    // Refresh-completion context: BUSY assertion can trail MASTER_ACTIVATION
+    // by a few microseconds, and the ActiveHigh polled path (unlike ActiveLow's
+    // 100 ms grace loop, or the ISR path's 20 ms edge wait below) would fall
+    // through immediately — returning mid-waveform, after which single-buffer
+    // drivers rewrite controller RAM while the panel is still driving. Give
+    // the poll the same bounded grace here, in the refresh-only context, so
+    // waitBusy() itself (which also serves command waits where BUSY may never
+    // assert) stays untouched for every other caller.
+    if (_busy == BusyPolarity::ActiveHigh) {
+      const unsigned long graceStart = millis();
+      while (digitalRead(_pins.busy) != HIGH && millis() - graceStart < 20) {
+        delayMicroseconds(200);
+      }
+    }
     waitBusy(tag);
     return;
   }

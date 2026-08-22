@@ -25,8 +25,8 @@ constexpr uint8_t CTRL2_G_104HZ_245DPS = 0x40;
 constexpr uint8_t CTRL3_C_BDU_IF_INC = 0x44;  // BDU=1, IF_INC=1 (block update + auto-increment)
 
 // Sensitivities for the scales above (datasheet "mechanical characteristics").
-constexpr float ACCEL_G_PER_LSB = 0.061f / 1000.0f;   // 0.061 mg/LSB at ±2 g
-constexpr float GYRO_DPS_PER_LSB = 8.75f / 1000.0f;    // 8.75 mdps/LSB at ±245 dps
+constexpr float ACCEL_G_PER_LSB = 0.061f / 1000.0f;  // 0.061 mg/LSB at ±2 g
+constexpr float GYRO_DPS_PER_LSB = 8.75f / 1000.0f;  // 8.75 mdps/LSB at ±245 dps
 
 // QMI8658 register map.
 constexpr uint8_t QMI8658_REG_WHO_AM_I = 0x00;
@@ -74,6 +74,7 @@ void ensureWire() {
       0;
 #endif
   if (g_wireReady[bus]) return;
+  if (s.i2cSda < 0 || s.i2cScl < 0) return;  // no sensor bus on this board
   auto& wire = sensorWire();
   wire.begin(s.i2cSda, s.i2cScl, s.i2cHz);
   g_wireReady[bus] = true;
@@ -109,8 +110,7 @@ bool powerDownQmi8658(uint8_t addr) {
   // fails, still try to stop the internal oscillator. This is also used as the
   // cleanup path after a partially failed begin().
   const bool sensorsDisabled = writeReg(addr, QMI8658_REG_CTRL7, QMI8658_CTRL7_DISABLE_ALL);
-  const bool oscillatorDisabled =
-      writeReg(addr, QMI8658_REG_CTRL1, QMI8658_CTRL1_BASE | QMI8658_CTRL1_SENSOR_DISABLE);
+  const bool oscillatorDisabled = writeReg(addr, QMI8658_REG_CTRL1, QMI8658_CTRL1_BASE | QMI8658_CTRL1_SENSOR_DISABLE);
   return sensorsDisabled && oscillatorDisabled;
 }
 
@@ -138,8 +138,7 @@ bool Imu::begin() {
       // SA0 selects between 0x6A and 0x6B. X3 production revisions have used
       // both, so treat the profile address as a preference rather than a
       // guarantee. This restores the fallback used by the pre-SDK X3 driver.
-      const uint8_t alternateAddr =
-          configuredAddr == QMI8658_ADDR_6A ? QMI8658_ADDR_6B : QMI8658_ADDR_6A;
+      const uint8_t alternateAddr = configuredAddr == QMI8658_ADDR_6A ? QMI8658_ADDR_6B : QMI8658_ADDR_6A;
       if (qmi8658PresentAt(configuredAddr)) {
         addr_ = configuredAddr;
       } else if (qmi8658PresentAt(alternateAddr)) {
@@ -148,12 +147,11 @@ bool Imu::begin() {
         return false;
       }
 
-      const bool configured =
-          writeReg(addr_, QMI8658_REG_CTRL7, QMI8658_CTRL7_DISABLE_ALL) &&
-          writeReg(addr_, QMI8658_REG_CTRL1, QMI8658_CTRL1_BASE) &&
-          writeReg(addr_, QMI8658_REG_CTRL2, QMI8658_CTRL2_FS_2G | QMI8658_CTRL2_ODR_28HZ) &&
-          writeReg(addr_, QMI8658_REG_CTRL3, QMI8658_CTRL3_FS_512DPS | QMI8658_CTRL3_ODR_28HZ) &&
-          writeReg(addr_, QMI8658_REG_CTRL7, QMI8658_CTRL7_ACC_GYRO_ENABLE);
+      const bool configured = writeReg(addr_, QMI8658_REG_CTRL7, QMI8658_CTRL7_DISABLE_ALL) &&
+                              writeReg(addr_, QMI8658_REG_CTRL1, QMI8658_CTRL1_BASE) &&
+                              writeReg(addr_, QMI8658_REG_CTRL2, QMI8658_CTRL2_FS_2G | QMI8658_CTRL2_ODR_28HZ) &&
+                              writeReg(addr_, QMI8658_REG_CTRL3, QMI8658_CTRL3_FS_512DPS | QMI8658_CTRL3_ODR_28HZ) &&
+                              writeReg(addr_, QMI8658_REG_CTRL7, QMI8658_CTRL7_ACC_GYRO_ENABLE);
       if (!configured) {
         // A failed setup must not strand a previously running sensor in its
         // multi-milliamp active mode. The digital interface remains available

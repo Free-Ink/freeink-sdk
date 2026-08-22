@@ -39,10 +39,14 @@ class SdmmcBlockDevice : public FsBlockDeviceInterface {
   bool syncDevice() override { return true; }
 
  private:
+  static constexpr size_t kSectorSize = 512;
+  static constexpr size_t kMaxTransferSectors = 8;
+
   // esp-idf's sdmmc_card_t is a typedef of an anonymous struct, so it can't be
   // forward-declared here (a `struct sdmmc_card_t;` tag is a different, conflicting
   // type). Hold it opaquely and cast in the .cpp, where the esp-idf header is included.
   void* _card = nullptr;
+  uint8_t* _dmaBuffer = nullptr;
 };
 
 }  // namespace freeink

@@ -190,6 +190,28 @@ class PanelDriver {
   // domains alive across adjacent waveforms can shut them down here.
   virtual void controllerIdle(EpdBus& bus) { (void)bus; }
   virtual void requestCompleteWaveformNextRefresh() {}
+  // Standing-image policy (ED2208): when enabled, RefreshMode::Full always
+  // runs the panel's complete OTP waveform (~15 s, DC-balanced, true white,
+  // full color) instead of an interrupted full-panel pass. Lets a consumer
+  // whose Full refreshes are all standing images (e.g. a clock/dashboard) get
+  // a clean render on every one without threading the one-shot
+  // requestCompleteWaveformNextRefresh() through each call site. Default off:
+  // consumers that page with Full (readers) keep the fast behavior.
+  virtual void setFullRefreshCompletesWaveform(bool enabled) { (void)enabled; }
+  // Accent color planes (ED2208, Spectra-6): each `plane` is a 1-bit buffer
+  // with the same logical geometry and layout as the framebuffer; a SET bit
+  // recolors that pixel's ink (a 0/black framebuffer bit) to that slot's
+  // `colorCode` on complete-waveform refreshes. Interrupted refreshes ignore
+  // the planes (color pigments never settle in a cut-off waveform), so
+  // accents appear only on standing images. Up to 4 slots; the lowest-
+  // numbered slot with a set bit wins where planes overlap. nullptr clears a
+  // slot. The caller owns the buffers and must keep them valid across
+  // refreshes.
+  virtual void setAccentPlaneSlot(uint8_t slot, const uint8_t* plane, uint8_t colorCode) {
+    (void)slot;
+    (void)plane;
+    (void)colorCode;
+  }
   // Interrupted-refresh cutoff tuning (ED2208: where the gate scan freezes).
   virtual void setFastRefreshCutoffMs(uint16_t ms) { (void)ms; }
   virtual uint16_t fastRefreshCutoffMs() const { return 0; }

@@ -6,6 +6,18 @@
 
 #include <BoardConfig.h>
 
+// Orientation of the visible-row stream, switchable per build for field A/B.
+// Defaults (0/0) = the stock convention, HARDWARE-CONFIRMED upright on a field
+// UC8279 unit: rows forward, no byte/bit mirroring — orientation comes from the
+// PSR SHL bit (0x37), which must be written AFTER PON to latch (PON reloads the
+// MTP defaults).
+#ifndef FREEINK_UC8279X4_ROWREV
+#define FREEINK_UC8279X4_ROWREV 0
+#endif
+#ifndef FREEINK_UC8279X4_XMIRROR
+#define FREEINK_UC8279X4_XMIRROR 0
+#endif
+
 namespace freeink {
 namespace {
 // UC8279 (800x480 X4 Pro variant) command set — UC81xx KW family, per the vendor
@@ -22,6 +34,7 @@ constexpr uint8_t CMD_PLL = 0x30;                 // PLL frame rate
 constexpr uint8_t CMD_VCOM_DATA_INTERVAL = 0x50;  // CDI — 1 data byte on this part
 constexpr uint8_t CMD_RESOLUTION = 0x61;          // TRES
 constexpr uint8_t CMD_GATE_SOURCE_START = 0x65;   // GSST (4 data bytes)
+constexpr uint8_t CMD_PARTIAL_WINDOW = 0x90;      // PTL (window; stock re-issues per partial)
 constexpr uint8_t CMD_PARTIAL_IN = 0x91;          // PTIN
 constexpr uint8_t CMD_PARTIAL_OUT = 0x92;         // PTOUT
 constexpr uint8_t CMD_CCSET = 0xE0;               // CCSET (cascade/output enable)
@@ -65,8 +78,10 @@ const GrayLut* selectAaLuts() {
 
 const Uc8279X4Config& uc8279X4DefaultConfig() {
   static const Uc8279X4Config cfg = {
-      0x37,  // psr0: REG=1 (external LUT) as written at init and for AA;
-             // built-in refreshes re-assert psr0 & 0xDF = 0x17 (OTP)
+      0x37,  // psr0: stock value, SHL set (stock streams rows forward with no RAM
+             // mirroring and writes PSR between PON and DRF — PON reloads MTP
+             // settings, so only post-PON PSR writes latch). REG=1 (external LUT)
+             // at init and for AA; built-in refreshes re-assert psr0 & 0xDF = 0x17
       0x4D,  // psr1
       0x20,  // pfs (0x03)
       0x0E,  // pll (0x30) — programmed at init on this variant
@@ -74,8 +89,9 @@ const Uc8279X4Config& uc8279X4DefaultConfig() {
       0x02,  // ccset (0xE0)
       0x1E,  // tsset (0xE5) full refresh
       0x5A,  // tssetFast (0xE5) fast/partial refresh
-      0x97,  // cdiAaFirst (0x50, 1 byte): first AA refresh, border driven, DDX=1
-      0xD7,  // cdiAaLater (0x50, 1 byte): later AA refreshes, border held
+      0x97,  // cdiAa (0x50, 1 byte): constant on EVERY AA refresh, per stock
+      0x97,  // cdiBwFull (0x50): stock writes it before every GC/full refresh
+      0xD7,  // cdiBwFast (0x50): stock value for the windowed partial
       600,   // tresHeight — addressed 800x600 (480 visible)
       120,   // gateOffset — visible gates start at 120 on this variant
   };
@@ -127,7 +143,6 @@ void Uc8279X4Driver::initController(EpdBus& bus) {
   bus.data(_cfg.gateScan);
 
   _isScreenOn = false;
-  _grayRefreshedOnce = false;
 }
 
 void Uc8279X4Driver::begin(EpdBus& bus) {
@@ -147,17 +162,26 @@ void Uc8279X4Driver::streamPlane(EpdBus& bus, uint8_t ramCmd, const uint8_t* fb,
   // Gates before the visible window (the 120-gate offset): white.
   memset(row, 0xFF, wb);
   for (uint16_t y = 0; y < _cfg.gateOffset; y++) bus.data(row, wb);
-  // Visible rows, mirror-Y via row reversal (mirror-X is the PSR SHL bit —
-  // same orientation convention as the UC8179 sibling). AA planes are sent
-  // bitwise-inverted per the vendor reference.
-  for (uint16_t y = _h; y-- > 0;) {
+  // Visible rows, stock convention (hardware-confirmed upright): forward order,
+  // bytes as-is. The ROWREV/XMIRROR switches (row reversal / reversed byte order
+  // + reversed bits) exist for future panel sub-variants whose scan differs.
+  // AA planes are sent bitwise-inverted per the vendor reference.
+  static const uint8_t kBitRev[16] = {0x0, 0x8, 0x4, 0xC, 0x2, 0xA, 0x6, 0xE,
+                                      0x1, 0x9, 0x5, 0xD, 0x3, 0xB, 0x7, 0xF};
+  for (uint16_t n = 0; n < _h; n++) {
+    const uint16_t y = FREEINK_UC8279X4_ROWREV ? static_cast<uint16_t>(_h - 1 - n) : n;
     const uint8_t* src = fb + static_cast<uint32_t>(y) * _wb;
-    if (invert) {
-      for (uint16_t i = 0; i < wb; i++) row[i] = static_cast<uint8_t>(~src[i]);
-      bus.data(row, wb);
-    } else {
-      bus.data(src, wb);
+    for (uint16_t i = 0; i < wb; i++) {
+      uint8_t b;
+      if (FREEINK_UC8279X4_XMIRROR) {
+        const uint8_t m = src[wb - 1 - i];
+        b = static_cast<uint8_t>((kBitRev[m & 0x0F] << 4) | kBitRev[m >> 4]);
+      } else {
+        b = src[i];
+      }
+      row[i] = invert ? static_cast<uint8_t>(~b) : b;
     }
+    bus.data(row, wb);
   }
   // Gates after the visible window: white, up to the addressed gate count.
   memset(row, 0xFF, wb);
@@ -200,15 +224,17 @@ bool Uc8279X4Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t*
   // post-AA gray residue for this frame.
   _redriveAfterGray = false;
 
-  // Built-in refresh setup per the reference (GC / DU tables; no CDI write —
-  // the 1-byte CDI is only asserted by the AA path):
+  // Built-in refresh setup, byte-for-byte the stock FW trigger order (RE of
+  // Factory.bin FUN_4214d050 partial / FUN_4214cfe8 full): CDI first — stock
+  // writes the 1-byte CDI on EVERY refresh, 0x97 full / 0xD7 partial — then
+  // CCSET/TSSET (+ PFS/gate-scan on partial), PON, the partial window, and a
+  // PSR rewrite between PON and DRF (same latch behavior as the AA path).
+  bus.cmd(CMD_VCOM_DATA_INTERVAL);
+  bus.data(fast ? _cfg.cdiBwFast : _cfg.cdiBwFull);
   bus.cmd(CMD_CCSET);
   bus.data(_cfg.ccset);  // 0x02
   bus.cmd(CMD_TSSET);
   bus.data(fast ? _cfg.tssetFast : _cfg.tsset);  // DU 0x5A / GC 0x1E
-  bus.cmd(CMD_PANEL_SETTING);
-  bus.data(static_cast<uint8_t>(_cfg.psr0 & 0xDF));  // REG cleared -> OTP (0x17)
-  bus.data(_cfg.psr1);
   if (fast) {
     bus.cmd(CMD_PFS);
     bus.data(_cfg.pfs);  // 0x03 <- 0x20
@@ -218,7 +244,28 @@ bool Uc8279X4Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t*
 
   powerOnIfNeeded(bus, " 8279x4_PON");
 
-  if (fast) bus.cmd(CMD_PARTIAL_IN);
+  if (fast) {
+    // Stock NEVER issues PTIN without a PTL (0x90) window — with PTL unset the
+    // DU scans but develops nothing (first field unit: 443 ms DRF, no image).
+    // Full-screen window; gate coords carry the 120-gate visible offset.
+    const uint16_t xEnd = _w - 1;
+    const uint16_t yStart = _cfg.gateOffset;
+    const uint16_t yEnd = _cfg.gateOffset + _h - 1;
+    bus.cmd(CMD_PARTIAL_IN);
+    bus.cmd(CMD_PARTIAL_WINDOW);
+    bus.data(0x00);
+    bus.data(0x00);  // x start, byte-aligned (& 0xF8)
+    bus.data(static_cast<uint8_t>(xEnd >> 8));
+    bus.data(static_cast<uint8_t>(xEnd | 0x07));
+    bus.data(static_cast<uint8_t>(yStart >> 8));
+    bus.data(static_cast<uint8_t>(yStart & 0xFF));
+    bus.data(static_cast<uint8_t>(yEnd >> 8));
+    bus.data(static_cast<uint8_t>(yEnd & 0xFF));
+    bus.data(0x01);
+  }
+  bus.cmd(CMD_PANEL_SETTING);
+  bus.data(static_cast<uint8_t>(_cfg.psr0 & 0xDF));  // REG cleared -> OTP (0x13)
+  bus.data(_cfg.psr1);
   bus.cmd(CMD_DISPLAY_REFRESH);
   // Confirm the waveform started (BUSY dropped) before returning, so
   // displayFinish() only rides out the completion edge.
@@ -272,13 +319,20 @@ void Uc8279X4Driver::deepSleep(EpdBus& bus) {
 
 // --- 4-level grayscale (anti-aliasing) --------------------------------------
 // AA plane order is the reverse of the built-in 4-gray order: plane0/LSB -> 0x10,
-// plane1/MSB -> 0x13, and BOTH planes are bitwise-inverted on this controller.
+// plane1/MSB -> 0x13. NOT inverted, unlike stock: stock inverts because ITS
+// planes are ABSOLUTE (white=(1,1)); the SDK consumer's planes are DELTA-encoded
+// (white AND black = (0,0), only greys flagged — the hardware-proven UC8179
+// arrangement). Inverting delta planes sent white through stock's black-drive
+// waveform bucket, washing the background gray on every AA refresh
+// (field-confirmed on the first UC8279 unit). Non-inverted, white/black land in
+// the gentle WW hold bucket, dark grey (1,1) in the strong-drive table, light
+// grey (0,1) in the mid-drive table.
 void Uc8279X4Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
-  if (lsb) streamPlane(bus, CMD_DTM1, lsb, /*invert=*/true);
+  if (lsb) streamPlane(bus, CMD_DTM1, lsb, /*invert=*/false);
 }
 
 void Uc8279X4Driver::copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
-  if (msb) streamPlane(bus, CMD_DTM2, msb, /*invert=*/true);
+  if (msb) streamPlane(bus, CMD_DTM2, msb, /*invert=*/false);
 }
 
 void Uc8279X4Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut,
@@ -287,10 +341,10 @@ void Uc8279X4Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, c
   (void)factoryMode;  // 4-level is absolute (defined by the planes)
 
   // Vendor AA sequence: PSR (REG=1) -> [planes already in RAM via
-  // copyGrayscale*] -> 5x49 LUTs -> CDI (first/later) -> PON -> PSR rewrite ->
+  // copyGrayscale*] -> 5x49 LUTs -> CDI (constant 0x97) -> PON -> PSR rewrite ->
   // DRF. No CCSET/TSSET writes on this path.
   bus.cmd(CMD_PANEL_SETTING);
-  bus.data(_cfg.psr0);  // 0x37: REG=1, external LUT
+  bus.data(_cfg.psr0);  // 0x33: REG=1, external LUT
   bus.data(_cfg.psr1);
   const GrayLut* luts = selectAaLuts();
   for (int i = 0; i < 5; i++) {
@@ -298,8 +352,7 @@ void Uc8279X4Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, c
     bus.data(luts[i].data, GRAY_LUT_LEN);
   }
   bus.cmd(CMD_VCOM_DATA_INTERVAL);
-  bus.data(_grayRefreshedOnce ? _cfg.cdiAaLater : _cfg.cdiAaFirst);  // first 0x97, later 0xD7
-  _grayRefreshedOnce = true;
+  bus.data(_cfg.cdiAa);  // constant 0x97 every AA refresh (stock; no first/later split)
 
   powerOnIfNeeded(bus, " 8279x4_gray_PON");
 

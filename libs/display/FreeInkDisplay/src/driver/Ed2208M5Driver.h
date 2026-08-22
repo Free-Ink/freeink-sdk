@@ -42,6 +42,21 @@ class Ed2208M5Driver : public PanelDriver {
 
   void requestCompleteWaveformNextRefresh() override { _completeNextRefresh = true; }
 
+  // Standing-image policy: Full refreshes always run the complete OTP
+  // waveform (see PanelDriver). Half/Fast stay interrupted, so consumers keep
+  // a fast path for transient frames (dialogs, alarms, key feedback).
+  void setFullRefreshCompletesWaveform(bool enabled) override { _fullCompletes = enabled; }
+
+  // Accent color planes (see PanelDriver): recolor ink pixels on
+  // complete-waveform refreshes only — an interrupted refresh cuts the
+  // waveform long before color pigments settle, so there the planes are
+  // ignored and accented pixels render as plain ink.
+  void setAccentPlaneSlot(uint8_t slot, const uint8_t* plane, uint8_t colorCode) override {
+    if (slot >= MAX_ACCENT_PLANES) return;
+    _accentPlanes[slot] = plane;
+    _accentColors[slot] = colorCode & 0x0F;
+  }
+
   // Interrupted-refresh cutoff. The cut freezes the gate scan mid-frame: rows
   // already scanned that frame got one more drive step, so the scan position at
   // the cut shows as a hard band across the panel. Tunable so the cutoff can be
@@ -69,6 +84,11 @@ class Ed2208M5Driver : public PanelDriver {
 
   bool _panelPowerOn = false;
   bool _completeNextRefresh = false;
+  bool _fullCompletes = false;  // Full mode promotes to the complete waveform
+  // 1bpp accent overlays (host-owned), nullptr = slot off; lowest set slot wins.
+  static constexpr uint8_t MAX_ACCENT_PLANES = 4;
+  const uint8_t* _accentPlanes[MAX_ACCENT_PLANES] = {nullptr, nullptr, nullptr, nullptr};
+  uint8_t _accentColors[MAX_ACCENT_PLANES] = {0x3, 0x3, 0x3, 0x3};
   uint16_t _cutoffMs = 0;  // 0 -> REFRESH_CUTOFF_MS default (set in .cpp)
   bool _lastFrameValid = false;
   uint8_t _prevFrame[LOGICAL_BUF];  // previous frame, for the dirty-window diff

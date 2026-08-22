@@ -81,6 +81,10 @@ class SDCardManager {
   // succeeds. The returned pointer implements SdFat's FsBlockDeviceInterface.
   // Do NOT touch the filesystem while the card is handed to the USB host.
   freeink::SdmmcBlockDevice* rawBlockDevice() { return _dev; }
+  // End the FsVolume mount while keeping the native block device alive for a
+  // raw USB-MSC owner. The caller must reinitialize the manager after the
+  // owner releases the card.
+  FsBlockDeviceInterface* detachFilesystemForRawAccess();
 #endif
 
  static SDCardManager& getInstance() { return instance; }

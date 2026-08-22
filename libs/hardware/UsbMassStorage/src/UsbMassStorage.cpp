@@ -6,47 +6,127 @@
 #include <USB.h>
 #include <USBMSC.h>
 
-// TinyUSB device-mounted state. Declared here to avoid pulling the full tusb
-// header set into this TU; it's a plain C symbol from the arduino-esp32 USB stack.
+#include <algorithm>
+#include <atomic>
+#include <cstring>
+
 extern "C" bool tud_mounted(void);
 
 namespace freeink {
 namespace {
 
 USBMSC gMsc;
-FsBlockDeviceInterface* gDev = nullptr;
+std::atomic<UsbMassStorage*> gOwner{nullptr};
+std::atomic<FsBlockDeviceInterface*> gDev{nullptr};
 constexpr uint16_t kBlockSize = 512;
+uint8_t gSectorScratch[kBlockSize];
 
-// USBMSC read/write callbacks. TinyUSB passes a byte `offset` within the LBA for
-// scatter transfers; in practice it is 0 and `bufsize` is a whole number of
-// sectors. Route to the block device's sector I/O (SdmmcBlockDevice already
-// bounces through DMA-capable memory).
+bool isRangeValid(FsBlockDeviceInterface* dev, const uint32_t lba, const uint32_t offset, const uint32_t bufsize) {
+  if (!dev || bufsize == 0) return false;
+  const uint64_t totalBytes = static_cast<uint64_t>(dev->sectorCount()) * kBlockSize;
+  const uint64_t start = static_cast<uint64_t>(lba) * kBlockSize + offset;
+  const uint64_t end = start + bufsize;
+  return end >= start && end <= totalBytes;
+}
+
 int32_t mscRead(uint32_t lba, uint32_t offset, void* buffer, uint32_t bufsize) {
-  if (gDev == nullptr || (bufsize % kBlockSize) != 0) return -1;
-  const uint32_t ns = bufsize / kBlockSize;
-  if (!gDev->readSectors(lba + offset / kBlockSize, static_cast<uint8_t*>(buffer), ns)) return -1;
+  auto* const dev = gDev.load();
+  auto* const owner = gOwner.load();
+  if (!buffer || !isRangeValid(dev, lba, offset, bufsize)) {
+    if (owner) owner->markIoError();
+    return -1;
+  }
+
+  const uint64_t start = static_cast<uint64_t>(lba) * kBlockSize + offset;
+  auto* output = static_cast<uint8_t*>(buffer);
+  uint32_t remaining = bufsize;
+  uint64_t cursor = start;
+
+  if ((offset % kBlockSize) == 0 && (bufsize % kBlockSize) == 0) {
+    const size_t sectors = bufsize / kBlockSize;
+    if (!dev->readSectors(static_cast<Sector_t>(start / kBlockSize), output, sectors)) {
+      if (owner) owner->markIoError();
+      return -1;
+    }
+  } else {
+    while (remaining > 0) {
+      const auto sector = static_cast<Sector_t>(cursor / kBlockSize);
+      const size_t within = static_cast<size_t>(cursor % kBlockSize);
+      const size_t count = std::min<size_t>(kBlockSize - within, remaining);
+      if (!dev->readSector(sector, gSectorScratch)) {
+        if (owner) owner->markIoError();
+        return -1;
+      }
+      memcpy(output, gSectorScratch + within, count);
+      output += count;
+      cursor += count;
+      remaining -= count;
+    }
+  }
+
+  if (owner) owner->markAccessed();
   return static_cast<int32_t>(bufsize);
 }
 
 int32_t mscWrite(uint32_t lba, uint32_t offset, uint8_t* buffer, uint32_t bufsize) {
-  if (gDev == nullptr || (bufsize % kBlockSize) != 0) return -1;
-  const uint32_t ns = bufsize / kBlockSize;
-  if (!gDev->writeSectors(lba + offset / kBlockSize, buffer, ns)) return -1;
+  auto* const dev = gDev.load();
+  auto* const owner = gOwner.load();
+  if (!buffer || !isRangeValid(dev, lba, offset, bufsize)) {
+    if (owner) owner->markIoError();
+    return -1;
+  }
+
+  const uint64_t start = static_cast<uint64_t>(lba) * kBlockSize + offset;
+  auto* input = buffer;
+  uint32_t remaining = bufsize;
+  uint64_t cursor = start;
+
+  if ((offset % kBlockSize) == 0 && (bufsize % kBlockSize) == 0) {
+    const size_t sectors = bufsize / kBlockSize;
+    if (!dev->writeSectors(static_cast<Sector_t>(start / kBlockSize), input, sectors)) {
+      if (owner) owner->markIoError();
+      return -1;
+    }
+  } else {
+    while (remaining > 0) {
+      const auto sector = static_cast<Sector_t>(cursor / kBlockSize);
+      const size_t within = static_cast<size_t>(cursor % kBlockSize);
+      const size_t count = std::min<size_t>(kBlockSize - within, remaining);
+      if (!dev->readSector(sector, gSectorScratch)) {
+        if (owner) owner->markIoError();
+        return -1;
+      }
+      memcpy(gSectorScratch + within, input, count);
+      if (!dev->writeSector(sector, gSectorScratch)) {
+        if (owner) owner->markIoError();
+        return -1;
+      }
+      input += count;
+      cursor += count;
+      remaining -= count;
+    }
+  }
+
+  if (owner) owner->markAccessed();
   return static_cast<int32_t>(bufsize);
 }
 
-// Accept host START/STOP UNIT (spin-up/eject) — nothing to gate; the medium is
-// always present while active.
-bool mscStartStop(uint8_t /*power_condition*/, bool /*start*/, bool /*load_eject*/) { return true; }
+bool mscStartStop(uint8_t /*power_condition*/, bool start, bool load_eject) {
+  if (load_eject && !start) {
+    if (auto* const owner = gOwner.load()) owner->markEjected();
+  }
+  return true;
+}
 
 }  // namespace
 
 bool UsbMassStorage::begin(FsBlockDeviceInterface* dev) {
-  if (_active || dev == nullptr) return false;
-  const uint32_t sectors = dev->sectorCount();
-  if (sectors == 0) return false;  // no card / not mounted
+  if (_active || !dev || dev->sectorCount() == 0) return false;
 
-  gDev = dev;
+  gDev.store(dev);
+  gOwner.store(this);
+  _state.store(UsbMassStorageState::WaitingForHost);
+  _hostSeen.store(false);
   gMsc.vendorID("FreeInk");
   gMsc.productID("SD Card");
   gMsc.productRevision("1.0");
@@ -55,11 +135,20 @@ bool UsbMassStorage::begin(FsBlockDeviceInterface* dev) {
   gMsc.onStartStop(mscStartStop);
   gMsc.onRead(mscRead);
   gMsc.onWrite(mscWrite);
-  if (!gMsc.begin(sectors, kBlockSize)) {
-    gDev = nullptr;
+  if (!gMsc.begin(dev->sectorCount(), kBlockSize)) {
+    gMsc.end();
+    gOwner.store(nullptr);
+    gDev.store(nullptr);
+    _state.store(UsbMassStorageState::Idle);
     return false;
   }
-  USB.begin();
+  if (!USB.begin()) {
+    gMsc.end();
+    gOwner.store(nullptr);
+    gDev.store(nullptr);
+    _state.store(UsbMassStorageState::Idle);
+    return false;
+  }
   _active = true;
   return true;
 }
@@ -67,11 +156,43 @@ bool UsbMassStorage::begin(FsBlockDeviceInterface* dev) {
 void UsbMassStorage::end() {
   if (!_active) return;
   gMsc.end();
-  gDev = nullptr;
+  gOwner.store(nullptr);
+  gDev.store(nullptr);
   _active = false;
+  _state.store(UsbMassStorageState::Idle);
+  _hostSeen.store(false);
 }
 
-bool UsbMassStorage::hostConnected() const { return _active && tud_mounted(); }
+UsbMassStorageState UsbMassStorage::state() const {
+  if (!_active) return UsbMassStorageState::Idle;
+  const auto current = _state.load();
+  if (current == UsbMassStorageState::Ejected || current == UsbMassStorageState::IoError) return current;
+
+  if (!tud_mounted()) {
+    return _hostSeen.load() ? UsbMassStorageState::Disconnected : UsbMassStorageState::WaitingForHost;
+  }
+
+  _hostSeen.store(true);
+  auto expected = UsbMassStorageState::WaitingForHost;
+  _state.compare_exchange_strong(expected, UsbMassStorageState::Connected);
+  return _state.load();
+}
+
+bool UsbMassStorage::hostConnected() const {
+  const auto current = state();
+  return current == UsbMassStorageState::Connected || current == UsbMassStorageState::Accessed;
+}
+
+void UsbMassStorage::markAccessed() const {
+  auto current = _state.load();
+  while (current != UsbMassStorageState::Ejected && current != UsbMassStorageState::IoError) {
+    if (_state.compare_exchange_weak(current, UsbMassStorageState::Accessed)) return;
+  }
+}
+
+void UsbMassStorage::markEjected() const { _state.store(UsbMassStorageState::Ejected); }
+
+void UsbMassStorage::markIoError() const { _state.store(UsbMassStorageState::IoError); }
 
 }  // namespace freeink
 

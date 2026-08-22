@@ -135,6 +135,21 @@ static const Ssd1677Config& ssd1677X4Config() {
 }
 #endif
 
+// Xteink X4 Pro with the fast-DU shortcut — OPT-IN via
+// -DFREEINK_X4PRO_FAST_DU_SHORTCUT. The X4 Pro paints on the stock X4 config
+// (same GDEQ0426T82 panel class — see ssd1677ActiveConfig), so the same
+// ~85 ms/refresh win applies, and so does the same panel-variance caveat: 0x1C
+// skips the per-refresh temperature load and power sequencing, and artifacts
+// tend to appear only over long sessions and across temperature. Enable only
+// after validating on your unit. SSD1677-batch units only — UC8179/UC8279
+// batches select a different driver and never reach this config.
+#ifdef FREEINK_X4PRO_FAST_DU_SHORTCUT
+static const Ssd1677Config& ssd1677X4ProConfig() {
+  static const Ssd1677Config cfg = fastDuRefreshShortcut(ssd1677DefaultConfig());
+  return cfg;
+}
+#endif
+
 Ssd1677Driver::Ssd1677Driver(const Ssd1677Config& cfg)
     : _cfg(cfg),
       _w(BoardConfig::ACTIVE.displayWidth),
@@ -695,7 +710,12 @@ static const Ssd1677Config& ssd1677ActiveConfig() {
     case BoardConfig::Board::Sticky: return ssd1677StickyConfig();
     // X4 Pro runs on the stock X4/GDEQ0426T82 config — same controller and panel
     // class, confirmed painting on hardware. No custom LUT or drive voltages needed.
+    // Layers the fast-DU shortcut only when the build opts in (ssd1677X4ProConfig).
+#ifdef FREEINK_X4PRO_FAST_DU_SHORTCUT
+    case BoardConfig::Board::XteinkX4Pro: return ssd1677X4ProConfig();
+#else
     case BoardConfig::Board::XteinkX4Pro: return ssd1677DefaultConfig();
+#endif
     // X4 layers the fast-DU shortcut on the default only when the build has
     // opted in (see ssd1677X4Config); stock 0xFC parity otherwise.
 #ifdef FREEINK_X4_FAST_DU_SHORTCUT

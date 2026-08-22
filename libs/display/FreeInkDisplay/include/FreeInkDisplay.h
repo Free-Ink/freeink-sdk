@@ -37,6 +37,29 @@ class FreeInkDisplay {
   // M5 PaperColor: run the next refresh's OTP waveform to completion (one-shot).
   void requestCompleteWaveformNextRefresh();
 
+  // M5 PaperColor: make every FULL_REFRESH run the complete OTP waveform
+  // (~15 s, DC-balanced, true white, full color) instead of an interrupted
+  // full-panel pass. For consumers whose Full refreshes are all standing
+  // images (clock/dashboard apps); readers that page with Full keep the
+  // default (off). No-op on other panels.
+  void setFullRefreshCompletesWaveform(bool enabled);
+
+  // M5 PaperColor (Spectra-6) accent color planes: 1-bit buffers with the
+  // framebuffer's geometry/layout. A set bit recolors that pixel's ink (a
+  // 0/black framebuffer bit) to the slot's `colorCode` on complete-waveform
+  // refreshes; interrupted refreshes render it as plain ink (color pigments
+  // never settle in a cut-off waveform), so accents appear only on standing
+  // images. Up to 4 slots — the lowest slot with a set bit wins on overlap;
+  // nullptr clears a slot; the caller owns the buffers. No-op on other panels.
+  void setAccentPlaneSlot(uint8_t slot, const uint8_t* plane, uint8_t colorCode);
+  // ED2208 Spectra-6 controller color codes for setAccentPlaneSlot().
+  static constexpr uint8_t SPECTRA_BLACK = 0x0;
+  static constexpr uint8_t SPECTRA_WHITE = 0x1;
+  static constexpr uint8_t SPECTRA_YELLOW = 0x2;
+  static constexpr uint8_t SPECTRA_RED = 0x3;
+  static constexpr uint8_t SPECTRA_BLUE = 0x5;
+  static constexpr uint8_t SPECTRA_GREEN = 0x6;
+
   // M5 PaperColor: interrupted-refresh cutoff (ms). The cut freezes the gate
   void setFastRefreshCutoffMs(uint16_t ms);
   uint16_t fastRefreshCutoffMs() const;

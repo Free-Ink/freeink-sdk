@@ -212,6 +212,22 @@ requires running the complete waveform (`requestCompleteWaveformNextRefresh()`).
 > `requestCompleteWaveformNextRefresh()` — roughly hourly works well — timed
 > around their own UX, since the complete waveform blocks for ~15 s.
 
+Two additional facades suit **standing-image consumers** (clocks, dashboards —
+anything whose screens park rather than page):
+
+- `setFullRefreshCompletesWaveform(true)` makes every `FULL_REFRESH` run the
+  complete OTP waveform, so each standing image is a clean, DC-balanced,
+  truthful render without threading the one-shot request through every call
+  site. `HALF`/`FAST` stay interrupted for transient frames (dialogs, alarms,
+  key feedback). Off by default — readers keep the fast `FULL`.
+- `setAccentPlaneSlot(slot, plane, colorCode)` takes host-owned 1-bit overlays
+  with the framebuffer's geometry (up to 4 slots, one color each; the lowest
+  slot with a set bit wins on overlap): set bits recolor that pixel's **ink**
+  to a Spectra-6 color (`FreeInkDisplay::SPECTRA_RED` etc.) on
+  complete-waveform refreshes. Interrupted refreshes ignore the planes —
+  pigments never settle in a cut-off waveform — so accents appear exactly on
+  the standing images that can render them.
+
 Two backends are selectable for this device:
 - **Native ED2208 (default)** — the fast interrupted-refresh path above.
 - **M5 official (`-DFREEINK_M5_OFFICIAL=1`)** — wraps M5's own **M5Unified + M5GFX**
@@ -275,8 +291,10 @@ polled, raw register reads + the reset/address dance, including the capacitive h
 key), and the **FT5x06 family** (Paper Mono's FT6336 — polled point reads gated on
 the active-low IRQ line). The InputManager exposes `hasTouch/isTouchPressed/wasTouchPressed/
 wasTouchReleased/getTouchPoint`; it delivers coordinates raw-panel-oriented and the
-app owns rotation. The GT911 boards set their `TouchConfig` in the board profile
-(e.g. `BoardConfig::LILYGO_T5_PRO_GT911`).
+app owns display-orientation mapping. GT911 additionally provides allocation-free
+multi-contact snapshots, completed 2-4 finger translation gestures, and completed
+two-finger rotations with a signed angle, center, and duration. The GT911 boards set
+their `TouchConfig` in the board profile (e.g. `BoardConfig::LILYGO_T5_PRO_GT911`).
 
 ## Build composition — devices × capabilities
 

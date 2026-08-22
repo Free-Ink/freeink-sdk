@@ -3,6 +3,7 @@
 #include <BoardConfig.h>
 #include <driver/gpio.h>
 #include <SPI.h>
+#include <new>
 
 #include "SdmmcBlockDevice.h"  // no-op unless FREEINK_SD_SDMMC
 
@@ -16,6 +17,8 @@ SDCardManager SDCardManager::instance;
 SDCardManager::SDCardManager() {}
 
 bool SDCardManager::begin() {
+  if (initialized) return true;
+
   // Native SDMMC: SdFat can't drive SDIO, so mount a plain FsVolume on the esp-idf
   // SDMMC block device. FsFile from this volume is the same type the SPI path
   // returns, so the public API and consumers are unchanged.
@@ -29,7 +32,18 @@ bool SDCardManager::begin() {
   // The SD power-enable (sd.powerEnable) is driven by SdmmcBlockDevice itself, which
   // reproduces the OEM's timed HIGH->LOW power-cycle around each mount attempt — do
   // NOT assert it here (holding it HIGH going in breaks that reset sequence).
-  if (!_dev) _dev = new freeink::SdmmcBlockDevice();
+  if (_dev) {
+    // detachFilesystemForRawAccess() intentionally keeps the host and card
+    // alive for USB-MSC. Tear that session down before mounting the volume
+    // again, otherwise sdmmc_host_init() rejects the second initialization.
+    _dev->end();
+  } else {
+    _dev = new (std::nothrow) freeink::SdmmcBlockDevice();
+    if (!_dev) {
+      if (Serial) Serial.printf("[%lu] [SD] SDMMC block-device allocation failed\n", millis());
+      return false;
+    }
+  }
   if (!_dev->begin(BoardConfig::ACTIVE.sdmmc)) {
     if (Serial) Serial.printf("[%lu] [SD] SDMMC init failed\n", millis());
     initialized = false;
@@ -49,6 +63,16 @@ bool SDCardManager::begin() {
   cachedTotalBytes = static_cast<uint64_t>(vol().clusterCount()) * vol().bytesPerCluster();
   cachedUsedBytesValid = false;
   return initialized;
+}
+
+FsBlockDeviceInterface* SDCardManager::detachFilesystemForRawAccess() {
+  if (!initialized || !_dev) return nullptr;
+  _vol.end();
+  initialized = false;
+  cachedTotalBytes = 0;
+  cachedUsedBytes = 0;
+  cachedUsedBytesValid = false;
+  return _dev;
 }
 #else
 SDCardManager::SDCardManager() : sd() {}
@@ -293,11 +317,6 @@ bool SDCardManager::ensureDirectoryExists(const char* path) {
 }
 
 bool SDCardManager::openFileForRead(const char* moduleName, const char* path, FsFile& file) {
-  if (!vol().exists(path)) {
-    if (Serial) Serial.printf("[%lu] [%s] File does not exist: %s\n", millis(), moduleName, path);
-    return false;
-  }
-
   file = vol().open(path, O_RDONLY);
   if (!file) {
     if (Serial) Serial.printf("[%lu] [%s] Failed to open file for reading: %s\n", millis(), moduleName, path);

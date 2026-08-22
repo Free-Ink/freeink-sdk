@@ -26,10 +26,10 @@ struct ButtonBindings {
   uint8_t next = InputManager::BTN_RIGHT;
 };
 
-// Call after InputManager::update(). Long-press and swipe synthesis stay
-// app-owned (InputManager exposes no per-touch hold/movement history); set
-// snapshot.longPress / swipeLeft / swipeRight afterwards if the app tracks
-// gestures itself.
+// Call after InputManager::update(). This adapter carries single-contact UI
+// edges only. InputManager also exposes completed panel-native 2-4 contact
+// translations and two-contact rotations; applications that use them should
+// route those gestures before this adapter's normal single-touch fallback.
 inline InputSnapshot snapshotFrom(const InputManager& input, const ButtonBindings& bindings = ButtonBindings{}) {
   InputSnapshot snapshot;
   snapshot.focusPrev = input.wasPressed(bindings.focusPrev);
@@ -43,10 +43,15 @@ inline InputSnapshot snapshotFrom(const InputManager& input, const ButtonBinding
     snapshot.touchPressed = input.wasTouchPressed();
     snapshot.touchReleased = input.wasTouchReleased();
     const InputManager::TouchPoint point = input.getTouchPoint();
+    float nx = 0.0f;
+    float ny = 0.0f;
+    // Keep raw panel coordinates below, but reuse InputManager's eligibility
+    // latch so a staggered multi-contact sequence cannot become a UI drag.
+    const bool singleContactHeld = input.isTouchHeldAt(nx, ny);
     if (point.valid) {
       snapshot.touchX = static_cast<int16_t>(point.x);
       snapshot.touchY = static_cast<int16_t>(point.y);
-      snapshot.touchHeld = !snapshot.touchReleased;
+      snapshot.touchHeld = singleContactHeld && !snapshot.touchReleased;
     }
   }
   return snapshot;
@@ -57,9 +62,8 @@ inline InputSnapshot snapshotFrom(const InputManager& input, const ButtonBinding
 // device's logical frame via touchToLogical(). flipX/flipY compensate for
 // mirrored panel mounting (a board property — set once per device, verified
 // on the bench, not rediscovered per app).
-inline InputSnapshot snapshotFrom(const InputManager& input, const DeviceContext& device,
-                                  const bool touchFlipX = false, const bool touchFlipY = false,
-                                  const ButtonBindings& bindings = ButtonBindings{}) {
+inline InputSnapshot snapshotFrom(const InputManager& input, const DeviceContext& device, const bool touchFlipX = false,
+                                  const bool touchFlipY = false, const ButtonBindings& bindings = ButtonBindings{}) {
   InputSnapshot snapshot = snapshotFrom(input, bindings);
   snapshot.touchPressed = false;
   snapshot.touchReleased = false;

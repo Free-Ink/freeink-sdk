@@ -21,9 +21,15 @@ class FrontlightManager {
   // Bring up the PWM channel(s). No-op if the board has no frontlight.
   void begin();
 
-  // Set brightness as a 0-100 percentage. 0 turns the light off. On a warm/cool board
-  // this is the TOTAL brightness; the current color-temperature split is preserved.
+  // Set brightness as a 0-100 percentage, mapped to duty through a perceptual
+  // gamma-1.6554 curve (1% is the smallest non-zero duty step, not 1% linear
+  // duty). 0 turns the light off. On a warm/cool board this is the TOTAL
+  // brightness; the current color-temperature split is preserved.
   void setBrightness(uint8_t percent);
+
+  // Set brightness with 8-bit control and a perceptual curve. Level 1 maps to the
+  // smallest non-zero hardware duty, making dim night reading possible.
+  void setBrightnessLevel(uint8_t level);
 
   // Convenience: fully off / restore last brightness.
   void off();
@@ -56,6 +62,7 @@ class FrontlightManager {
   }
 
   uint8_t brightness() const { return _brightness; }
+  uint8_t brightnessLevel() const { return _brightnessLevel; }
   uint8_t colorTemperature() const { return _warmPercent; }
 
  private:
@@ -63,9 +70,22 @@ class FrontlightManager {
   // Recompute and write both channels from _brightness + _warmPercent.
   void apply();
 #endif
+#ifdef FREEINK_FRONTLIGHT_LS
+  // Keep RC_FAST powered through light sleep only while the light is actually
+  // lit. The LEDC driver's KEEP_ALIVE config pins RC_FAST (and the digital
+  // domain at its higher sleep bias) for every light-sleep window from boot;
+  // begin() cancels that via the refcounted sleep sub-mode API and apply()
+  // re-arms it on 0<->nonzero total-duty transitions, so dark idle sleeps at
+  // full depth.
+  void updateLsKeepAlive(bool lit);
+  bool _lsAttachOk = false;         // both channel attaches succeeded (refcount is balanced)
+  bool _lsKeepAliveArmed = false;   // our own +1 on the RC_FAST sleep sub-mode is active
+#endif
 
   bool _begun = false;
   uint8_t _brightness = 0;
+  uint8_t _brightnessLevel = 0;
+  bool _useLevel = false;
   uint8_t _lastBrightness = 50;
   uint8_t _warmPercent = 50;  // neutral by default
 };

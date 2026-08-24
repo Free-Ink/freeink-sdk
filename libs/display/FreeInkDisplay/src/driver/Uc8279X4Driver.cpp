@@ -200,17 +200,37 @@ bool Uc8279X4Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t*
   // Same differential model as the UC8179 sibling: full OTP flash on an explicit
   // Full request or the forced first clear, otherwise a PTIN/PTOUT partial whose
   // OLD plane (0x10) holds the previous displayed frame (synced in displayFinish).
-  const bool fast = (mode != RefreshMode::Full) && !_needFullClear && _oldPlaneValid;
+  //
+  // HALF is the third case, and it is NOT a partial. Every caller that asks for
+  // HALF is asking for a clean: the reader's periodic refresh cycle, the sleep
+  // screen, the manual power-button refresh. Folding it into `fast` (the old
+  // `mode != RefreshMode::Full` test) made those a plain DU with the previous
+  // frame as the OLD plane, which cleans nothing — an unchanged pixel pairs
+  // (white,white), selects WW, and idles with whatever charge an earlier page
+  // parked under it. That charge is invisible at first and surfaces over the
+  // following seconds, then compounds because nothing ever scrubs it. Give HALF
+  // the sibling's charge scrub instead (Uc8179Driver::displayStart): the GC-class
+  // setup below with the OLD plane written as the target's COMPLEMENT, so every
+  // pixel is forced into a real transition cell and driven to its endpoint.
+  const bool absoluteClear = (mode == RefreshMode::Full) || _needFullClear || !_oldPlaneValid;
+  const bool scrub = !absoluteClear && (mode == RefreshMode::Half);
+  const bool fast = !absoluteClear && !scrub;
 
   streamPlane(bus, CMD_DTM2, fb);
   if (!fast) {
-    // Full flash: seed the OLD plane white across the whole 600-gate scan for the
-    // absolute GC-from-white waveform.
-    uint8_t whiteRow[128];
-    const uint16_t wb = _wb <= sizeof(whiteRow) ? _wb : sizeof(whiteRow);
-    memset(whiteRow, 0xFF, wb);
-    bus.cmd(CMD_DTM1);
-    for (uint16_t y = 0; y < _tresH; y++) bus.data(whiteRow, wb);
+    if (scrub) {
+      // Charge scrub: no WW/BB pixel is allowed to idle with charge from an
+      // older page. Target white drives through BW, target black through WB.
+      streamPlane(bus, CMD_DTM1, fb, /*invert=*/true);
+    } else {
+      // Full flash / forced first clear: seed the OLD plane white across the
+      // whole 600-gate scan for the absolute GC-from-white waveform.
+      uint8_t whiteRow[128];
+      const uint16_t wb = _wb <= sizeof(whiteRow) ? _wb : sizeof(whiteRow);
+      memset(whiteRow, 0xFF, wb);
+      bus.cmd(CMD_DTM1);
+      for (uint16_t y = 0; y < _tresH; y++) bus.data(whiteRow, wb);
+    }
   } else if (_darkBackground || _redriveAfterGray) {
     // Inverted content: the KW differential idles unchanged pixels, so the
     // light residue of every white->black transition parks in the black
@@ -220,8 +240,8 @@ bool Uc8279X4Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t*
     // at their endpoint. displayFinish()'s DTM1 sync restores the baseline.
     streamPlane(bus, CMD_DTM1, fb, /*invert=*/true);
   }
-  // Consumed: the white-seed (!fast) or the re-drive above already scrubbed any
-  // post-AA gray residue for this frame.
+  // Consumed: the white-seed, the HALF scrub, or the re-drive above already
+  // scrubbed any post-AA gray residue for this frame.
   _redriveAfterGray = false;
 
   // Built-in refresh setup, byte-for-byte the stock FW trigger order (RE of

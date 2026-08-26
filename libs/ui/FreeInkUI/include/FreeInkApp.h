@@ -140,6 +140,14 @@ public:
 
   void header(const HeaderProps &props,
               LayoutAnchor anchor = LayoutAnchor::Top) {
+    header(props, take(anchor, theme_.headerHeight));
+  }
+
+  // Themed header at an explicit rect, for chrome that positions the band
+  // itself (e.g. a band whose visible top tracks the device safe area while
+  // the layout below keeps its own geometry). Does not consume body space --
+  // pair with takeTop when the band should be reserved.
+  void header(const HeaderProps &props, Rect rect) {
     HeaderProps themed = props;
     if (textStyleUnset(themed.titleText)) {
       themed.titleText = theme_.titleText;
@@ -165,7 +173,7 @@ public:
       themed.styles.normal.borderWidth = theme_.headerUnderline;
     }
     themed.minTouchSize = theme_.minTouchSize;
-    ui::header(frame_, take(anchor, theme_.headerHeight), themed);
+    ui::header(frame_, rect, themed);
   }
 
   // Sub-screen chrome: leading back button + centered title, with an optional

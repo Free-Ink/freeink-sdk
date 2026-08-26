@@ -1467,11 +1467,14 @@ constexpr BoardProfile XTEINK_X4_PRO = {
     // button ladder — that earlier assumption was wrong; the ladder pins remain unconfirmed.
     {1},
     0,  // displayControllerVariant: filled by the boot probe
-    // Bezel overlap: the panel sits recessed, and 7px is the empirically-tuned
-    // side inset that keeps an edge-hugging scroll indicator visible (was the
-    // firmware's hardcoded X4 Pro scrollbar inset); top/bottom keep the X4
-    // historical values pending measurement.
-    {9, 7, 3, 7}};
+    // Bezel overlap, measured on real hardware (2026-08-26) with the BEZEL
+    // ruler app: the glass hides 10 rows at the top, 1 column each side, and
+    // nothing at the bottom -- the panel sits shifted toward its bottom flex
+    // cable. Per-unit variance is real (upstream #618 measured 5-11 hidden
+    // top rows across X4 units), so a unit that still clips should be
+    // re-measured with the ruler rather than padded blindly. The old side
+    // value (7) was a scrollbar-aesthetics constant, not a measurement.
+    {10, 1, 0, 1}};
 
 // Largest framebuffer (bytes) over the devices compiled into this build, derived
 // from the profiles above. The display facade sizes its static framebuffer to

@@ -185,6 +185,25 @@ class InputManager {
   // (~700 ms), while still down — a hold shortcut (e.g. open the reader menu).
   // Cleared each #update().
   bool wasHomeKeyLongPressed() const;
+  // Home key currently held (level, not an edge). A motionless hold produces
+  // no new-data frames, so its long-press threshold is timed by #update()
+  // against the wall clock — a host that stops polling while this is true
+  // stretches that threshold by however long it stayed away.
+  bool isHomeKeyDown() const;
+
+  // Touch INT line usable as a light-sleep wake source, or -1. A host can only
+  // wake from light sleep on a GPIO LEVEL (the edge detector is clock-gated
+  // while asleep), so this reports the pin ONLY once the driver has put the
+  // controller in a level-hold INT mode — the line then stays asserted from the
+  // report frame until the poll clears the status register, which a level wake
+  // cannot miss. -1 whenever that cannot be guaranteed (no touch, probe failed,
+  // FREEINK_GT911_INT_WAKE not built, or the controller refused the mode);
+  // callers must keep polling in that case.
+  int8_t touchWakeIrqPin() const;
+  // Asserted level of #touchWakeIrqPin (true = LOW), from the board profile's
+  // TouchConfig::irqActiveLow. The driver only ever programs a low-level hold,
+  // and refuses to report the pin at all on a profile that claims otherwise.
+  bool touchWakeIrqActiveLow() const;
 
   // Optional board hook for buttons that aren't direct GPIOs — e.g. a key
   // behind an I2C IO-expander (the LilyGo T5 S3 user button on its PCA9535). It
@@ -193,6 +212,10 @@ class InputManager {
   // none.
   using ButtonHook = uint8_t (*)();
   static void setButtonHook(ButtonHook hook) { s_buttonHook = hook; }
+  // True once a board has installed such a hook. Lets a host tell that some of
+  // its buttons are NOT readable as GPIO levels — e.g. a GPIO-interrupt idle
+  // wait cannot see them and must keep polling instead.
+  static bool hasButtonHook() { return s_buttonHook != nullptr; }
 
   // Boards such as Sticky wire OK/confirm and power/wake to the same GPIO. By
   // default a short click emits CONFIRM and a hold emits POWER. Apps that
@@ -314,6 +337,12 @@ class InputManager {
   void gt911ClearStatus();
   void beginFt6336u();
   void pollFt6336u(unsigned long now);
+#ifdef FREEINK_GT911_INT_WAKE
+  bool gt911WriteReg(uint16_t reg, const uint8_t* buf, uint8_t len);
+  // Put the INT line in low-level hold mode so it can serve as a light-sleep
+  // wake source; sets touchWakeIrqUsable on success.
+  void gt911ConfigureIntWake();
+#endif
 
   enum class MultiTouchGestureState : uint8_t { Idle, Tracking, Blocked };
   struct TrackedTouchContact {
@@ -358,6 +387,7 @@ class InputManager {
   bool twoButtonLongPressActive;
 
   bool touchDataEnabled = false;         // I2C up, controller present
+  bool touchWakeIrqUsable = false;       // INT held in a level mode (touchWakeIrqPin)
   uint8_t gt911Addr = 0;                 // resolved GT911 address (0 until probed)
   unsigned long touchIrqPulseUntil = 0;  // synthesized-confirm window after a press
   unsigned long touchReadAt = 0;         // next scheduled I2C poll

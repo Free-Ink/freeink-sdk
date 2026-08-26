@@ -48,6 +48,16 @@ class GfxRendererTarget final : public DrawTarget {
     device.width = static_cast<int16_t>(renderer.getScreenWidth());
     device.height = static_cast<int16_t>(renderer.getScreenHeight());
     device.orientation = static_cast<Orientation>(renderer.getOrientation());
+    // The panel's bezel-covered edge pixels (BoardConfig viewableInsets,
+    // rotated into this orientation). Screen seeds its content rect from
+    // safeRect(), so everything laid out through it clears the glass;
+    // deliberate full-bleed paint keeps using screen().
+    {
+      int top = 0, right = 0, bottom = 0, left = 0;
+      renderer.getOrientedViewableTRBL(&top, &right, &bottom, &left);
+      device.safeArea = Insets{static_cast<int16_t>(top), static_cast<int16_t>(right),
+                               static_cast<int16_t>(bottom), static_cast<int16_t>(left)};
+    }
     // Same inverse-of-render-rotation selector as DisplayTarget: this makes
     // touchToLogical() agree case-for-case with GfxRenderer::tapToLogical, so
     // FreeInkUI components and the firmware's own tap path map taps identically.

@@ -65,6 +65,14 @@ public:
   void setContentMargin(Insets margin) {
     content_ = insetClamped(frame_.safeRect(), margin);
   }
+  // Margins measured against the FULL screen frame, for hosts whose chrome is
+  // drawn at absolute renderer coordinates and whose margins already fold the
+  // device's safe area in (they derive from an insets-aware safe-area rect).
+  // setContentMargin() measures from safeRect(); using it with absolute
+  // margins applies the safe area twice.
+  void setContentMarginAbsolute(Insets margin) {
+    content_ = insetClamped(frame_.screen(), margin);
+  }
   void insetContent(Insets margin) {
     content_ = insetClamped(content_, margin);
   }

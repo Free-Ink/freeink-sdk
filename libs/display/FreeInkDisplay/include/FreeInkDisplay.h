@@ -64,6 +64,12 @@ class FreeInkDisplay {
   void setFastRefreshCutoffMs(uint16_t ms);
   uint16_t fastRefreshCutoffMs() const;
 
+  // Hold the periodic anti-ghost full refresh through a live interaction (slider
+  // drag): while held, fast refreshes are never promoted to a full. Clear it and
+  // force one full afterward to scrub any ghost. No-op on panels without the
+  // periodic-full cadence (currently the EEGO A4's UC8279C driver).
+  void setHoldPeriodicFullRefresh(bool hold);
+
   void begin();
 
   // Legacy compile-time dimensions kept for compatibility.

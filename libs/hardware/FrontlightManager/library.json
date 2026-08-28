@@ -1,8 +1,8 @@
 {
   "name": "FrontlightManager",
   "version": "1.0.0",
-  "description": "FreeInk PWM frontlight manager driven by BoardConfig::ACTIVE.frontlight. Inert on boards without a frontlight; brightness PWM functional now, warm/cool color mixing scaffolded.",
-  "keywords": "frontlight, backlight, pwm, ledc",
+  "description": "FreeInk frontlight manager driven by BoardConfig::ACTIVE.frontlight. Inert on boards without a frontlight. Backends: LEDC PWM (single + warm/cool), M5PM1 PMIC PWM, and I2C LED driver (warm/cool).",
+  "keywords": "frontlight, backlight, pwm, ledc, i2c",
   "authors": [{"name": "FreeInk SDK Contributors"}],
   "dependencies": {},
   "platforms": "espressif32",

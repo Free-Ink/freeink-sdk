@@ -116,6 +116,10 @@ class It8951Driver : public PanelDriver {
   // B/W pass on a clearing page.
   uint16_t _partialsSinceClear = 0;
   bool _lastClear = true;
+  // begin() power-cycles the rail and INIT-wipes the glass, so there is no
+  // retained frame for a differential first paint (the consumer's seamless
+  // fast-wake assumes one). Promote the first content refresh to GC16.
+  bool _firstPaintPending = true;
 
   // Buffered grayscale planes (PSRAM, _fbWb*_fbH each), combined with the B/W base
   // in displayGray(). Allocated in begin().

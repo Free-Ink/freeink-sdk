@@ -6,9 +6,12 @@
 // other classic-ESP32-only symbols, so other MCU builds skip it entirely.
 #if FREEINK_DRIVER_IT8951
 
+#include <driver/gpio.h>
+
 #include <cstring>
 
 #include "esp_heap_caps.h"
+#include "esp_system.h"
 
 namespace freeink {
 namespace {
@@ -319,6 +322,11 @@ void It8951Driver::begin(EpdBus& bus) {
   }
   if (_busy >= 0) pinMode(_busy, INPUT);
   if (_pwrEn >= 0) {
+    // PowerManager::powerDownRailsForSleep() latches this rail LOW through deep
+    // sleep (the hold survives wake) and a held pad silently ignores writes.
+    // Release it first — this driver bypasses EpdBus, which does the same
+    // release for the other panels.
+    gpio_hold_dis(static_cast<gpio_num_t>(_pwrEn));
     pinMode(_pwrEn, OUTPUT);
     digitalWrite(_pwrEn, HIGH);  // enable the EPD power rail
     delay(100);
@@ -359,6 +367,22 @@ void It8951Driver::begin(EpdBus& bus) {
   // Clear to white with the INIT waveform (ignores buffer content).
   displayArea(0, 0, _panelW, _panelH, 0);
   waitDisplayReady();
+  if (esp_reset_reason() == ESP_RST_DEEPSLEEP) {
+    // Waking with the sleep cover on the glass: INIT alone leaves faint
+    // residue of dark art (most visible in dithered fields). Drive the pigment
+    // through an explicit white GC16 between two INIT passes to scrub it.
+    // Cold boots skip the cost. _base is scratch here; the first display()
+    // re-snapshots it before use.
+    if (_base) {
+      memset(_base, 0xFF, static_cast<size_t>(_fbWb) * _fbH);
+      loadImageFull(_base);
+      displayArea(0, 0, _panelW, _panelH, _cfg.fullMode);
+      waitDisplayReady();
+    }
+    displayArea(0, 0, _panelW, _panelH, 0);
+    waitDisplayReady();
+  }
+  _firstPaintPending = true;
 }
 
 void It8951Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
@@ -370,9 +394,10 @@ void It8951Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, 
   // otherwise it's a fast DU. DU/DU4 leave residue that accumulates across menu and
   // activity navigation; promoting to GC16 every ghostClearInterval refreshes wipes
   // it automatically, like the X3 driver, with no firmware involvement.
-  const bool clear = (mode != RefreshMode::Fast) || !_running ||
+  const bool clear = (mode != RefreshMode::Fast) || !_running || _firstPaintPending ||
                      (_cfg.ghostClearInterval != 0 && _partialsSinceClear >= _cfg.ghostClearInterval);
   const uint16_t dpyMode = clear ? _cfg.fullMode : _cfg.fastMode;
+  _firstPaintPending = false;
 
 #ifdef IT8951_PROBE_DEBUG
   if (Serial)
@@ -447,7 +472,8 @@ void It8951Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, con
   // DU4 is a differential update: only changed pixels (the AA glyph edges) move, so
   // a full-panel refresh refines the edges without a flash. On a page the B/W pass
   // already promoted to a GC16 clear, do the same here so ghosting clears fully.
-  const uint16_t gmode = _lastClear ? _cfg.fullMode : _cfg.grayMode;
+  const uint16_t gmode = (_lastClear || _firstPaintPending) ? _cfg.fullMode : _cfg.grayMode;
+  _firstPaintPending = false;
   displayArea(0, 0, _panelW, _panelH, gmode);
   waitDisplayReady();
   if (turnOff) {

@@ -85,16 +85,28 @@ class Uc8279X4Driver : public PanelDriver {
   void setBackgroundHint(bool darkBackground) override { _darkBackground = darkBackground; }
 
   // --- 4-level grayscale (anti-aliasing) ---
-  // External-LUT path: plane0/LSB -> 0x10, plane1/MSB -> 0x13 (the reverse of
-  // the built-in 4-gray order), sent NON-inverted — stock inverts only because
-  // its planes are absolute-encoded; the SDK's delta planes must not be (see
-  // copyGrayscaleLsb). 5x49 LUTs whose bytes depend on the LUT_VER variant
-  // (0x02 vs 0x68), single-byte CDI (constant 0x97), PSR rewritten before DRF,
-  // and the panel LEFT POWERED between AA page refreshes (vendor behavior).
+  // External-LUT path (ported from the UC8179 sibling). CrossPoint supplies DELTA
+  // masks (maskLsb, maskMsb): black/white=(0,0), dark=(1,1), light=(0,1), with a
+  // B/W base that is 1 for white and 0 for every non-white pixel. Those are folded
+  // into stock's ABSOLUTE selectors so white and black are DISTINCT buckets:
+  //   plane0 = base | maskLsb,  plane1 = plane0 ^ maskMsb
+  //   -> black=(0,0), dark=(1,0), light=(0,1), white=(1,1)
+  // sent INVERTED (as stock does; the 5x49 LUTs were extracted for this encoding).
+  // Feeding raw delta planes conflated black & white into one bucket and left the
+  // B/W diff baseline unaware of AA edge charge -> white ghosting; the absolute
+  // fold + post-DRF base restore (base = plane0 & plane1) fixes both. Single-byte
+  // CDI (constant 0x97), PSR rewritten before DRF, panel LEFT POWERED (vendor).
   void copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) override;
   void copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) override;
   void displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut, bool factoryMode) override;
   void cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) override;
+  // Base frame for a grayscale overlay. The periodic clean the reader asks for
+  // via a Half fallback must be a TRUE Full GC on this path — the Half is a B/W
+  // invert-seed scrub that cannot clear the panel's gray edge charge and leaves
+  // ghosting on an AA page. Promote Half->Full here; Fast stays Fast (the
+  // absolute AA path self-cleans per page). The pure-B/W menu keeps its Half
+  // scrub because it arrives through display()/displayStart, not this entry.
+  void displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, RefreshMode fallback, bool turnOff) override;
 
  private:
   void initController(EpdBus& bus);
@@ -104,7 +116,16 @@ class Uc8279X4Driver : public PanelDriver {
   // sub-variants), then 0xFF padding to the addressed gate count. `invert`
   // bitwise-inverts the image rows (AA planes only, per the vendor reference).
   void streamPlane(EpdBus& bus, uint8_t ramCmd, const uint8_t* fb, bool invert = false);
+  // Stream (lhs XOR rhs) into a RAM plane with the same geometry/mirroring as
+  // streamPlane (used to build absolute grayscale plane1 = plane0 ^ maskMsb).
+  void streamPlaneXor(EpdBus& bus, uint8_t ramCmd, const uint8_t* lhs, const uint8_t* rhs, bool invert = false);
   void powerOnIfNeeded(EpdBus& bus, const char* tag);
+  // Stock's non-flashing previous->current AA base transition (FUN_4214d4ac /
+  // FUN_4214d3a0). DTM1 holds the previous page's B/W base, DTM2 the new one;
+  // the UC8279_aa_prebw_mid settle waveform drives that transition without an OTP
+  // GC flash. Ported from the UC8179 sibling; the base is restored to DTM1 after.
+  void transitionGrayscaleBase(EpdBus& bus, const uint8_t* fb, bool turnOff);
+  void runGrayscalePrecondition(EpdBus& bus);
 
   const Uc8279X4Config& _cfg;
 
@@ -118,6 +139,17 @@ class Uc8279X4Driver : public PanelDriver {
   bool _darkBackground = false;
   bool _needFullClear = true;
   bool _oldPlaneValid = false;
+
+  // Grayscale absolute-plane state (ported from UC8179). `_grayBase` holds the
+  // B/W base captured at displayStart; copyGrayscaleLsb folds it into stock's
+  // absolute plane0, copyGrayscaleMsb derives plane1 and recovers the base for
+  // the post-DRF restore. SPIRAM-backed, framebuffer-sized, allocated in begin().
+  uint8_t* _grayBase = nullptr;
+  bool _grayBaseValid = false;
+  bool _absoluteGrayPlanes = false;
+  // True once a grayscale (AA) refresh has run. Gates the non-flashing base
+  // transition + precondition (both need a valid previous page in DTM1).
+  bool _grayRefreshedOnce = false;
   // Set after every grayscale (AA) refresh. The AA overlay leaves gray edge
   // charge the plain B/W fast diff can't scrub (the B/W baseline records those
   // pixels as white), so it accumulates under rapid page turns → garble. Consumed

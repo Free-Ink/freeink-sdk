@@ -11,6 +11,9 @@
 #include <driver/i2c_master.h>
 #include <esp_rom_sys.h>
 #endif
+#if FREEINK_DEVICE_EEGO_A4
+#include "gsl/EegoA4GslFirmware.h"
+#endif
 #endif
 #if FREEINK_DEVICE_PAPERMONO
 #include <PaperMonoBoard.h>
@@ -98,12 +101,19 @@ void InputManager::begin() {
 
   const int8_t pins[] = {BoardConfig::ACTIVE.input.back, BoardConfig::ACTIVE.input.confirm,
                          BoardConfig::ACTIVE.input.left, BoardConfig::ACTIVE.input.right,
-                         BoardConfig::ACTIVE.input.up,   BoardConfig::ACTIVE.input.down,
-                         BoardConfig::ACTIVE.input.power};
+                         BoardConfig::ACTIVE.input.up,   BoardConfig::ACTIVE.input.down};
   for (const int8_t pin : pins) {
     if (pin >= 0) {
       pinMode(pin, INPUT_PULLUP);
     }
+  }
+  // Power follows its declared polarity, as in the ladder branch above. An
+  // active-high button (EEGO A4) needs INPUT_PULLDOWN: the unconditional
+  // pull-up fights its weak external pull-down into mid-rail phantom presses.
+  // Configured after the loop so a pin shared with a button (all such boards
+  // are active-low) resolves to the same INPUT_PULLUP either way.
+  if (BoardConfig::ACTIVE.input.power >= 0) {
+    pinMode(BoardConfig::ACTIVE.input.power, BoardConfig::ACTIVE.input.powerActiveHigh ? INPUT_PULLDOWN : INPUT_PULLUP);
   }
   beginTouch();
 }
@@ -276,7 +286,8 @@ uint8_t InputManager::getDigitalState() const {
   if (isDigitalPressed(BoardConfig::ACTIVE.input.right)) state |= (1 << BTN_RIGHT);
   if (isDigitalPressed(BoardConfig::ACTIVE.input.up)) state |= (1 << BTN_UP);
   if (isDigitalPressed(BoardConfig::ACTIVE.input.down)) state |= (1 << BTN_DOWN);
-  if (isDigitalPressed(BoardConfig::ACTIVE.input.power) &&
+  // Power reads at its declared polarity (isDigitalPressed assumes active-low).
+  if (isPowerButtonPhysicallyPressed() &&
       BoardConfig::ACTIVE.inputStyle != BoardConfig::InputStyle::DigitalConfirmBackHold &&
       BoardConfig::ACTIVE.inputStyle != BoardConfig::InputStyle::DigitalConfirmPowerHold) {
     state |= (1 << BTN_POWER);
@@ -489,6 +500,13 @@ void InputManager::update() {
 }
 
 bool InputManager::isPressed(const uint8_t buttonIndex) const { return currentState & (1 << buttonIndex); }
+
+bool InputManager::isPowerButtonPhysicallyPressed() const {
+  const int8_t pin = BoardConfig::ACTIVE.input.power;
+  if (pin < 0) return false;
+  const int activeLevel = BoardConfig::ACTIVE.input.powerActiveHigh ? HIGH : LOW;
+  return digitalRead(pin) == activeLevel;
+}
 
 bool InputManager::wasPressed(const uint8_t buttonIndex) const { return pressedEvents & (1 << buttonIndex); }
 
@@ -1109,6 +1127,10 @@ void InputManager::beginTouch() {
     beginFt6336u();
     return;
   }
+  if (t.controller == BoardConfig::TouchController::Gslx680) {
+    beginGslx680();
+    return;
+  }
   // CHSC6x: I2C bus only. The IRQ is left unconfigured — it's a brief pulse on
   // this controller, so detection polls I2C and gates on the frame's touch bit
   // instead (see decodeChsc6xFrame / updateTouchFromIrq).
@@ -1144,6 +1166,8 @@ uint8_t InputManager::serviceTouch() {
     pollFt5x06(now);
   } else if (t.controller == BoardConfig::TouchController::Ft6336u) {
     pollFt6336u(now);
+  } else if (t.controller == BoardConfig::TouchController::Gslx680) {
+    pollGslx680(now);
   } else {
     updateTouchFromIrq(now, 0);  // detection polls I2C; the IRQ is unused now
     // Synthesized confirm tracks an actually-detected press, not the IRQ line.
@@ -1436,6 +1460,211 @@ void InputManager::pollFt5x06(const unsigned long now) {
     if (absInt(dx) > TOUCH_TAP_RELEASE_SLOP_PX || absInt(dy) > TOUCH_TAP_RELEASE_SLOP_PX) {
       touchMovedBeyondTapReleaseSlop = true;
     }
+  }
+}
+
+// --- GSLX680 (EEGO A4) ------------------------------------------------------
+// Silead GSLX680: needs its firmware uploaded over I2C at boot before it reports
+// anything. Sequence, register values, and coordinate packing were recovered from
+// the stock firmware; the firmware blob (gsl/EegoA4GslFirmware.h) is byte-verified.
+
+bool InputManager::gslWrite(const uint8_t reg, const uint8_t* data, const uint8_t len) {
+  const uint8_t addr = BoardConfig::ACTIVE.touch.i2cAddress;
+  Wire.beginTransmission(addr);
+  Wire.write(reg);
+  if (len) Wire.write(data, len);
+  return Wire.endTransmission() == 0;
+}
+
+bool InputManager::gslRead(const uint8_t reg, uint8_t* buf, const uint8_t len) {
+  const uint8_t addr = BoardConfig::ACTIVE.touch.i2cAddress;
+  Wire.beginTransmission(addr);
+  Wire.write(reg);
+  if (Wire.endTransmission(false) != 0) return false;
+  const uint8_t got = Wire.requestFrom(addr, len, static_cast<uint8_t>(true));
+  if (got != len) {
+    while (Wire.available()) Wire.read();
+    return false;
+  }
+  for (uint8_t i = 0; i < len; ++i) buf[i] = Wire.read();
+  return true;
+}
+
+bool InputManager::gslUploadFirmware() {
+#if FREEINK_DEVICE_EEGO_A4
+  bool ok = true;
+  for (size_t i = 0; i < freeink::EEGO_A4_GSL_FIRMWARE_LEN; ++i) {
+    const freeink::Gslx680FwEntry& e = freeink::EEGO_A4_GSL_FIRMWARE[i];
+    if (e.reg == 0xF0) {
+      const uint8_t page = static_cast<uint8_t>(e.value & 0xFF);  // page select: one byte
+      ok = gslWrite(0xF0, &page, 1) && ok;
+    } else {
+      const uint8_t val[4] = {static_cast<uint8_t>(e.value & 0xFF), static_cast<uint8_t>((e.value >> 8) & 0xFF),
+                              static_cast<uint8_t>((e.value >> 16) & 0xFF), static_cast<uint8_t>((e.value >> 24) & 0xFF)};
+      ok = gslWrite(e.reg, val, 4) && ok;
+    }
+  }
+  return ok;
+#else
+  return false;
+#endif
+}
+
+void InputManager::beginGslx680() {
+  const auto& t = BoardConfig::ACTIVE.touch;
+  if (t.sda < 0 || t.scl < 0 || t.i2cAddress == 0) return;
+
+  // The GSLX680 has no reset self-timing: pulse RST low then high before I2C.
+  if (t.reset >= 0) {
+    gpio_hold_dis(static_cast<gpio_num_t>(t.reset));
+    pinMode(t.reset, OUTPUT);
+    digitalWrite(t.reset, LOW);
+    delay(20);
+    digitalWrite(t.reset, HIGH);
+    delay(50);
+  }
+
+  Wire.begin(t.sda, t.scl, 400000);
+  Wire.setTimeOut(10);
+
+  const uint8_t z4[4] = {0, 0, 0, 0};
+  auto wr1 = [&](uint8_t reg, uint8_t v) { gslWrite(reg, &v, 1); };
+  auto resetBlock = [&]() {  // FUN_42046c08
+    wr1(0xE0, 0x88);
+    delay(20);
+    wr1(0x80, 0x03);
+    delay(5);
+    wr1(0xE4, 0x04);
+    delay(5);
+    wr1(0xE0, 0x00);
+    delay(20);
+  };
+  auto clearRegs = [&]() {  // FUN_42046c74
+    wr1(0xE0, 0x88);
+    delay(20);
+    wr1(0xE4, 0x04);
+    delay(10);
+    gslWrite(0xBC, z4, 4);
+    delay(10);
+  };
+  auto startup = [&]() {  // FUN_42046c58
+    wr1(0xE0, 0x00);
+    delay(10);
+  };
+
+  // Presence probe (FUN_42046e18): the chip must ACK before we spend time uploading.
+  uint8_t probe = 0;
+  gslRead(0xF0, &probe, 1);
+  delay(2);
+  wr1(0xF0, 0x12);
+  delay(2);
+  const bool present = gslRead(0xF0, &probe, 1);
+
+  resetBlock();
+  clearRegs();
+  clearRegs();
+  resetBlock();
+  clearRegs();
+  gslUploadFirmware();
+  startup();
+  clearRegs();
+  startup();
+
+  // Verify the firmware took: reg 0xB0 reads back 0x5A5A5A5A ("ZZZZ").
+  delay(30);
+  uint8_t chk[4] = {0, 0, 0, 0};
+  bool loaded = gslRead(0xB0, chk, 4) && chk[0] == 0x5A && chk[1] == 0x5A && chk[2] == 0x5A && chk[3] == 0x5A;
+  if (!loaded) {  // one recovery pass, as the stock init does
+    clearRegs();
+    startup();
+    loaded = gslRead(0xB0, chk, 4) && chk[0] == 0x5A && chk[1] == 0x5A && chk[2] == 0x5A && chk[3] == 0x5A;
+  }
+  touchDataEnabled = present || loaded;  // still poll if the chip ACKs, even if the magic lags
+#ifdef TOUCH_PROBE_DEBUG
+  touchDebugPrintf("[touch] GSLX680 probe present=%d loaded=%d chk=%02X%02X%02X%02X\n", present, loaded, chk[0], chk[1],
+                   chk[2], chk[3]);
+#endif
+}
+
+void InputManager::pollGslx680(const unsigned long now) {
+  if (now < touchReadAt) return;
+  touchReadAt = now + TOUCH_SAMPLE_DELAY_MS;
+
+  // Data register 0x80: byte 0 = finger count, then 4 bytes per finger.
+  uint8_t frame[24] = {};
+  if (!gslRead(0x80, frame, sizeof(frame))) return;  // survive transient bus errors
+
+  auto finishHomeKey = [&]() {
+    if (!touchHomeKeyDown) return;
+    lastTouchHeldDurationMs = now - touchHomeKeyDownAt;
+    if (!touchHomeKeyLongFired) touchHomeKeyTapEvent = true;
+    touchHomeKeyDown = false;
+    touchHomeKeyLongFired = false;
+  };
+
+  const uint8_t count = frame[0] > 5 ? 5 : frame[0];
+  if (count == 0) {
+    finishHomeKey();
+    if (touchPressed) {
+      touchPressed = false;
+      touchPoint.valid = false;
+      touchReleasedEvent = true;
+      lastTouchHeldDurationMs = now - touchDownPoint.timestamp;
+    }
+    return;
+  }
+
+  const uint16_t rawYWord = static_cast<uint16_t>(frame[5]) << 8 | frame[4];
+  const uint16_t rawXWord = static_cast<uint16_t>(frame[7]) << 8 | frame[6];
+
+  // The capacitive home key below the panel reports a fixed sentinel (not a
+  // coordinate). Route it to the home-key events instead of a screen tap.
+  const bool homeKeyDown = count == 1 && rawXWord == 0x03a0 && rawYWord == 0x1020;
+  if (homeKeyDown) {
+    if (!touchHomeKeyDown) {
+      touchHomeKeyEvent = true;
+      touchHomeKeyDown = true;
+      touchHomeKeyLongFired = false;
+      touchHomeKeyDownAt = now;
+    } else if (!touchHomeKeyLongFired && now - touchHomeKeyDownAt >= HOME_KEY_LONG_PRESS_MS) {
+      touchHomeKeyLongEvent = true;
+      touchHomeKeyLongFired = true;
+    }
+    touchPressed = false;
+    touchPoint.valid = false;
+    return;
+  }
+  finishHomeKey();
+
+  // GSLX680 1.2.7 calibration: the digitizer is portrait (raw ~0..920 x 0..680)
+  // over a landscape 768x552 framebuffer. Map, swap the axes, then mirror the
+  // short axis for GfxRenderer's Portrait transform. Returns panel-native coords.
+  const uint16_t rawY = rawYWord & 0x0fff;
+  const uint16_t rawX = rawXWord & 0x0fff;
+  const uint16_t limitedY = rawY > 680 ? 680 : rawY;
+  const uint16_t limitedX = rawX > 920 ? 920 : rawX;
+  const uint16_t portraitX = static_cast<uint32_t>(limitedY) * 551 / 680;
+  const uint16_t portraitY = static_cast<uint32_t>(920 - limitedX) * 767 / 920;
+
+  touchPoint.valid = true;
+  touchPoint.x = portraitY;
+  touchPoint.y = static_cast<uint16_t>(551 - portraitX);
+  touchPoint.timestamp = now;
+
+  if (!touchPressed) {
+    touchPressed = true;
+    touchPressedEvent = true;
+    touchDownPoint = touchPoint;
+    touchUpPoint = touchPoint;
+    touchMovedBeyondTapSlop = false;
+    touchMovedBeyondTapReleaseSlop = false;
+  } else {
+    touchUpPoint = touchPoint;
+    const int dx = static_cast<int>(touchUpPoint.x) - static_cast<int>(touchDownPoint.x);
+    const int dy = static_cast<int>(touchUpPoint.y) - static_cast<int>(touchDownPoint.y);
+    if (absInt(dx) > TOUCH_TAP_SLOP_PX || absInt(dy) > TOUCH_TAP_SLOP_PX) touchMovedBeyondTapSlop = true;
+    if (absInt(dx) > TOUCH_TAP_RELEASE_SLOP_PX || absInt(dy) > TOUCH_TAP_RELEASE_SLOP_PX)
+      touchMovedBeyondTapReleaseSlop = true;
   }
 }
 

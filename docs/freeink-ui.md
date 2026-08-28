@@ -585,6 +585,14 @@ tied to any application's screen structure:
 - `button`
 - `checkbox`
 - `slider`
+- `capsuleSlider` (finger-height filled-capsule slider with an edge-riding
+  handle; touch-drag routed)
+- `sliderRow` (caption + value readout over `[-]` capsule `[+]`, with an
+  optional trailing icon toggle)
+- `tileGrid` (quick-setting tile cards in fixed columns; checked tiles fill
+  solid)
+- `sheet` (partial-height sheet chrome: card body, edge rule, grabber, and an
+  optional tap-outside dismiss action)
 - `gestureBar`
 - `header`
 - `list` (virtualized; see below — supports hug-content pill rows and
@@ -630,7 +638,10 @@ props (`ButtonProps::radius`, `SettingRowProps::radius`,
 `ToggleRowProps::radius`/`knobRadius`, `StepperRowProps::buttonRadius`,
 `CheckboxProps::radius`, `SliderProps::radius`, `DropdownProps::radius`,
 `RadioGroupProps::radius`, `TableProps::cellRadius`, or
-`QwertyKeyboardProps::keyRadius`) when a product theme wants rounded controls.
+`QwertyKeyboardProps::keyRadius`) when a product theme wants rounded
+controls. The control-center pieces are card language and default rounded
+instead (`SliderRowProps::buttonRadius`, `TileGridProps::radius`; 0 gives
+square cards), and `SheetProps::radius` rounds the sheet's free-edge corners.
 The builder exposes the same fields in the inspector and JSON schema.
 Dropdowns use a stroked chevron indicator by default; tune
 `DropdownProps::indicatorWidth`, `indicatorSize`, and `indicatorStroke` for a
@@ -656,6 +667,47 @@ font.increment = ActionFontLarger;
 font.controlSize = 14; // explicit plus/minus strokes, independent of font glyphs
 stepperRow(ui, rowRect, font);
 ```
+
+Control-panel surfaces (a pull-down control center, a bottom sheet of quick
+settings) compose from `sheet`, `sliderRow`/`capsuleSlider`, and `tileGrid`:
+
+```cpp
+freeink::ui::SheetProps panel;             // top-anchored card with a grabber
+panel.dismissAction = ActionClosePanel;    // tap outside the sheet closes it
+sheet(ui, panelRect, panel);
+
+freeink::ui::SliderRowProps brightness;    // caption + [-] [capsule] [+] [lamp]
+brightness.label = "Brightness";
+brightness.value = "62%";                  // caller-formatted readout
+brightness.sliderValue = 62;
+brightness.sliderAction = ActionBrightness;   // drag/tap; dragPermille carries the position
+brightness.decrement = ActionBrightnessStep;  // value -1 / +1 per press
+brightness.increment = ActionBrightnessStep;
+brightness.toggleAction = ActionLightToggle;  // trailing icon button
+brightness.toggleIcon = lampIcon;
+sliderRow(ui, rowRect, brightness);
+
+freeink::ui::TileGridItem tiles[2];
+tiles[0].label = "Night mode";
+tiles[0].value = TileNightMode;            // stable id, not grid position
+tiles[0].state = nightMode ? freeink::ui::StateChecked : freeink::ui::StateNormal;
+tiles[1].label = "Refresh";
+tiles[1].value = TileRefresh;
+freeink::ui::TileGridProps grid;
+grid.items = tiles;
+grid.count = 2;
+grid.action = ActionTile;                  // event value = the tile's id
+tileGrid(ui, gridRect, grid);
+```
+
+`sheetContentRect()` returns the part of the sheet its content may use (the
+rect minus the grabber band), `sliderRowHeight()` and `tileGridHeight()` size
+the bands, and the `Screen` wrappers (`screen.sheet(...)`, `screen.sliderRow(...)`,
+`screen.tileGrid(...)`) apply theme fonts and spacing and reserve the bands
+automatically. The capsule slider is the drag surface; the step buttons exist
+because a drag on matte glass is unreliable and single steps land exact
+values. On a rect too narrow for the capsule's handle the track is skipped
+entirely and the step buttons alone drive the value.
 
 Text-entry screens can use the generic `keyGrid` for compact custom pads,
 `keyboard` for data-driven rows, or `qwertyKeyboard` for a ready-made four-row

@@ -229,6 +229,11 @@ class PanelDriver {
   // Interrupted-refresh cutoff tuning (ED2208: where the gate scan freezes).
   virtual void setFastRefreshCutoffMs(uint16_t ms) { (void)ms; }
   virtual uint16_t fastRefreshCutoffMs() const { return 0; }
+  // Hold the periodic anti-ghost full refresh through a continuous interaction
+  // (e.g. a live slider drag): while set, fast refreshes are never promoted to a
+  // full, so the drag stays flash-free. Clear it and force one full afterward to
+  // scrub any accumulated ghost. No-op on drivers without a periodic-full cadence.
+  virtual void setHoldPeriodicFull(bool hold) { (void)hold; }
   virtual void grayscaleRevert(EpdBus& bus, const uint8_t* fb) { (void)bus; (void)fb; }
   virtual void setCustomLut(EpdBus& bus, bool enabled, const unsigned char* data) { (void)bus; (void)enabled; (void)data; }
 };

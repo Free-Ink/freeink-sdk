@@ -28,6 +28,10 @@ class InputManager {
   // Level state from the last update().
   bool isPressed(uint8_t buttonIndex) const;
 
+  // Current electrical level of the configured power-button GPIO, before
+  // logical click/hold classification. False when the board has no such GPIO.
+  bool isPowerButtonPhysicallyPressed() const;
+
   // Press edge since the previous update().
   bool wasPressed(uint8_t buttonIndex) const;
 
@@ -310,6 +314,11 @@ class InputManager {
   void gt911ClearStatus();
   void beginFt6336u();
   void pollFt6336u(unsigned long now);
+  void beginGslx680();
+  void pollGslx680(unsigned long now);
+  bool gslWrite(uint8_t reg, const uint8_t* data, uint8_t len);
+  bool gslRead(uint8_t reg, uint8_t* buf, uint8_t len);
+  bool gslUploadFirmware();
 
   enum class MultiTouchGestureState : uint8_t { Idle, Tracking, Blocked };
   struct TrackedTouchContact {

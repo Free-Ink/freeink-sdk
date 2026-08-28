@@ -44,6 +44,8 @@ class PaperMonoDriver final : public PanelDriver {
   void begin(EpdBus& bus) override;
   void deepSleep(EpdBus& bus) override;
   void display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) override;
+  void displayWindow(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, uint16_t x, uint16_t y, uint16_t w,
+                     uint16_t h, bool turnOff) override;
   // The complete 3-gray target is intentionally batched in host RAM before a
   // waveform starts. Generic displayStart/displayFinish therefore stays
   // synchronous; advertising an in-flight refresh here would make BUSY polling
@@ -102,8 +104,12 @@ class PaperMonoDriver final : public PanelDriver {
   // Re-runs the just-finished drive (planes rewritten, then re-trigger) while
   // the boot-clean budget lasts; see the definition for why.
   void runBootCleanPass(EpdBus& bus, const uint8_t* newPlane, const uint8_t* oldPlane);
+  void setRamWindow(EpdBus& bus, uint16_t x, uint16_t y, uint16_t w, uint16_t h);
+  void restoreFullRamWindow(EpdBus& bus);
   void resetRamCounter(EpdBus& bus);
   void writePlane(EpdBus& bus, uint8_t command, const uint8_t* data);
+  void writePlaneWindow(EpdBus& bus, uint8_t command, const uint8_t* data, uint16_t x, uint16_t y, uint16_t w,
+                        uint16_t h);
   void activate(EpdBus& bus, uint8_t control);
   void activateOtp(EpdBus& bus);
   void powerOffController(EpdBus& bus);
@@ -139,6 +145,7 @@ class PaperMonoDriver final : public PanelDriver {
   bool _pendingCorrective = false;
   bool _displayCommitted = false;
   bool _controllerPowered = false;
+  bool _windowBaselineValid = false;
   enum class LutState : uint8_t { Unknown, OtpBw, Custom };
   LutState _lutState = LutState::Unknown;
   uint32_t _pendingGeneration = 0;

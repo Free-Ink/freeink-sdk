@@ -275,8 +275,15 @@ The **GT911 touch** is on the same bus at **0x5D** (INT=GPIO4, RST=GPIO10; see
   resident profile and re-uploads the OEM table (recovered from app1's
   `Cw2017PowerHal`) if it's missing, then reads **SoC from reg 0x04** and **VCELL
   from regs 0x02/0x03** (14-bit, `mV = (raw·5 + 8) >> 4`). Charging state is not
-  observable from the gauge (no charger IC on this bus); the VBUS/USB-detect pin was
-  **not conclusively identified**.
+  observable from the gauge (no charger IC on this bus, and the CW2017 has no
+  current register) — stock reads it from a **charger STAT line on GPIO21**,
+  configured input/no-pull and read **active-HIGH** (raw level = charging;
+  `Cw2017PowerHal` vtable slot 3 → GPIO getter at IROM 0x4214f67c, pin 0x15 set
+  in board init 0x4214eeb0). Carried as `batteryChargeStatus = 21` +
+  `batteryChargeStatusActiveHigh`; `BatteryMonitor` falls back to this pin when
+  the gauge reports charging as unobservable. The VBUS/USB-detect pin remains
+  **not conclusively identified** (stock's battery icon uses the GPIO21 charge
+  state, not a USB-presence signal).
 
 ## Frontlight — dual warm/cold PWM
 

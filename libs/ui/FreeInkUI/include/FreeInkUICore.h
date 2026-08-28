@@ -626,6 +626,15 @@ enum class SelectionStyle : uint8_t {
   Triangle,   // rows keep their normal style; triangle marker
 };
 
+// Sentinel for radius props: inherit the theme's shape token. Screen wrappers
+// substitute the matching ThemeTokens value; components rendered on a bare
+// Frame resolve it to their classic default via resolveRadius().
+inline constexpr uint8_t RADIUS_INHERIT = 0xFF;
+
+inline uint8_t resolveRadius(const uint8_t propRadius, const uint8_t fallback) {
+  return propRadius == RADIUS_INHERIT ? fallback : propRadius;
+}
+
 struct ThemeTokens {
   FontId fontSmall = 0;
   FontId fontBody = 0;
@@ -658,6 +667,15 @@ struct ThemeTokens {
   int16_t headerSidePadding = 6;
   uint8_t headerUnderline = 1; // bottom rule thickness; 0 = none
   TextAlign headerTitleAlign = TextAlign::Left;
+  // Control shape tokens, forwarded into any radius prop left at
+  // RADIUS_INHERIT: quick-setting tiles and slider step buttons
+  // (Screen::tileGrid()/sliderRow()), the sheet's free-edge corners
+  // (Screen::sheet()), and the capsule slider's corners — a capsuleRadius of
+  // at least half the control's height draws the classic full stadium,
+  // smaller values square it toward the theme's card language.
+  uint8_t controlRadius = 18;
+  uint8_t sheetRadius = 0;
+  uint8_t capsuleRadius = 255;
   TextStyle smallText{};
   TextStyle bodyText{};
   TextStyle titleText{};
@@ -1142,6 +1160,8 @@ private:
   // they don't have the torn-read hazard count_/interactions_ have.
   int16_t focused_ = -1;
   int16_t active_ = -1;
+  // Mirrors the last routed frame's contact, so its opening frame is visible.
+  bool contactHeld_ = false;
   ActionId flashAction_ = NO_ACTION; // tap-flash target (see setFlash)
   int16_t flashValue_ = 0;
 
@@ -1169,8 +1189,10 @@ private:
       if (hasState(interaction.state, StateDisabled))
         continue;
       const bool acceptsKind = acceptsInput(interaction.inputMask, kind);
+      // InputTouch is the catch-all for tap-style kinds; long-press and drag
+      // are opt-in, so a plain button never absorbs them.
       const bool acceptsTouchFallback =
-          kind != InputLongPress &&
+          kind != InputLongPress && kind != InputDrag &&
           acceptsInput(interaction.inputMask, InputTouch);
       if (!acceptsKind && !acceptsTouchFallback)
         continue;
@@ -1226,6 +1248,27 @@ private:
     ActionEvent event{};
     const size_t slotCount = count_[slot];
 
+    // touchPressed is gated on the contact first reading as a tap, which a
+    // fast drag never is. Bind on the frame the contact begins, at the point
+    // it landed — the live position would let a passing contact grab a
+    // slider. Drag-masked elements only, so taps keep press-then-release;
+    // a contact starting elsewhere clears whatever the last one bound.
+    // The latch closes on hold and opens on the release edge, never on the
+    // mere absence of a hold: render() routes a default-constructed snapshot
+    // through this same buffer on every repaint, and a drag repaints every
+    // frame. Clearing on !touchHeld would let that placeholder re-open the
+    // latch between two input frames, making every held frame read as a fresh
+    // contact — the bind below would then re-run against the live position and
+    // drop the drag the moment the finger leaves the rect.
+    const bool contactBegan = input.touchHeld && !contactHeld_;
+    if (input.touchHeld) contactHeld_ = true;
+    if (input.touchReleased) contactHeld_ = false;
+    if (contactBegan) {
+      active_ = findTouch(slot, input.touchX, input.touchY, InputDrag);
+    }
+
+    // Runs second so an adapter reporting both edges on one frame keeps its
+    // pressed-element highlight.
     if (input.touchPressed) {
       active_ = findTouch(slot, input.touchX, input.touchY, InputTouch);
     }

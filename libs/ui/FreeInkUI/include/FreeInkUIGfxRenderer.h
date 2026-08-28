@@ -53,6 +53,14 @@ class GfxRendererTarget final : public DrawTarget {
     // FreeInkUI components and the firmware's own tap path map taps identically.
     device.touchOrientation = touchOrientationFor(device.orientation);
     device.hasButtons = true;
+    // Board viewable insets (bezel / rounded-corner clearance), oriented to the
+    // current rotation, become the fui safe area — so every fui screen's body,
+    // list, and popups lay out inside the bezel automatically. Zero on
+    // rectangular panels. Insets order is {top, right, bottom, left}.
+    int viTop = 0, viRight = 0, viBottom = 0, viLeft = 0;
+    renderer.getOrientedViewableTRBL(&viTop, &viRight, &viBottom, &viLeft);
+    device.safeArea = Insets{static_cast<int16_t>(viTop), static_cast<int16_t>(viRight),
+                             static_cast<int16_t>(viBottom), static_cast<int16_t>(viLeft)};
     return device;
   }
 

@@ -85,8 +85,15 @@ int SecureClient::connectWithMethod(const char* host, uint16_t port, void* metho
   if (_insecure) {
     wolfSSL_CTX_set_verify(ctx, WOLFSSL_VERIFY_NONE, nullptr);
   } else if (_rootCA) {
-    wolfSSL_CTX_load_verify_buffer(ctx, reinterpret_cast<const unsigned char*>(_rootCA),
-                                   strlen(_rootCA), WOLFSSL_FILETYPE_PEM);
+    // Fail closed on a CA buffer that doesn't parse: the context would
+    // otherwise proceed to the handshake with an empty trust store, and the
+    // resulting verify failure is indistinguishable from a real bad peer.
+    if (wolfSSL_CTX_load_verify_buffer(ctx, reinterpret_cast<const unsigned char*>(_rootCA), strlen(_rootCA),
+                                       WOLFSSL_FILETYPE_PEM) != WOLFSSL_SUCCESS) {
+      if (Serial) Serial.printf("[SecureClient] CA load failed (%s)\n", label);
+      stop();
+      return 0;
+    }
   }
   wolfSSL_SetIORecv(ctx, wcRecv);
   wolfSSL_SetIOSend(ctx, wcSend);
@@ -101,6 +108,19 @@ int SecureClient::connectWithMethod(const char* host, uint16_t port, void* metho
   wolfSSL_SetIOReadCtx(ssl, &_transport);
   wolfSSL_SetIOWriteCtx(ssl, &_transport);
   wolfSSL_UseSNI(ssl, WOLFSSL_SNI_HOST_NAME, host, strlen(host));
+  if (!_insecure) {
+    // SNI names the host but does NOT bind the peer's certificate to it:
+    // without an explicit domain-name check, wolfSSL accepts any certificate
+    // signed by a trusted CA regardless of which hostname it was issued for,
+    // so a CA-verified connection would still be redirectable to any
+    // CA-certified attacker host. check_domain_name matches the connect host
+    // against the leaf's SANs/CN (wildcards included) during the handshake.
+    if (wolfSSL_check_domain_name(ssl, host) != WOLFSSL_SUCCESS) {
+      if (Serial) Serial.printf("[SecureClient] domain check setup failed (%s): %s\n", label, host);
+      stop();
+      return 0;
+    }
+  }
 #if defined(WOLFSSL_TLS13) && defined(HAVE_CURVE25519)
   // MEMFIX-PORT: pin the TLS 1.3 key_share to X25519. wolfSSL's default is a
   // P-256 share, generated with fast-math bignums that WOLFSSL_SMALL_STACK

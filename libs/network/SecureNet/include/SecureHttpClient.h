@@ -262,6 +262,17 @@ class SecureHttpClient {
         return -1;
       }
 
+      // RFC 9110 §6.4.1: 1xx, 204 and 304 responses never carry a body,
+      // regardless of what Content-Length or Transfer-Encoding they echo (a
+      // 304 replays the cached response's headers). Without this, a 304 with
+      // no framing headers would fall into readUntilClose() and stall a
+      // kept-alive connection until the timeout.
+      if (_status == 204 || _status == 304 || (_status >= 100 && _status < 200)) {
+        _bodyComplete = true;
+        if (!_reuse || !keepAlive) closeConnection();
+        return _status;
+      }
+
       // A close-delimited body (no framing) ends WITH the connection, so it can
       // never leave a reusable socket behind.
       // A 3xx body that is about to be followed is protocol plumbing, not

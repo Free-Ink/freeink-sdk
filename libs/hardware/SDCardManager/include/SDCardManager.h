@@ -68,6 +68,18 @@ class SDCardManager {
   bool openFileForWrite(const char* moduleName, const String& path, FsFile& file);
   bool removeDir(const char* path);
 
+  // Unmount cleanly on the way into deep sleep. Flushes SdFat's FAT/directory
+  // cache and ends the card session, so a card that keeps its power through
+  // sleep is left idle in a state it defines, rather than mid-transaction with
+  // dirty cache. Call it AFTER the last write of the sleep sequence; the next
+  // boot re-mounts through begin() as usual (deep-sleep wake is a chip reset,
+  // so nothing here has to survive).
+  //
+  // Boards whose SD rail is switched off a moment later by
+  // PowerManager::powerDownRailsForSleep() want this too: an unmount before the
+  // power cut is strictly safer than yanking the rail mid-cache.
+  void prepareForSleep();
+
   // Optional board hook to bring up SD-card power before the card is mounted, for
   // boards whose SD rail isn't a plain GPIO (e.g. behind an I2C PMIC). Called once
   // at the start of begin(). The board registers it from its own board-support

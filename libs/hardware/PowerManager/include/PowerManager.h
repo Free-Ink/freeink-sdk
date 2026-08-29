@@ -47,6 +47,19 @@ class PowerManager {
   // back-powering an unpowered controller) and HIGH when its rail remains on
   // (keeps deep-sleep state stable). NOTE: cutting the touch rail forfeits
   // touch-to-wake.
+  //
+  // Boards with NO gated rail are not left alone either, because there the
+  // peripheral simply stays powered and something has to quiet it:
+  //   * Touch — the controller is parked in reset (RESET held asserted) on
+  //     profiles that opt in via TouchConfig::holdResetInSleep. A GT911 left
+  //     scanning costs several mA, dwarfing every other sleep load.
+  //   * SD — chip-select is held DEASSERTED so a still-powered card idles
+  //     deselected instead of floating into an undefined selection state.
+  // Every one of these holds is released again by the corresponding bring-up
+  // path (InputManager's touch reset, SDCardManager::begin(),
+  // BoardConfig::releaseSdRail()) — gpio_hold_en survives the wake reset, and a
+  // held pad silently swallows writes, so a missing release means dead hardware
+  // after the first sleep and only after a sleep.
   static void powerDownRailsForSleep();
 
   // Isolate floating GPIOs to cut sleep current, then enter deep sleep. Does not

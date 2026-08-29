@@ -134,6 +134,20 @@ class PanelDriver {
     (void)bus; (void)plane; (void)rows; (void)yStart; (void)numRows;
   }
   virtual void prepareGrayscaleTarget(const uint8_t* bw) { (void)bw; }
+  // Single-push grayscale: `fb` is the intact 1-bpp B/W frame and the LSB/MSB
+  // planes were staged beforehand (copyGrayscale*/writeGrayscalePlaneStrip);
+  // the driver composes and displays base + greys as ONE waveform in `mode`.
+  // Only meaningful on a panel whose LUTs can land a grey from any source
+  // state -- a driver advertises that with supportsGrayFrame(). Everyone else
+  // keeps the two-push base + displayGray() flow.
+  virtual bool supportsGrayFrame() const { return false; }
+  virtual void displayGrayFrame(EpdBus& bus, const uint8_t* fb, RefreshMode mode, bool turnOff) {
+    (void)bus;
+    (void)fb;
+    (void)mode;
+    (void)turnOff;
+  }
+
   virtual void displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut, bool factoryMode) {
     (void)lut;
     (void)factoryMode;

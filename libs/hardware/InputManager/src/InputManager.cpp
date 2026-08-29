@@ -1693,6 +1693,13 @@ void InputManager::beginGt911() {
     Wire.setTimeOut(10);
   }
 
+  // Release any pad hold left on RESET by the sleep path (TouchConfig::
+  // holdResetInSleep parks the controller in reset on boards with no touch
+  // rail). gpio_hold_en survives the deep-sleep wake reset, and a held pad
+  // silently swallows the reset dance below — touch would come back dead after
+  // the first wake, and only after a wake.
+  if (t.reset >= 0) gpio_hold_dis(static_cast<gpio_num_t>(t.reset));
+
   auto resetWithIntLevel = [&](const uint8_t level) {
     if (t.reset < 0 || t.irq < 0) return;
     pinMode(t.irq, OUTPUT);
@@ -1856,6 +1863,9 @@ void InputManager::beginFt6336u() {
     // Exact Murphy Reader reset timing: RESET low 50 ms, high 100 ms.
     // GPIO7 is shared with the display reset line on this board.
     if (t.reset >= 0) {
+      // Release a sleep-path hold first (TouchConfig::holdResetInSleep); it
+      // survives the wake reset and would make the pulse below a no-op.
+      gpio_hold_dis(static_cast<gpio_num_t>(t.reset));
       pinMode(t.reset, OUTPUT);
       digitalWrite(t.reset, LOW);
       delay(50);

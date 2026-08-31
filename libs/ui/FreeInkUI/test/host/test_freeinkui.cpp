@@ -785,6 +785,69 @@ void testListItemsWindowSkipsUnavailablePartialPreview() {
   CHECK(!draw.drewForbiddenLabel);
 }
 
+void testListInlineSectionHeadingWindow() {
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice();
+  InputSnapshot input;
+  InteractionBuffer<16> interactions;
+  Frame<16> frame(draw, device, input, interactions);
+
+  ListItem window[3]{};
+  window[0].label = "Book A";
+  window[0].sectionHeading = "Author A";
+  window[0].actionValue = 10;
+  window[1].label = "Book B";
+  window[1].actionValue = 11;
+  window[2].label = "Book C";
+  window[2].sectionHeading = "Author C";
+  window[2].actionValue = 12;
+
+  ListNav nav;
+  ListProps props;
+  props.items = window;
+  props.itemsWindowFirst = 10;
+  props.itemsWindowCount = 3;
+  props.count = 100;
+  props.topIndex = 10;
+  props.action = 9;
+  props.rowHeight = 40;
+  props.headerUnderline = false;
+  props.nav = &nav;
+  list(frame, Rect{0, 0, 480, 96}, props);  // 16px heading + two 40px rows
+
+  CHECK_EQ(interactions.count(), 2u);
+  CHECK_EQ(interactions.data()[0].value, 10);
+  CHECK_EQ(interactions.data()[1].value, 11);
+  CHECK_EQ(nav.drawnRows, 2);
+  CHECK_EQ(draw.countKind(FakeDrawTarget::Op::Text), 3u);  // heading + two books
+}
+
+void testListInlineSectionHeadingDoesNotOrphan() {
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice();
+  InputSnapshot input;
+  InteractionBuffer<4> interactions;
+  Frame<4> frame(draw, device, input, interactions);
+
+  ListItem item{};
+  item.label = "Book";
+  item.sectionHeading = "Author";
+  item.actionValue = 4;
+
+  ListNav nav;
+  ListProps props;
+  props.items = &item;
+  props.count = 1;
+  props.action = 9;
+  props.rowHeight = 40;
+  props.nav = &nav;
+  list(frame, Rect{0, 0, 480, 55}, props);  // heading + row need 56px
+
+  CHECK_EQ(interactions.count(), 0u);
+  CHECK_EQ(nav.drawnRows, 0);
+  CHECK_EQ(draw.countKind(FakeDrawTarget::Op::Text), 0u);
+}
+
 void testListNavLayoutFeedback() {
   FakeDrawTarget draw;
   DeviceContext device = makeDevice();
@@ -3406,6 +3469,8 @@ int main() {
   testListItemsWindow();
   testListItemsWindowStopsBeforePastEndMeasurement();
   testListItemsWindowSkipsUnavailablePartialPreview();
+  testListInlineSectionHeadingWindow();
+  testListInlineSectionHeadingDoesNotOrphan();
   testListNavLayoutFeedback();
   testListNavConvergesThroughRealList();
   testListCanUseFullTitleWidthWithShortValue();

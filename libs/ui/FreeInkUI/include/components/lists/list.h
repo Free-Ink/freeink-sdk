@@ -21,6 +21,10 @@ struct ListItem {
   // value string is ignored when set. Activation stays row-level via action.
   bool toggle = false;
   bool toggleChecked = false;
+  // Optional section heading drawn immediately before this selectable row.
+  // It shares the row's logical index and interaction value. Kept last so
+  // existing aggregate initializers remain source-compatible.
+  const char *sectionHeading = nullptr;
 };
 
 struct ListNav;
@@ -453,8 +457,26 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
     } else if (labelLines > 1) {
       itemH = static_cast<int16_t>(rowH + labelLh * (labelLines - 1));
     }
-    if (static_cast<int16_t>(cursorY + itemH) > rowArea.bottom())
+    const bool hasSectionHeading = item.sectionHeading != nullptr && item.sectionHeading[0] != '\0';
+    const int16_t sectionPad = hasSectionHeading && i != top ? props.sectionGap : 0;
+    const int16_t sectionH =
+        hasSectionHeading ? static_cast<int16_t>(sectionPad + headerH + rowGap) : 0;
+    if (static_cast<int16_t>(cursorY + sectionH + itemH) > rowArea.bottom())
       break;
+    if (hasSectionHeading) {
+      cursorY = static_cast<int16_t>(cursorY + sectionPad);
+      Rect headerRow{static_cast<int16_t>(rowArea.x + sidePad), cursorY,
+                     static_cast<int16_t>(rowArea.width - sidePad * 2),
+                     headerLh};
+      frame.target().text(headerRow, item.sectionHeading, props.headerText);
+      if (props.headerUnderline) {
+        frame.target().fill(Rect{headerRow.x,
+                                 static_cast<int16_t>(cursorY + headerLh + 2),
+                                 headerRow.width, 1},
+                            Paint::solid(props.headerText.color));
+      }
+      cursorY = static_cast<int16_t>(cursorY + headerH + rowGap);
+    }
     ++drawnRows;
     ++consumedIndexes;
     if (props.selectedIndex == static_cast<int16_t>(i))

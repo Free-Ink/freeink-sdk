@@ -17,7 +17,8 @@
 //     fingerprint. It reads whatever pins the ACTIVE profile carries, so it is
 //     safe on the S3 X4 Pro too.
 #define FREEINK_XTEINK_C3 (FREEINK_DEVICE_X4 || FREEINK_DEVICE_X3)
-#define FREEINK_XTEINK_DISPLAY_PROBE (FREEINK_DEVICE_X3 || FREEINK_DEVICE_X4 || FREEINK_DEVICE_X4PRO)
+#define FREEINK_XTEINK_DISPLAY_PROBE \
+  (FREEINK_DEVICE_X3 || FREEINK_DEVICE_X4 || FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_X4CLASSIC)
 
 namespace freeink {
 
@@ -228,13 +229,31 @@ DisplayControllerVerdict probeDisplayController(const EpdProbePins& p, uint8_t v
   // VER = FF FF FF FF FF (blank/unreadable LUT_VER area) with FLG = 0x13 (the
   // datasheet's idle default), which the uniform-VER floating-bus test wrongly
   // rejects. A pulled-up floating bus also reads FF — so require POSITIVE
-  // evidence: the RMTP dump must start with the 0xA5 MTP key, which only a
-  // real UC81xx with a programmed MTP can produce (and without which OTP-mode
-  // refreshes wouldn't run anyway). UC8253 has no RMTP command; its read
-  // floats and can never match.
-  if (!confirmed && flgDriven && verAgree && verIsFloating(ver1) && ver1[0] == 0xFF && g_probeDiag.mtpValid &&
-      g_probeDiag.mtp[0] == 0xA5) {
-    confirmed = true;
+  // evidence from RMTP. Two acceptable shapes:
+  //   * mtp[0] == 0xA5: a programmed MTP's refresh-enable key. Unambiguous.
+  //   * a NON-UNIFORM dump that repeats byte-for-byte on a second read: the
+  //     field UC8279d modules ship a BLANK MTP (all zeros except the LUT
+  //     version stamp at 0x01A — never 0xA5), but the silicon still DRIVES
+  //     the RMTP readback. A UC8253 has no 0xA2 command, so its read floats
+  //     to a uniform pull-up pattern (field-confirmed FF); floating garbage
+  //     can be non-uniform once but cannot repeat 48 bytes exactly.
+  if (!confirmed && flgDriven && verAgree && verIsFloating(ver1) && ver1[0] == 0xFF && g_probeDiag.mtpValid) {
+    if (g_probeDiag.mtp[0] == 0xA5) {
+      confirmed = true;
+    } else {
+      bool uniform = true;
+      for (size_t i = 1; i < sizeof(g_probeDiag.mtp); i++) {
+        if (g_probeDiag.mtp[i] != g_probeDiag.mtp[0]) {
+          uniform = false;
+          break;
+        }
+      }
+      if (!uniform) {
+        uint8_t raw2[sizeof(g_probeDiag.mtp) + 1] = {0};
+        epdCmdRead(p, UC81XX_CMD_RMTP, raw2, sizeof(raw2));
+        if (memcmp(g_probeDiag.mtp, raw2 + 1, sizeof(g_probeDiag.mtp)) == 0) confirmed = true;
+      }
+    }
   }
   releaseDisplayPins(p);
 
@@ -317,12 +336,32 @@ bool applyXteinkDisplayController() {
   // panel). Log it — and flag when it disagrees with the probe — but never
   // decide on it.
   uint8_t screenType = 0;
-  if (readOemScreenType(&screenType)) {
+  const bool haveScreenType = readOemScreenType(&screenType);
+  if (haveScreenType) {
     if (Serial)
-      Serial.printf("[%lu] [XTDET] NVS hw_calib/screenType=%u (%s) [info only]\n", millis(), screenType,
+      Serial.printf("[%lu] [XTDET] NVS hw_calib/screenType=%u (%s)\n", millis(), screenType,
                     screenTypeIsUltraChip(screenType) ? "UltraChip" : "default");
   } else if (Serial) {
-    Serial.printf("[%lu] [XTDET] NVS hw_calib/screenType: not set [info only]\n", millis());
+    Serial.printf("[%lu] [XTDET] NVS hw_calib/screenType: not set\n", millis());
+  }
+
+  // X4 Classic has NO MISO line, so the display-bus probe can never read the
+  // controller ID (VER always floats to 0xFF). NVS hw_calib/screenType is the ONLY
+  // source of truth here — the factory writes it once. Map it directly:
+  //   1 / 0x0B -> UC8179, 2 / 0x0C -> UC8279, else (3/default/unset) -> SSD1677.
+  if (BoardConfig::isX4Classic()) {
+    if (haveScreenType && screenTypeIsUltraChip(screenType)) {
+      const bool is8279 = (screenType == 2 || screenType == 0x0C);
+      BoardConfig::ACTIVE.displayController =
+          is8279 ? BoardConfig::DisplayController::UC8279 : BoardConfig::DisplayController::UC8179;
+      g_probeDiag.promoted = true;
+      if (Serial)
+        Serial.printf("[%lu] [XTDET] X4C: NVS screenType=%u -> %s (no MISO, probe skipped)\n", millis(), screenType,
+                      is8279 ? "UC8279" : "UC8179");
+      return true;
+    }
+    if (Serial) Serial.printf("[%lu] [XTDET] X4C: keeping SSD1677 (no UltraChip screenType)\n", millis());
+    return false;  // SSD1677 default
   }
 
   uint8_t ver[5] = {0};

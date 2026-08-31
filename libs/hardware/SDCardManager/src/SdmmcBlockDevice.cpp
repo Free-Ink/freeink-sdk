@@ -53,7 +53,8 @@ bool SdmmcBlockDevice::begin(const BoardConfig::SdmmcPins& pins) {
     sdmmc_host_deinit();
     return false;
   }
-  // SD power/enable pin (sd.powerEnable, GPIO5 on X4 Pro). The OEM mountSD pulses it
+  // SD power/enable pin (sd.powerEnable: GPIO5 on X4 Pro, GPIO6 on X4C).
+  // OEM mountSD pulses it
   // HIGH→LOW before each attempt and runs the card with the pin held LOW; it is an
   // active-LOW enable that gates the card's data path, not a one-shot rail. Confirmed
   // on hardware: pulsing then holding LOW mounts reliably, whereas driving it HIGH
@@ -75,11 +76,12 @@ bool SdmmcBlockDevice::begin(const BoardConfig::SdmmcPins& pins) {
     return false;
   }
 
-  // Retry the WHOLE mount — init AND a real sector-0 read — power-cycling GPIO5 before
+  // Retry the WHOLE mount — init AND a real sector-0 read — power-cycling the
+  // configured gate before
   // each attempt, mirroring the OEM mountSD. Retrying only card_init leaves SdFat's
   // first (un-retried) block read to hit a still-marginal data path and fail with
   // 0x107; validating a real read here means _card is only published once genuine
-  // block I/O works, and GPIO5 is left in the exact LOW state that read succeeded under.
+  // block I/O works, and the gate is left in the exact LOW state that read succeeded under.
   esp_err_t mountErr = ESP_FAIL;
   for (int attempt = 0; attempt < 4; attempt++) {
     if (sdPwr >= 0) {

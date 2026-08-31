@@ -28,6 +28,10 @@ class InputManager {
   // Level state from the last update().
   bool isPressed(uint8_t buttonIndex) const;
 
+  // Current electrical level of the configured power-button GPIO, before
+  // logical click/hold classification. False when the board has no such GPIO.
+  bool isPowerButtonPhysicallyPressed() const;
+
   // Press edge since the previous update().
   bool wasPressed(uint8_t buttonIndex) const;
 
@@ -142,10 +146,16 @@ class InputManager {
   // contacts plus their centroid start/end normalized in its panel-native
   // frame; applications opt into the exact counts they support, map display
   // orientation, and decide whether the result is up/down/left/right. Pinches,
-  // rotations, diagonal motion, delayed gestures, ambiguous contact matching,
-  // track-ID replacements, and sequences above MAX_TOUCH_CONTACTS are rejected.
+  // diagonal motion, delayed gestures, ambiguous contact matching, track-ID
+  // replacements, and sequences above MAX_TOUCH_CONTACTS are rejected.
   bool wasMultiTouchSwipe(uint8_t& contactCount, float& nxStart, float& nyStart, float& nxEnd, float& nyEnd,
                           unsigned long& durationMs) const;
+  // One-shot two-contact rotation on release. Positive degrees are clockwise
+  // and negative degrees counterclockwise in the corrected panel-native frame,
+  // normalized to [-180, 180]. The center is the average of the start/end
+  // contact centroids, normalized to 0..1. Pinches and sub-threshold turns are
+  // rejected, and an accepted rotation cannot also become a translation.
+  bool wasMultiTouchRotation(float& degrees, float& nxCenter, float& nyCenter, unsigned long& durationMs) const;
   // One-shot long-press: fires WHILE the finger is still down, once a
   // stationary contact (within tap slop) has been held TOUCH_LONG_PRESS_MS.
   // Position is the touch-down point, normalized like wasTouchTap. Fires at
@@ -156,8 +166,8 @@ class InputManager {
   // Ignore the remainder of the current contact: tap, swipe, release,
   // tap-candidate and held queries report nothing until the finger lifts and
   // the release edge has passed, then a fresh contact is delivered normally.
-  // Self-clears; async tap, single-swipe, and multi-touch-swipe queues are
-  // gated by the same latch.
+  // Self-clears; async tap, single-swipe, multi-touch-swipe, and rotation
+  // queues are gated by the same latch.
   void suppressTouchContact();
   // True if a touch press or release happened this frame. Coarse "the user
   // touched the screen" signal (the touch analogue of wasAnyPressed/Released)
@@ -226,6 +236,11 @@ class InputManager {
   bool popMultiTouchSwipe(uint8_t& contactCount, float& nxStart, float& nyStart, float& nxEnd, float& nyEnd,
                           unsigned long& durationMs);
 
+  // Pop a queued completed two-contact rotation. Values use the same signed
+  // degrees, normalized center, and duration contract as
+  // wasMultiTouchRotation().
+  bool popMultiTouchRotation(float& degrees, float& nxCenter, float& nyCenter, unsigned long& durationMs);
+
   // --- Diagnostics -----------------------------------------------------------
   // A live sample of one button-group ADC pin: the raw reading plus the BTN_*
   // it currently classifies as (-1 = no band matched). On the Xteink ADC ladder
@@ -260,6 +275,13 @@ class InputManager {
     uint16_t durationMs;
   };
   QueueHandle_t _asyncMultiTouchSwipeQueue = nullptr;
+  struct QueuedMultiTouchRotation {
+    float degrees;
+    uint16_t centerX;
+    uint16_t centerY;
+    uint16_t durationMs;
+  };
+  QueueHandle_t _asyncMultiTouchRotationQueue = nullptr;
   TaskHandle_t _asyncTask = nullptr;
   uint32_t _asyncPollMs = 15;
   static void asyncTaskTrampoline(void* self);
@@ -292,6 +314,11 @@ class InputManager {
   void gt911ClearStatus();
   void beginFt6336u();
   void pollFt6336u(unsigned long now);
+  void beginGslx680();
+  void pollGslx680(unsigned long now);
+  bool gslWrite(uint8_t reg, const uint8_t* data, uint8_t len);
+  bool gslRead(uint8_t reg, uint8_t* buf, uint8_t len);
+  bool gslUploadFirmware();
 
   enum class MultiTouchGestureState : uint8_t { Idle, Tracking, Blocked };
   struct TrackedTouchContact {
@@ -310,8 +337,10 @@ class InputManager {
   bool findContactAssignment(const TouchSnapshot& snapshot, uint8_t trackedCount,
                              uint8_t assignment[MAX_TOUCH_CONTACTS]) const;
   bool isTrackedContact(const MultiTouchPoint& point) const;
-  bool hasStableMultiTouchGeometry() const;
+  bool hasStableTranslationGeometry() const;
+  bool hasEligibleRotationScale() const;
   bool isMultiTouchTranslation(unsigned long now) const;
+  bool classifyMultiTouchRotation(unsigned long now);
   void normalizeTouchPoint(uint16_t x, uint16_t y, float& nx, float& ny) const;
 
   uint8_t currentState;
@@ -354,7 +383,8 @@ class InputManager {
   MultiTouchGestureState multiTouchGestureState = MultiTouchGestureState::Idle;
   TrackedTouchContact multiTouchContacts[MAX_TOUCH_CONTACTS] = {};
   uint8_t trackedTouchContactCount = 0;
-  bool touchMultiContactSequence = false;  // suppresses single-contact classifiers until full release
+  bool multiTouchRotationEligible = false;  // latched false if any frame leaves the allowed scale band
+  bool touchMultiContactSequence = false;   // suppresses single-contact classifiers until full release
   bool multiTouchSwipeEvent = false;
   uint8_t multiTouchSwipeContactCount = 0;
   uint16_t multiTouchSwipeStartX = 0;
@@ -362,6 +392,11 @@ class InputManager {
   uint16_t multiTouchSwipeEndX = 0;
   uint16_t multiTouchSwipeEndY = 0;
   uint16_t multiTouchSwipeDurationMs = 0;
+  bool multiTouchRotationEvent = false;
+  float multiTouchRotationDegrees = 0.0f;
+  uint16_t multiTouchRotationCenterX = 0;
+  uint16_t multiTouchRotationCenterY = 0;
+  uint16_t multiTouchRotationDurationMs = 0;
   TouchPoint touchDownPoint = {false, 0, 0, 0};  // first sample of the current contact (tap routing)
   TouchPoint touchUpPoint = {false, 0, 0, 0};    // last sample before release (swipe routing)
   unsigned long lastTouchHeldDurationMs = 0;     // contact duration, latched at release

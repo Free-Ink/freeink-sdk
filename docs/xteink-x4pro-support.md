@@ -69,26 +69,37 @@ Only **SCLK/MOSI** could not be pinned from the RE — they came from the SPI
 constructor argument order, which is ambiguous — and were settled by hardware as
 **SCLK = 12, MOSI = 11**.
 
-### Recovered OEM command stream (reference)
+### Recovered OEM command streams (reference)
 
-The command stream below was recovered from the OEM firmware and matches the live
-controller. Key code offsets (app1 IROM):
-`writeCommand 0x4201a2d4`, `init 0x4201a568`, `fullUpdate 0x4201a628`,
-`fastUpdate 0x4201a6c8`, `waitBusy 0x42014f58`.
+The refresh sequence changed between analyzed OEM releases. Keep findings
+version-scoped: an older image uses `0xC7` for FAST, while the newer 7.4.4 image
+uses the X4-compatible `0xFC` partial/DU sequence that FreeInk selects by
+default.
 
-The **Display Update Control 2 (0x22)** values that distinguish this board from
-the other SSD1677 boards:
+| Mode | X4 Pro 7.4.4 | Earlier X4 Pro image | X4 default | Sticky |
+|---|---|---|---|---|
+| Full | 0xF7 | 0xF7 | 0xF7 | 0xF7 |
+| Fast | 0xFC | 0xC7 | 0xFC | 0xFF |
 
-| Mode | X4 Pro | X4 default | Sticky |
-|---|---|---|---|
-| Full | 0xF7 | 0xFC | 0xFF |
-| Fast | 0xC7 | — | — |
+**7.4.4 update (`xteink_app_update_x4pro_7.4.4_20260827_133901.xota`).** The
+decrypted ESP32-S3 app identifies itself as `xteink_app` 7.4.4, built 2026-08-27
+against ESP-IDF 6.0.1. The OTA metadata labels the package `V7.4.5`; the embedded
+app descriptor remains the authoritative application version.
 
-Full and fast refresh use the panel's built-in OTP waveform (no custom LUT); only
-partial refresh loads a custom LUT.
+- **FULL** (`0x421e36ac`): border `0x3C = 0xC0`, update control
+  `0x22 = 0xF7`, master activation `0x20`, wait BUSY.
+- **FAST** (`0x421e37b8`): border `0x3C = 0xC0`, update control
+  `0x22 = 0xFC`, master activation `0x20`, wait BUSY.
 
-The sequence below was recovered from the OEM firmware and verified against the
-live controller:
+Both routines contain only panel command/data/wait operations. They do not call
+the LEDC/frontlight path. A visible whole-panel light-then-dark transition during
+FAST is therefore the SSD1677's electrophoretic waveform, not evidence that the
+frontlight PWM changed.
+
+**Earlier app1 image.** Key IROM offsets are `writeCommand 0x4201a2d4`,
+`init 0x4201a568`, `fullUpdate 0x4201a628`, `fastUpdate 0x4201a6c8`, and
+`waitBusy 0x42014f58`. This image supplied the following hardware bring-up
+details and was verified against the live controller:
 
 - **INIT** (`0x4201a568`): SW RESET `0x12`, then a **fixed `delay(10)`** — *not*
   a BUSY-wait. Then temp sensor `0x18 = 0x80` (internal); booster
@@ -96,10 +107,9 @@ live controller:
   `0x01DF` = 479 → MUX 480, `SM = 1` scan direction); border `0x3C = 0x80`.
   RAM window: data-entry `0x11 = 0x01`, X range via `0x44`, Y range via `0x45`,
   cursor via `0x4E`/`0x4F`; width `0x320` = 800, height `0x1E0` = 480.
-- **FULL** refresh (`0x4201a628`): `0x21 = 0x00`, `0x22 = 0xF7`, `0x20`, wait
-  BUSY.
-- **FAST** refresh (`0x4201a6c8`): `0x22 = 0xC7`, `0x20`, wait BUSY.
-- **PARTIAL** refresh: loads a custom `0x32` LUT plus `0x03` (VGH) = `0x17`,
+- **FULL** (`0x4201a628`): `0x21 = 0x00`, `0x22 = 0xF7`, `0x20`, wait BUSY.
+- **FAST** (`0x4201a6c8`): `0x22 = 0xC7`, `0x20`, wait BUSY.
+- **PARTIAL**: loads a custom `0x32` LUT plus `0x03` (VGH) = `0x17`,
   `0x04` (VSH1/VSH2/VSL) = `41 A8 32`, `0x2C` (VCOM) = `0x30`.
 
 ## Touch — GT911
@@ -275,24 +285,35 @@ The **GT911 touch** is on the same bus at **0x5D** (INT=GPIO4, RST=GPIO10; see
   resident profile and re-uploads the OEM table (recovered from app1's
   `Cw2017PowerHal`) if it's missing, then reads **SoC from reg 0x04** and **VCELL
   from regs 0x02/0x03** (14-bit, `mV = (raw·5 + 8) >> 4`). Charging state is not
-  observable from the gauge (no charger IC on this bus); the VBUS/USB-detect pin was
-  **not conclusively identified**.
+  observable from the gauge (no charger IC on this bus, and the CW2017 has no
+  current register) — stock reads it from a **charger STAT line on GPIO21**,
+  configured input/no-pull and read **active-HIGH** (raw level = charging;
+  `Cw2017PowerHal` vtable slot 3 → GPIO getter at IROM 0x4214f67c, pin 0x15 set
+  in board init 0x4214eeb0). Carried as `batteryChargeStatus = 21` +
+  `batteryChargeStatusActiveHigh`; `BatteryMonitor` falls back to this pin when
+  the gauge reports charging as unobservable. The VBUS/USB-detect pin remains
+  **not conclusively identified** (stock's battery icon uses the GPIO21 charge
+  state, not a USB-presence signal).
 
 ## Frontlight — dual warm/cold PWM
 
 **Confirmed on hardware** — dual-channel color temperature, and the identities
 are now nailed down: **cool/white = GPIO8, warm = GPIO9**, both **active-HIGH**
-(driving each pin high lights that LED). This **matches the dump**, and the
-profile's `FrontlightConfig{8, 10000, 10, true, 9}` is **correct**. Two LEDC
-channels, mixed by `FrontlightManager` (`setBrightness` = total level,
-`setColorTemperature` = warm/cool split).
+(driving each pin high lights that LED). Two LEDC channels are mixed by
+`FrontlightManager` (`setBrightness` = total level, `setColorTemperature` =
+warm/cool split).
 
 | Channel | GPIO | Color | LEDC ch |
 |---|---|---|---|
 | `frontlight.gpio` | 8 | cool/white | 4 |
 | `frontlight.gpioWarm` | 9 | warm | 5 |
 
-10 kHz, 10-bit, **active-high**.
+The original board-bring-up dump configures 10 kHz, while stock 7.0.8 passes
+25 kHz and 10 bits to the frontlight initializer for the same GPIO8/GPIO9 pair.
+The SDK follows that directly recovered value with
+`FrontlightConfig{8, 25000, 10, true, 9}`. GPIO assignment, resolution, and
+active-high polarity agree across the images. This PWM change is independent of
+the panel-waveform transition described above.
 
 ## Partitions (16 MB, dual-OTA)
 

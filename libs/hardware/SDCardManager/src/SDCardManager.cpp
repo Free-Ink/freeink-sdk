@@ -126,11 +126,28 @@ bool SDCardManager::begin() {
     digitalWrite(BoardConfig::ACTIVE.display.cs, HIGH);
   }
 
-  if (SD_SCLK >= 0 && SD_MOSI >= 0 && SD_MISO >= 0) {
-    SPI.begin(SD_SCLK, SD_MISO, SD_MOSI, SD_CS);
+  // A board with a dedicated SD SPI bus (separateSpi) MUST NOT reconfigure the
+  // global SPI object: that bus belongs to the display, and Arduino's second
+  // SPI.begin() won't remap its pins, so the panel would end up transmitting on
+  // the SD pins. Give SD its own HSPI instance and leave the global SPI for the
+  // display. Other boards keep sharing the global SPI as before.
+  bool cardReady = false;
+#if FREEINK_MCU_S3 || FREEINK_MCU_ESP32
+  if (BoardConfig::ACTIVE.sd.separateSpi && SD_SCLK >= 0 && SD_MOSI >= 0 && SD_MISO >= 0) {
+    static SPIClass dedicatedSdSpi(HSPI);
+    cardReady = dedicatedSdSpi.begin(SD_SCLK, SD_MISO, SD_MOSI, SD_CS) &&
+                sd.begin(SdSpiConfig(SD_CS, SHARED_SPI | USER_SPI_BEGIN, SPI_FQ, &dedicatedSdSpi));
+  } else {
+#endif
+    if (SD_SCLK >= 0 && SD_MOSI >= 0 && SD_MISO >= 0) {
+      SPI.begin(SD_SCLK, SD_MISO, SD_MOSI, SD_CS);
+    }
+    cardReady = sd.begin(SD_CS, SPI_FQ);
+#if FREEINK_MCU_S3 || FREEINK_MCU_ESP32
   }
+#endif
 
-  if (!sd.begin(SD_CS, SPI_FQ)) {
+  if (!cardReady) {
     if (Serial)
       Serial.printf("[%lu] [SD] SD card not detected (err=0x%02X data=0x%02X cs=%d sclk=%d miso=%d mosi=%d clk=%luHz)\n",
                     millis(), sd.sdErrorCode(), sd.sdErrorData(), SD_CS, SD_SCLK,

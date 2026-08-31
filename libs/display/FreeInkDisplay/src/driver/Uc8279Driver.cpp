@@ -139,15 +139,6 @@ bool Uc8279Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
   if (!_oldPlaneValid) {
     bus.fillPlane(CMD_DTM1, 0xFF, _h, _wb);
     bus.cmd(CMD_DATA_STOP);
-  } else if (_darkBackground && !useGc) {
-    // Inverted content: a DU fast idles unchanged pixels, so the light residue
-    // of every white->black transition parks in the black background and
-    // accumulates between GC passes. Rewrite the OLD plane as the complement
-    // of the target: every pixel classifies as changed and is re-driven toward
-    // its target — optically invisible on pixels already at their endpoint.
-    // displayFinish()'s DTM1 sync restores the true baseline afterwards.
-    bus.sendPlaneFlippedInverted(CMD_DTM1, fb, _h, _wb);
-    bus.cmd(CMD_DATA_STOP);
   }
   bus.sendPlaneFlipped(CMD_DTM2, fb, _h, _wb);
   bus.cmd(CMD_DATA_STOP);
@@ -221,11 +212,12 @@ void Uc8279Driver::skipInitialResync() {
 }
 
 void Uc8279Driver::deepSleep(EpdBus& bus) {
-  if (_isScreenOn) {
-    bus.cmd(CMD_POWER_OFF);
-    bus.waitBusy(" 8279 power-down");
-    _isScreenOn = false;
-  }
+  // Always park before DSLP (see Uc8179Driver::deepSleep for the full
+  // rationale). This driver is X3TwoPhase (Uc8279Driver.h) which DOES have a
+  // bounded busy wait, but only wait when the panel was actually on.
+  bus.cmd(CMD_POWER_OFF);
+  if (_isScreenOn) bus.waitBusy(" 8279 power-down");
+  _isScreenOn = false;
   bus.cmd(CMD_DEEP_SLEEP);
   bus.data(0xA5);
 }

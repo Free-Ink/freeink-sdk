@@ -35,6 +35,9 @@
 #if FREEINK_DRIVER_UC8279_X4
 #include "driver/Uc8279X4Driver.h"
 #endif
+#if FREEINK_DRIVER_UC8279C
+#include "driver/Uc8279cA4Driver.h"
+#endif
 #if FREEINK_DRIVER_ED2208
 #include "driver/Ed2208M5Driver.h"
 #endif
@@ -158,7 +161,9 @@ void FreeInkDisplay::selectDriver() {
         break;
       }
 #endif
-#if FREEINK_DRIVER_SSD1677
+#if FREEINK_DRIVER_UC8279C
+      _driver = &uc8279cA4Driver();
+#elif FREEINK_DRIVER_SSD1677
       _driver = &ssd1677Driver();
 #elif FREEINK_DRIVER_PAPER_MONO
       _driver = &paperMonoDriver();
@@ -859,10 +864,6 @@ bool FreeInkDisplay::supportsStripGrayscale() const {
   return !_inverted && _driver && _driver->supportsStripGrayscale();
 }
 
-bool FreeInkDisplay::supportsFactoryGrayscale() const {
-  return !_inverted && _driver && _driver->supportsFactoryGrayscale();
-}
-
 bool FreeInkDisplay::combinesGrayscaleBase() const { return _driver && _driver->combinesGrayscaleBase(); }
 
 void FreeInkDisplay::cleanupGrayscaleBuffers(const uint8_t* bwBuffer) {
@@ -930,12 +931,24 @@ void FreeInkDisplay::requestCompleteWaveformNextRefresh() {
   if (_driver) _driver->requestCompleteWaveformNextRefresh();
 }
 
+void FreeInkDisplay::setFullRefreshCompletesWaveform(bool enabled) {
+  if (_driver) _driver->setFullRefreshCompletesWaveform(enabled);
+}
+
+void FreeInkDisplay::setAccentPlaneSlot(uint8_t slot, const uint8_t* plane, uint8_t colorCode) {
+  if (_driver) _driver->setAccentPlaneSlot(slot, plane, colorCode);
+}
+
 void FreeInkDisplay::setFastRefreshCutoffMs(uint16_t ms) {
   if (_driver) _driver->setFastRefreshCutoffMs(ms);
 }
 
 uint16_t FreeInkDisplay::fastRefreshCutoffMs() const {
   return _driver ? _driver->fastRefreshCutoffMs() : 0;
+}
+
+void FreeInkDisplay::setHoldPeriodicFullRefresh(bool hold) {
+  if (_driver) _driver->setHoldPeriodicFull(hold);
 }
 
 void FreeInkDisplay::grayscaleRevert() {

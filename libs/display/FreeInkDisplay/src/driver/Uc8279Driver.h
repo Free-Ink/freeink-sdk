@@ -46,10 +46,6 @@ class Uc8279Driver : public PanelDriver {
 
   void requestResync(uint8_t settlePasses) override;
   void skipInitialResync() override;
-  // Inverted (dark-background) content: fast refreshes rewrite the OLD plane
-  // as the complement of the target so every pixel is re-driven toward its
-  // target each update. See displayStart().
-  void setBackgroundHint(bool darkBackground) override { _darkBackground = darkBackground; }
 
   // --- 4-level grayscale / anti-aliasing (mirrors the UC8253 X3 sibling) ---
   // Two 1bpp planes (LSB -> DTM1/old, MSB -> DTM2/new) encode 4 levels; the
@@ -90,7 +86,6 @@ class Uc8279Driver : public PanelDriver {
   uint32_t _bufferSize;
 
   bool _isScreenOn = false;
-  bool _darkBackground = false;
   bool _firstRefresh = true;   // CDI 0x97 on the first refresh after init, 0xD7 after
   bool _oldPlaneValid = false; // DTM1 holds a real previous frame (differential baseline)
   bool _forceFullSyncNext = false;

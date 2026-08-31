@@ -43,6 +43,12 @@ struct ListProps {
   // so the caller must keep the window covering that range (refresh it after
   // viewport changes, before list()). 0 = items is the full array.
   uint16_t itemsWindowFirst = 0;
+  // Number of ListItems supplied in `items` when it is a virtual window.
+  // Set this whenever itemsWindowFirst is non-zero (or the supplied array is
+  // otherwise shorter than count), so optional previews can stay within the
+  // materialized data. 0 preserves the full-array behavior for existing
+  // callers.
+  uint16_t itemsWindowCount = 0;
   // First item index drawn at the top of the rect. The list is virtualized:
   // only the rows that fully fit inside the rect are laid out, drawn, and
   // registered for interaction. Use listVisibleRows()/listTopIndexFor() to
@@ -96,6 +102,13 @@ struct ListProps {
   // behind a bezel). -1 = inherit the theme's listScrollInset.
   int16_t scrollIndicatorInset = -1;
   bool centerSingleLine = false;
+  // Mirrors row layout for RTL languages: icon and label move to the
+  // trailing (right) edge, value/toggle move to the leading (left) edge --
+  // matching BaseTheme::drawList()'s "title right, value left" convention.
+  // Callers must set this themselves (I18N.isRtl()); list() has no built-in
+  // language awareness. Off by default so every existing caller is
+  // unaffected.
+  bool rtl = false;
   // Shrink each row's background/hit area to its label width plus side
   // padding instead of the full rect width (hug-content menu rows).
   bool hugContents = false;
@@ -345,6 +358,12 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
   uint16_t consumedIndexes = 0; // item AND header indexes laid out from top
   bool selectedDrawn = false;
   for (uint16_t i = top; i < props.count; ++i) {
+    // Stop before reading the next window entry. The size/layout work below
+    // dereferences `item`, so checking after it would require callers that
+    // virtualize their data to provide one extra, otherwise out-of-window row.
+    if (drawnRows >= visible || i >= end || i < props.itemsWindowFirst ||
+        (props.itemsWindowCount > 0 && i - props.itemsWindowFirst >= props.itemsWindowCount))
+      break;
     const ListItem &item = props.items[i - props.itemsWindowFirst];
     if (item.isHeader) {
       const int16_t pad = i != top ? props.sectionGap : 0;
@@ -441,8 +460,7 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
     } else if (labelLines > 1) {
       itemH = static_cast<int16_t>(rowH + labelLh * (labelLines - 1));
     }
-    if (static_cast<int16_t>(cursorY + itemH) > rowArea.bottom() ||
-        drawnRows >= visible || i >= end)
+    if (static_cast<int16_t>(cursorY + itemH) > rowArea.bottom())
       break;
     ++drawnRows;
     ++consumedIndexes;
@@ -517,26 +535,41 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
                                    ? props.iconSize
                                    : static_cast<int16_t>(icon.width);
       // Centered on the full row content, not the title band: with a subtitle
-      // the icon belongs to the label+subtitle block as a whole.
+      // the icon belongs to the label+subtitle block as a whole. RTL mirrors
+      // the icon to the row's trailing (right) edge, matching
+      // BaseTheme::drawList's "title anchored right" convention, and shrinks
+      // content from that side instead so the label/value slots below
+      // reflow to the left of it.
+      const int16_t iconX = props.rtl
+          ? static_cast<int16_t>(content.x + content.width - iconSize)
+          : content.x;
       Rect iconRect{
-          content.x,
+          iconX,
           static_cast<int16_t>(content.y + (content.height - iconSize) / 2),
           iconSize, iconSize};
       frame.target().bitmap(iconRect, icon, BitmapMode::Contain,
                             style.foreground);
-      content.x = static_cast<int16_t>(content.x + iconSize + props.textGap);
+      if (!props.rtl)
+        content.x = static_cast<int16_t>(content.x + iconSize + props.textGap);
       content.width =
           static_cast<int16_t>(content.width - iconSize - props.textGap);
       band.x = content.x;
       band.width = content.width;
     }
 
+    // RTL: the value/toggle slot moves to the band's leading (left) edge and
+    // the label fills whatever remains on the trailing (right) edge, next to
+    // the icon -- computed below via labelX once the slot width is known.
+    int16_t labelX = band.x;
     int16_t availW = band.width;
     if (item.toggle) {
       const int16_t togW = props.toggleWidth < 18 ? 18 : props.toggleWidth;
       const int16_t togH = props.toggleHeight < 12 ? 12 : props.toggleHeight;
+      const int16_t togX = props.rtl
+          ? static_cast<int16_t>(band.x + props.valueInset)
+          : static_cast<int16_t>(band.x + band.width - togW - props.valueInset);
       Rect toggleRect{
-          static_cast<int16_t>(band.x + band.width - togW - props.valueInset),
+          togX,
           static_cast<int16_t>(band.y + (band.height - togH) / 2), togW, togH};
       // The switch draws in row-foreground ink with the foreground's opposite
       // as "paper", so it inverts along with the row when selected.
@@ -568,20 +601,25 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
       }
       availW = static_cast<int16_t>(availW - togW - props.valueInset -
                                     props.textGap);
+      if (props.rtl)
+        labelX = static_cast<int16_t>(band.x + band.width - availW);
     } else if (item.value) {
       TextStyle valueStyle =
           textStyleWithForeground(props.valueText, style.foreground);
-      valueStyle.align = TextAlign::Right;
+      valueStyle.align = props.rtl ? TextAlign::Left : TextAlign::Right;
       const int16_t valueW =
           frame.target()
               .measureText(valueStyle.font, item.value, valueStyle)
               .width;
-      Rect valueRect{
-          static_cast<int16_t>(band.x + availW - valueW - props.valueInset),
-          band.y, valueW, band.height};
+      const int16_t valueX = props.rtl
+          ? static_cast<int16_t>(band.x + props.valueInset)
+          : static_cast<int16_t>(band.x + availW - valueW - props.valueInset);
+      Rect valueRect{valueX, band.y, valueW, band.height};
       frame.target().text(valueRect, item.value, valueStyle);
       availW = static_cast<int16_t>(availW - valueW - props.valueInset -
                                     props.textGap);
+      if (props.rtl)
+        labelX = static_cast<int16_t>(band.x + band.width - availW);
     }
 
     if (props.balanceWrappedLabelWithValue && labelStyle.maxLines > 1 && (item.toggle || item.value) && item.label) {
@@ -599,8 +637,10 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
       }
     }
 
+    if (props.rtl && !props.centerSingleLine)
+      labelStyle.align = TextAlign::Right;
     if (item.subtitle) {
-      frame.target().text(Rect{band.x, band.y, availW, band.height}, item.label,
+      frame.target().text(Rect{labelX, band.y, availW, band.height}, item.label,
                           labelStyle);
       frame.target().text(
           Rect{content.x, static_cast<int16_t>(band.y + band.height),
@@ -610,15 +650,20 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
     } else {
       if (props.centerSingleLine)
         labelStyle.align = TextAlign::Center;
-      frame.target().text(Rect{band.x, band.y, availW, band.height}, item.label,
+      frame.target().text(Rect{labelX, band.y, availW, band.height}, item.label,
                           labelStyle);
     }
 
     if (props.selectedIndex == static_cast<int16_t>(i) &&
         props.selectionMarker != SelectionMarker::None) {
       if (props.selectionMarker == SelectionMarker::Underline) {
+        // RTL mirrors which edge carries markerInset's extra gap, matching
+        // the label's own trailing/leading swap above.
+        const int16_t underlineX = props.rtl
+            ? static_cast<int16_t>(row.x + sidePad)
+            : static_cast<int16_t>(row.x + sidePad + props.markerInset);
         frame.target().fill(
-            Rect{static_cast<int16_t>(row.x + sidePad + props.markerInset),
+            Rect{underlineX,
                  static_cast<int16_t>(row.bottom() - props.markerThickness),
                  static_cast<int16_t>(row.width - sidePad * 2 -
                                       props.markerInset),
@@ -654,10 +699,15 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
   if (props.nav)
     props.nav->onListRendered(top, consumedIndexes, selectedDrawn);
 
-  if (props.partialTrailingRow && overflows && visible > 0) {
-    const uint16_t partialIndex = static_cast<uint16_t>(top + visible);
+  if (props.partialTrailingRow && visible > 0) {
+    // First index the loop above did NOT lay out. With wrapped rows fewer
+    // indexes fit than the fixed-height `visible` estimate, so top + visible
+    // would preview an item past the real next one (skipping the rows in
+    // between — pressing Next then selects a different item than previewed).
+    const uint16_t partialIndex = static_cast<uint16_t>(top + consumedIndexes);
     const int16_t remainingH = static_cast<int16_t>(rowArea.bottom() - cursorY);
-    if (partialIndex < props.count &&
+    if (partialIndex < props.count && partialIndex >= props.itemsWindowFirst &&
+        (props.itemsWindowCount == 0 || partialIndex - props.itemsWindowFirst < props.itemsWindowCount) &&
         remainingH >= props.partialTrailingMinHeight) {
       const ListItem &item = props.items[partialIndex - props.itemsWindowFirst];
       if (!item.isHeader && item.label != nullptr && item.label[0] != '\0') {

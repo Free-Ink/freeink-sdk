@@ -307,10 +307,6 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
       bus.cmd(CMD_DTM1);
       for (uint16_t y = 0; y < _tresH; y++) bus.data(whiteRow, wb);
     }
-  } else if (_darkBackground) {
-    // Inverted content uses the target complement even with DU so unchanged dark
-    // background pixels do not park residue.
-    streamPlane(bus, CMD_DTM1, fb, /*invert=*/true);
   }
   // (Ordinary Fast: OLD still holds the previous frame from displayFinish.)
   // A completed ordinary refresh supersedes any pending post-AA transition.
@@ -393,11 +389,26 @@ void Uc8179Driver::skipInitialResync() { _needFullClear = false; }
 void Uc8179Driver::deepSleep(EpdBus& bus) {
   _grayBaseValid = false;
   _absoluteGrayPlanes = false;
-  if (_isScreenOn) {
-    bus.cmd(CMD_POWER_OFF);
-    bus.waitBusy(" 8179 power-down");
-    _isScreenOn = false;
-  }
+  // Always power the panel down before DSLP: re-issuing POF on an already-off
+  // panel is harmless, and guarantees the booster/charge-pump is off even if
+  // _isScreenOn drifted out of sync. PR #3215 holds the X4 Pro master rail
+  // (GPIO1) HIGH through deep sleep, so a biased booster would otherwise keep
+  // drawing mA.
+  //
+  // Wait only when the panel was actually on. This driver's busy polarity is
+  // UcIdleHigh (Uc8179Driver.h), whose waitBusy() has NO millisecond timeout
+  // (EpdBus.cpp:251-267) — issuing the next command while BUSY_N stays LOW can
+  // make the controller discard writes. That is safe here: on the X4 Pro the
+  // panel rail is always powered (display.powerEnable = PIN_UNASSIGNED, so
+  // powerDownRailsForSleep() never gates it), so a panel that was on reads
+  // BUSY HIGH (idle) and POF completes immediately; and the stuck-LOW case
+  // (rail dropped -> BUSY floated LOW) belonged to the PRE-#3215 battery-only
+  // bug, which PR #3215 removed by holding the master rail up. Skipping the
+  // wait on an already-off panel avoids an unbounded busy-poll with no real
+  // work to wait for.
+  bus.cmd(CMD_POWER_OFF);
+  if (_isScreenOn) bus.waitBusy(" 8179 power-down");
+  _isScreenOn = false;
   bus.cmd(CMD_DEEP_SLEEP);
   bus.data(0xA5);
 }

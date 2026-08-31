@@ -2,6 +2,7 @@
 
 // FreeInk — small shared helpers (header-only).
 
+#include <cstdlib>
 #include <stdint.h>
 #include <string.h>
 
@@ -53,9 +54,22 @@ inline int32_t base64Decode(const char* in, size_t inLen, uint8_t* out, size_t o
   return static_cast<int32_t>(n);
 }
 
+// True when a contiguous block of `bytes` is currently allocatable. Used to
+// gate string/vector growth on this path: growth is a throwing allocation,
+// and with -fno-exceptions a failed grow abort()s the firmware.
+inline bool heapProbe(size_t bytes) {
+  void* p = malloc(bytes);
+  if (!p) return false;
+  free(p);
+  return true;
+}
+
 inline std::string base64Decode(const std::string& in) {
   std::string out;
-  out.resize((in.size() * 3) / 4 + 3);
+  const size_t need = (in.size() * 3) / 4 + 3;
+  // Empty on OOM: every caller treats an empty decode as a failed field.
+  if (!heapProbe(need + 64)) return out;
+  out.resize(need);
   const int32_t n = base64Decode(in.data(), in.size(), reinterpret_cast<uint8_t*>(out.data()), out.size());
   if (n < 0) return std::string();
   out.resize(static_cast<size_t>(n));

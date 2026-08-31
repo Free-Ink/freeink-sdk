@@ -205,9 +205,16 @@ class DisplayTarget final : public DrawTarget {
   void text(const Rect rect, const char* text, const TextStyle style) override {
     if (!text || rect.empty()) return;
     const BitmapFont& f = fontFor(style.font);
-    const bool ink = !style.inverted && style.color != Color::White;
+    // A solid foreground (the common case) maps to a 1-bit ink/paper pair; a
+    // dithered foreground (e.g. a disabled row's dither(LightGray)) keeps its
+    // gray level so plot() dithers it through the Bayer matrix instead of
+    // collapsing to solid black. inverted flips solid colors; a gray stays gray.
+    const Color inkColor = style.inverted && style.color != Color::Transparent
+                               ? invertedColor(style.color)
+                               : style.color;
+    const bool ink = inkColor == Color::Black;
     layoutText(*this, rect, text, style, [&](const char* line, const Rect lineRect) {
-      drawRun(f, line, lineRect.x, static_cast<int16_t>(lineRect.y + f.ascent), ink);
+      drawRun(f, line, lineRect.x, static_cast<int16_t>(lineRect.y + f.ascent), ink, inkColor);
     });
   }
 
@@ -388,10 +395,16 @@ class DisplayTarget final : public DrawTarget {
   }
 
   void drawGlyph(const BitmapFont& f, const FontGlyph& g, const int16_t penX, const int16_t baseline,
-                 const bool ink) {
-    const Color color = ink ? Color::Black : Color::White;
+                 const bool ink, const Color inkColor = Color::Black) {
+    // Solid colors keep the legacy 1-bit ink/paper pair; a dithered foreground
+    // (e.g. a disabled row's dither(LightGray)) renders in that gray level via
+    // plot()'s inkForColor() dither. The coverage test below is unchanged so
+    // solid text stays pixel-identical to before.
+    const Color color = (inkColor == Color::Black || inkColor == Color::White)
+                            ? (ink ? Color::Black : Color::White)
+                            : inkColor;
     if (f.bpp == 4) {
-      // Anti-aliased glyph: 4-bit coverage per pixel, thresholded against the
+      // Anti-liased glyph: 4-bit coverage per pixel, thresholded against the
       // Bayer matrix so edge coverage becomes an ordered dither on the 1-bit
       // panel. Coverage 15 always plots (a plain a > bayer would drop 1 in 16
       // interior pixels); coverage 0 never does, leaving the background as-is.
@@ -419,31 +432,34 @@ class DisplayTarget final : public DrawTarget {
     }
   }
 
-  void drawRun(const BitmapFont& f, const char* s, int16_t penX, const int16_t baseline, const bool ink) {
+  void drawRun(const BitmapFont& f, const char* s, int16_t penX, const int16_t baseline,
+               const bool ink, const Color inkColor = Color::Black) {
     while (*s) {
       uint32_t cp;
       s += decodeUtf8(s, cp);
       if (cp == 0x2026) {
         const FontGlyph* dot = glyphFor(f, '.');
-        if (dot) for (int i = 0; i < 3; ++i) { drawGlyph(f, *dot, penX, baseline, ink); penX += dot->xAdvance; }
+        if (dot) for (int i = 0; i < 3; ++i) { drawGlyph(f, *dot, penX, baseline, ink, inkColor); penX += dot->xAdvance; }
         continue;
       }
       const FontGlyph* g = glyphFor(f, cp);
-      if (g) { drawGlyph(f, *g, penX, baseline, ink); penX = static_cast<int16_t>(penX + g->xAdvance); }
+      if (g) { drawGlyph(f, *g, penX, baseline, ink, inkColor); penX = static_cast<int16_t>(penX + g->xAdvance); }
       else if (fallback_ != nullptr) {
         RuntimeGlyphSource::Glyph rg;
         if (fallback_->glyph(cp, f.yAdvance, &rg)) {
-          const Color color = ink ? Color::Black : Color::White;
-          for (uint16_t gy = 0; gy < rg.height; ++gy) {
-            const uint8_t* row = rg.coverage + static_cast<uint32_t>(gy) * rg.width;
-            for (uint16_t gx = 0; gx < rg.width; ++gx) {
-              const uint8_t a = row[gx];
-              if (a == 0) continue;
-              const int16_t px = static_cast<int16_t>(penX + rg.xoff + gx);
-              const int16_t py = static_cast<int16_t>(baseline + rg.yoff + gy);
-              if (a >= 240 || (a >> 4) > bayerAt(px, py)) plot(px, py, color);
-            }
-          }
+          const Color color = (inkColor == Color::Black || inkColor == Color::White)
+                            ? (ink ? Color::Black : Color::White)
+                            : inkColor;
+           for (uint16_t gy = 0; gy < rg.height; ++gy) {
+             const uint8_t* row = rg.coverage + static_cast<uint32_t>(gy) * rg.width;
+             for (uint16_t gx = 0; gx < rg.width; ++gx) {
+               const uint8_t a = row[gx];
+               if (a == 0) continue;
+               const int16_t px = static_cast<int16_t>(penX + rg.xoff + gx);
+               const int16_t py = static_cast<int16_t>(baseline + rg.yoff + gy);
+               if (a >= 240 || (a >> 4) > bayerAt(px, py)) plot(px, py, color);
+             }
+           }
           penX = static_cast<int16_t>(penX + rg.advance);
         } else {
           drawMissingGlyph(f, penX, baseline, ink);

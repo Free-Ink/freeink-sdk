@@ -114,6 +114,9 @@ void writeManifest(const char* path) {
       "    {\"component\": \"button\", \"category\": \"controls\", \"file\": \"freeinkui-components/button.svg\"},\n"
       "    {\"component\": \"checkbox\", \"category\": \"controls\", \"file\": \"freeinkui-components/checkbox.svg\"},\n"
       "    {\"component\": \"slider\", \"category\": \"controls\", \"file\": \"freeinkui-components/slider.svg\"},\n"
+      "    {\"component\": \"capsuleSlider\", \"category\": \"controls\", \"file\": \"freeinkui-components/capsule-slider.svg\"},\n"
+      "    {\"component\": \"sliderRow\", \"category\": \"controls\", \"file\": \"freeinkui-components/slider-row.svg\"},\n"
+      "    {\"component\": \"tileGrid\", \"category\": \"controls\", \"file\": \"freeinkui-components/tile-grid.svg\"},\n"
       "    {\"component\": \"settingRow\", \"category\": \"settings\", \"file\": \"freeinkui-components/setting-row.svg\"},\n"
       "    {\"component\": \"toggleRow\", \"category\": \"settings\", \"file\": \"freeinkui-components/toggle-row.svg\"},\n"
       "    {\"component\": \"stepperRow\", \"category\": \"settings\", \"file\": \"freeinkui-components/stepper-row.svg\"},\n"
@@ -140,7 +143,8 @@ void writeManifest(const char* path) {
       "    {\"component\": \"optionDialog\", \"category\": \"overlays\", \"file\": \"freeinkui-components/option-dialog.svg\"},\n"
       "    {\"component\": \"messagePanel\", \"category\": \"overlays\", \"file\": \"freeinkui-components/message-panel.svg\"},\n"
       "    {\"component\": \"toast\", \"category\": \"overlays\", \"file\": \"freeinkui-components/toast.svg\"},\n"
-      "    {\"component\": \"popup\", \"category\": \"overlays\", \"file\": \"freeinkui-components/popup.svg\"}\n"
+      "    {\"component\": \"popup\", \"category\": \"overlays\", \"file\": \"freeinkui-components/popup.svg\"},\n"
+      "    {\"component\": \"sheet\", \"category\": \"overlays\", \"file\": \"freeinkui-components/sheet.svg\"}\n"
       "  ]\n"
       "}\n";
 }
@@ -231,6 +235,54 @@ void renderPalette(const std::string& dir) {
     props.action = 1;
     props.radius = 2;
     slider(frame, Rect{rect.x, static_cast<int16_t>(rect.y + 30), rect.width, 34}, props);
+  });
+
+  renderComponent(dir, "capsule-slider.svg", "capsuleSlider", [](auto& frame, Rect rect) {
+    CapsuleSliderProps props;
+    props.value = 62;
+    props.max = 100;
+    props.action = 1;
+    capsuleSlider(frame, Rect{rect.x, static_cast<int16_t>(rect.y + 26), rect.width, 44}, props);
+  });
+
+  renderComponent(dir, "slider-row.svg", "sliderRow", [](auto& frame, Rect rect) {
+    SliderRowProps props;
+    props.label = "Brightness";
+    props.value = "62%";
+    props.sliderValue = 62;
+    props.sliderAction = 1;
+    props.decrement = 2;
+    props.increment = 2;
+    props.toggleAction = 3;
+    props.labelText = text();
+    props.labelText.bold = true;
+    props.buttonText = text(0, TextAlign::Center);
+    props.buttonText.bold = true;
+    props.buttonRadius = 12;
+    sliderRow(frame, Rect{rect.x, static_cast<int16_t>(rect.y + 14), rect.width, 84}, props);
+  });
+
+  renderComponent(dir, "tile-grid.svg", "tileGrid", [](auto& frame, Rect rect) {
+    TileGridItem items[2];
+    items[0].label = "Night mode";
+    items[0].value = 0;
+    items[0].state = StateChecked;
+    items[1].label = "Refresh";
+    items[1].value = 1;
+    TileGridProps props;
+    props.items = items;
+    props.count = 2;
+    props.action = 1;
+    props.tileHeight = 64;
+    props.radius = 12;
+    props.text = text(0, TextAlign::Center);
+    tileGrid(frame, Rect{rect.x, static_cast<int16_t>(rect.y + 22), rect.width, 64}, props);
+  });
+
+  renderComponent(dir, "sheet.svg", "sheet", [](auto& frame, Rect rect) {
+    SheetProps props;
+    props.grabberInset = 10;
+    sheet(frame, Rect{rect.x, rect.y, rect.width, 100}, props);
   });
 
   renderComponent(dir, "stepper-row.svg", "stepperRow", [](auto& frame, Rect rect) {

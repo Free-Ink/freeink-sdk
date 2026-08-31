@@ -11,6 +11,7 @@
 #include <cstring>
 
 extern "C" bool tud_mounted(void);
+extern "C" bool tud_disconnect(void);
 
 namespace freeink {
 namespace {
@@ -166,11 +167,15 @@ void UsbMassStorage::end() {
 UsbMassStorageState UsbMassStorage::state() const {
   if (!_active) return UsbMassStorageState::Idle;
   const auto current = _state.load();
-  if (current == UsbMassStorageState::Ejected || current == UsbMassStorageState::IoError) return current;
+  if (current == UsbMassStorageState::Ejected) return current;
 
   if (!tud_mounted()) {
     return _hostSeen.load() ? UsbMassStorageState::Disconnected : UsbMassStorageState::WaitingForHost;
   }
+
+  // Keep the error visible while the host is mounted, but report a later cable
+  // removal so the application can safely reclaim its raw storage session.
+  if (current == UsbMassStorageState::IoError) return current;
 
   _hostSeen.store(true);
   auto expected = UsbMassStorageState::WaitingForHost;
@@ -183,6 +188,8 @@ bool UsbMassStorage::hostConnected() const {
   return current == UsbMassStorageState::Connected || current == UsbMassStorageState::Accessed;
 }
 
+bool UsbMassStorage::disconnectHost() const { return _active && tud_disconnect(); }
+
 void UsbMassStorage::markAccessed() const {
   auto current = _state.load();
   while (current != UsbMassStorageState::Ejected && current != UsbMassStorageState::IoError) {
@@ -192,7 +199,10 @@ void UsbMassStorage::markAccessed() const {
 
 void UsbMassStorage::markEjected() const { _state.store(UsbMassStorageState::Ejected); }
 
-void UsbMassStorage::markIoError() const { _state.store(UsbMassStorageState::IoError); }
+void UsbMassStorage::markIoError() const {
+  _hostSeen.store(true);
+  _state.store(UsbMassStorageState::IoError);
+}
 
 }  // namespace freeink
 

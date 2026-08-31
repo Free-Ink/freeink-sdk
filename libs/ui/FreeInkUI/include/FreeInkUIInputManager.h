@@ -27,10 +27,9 @@ struct ButtonBindings {
 };
 
 // Call after InputManager::update(). This adapter carries single-contact UI
-// edges only. InputManager also exposes panel-native 2-4 contact translation
-// endpoints and their contact count; applications that use them should map
-// their direction and route them before this adapter's normal single-touch
-// fallback.
+// edges only. InputManager also exposes completed panel-native 2-4 contact
+// translations and two-contact rotations; applications that use them should
+// route those gestures before this adapter's normal single-touch fallback.
 inline InputSnapshot snapshotFrom(const InputManager& input, const ButtonBindings& bindings = ButtonBindings{}) {
   InputSnapshot snapshot;
   snapshot.focusPrev = input.wasPressed(bindings.focusPrev);

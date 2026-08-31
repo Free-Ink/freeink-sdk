@@ -139,6 +139,22 @@ void Ed2208M5Driver::writeFrame(EpdBus& bus, const uint8_t* fb) {
 #endif
   uint8_t packedRow[PANEL_WIDTH / 2];
 
+  // Accent recoloring rides complete waveforms only: an interrupted refresh
+  // cuts long before the color pigments settle, so there accented pixels stay
+  // plain ink and the accents show up when the standing image is rendered.
+  // Compact the active slots so the per-pixel loop only touches real planes.
+  const uint8_t* accents[MAX_ACCENT_PLANES];
+  uint8_t accentCodes[MAX_ACCENT_PLANES];
+  uint8_t accentCount = 0;
+  if (_completeNextRefresh) {
+    for (uint8_t s = 0; s < MAX_ACCENT_PLANES; ++s) {
+      if (_accentPlanes[s] == nullptr) continue;
+      accents[accentCount] = _accentPlanes[s];
+      accentCodes[accentCount] = _accentColors[s];
+      ++accentCount;
+    }
+  }
+
   bus.beginTxn();
   bus.rawCmd(0x10);
   for (uint16_t panelY = 0; panelY < PANEL_HEIGHT; ++panelY) {
@@ -154,8 +170,25 @@ void Ed2208M5Driver::writeFrame(EpdBus& bus, const uint8_t* fb) {
       const uint32_t rightOffset = static_cast<uint32_t>(rightLogicalY) * LOGICAL_WB;
       const bool rightWhite = (fb[rightOffset + (rightLogicalX >> 3)] >> (7 - (rightLogicalX & 7))) & 0x01;
 
-      packedRow[panelX >> 1] = static_cast<uint8_t>(((leftWhite ? EPD_WHITE : EPD_BLACK) << 4) |
-                                                    (rightWhite ? EPD_WHITE : EPD_BLACK));
+      uint8_t leftCode = leftWhite ? EPD_WHITE : EPD_BLACK;
+      uint8_t rightCode = rightWhite ? EPD_WHITE : EPD_BLACK;
+      if (!leftWhite) {
+        for (uint8_t s = 0; s < accentCount; ++s) {
+          if ((accents[s][leftOffset + (leftLogicalX >> 3)] >> (7 - (leftLogicalX & 7))) & 0x01) {
+            leftCode = accentCodes[s];
+            break;
+          }
+        }
+      }
+      if (!rightWhite) {
+        for (uint8_t s = 0; s < accentCount; ++s) {
+          if ((accents[s][rightOffset + (rightLogicalX >> 3)] >> (7 - (rightLogicalX & 7))) & 0x01) {
+            rightCode = accentCodes[s];
+            break;
+          }
+        }
+      }
+      packedRow[panelX >> 1] = static_cast<uint8_t>((leftCode << 4) | rightCode);
     }
     bus.rawWriteBytes(packedRow, sizeof(packedRow));
   }
@@ -321,6 +354,11 @@ void Ed2208M5Driver::refresh(EpdBus& bus, uint16_t dirtyX, uint16_t dirtyY, uint
 
 void Ed2208M5Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
   if (!fb) return;
+
+  // Standing-image policy: promote Full to the complete OTP waveform. Set
+  // before writeFrame so the per-frame polarity pick (dark hack) and the
+  // accent plane both see it; refresh() consumes the flag as usual.
+  if (_fullCompletes && mode == RefreshMode::Full) _completeNextRefresh = true;
 
   uint16_t dirtyX = 0, dirtyY = 0, dirtyW = PANEL_WIDTH, dirtyH = PANEL_HEIGHT;
   const bool forceFullPanelRefresh = (mode == RefreshMode::Full);

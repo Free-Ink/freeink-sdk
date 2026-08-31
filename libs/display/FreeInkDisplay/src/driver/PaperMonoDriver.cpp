@@ -12,6 +12,10 @@ namespace {
 constexpr uint8_t CMD_SOFT_RESET = 0x12;
 constexpr uint8_t CMD_WRITE_NEW = 0x24;
 constexpr uint8_t CMD_WRITE_OLD = 0x26;
+constexpr uint8_t CMD_SET_RAM_X_RANGE = 0x44;
+constexpr uint8_t CMD_SET_RAM_Y_RANGE = 0x45;
+constexpr uint8_t CMD_SET_RAM_X_COUNTER = 0x4E;
+constexpr uint8_t CMD_SET_RAM_Y_COUNTER = 0x4F;
 constexpr uint16_t WIDTH = 800;
 constexpr uint16_t HEIGHT = 480;
 constexpr uint16_t WIDTH_BYTES = WIDTH / 8;
@@ -194,6 +198,7 @@ void PaperMonoDriver::begin(EpdBus& bus) {
   _displayWorkGeneration = 0;
   _controllerPowered = false;
   _lutState = LutState::Unknown;
+  _windowBaselineValid = false;
   resetGray();
 }
 
@@ -202,6 +207,7 @@ void PaperMonoDriver::initController(EpdBus& bus) {
   bus.waitBusy("PaperMono reset");
   _controllerPowered = false;
   _lutState = LutState::Unknown;
+  _windowBaselineValid = false;
 
   bus.cmd(0x18);
   bus.data(0x80);
@@ -222,14 +228,14 @@ void PaperMonoDriver::initController(EpdBus& bus) {
   // raster transform; X+/Y+ adds a visible left/right mirror on this hardware.
   bus.data(0x02);
 
-  bus.cmd(0x44);
+  bus.cmd(CMD_SET_RAM_X_RANGE);
   const uint16_t xStart = WIDTH - 1;
   const uint16_t xEnd = 0;
   bus.data(static_cast<uint8_t>(xStart & 0xFF));
   bus.data(static_cast<uint8_t>(xStart >> 8));
   bus.data(static_cast<uint8_t>(xEnd & 0xFF));
   bus.data(static_cast<uint8_t>(xEnd >> 8));
-  bus.cmd(0x45);
+  bus.cmd(CMD_SET_RAM_Y_RANGE);
   bus.data(0x00);
   bus.data(0x00);
   bus.data(static_cast<uint8_t>((HEIGHT - 1) & 0xFF));
@@ -243,12 +249,41 @@ void PaperMonoDriver::initController(EpdBus& bus) {
   _initialized = true;
 }
 
-void PaperMonoDriver::resetRamCounter(EpdBus& bus) {
-  const uint16_t xStart = WIDTH - 1;
-  bus.cmd(0x4E);
+void PaperMonoDriver::setRamWindow(EpdBus& bus, uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
+  // Paper Mono uses X-/Y+ data entry. Reversing each source row already
+  // aligns framebuffer X with controller X; mirroring the RAM X range again
+  // moves the driven rectangle to WIDTH-x-w. Only Y needs the mount flip.
+  const uint16_t xStart = static_cast<uint16_t>(x + w - 1);
+  const uint16_t xEnd = x;
+  const uint16_t yStart = static_cast<uint16_t>(HEIGHT - y - h);
+  const uint16_t yEnd = static_cast<uint16_t>(HEIGHT - 1 - y);
+
+  bus.cmd(CMD_SET_RAM_X_RANGE);
   bus.data(static_cast<uint8_t>(xStart & 0xFF));
   bus.data(static_cast<uint8_t>(xStart >> 8));
-  bus.cmd(0x4F);
+  bus.data(static_cast<uint8_t>(xEnd & 0xFF));
+  bus.data(static_cast<uint8_t>(xEnd >> 8));
+  bus.cmd(CMD_SET_RAM_Y_RANGE);
+  bus.data(static_cast<uint8_t>(yStart & 0xFF));
+  bus.data(static_cast<uint8_t>(yStart >> 8));
+  bus.data(static_cast<uint8_t>(yEnd & 0xFF));
+  bus.data(static_cast<uint8_t>(yEnd >> 8));
+  bus.cmd(CMD_SET_RAM_X_COUNTER);
+  bus.data(static_cast<uint8_t>(xStart & 0xFF));
+  bus.data(static_cast<uint8_t>(xStart >> 8));
+  bus.cmd(CMD_SET_RAM_Y_COUNTER);
+  bus.data(static_cast<uint8_t>(yStart & 0xFF));
+  bus.data(static_cast<uint8_t>(yStart >> 8));
+}
+
+void PaperMonoDriver::restoreFullRamWindow(EpdBus& bus) { setRamWindow(bus, 0, 0, WIDTH, HEIGHT); }
+
+void PaperMonoDriver::resetRamCounter(EpdBus& bus) {
+  const uint16_t xStart = WIDTH - 1;
+  bus.cmd(CMD_SET_RAM_X_COUNTER);
+  bus.data(static_cast<uint8_t>(xStart & 0xFF));
+  bus.data(static_cast<uint8_t>(xStart >> 8));
+  bus.cmd(CMD_SET_RAM_Y_COUNTER);
   bus.data(0x00);
   bus.data(0x00);
 }
@@ -276,7 +311,36 @@ void PaperMonoDriver::writePlane(EpdBus& bus, uint8_t command, const uint8_t* da
   bus.endTxn();
 }
 
+void PaperMonoDriver::writePlaneWindow(EpdBus& bus, uint8_t command, const uint8_t* data, uint16_t x, uint16_t y,
+                                       uint16_t w, uint16_t h) {
+  if (!data) return;
+  setRamWindow(bus, x, y, w, h);
+  const uint16_t firstByte = x / 8;
+  const uint16_t widthBytes = w / 8;
+  uint16_t staged = 0;
+
+  bus.cmd(command);
+  bus.beginTxn();
+  for (uint16_t rowOffset = 0; rowOffset < h; ++rowOffset) {
+    const uint16_t sourceY = static_cast<uint16_t>(y + h - 1 - rowOffset);
+    const uint32_t rowBase = static_cast<uint32_t>(sourceY) * WIDTH_BYTES;
+    for (uint16_t byteOffset = 0; byteOffset < widthBytes; ++byteOffset) {
+      const uint16_t sourceByte = static_cast<uint16_t>(firstByte + widthBytes - 1 - byteOffset);
+      ROTATE_CHUNK[staged++] = REVERSE_BITS_LUT[data[rowBase + sourceByte]];
+      if (staged == ROTATE_CHUNK_BYTES) {
+        bus.rawWriteBytes(ROTATE_CHUNK, staged);
+        staged = 0;
+      }
+    }
+  }
+  if (staged > 0) bus.rawWriteBytes(ROTATE_CHUNK, staged);
+  bus.endTxn();
+}
+
 void PaperMonoDriver::activate(EpdBus& bus, uint8_t control) {
+  // An activation may swap or consume the controller plane roles. A future
+  // window update must not trust them until they are explicitly re-seeded.
+  _windowBaselineValid = false;
   bus.cmd(0x22);
   bus.data(control);
   bus.cmd(0x20);
@@ -740,6 +804,71 @@ void PaperMonoDriver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* pre
   if (!_preparingGray) commitPending(bus, false);
 }
 
+void PaperMonoDriver::displayWindow(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, uint16_t x, uint16_t y,
+                                    uint16_t w, uint16_t h, bool turnOff) {
+  (void)prev;
+  if (!fb || w == 0 || h == 0 || x + w > WIDTH || y + h > HEIGHT || x % 8 != 0 || w % 8 != 0) return;
+  if (!_initialized) {
+    bus.reset();
+    initController(bus);
+  }
+  if (!allocateBuffers()) return;
+
+  const bool rotate180 = BoardConfig::ACTIVE.orientation.mirrorX && BoardConfig::ACTIVE.orientation.mirrorY;
+  if (!rotate180 || _needsFull || !_lastBwValid || _panelHasGray || _grayLsbReady || _grayMsbReady) {
+    display(bus, fb, prev, RefreshMode::Fast, turnOff);
+    return;
+  }
+
+  const uint16_t firstByte = x / 8;
+  const uint16_t widthBytes = w / 8;
+  bool changed = false;
+  for (uint16_t row = 0; row < h && !changed; ++row) {
+    const uint32_t offset = static_cast<uint32_t>(y + row) * WIDTH_BYTES + firstByte;
+    changed = memcmp(fb + offset, _lastBw + offset, widthBytes) != 0;
+  }
+  if (!changed) return;
+
+  // A normal Paper Mono activation does not preserve trustworthy NEW/OLD
+  // plane roles. Seed both full planes once before the first window update;
+  // subsequent window activations re-seed just their rectangle below.
+  if (!_windowBaselineValid) {
+    restoreFullRamWindow(bus);
+    writePlane(bus, CMD_WRITE_NEW, _lastBw);
+    writePlane(bus, CMD_WRITE_OLD, _lastBw);
+    _windowBaselineValid = true;
+  }
+
+  writePlaneWindow(bus, CMD_WRITE_NEW, fb, x, y, w, h);
+  writePlaneWindow(bus, CMD_WRITE_OLD, _lastBw, x, y, w, h);
+  activateOtp(bus);
+
+  // Commit only the addressed rectangle to the host glass model and previous
+  // target. Window-external pixels were represented by equal NEW/OLD planes
+  // and therefore remained idle during the OTP differential waveform.
+  for (uint16_t row = 0; row < h; ++row) {
+    const uint32_t offset = static_cast<uint32_t>(y + row) * WIDTH_BYTES + firstByte;
+    for (uint16_t byte = 0; byte < widthBytes; ++byte) {
+      const uint32_t index = offset + byte;
+      const uint8_t black = static_cast<uint8_t>(~fb[index]);
+      _glassNonWhite[index] = black;
+      _glassBlack[index] = black;
+      _lastBw[index] = fb[index];
+    }
+  }
+
+  // Re-establish equal plane contents for the updated rectangle. This makes
+  // the next window activation neutral outside its own changed pixels.
+  writePlaneWindow(bus, CMD_WRITE_NEW, fb, x, y, w, h);
+  writePlaneWindow(bus, CMD_WRITE_OLD, fb, x, y, w, h);
+  restoreFullRamWindow(bus);
+  _windowBaselineValid = true;
+  _panelHasGray = false;
+  _displayCommitted = true;
+
+  if (turnOff) powerOffController(bus);
+}
+
 bool PaperMonoDriver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
   display(bus, fb, prev, mode, turnOff);
   return false;
@@ -942,6 +1071,7 @@ void PaperMonoDriver::controllerIdle(EpdBus& bus) {
   delay(2);
   _initialized = false;
   _controllerPowered = false;
+  _windowBaselineValid = false;
 }
 
 void PaperMonoDriver::setGrayParams(const PaperMonoGrayParams& params) {
@@ -1004,6 +1134,7 @@ void PaperMonoDriver::deepSleep(EpdBus& bus) {
   _initialized = false;
   _needsFull = true;
   _lastBwValid = false;
+  _windowBaselineValid = false;
   resetGray();
 }
 

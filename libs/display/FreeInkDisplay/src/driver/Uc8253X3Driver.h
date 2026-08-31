@@ -74,10 +74,6 @@ class Uc8253X3Driver : public PanelDriver {
 
   void requestResync(uint8_t settlePasses) override;
   void skipInitialResync() override;
-  // Inverted (dark-background) content: fast refreshes rewrite DTM1 ("old")
-  // as the complement of the target so every pixel is re-driven toward its
-  // target each update. See displayStart().
-  void setBackgroundHint(bool darkBackground) override { _darkBackground = darkBackground; }
 
  private:
   void initController(EpdBus& bus);
@@ -95,7 +91,6 @@ class Uc8253X3Driver : public PanelDriver {
   bool _isScreenOn = false;
   bool _redRamSynced = false;
   bool _inGrayscaleMode = false;
-  bool _darkBackground = false;
   uint8_t _initialFullSyncsRemaining = 0;
   bool _forceFullSyncNext = false;
   uint8_t _forcedConditionPassesNext = 0;

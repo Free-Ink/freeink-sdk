@@ -18,6 +18,11 @@ std::string trim(const std::string& s) {
 }  // namespace
 
 bool parseRightsXml(const std::string& xml, Rights* out) {
+  // Upfront heap gate for the parse below: the scanner and field extraction
+  // materialize substrings proportional to the document (throwing allocations;
+  // -fno-exceptions turns a failed grow into abort()). One probe here fails
+  // the parse readably instead of aborting mid-extraction on a tight heap.
+  if (!heapProbe(xml.size() + 4096)) return false;
   XmlScanner scanner(xml);
   std::string lastElement;
   bool inDisplay = false;

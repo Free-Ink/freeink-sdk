@@ -35,6 +35,9 @@ class UsbMassStorage {
   bool active() const { return _active; }
   UsbMassStorageState state() const;
   bool hostConnected() const;
+  // Soft-disconnect the USB device from the host. Call from application/task
+  // context, never from an MSC callback; end() still owns final teardown.
+  bool disconnectHost() const;
 
   // Called by the TinyUSB callbacks to publish the most recent host event.
   void markAccessed() const;
@@ -60,6 +63,7 @@ class UsbMassStorage {
   bool active() const { return false; }
   UsbMassStorageState state() const { return UsbMassStorageState::Idle; }
   bool hostConnected() const { return false; }
+  bool disconnectHost() const { return false; }
 };
 }  // namespace freeink
 

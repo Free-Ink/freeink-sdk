@@ -156,6 +156,12 @@ class InputManager {
   // contact centroids, normalized to 0..1. Pinches and sub-threshold turns are
   // rejected, and an accepted rotation cannot also become a translation.
   bool wasMultiTouchRotation(float& degrees, float& nxCenter, float& nyCenter, unsigned long& durationMs) const;
+  // One-shot two-contact pinch/spread on release. `scale` is end separation
+  // divided by start separation (<1.0 = pinch in / zoom out, >1.0 = spread /
+  // zoom in). The center is the average of the start/end contact centroids,
+  // normalized to 0..1. Rotations, tiny scale changes, and ambiguous contacts
+  // are rejected, and an accepted pinch cannot also become a translation.
+  bool wasMultiTouchPinch(float& scale, float& nxCenter, float& nyCenter, unsigned long& durationMs) const;
   // One-shot long-press: fires WHILE the finger is still down, once a
   // stationary contact (within tap slop) has been held TOUCH_LONG_PRESS_MS.
   // Position is the touch-down point, normalized like wasTouchTap. Fires at
@@ -241,6 +247,10 @@ class InputManager {
   // wasMultiTouchRotation().
   bool popMultiTouchRotation(float& degrees, float& nxCenter, float& nyCenter, unsigned long& durationMs);
 
+  // Pop a queued completed two-contact pinch/spread. Values use the same scale,
+  // normalized center, and duration contract as wasMultiTouchPinch().
+  bool popMultiTouchPinch(float& scale, float& nxCenter, float& nyCenter, unsigned long& durationMs);
+
   // --- Diagnostics -----------------------------------------------------------
   // A live sample of one button-group ADC pin: the raw reading plus the BTN_*
   // it currently classifies as (-1 = no band matched). On the Xteink ADC ladder
@@ -282,6 +292,13 @@ class InputManager {
     uint16_t durationMs;
   };
   QueueHandle_t _asyncMultiTouchRotationQueue = nullptr;
+  struct QueuedMultiTouchPinch {
+    float scale;
+    uint16_t centerX;
+    uint16_t centerY;
+    uint16_t durationMs;
+  };
+  QueueHandle_t _asyncMultiTouchPinchQueue = nullptr;
   TaskHandle_t _asyncTask = nullptr;
   uint32_t _asyncPollMs = 15;
   static void asyncTaskTrampoline(void* self);
@@ -341,6 +358,7 @@ class InputManager {
   bool hasEligibleRotationScale() const;
   bool isMultiTouchTranslation(unsigned long now) const;
   bool classifyMultiTouchRotation(unsigned long now);
+  bool classifyMultiTouchPinch(unsigned long now);
   void normalizeTouchPoint(uint16_t x, uint16_t y, float& nx, float& ny) const;
 
   uint8_t currentState;
@@ -397,6 +415,11 @@ class InputManager {
   uint16_t multiTouchRotationCenterX = 0;
   uint16_t multiTouchRotationCenterY = 0;
   uint16_t multiTouchRotationDurationMs = 0;
+  bool multiTouchPinchEvent = false;
+  float multiTouchPinchScale = 1.0f;
+  uint16_t multiTouchPinchCenterX = 0;
+  uint16_t multiTouchPinchCenterY = 0;
+  uint16_t multiTouchPinchDurationMs = 0;
   TouchPoint touchDownPoint = {false, 0, 0, 0};  // first sample of the current contact (tap routing)
   TouchPoint touchUpPoint = {false, 0, 0, 0};    // last sample before release (swipe routing)
   unsigned long lastTouchHeldDurationMs = 0;     // contact duration, latched at release

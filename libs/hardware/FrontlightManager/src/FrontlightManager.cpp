@@ -8,6 +8,7 @@
 #ifdef FREEINK_FRONTLIGHT_LS
 #include <driver/gpio.h>
 #include <driver/ledc.h>
+#include <soc/clk_tree_defs.h>
 // esp_sleep_sub_mode_config lives in a private IDF header (no public API exists
 // for balancing the refcounted RC_FAST keep-on the LEDC driver takes for
 // KEEP_ALIVE channels — the driver manages it through this same header). Pinned
@@ -85,12 +86,38 @@ uint32_t physicalDuty(uint32_t logicalDuty, uint32_t full, bool activeHigh) {
 // sleep current), mark the
 // channels KEEP_ALIVE, and disable the GPIO sleep-isolation override on the
 // output pins (a documented gotcha: sleep entry reconfigures the pad and kills
-// the PWM even when the clock survives). RC_FAST at 10 kHz supports up to
-// 10-bit resolution (17.5 MHz / 10 kHz = 1750 >= 1024), so the board profiles'
-// full duty range — including setBrightnessLevel's level-1 minimum step — stays
-// expressible. Uses the IDF driver directly (fixed LEDC_TIMER_0 + the channel
-// ids below) because the Arduino helpers don't expose sleep_mode; safe here
-// because frontlight boards using this flag have no other LEDC consumer.
+// the PWM even when the clock survives).
+// Uses the IDF driver directly (fixed LEDC_TIMER_0 + the channel ids below)
+// because the Arduino helpers don't expose sleep_mode; safe here because
+// frontlight boards using this flag have no other LEDC consumer.
+//
+// RC_FAST also bounds which (frequency, resolution) pairs exist at all. LEDC
+// forms its divisor as (clk << 8) / (freq * 2^bits) and rejects any result at
+// or below 255 (LEDC_IS_DIV_INVALID), so a pair is achievable exactly while
+// freq * 2^bits stays within the clock. Miss it and ledc_timer_config()
+// returns ESP_FAIL, attachChannel() below leaves the channels unattached, and
+// the frontlight cannot be turned on AT ALL: no crash, no failed build, every
+// UI control still moving and the sun icon still toggling. That shipped on the
+// X4 Pro in v1.11.1, when an upstream profile edit took its frequency from
+// 10 kHz to 25 kHz and 25 kHz * 1024 = 25.6 MHz stopped fitting in 17.5 MHz.
+// Hardware is the worst place to find this, so the build refuses the pair.
+constexpr bool fitsRcFast(const uint32_t freq, const uint8_t bits) {
+  // <= is the conservative form: equality yields divisor 256, one above the
+  // reject threshold. The true boundary is 256/255 higher, and the driver
+  // divides by a CALIBRATED RC_FAST that drifts from this nominal figure, so
+  // the extra 0.4% is not worth claiming.
+  return (static_cast<uint64_t>(freq) << bits) <= SOC_CLK_RC_FAST_FREQ_APPROX;
+}
+// Scoped to the profile this build ships, and only when it drives LEDC pins: a
+// PMIC frontlight (viaPm1Pwm) and a board with none never reach the timer.
+static_assert(BoardConfig::DEFAULT_DEVICE.frontlight.gpio == BoardConfig::PIN_UNASSIGNED ||
+                  BoardConfig::DEFAULT_DEVICE.frontlight.viaPm1Pwm ||
+                  fitsRcFast(BoardConfig::DEFAULT_DEVICE.frontlight.pwmFrequency,
+                             BoardConfig::DEFAULT_DEVICE.frontlight.pwmResolutionBits),
+              "FREEINK_FRONTLIGHT_LS: this board's frontlight pwmFrequency * 2^pwmResolutionBits "
+              "exceeds RC_FAST, so LEDC cannot attach the channels and the light would never turn "
+              "on. Lower the frequency or the resolution in its BoardConfig profile.");
+
 bool attachChannel(int8_t gpio, uint8_t ch, uint32_t freq, uint8_t bits) {
   ledc_timer_config_t timer = {};
   timer.speed_mode = LEDC_LOW_SPEED_MODE;
@@ -99,8 +126,12 @@ bool attachChannel(int8_t gpio, uint8_t ch, uint32_t freq, uint8_t bits) {
   timer.freq_hz = freq;
   timer.clk_cfg = LEDC_USE_RC_FAST_CLK;
   if (ledc_timer_config(&timer) != ESP_OK) {
-    // freq/bits exceed RC_FAST — leave the light unconfigured rather than
-    // silently falling back to a clock that freezes in light sleep.
+    // Unreachable for the shipped profile (the static_assert above), so this is
+    // the belt for a runtime-selected board. Say WHY: begin()'s ok=0 on its own
+    // names no cause, and that is what took this one three releases to find.
+    LOG_ERR("FrontlightMgr", "RC_FAST cannot clock %u Hz at %u-bit (needs %llu Hz <= %u); light stays dark", freq,
+            bits, static_cast<unsigned long long>(static_cast<uint64_t>(freq) << bits),
+            static_cast<unsigned>(SOC_CLK_RC_FAST_FREQ_APPROX));
     return false;
   }
   ledc_channel_config_t chan = {};

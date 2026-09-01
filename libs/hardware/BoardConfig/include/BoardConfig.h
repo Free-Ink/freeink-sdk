@@ -1561,13 +1561,23 @@ constexpr BoardProfile XTEINK_X4_PRO = {
     // Frontlight: dual warm/cold LEDC PWM with color temperature (NVS lightWarmValue/
     // lightColdValue/lightCT/lightBri/lightOn). Recovered from the OEM LEDC init (IROM
     // 0x420a2130 → helper 0x420a20c0): two channels — GPIO8 on LEDC ch4 and GPIO9 on ch5 —
-    // The original bring-up dump used 10 kHz; stock 7.0.8 passes 25 kHz / 10-bit to
-    // the frontlight initializer on the same pins. Use that directly recovered value.
     // Both channels are active-HIGH (init drives the pin LOW = off, brightness raises
     // duty).
     // GPIO8 is the hardware-confirmed cool channel and GPIO9 the warm channel;
     // FrontlightManager mixes them for color-temperature control.
-    {8, 25000, 10, true, 9},
+    //
+    // 10 kHz, and NOT the 25 kHz stock 7.0.8 passes to the same initializer, because
+    // this build does not clock LEDC the way stock does. Under FREEINK_FRONTLIGHT_LS
+    // the timer runs off RC_FAST (~17.5 MHz) so the PWM survives light sleep, and LEDC
+    // can only divide that down while freq * 2^bits fits inside it. 25 kHz * 1024 =
+    // 25.6 MHz does not fit: ledc_timer_config() returns ESP_FAIL, the channels are
+    // never attached, and the frontlight cannot be turned on at all, with no crash and
+    // no failed build. That is what 25 kHz shipped as in v1.11.1. 10 kHz * 1024 =
+    // 10.24 MHz fits, and keeps the full 10-bit range setBrightnessLevel's level-1
+    // night minimum and the gamma table are both tuned for. Stock affords 25 kHz by
+    // clocking LEDC from APB and letting the light die in sleep.
+    // The static_assert in FrontlightManager.cpp holds this pair to the constraint.
+    {8, 10000, 10, true, 9},
     NO_AUDIO,
     NO_LEDS,
     NO_FLIP,  // panel mount transform pending hardware; native SSD1677 scan is 800x480 landscape

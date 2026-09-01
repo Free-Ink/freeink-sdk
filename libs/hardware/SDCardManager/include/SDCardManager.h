@@ -37,7 +37,22 @@ class SDCardManager {
   // Returns used space in bytes, cached with a 20-second TTL (freeClusterCount
   // scans the FAT and is too slow to call on every frame). 0 if not mounted or
   // the cluster count cannot be determined.
+  // Bytes in use. RETURNS 0 WHEN IT CANNOT ANSWER, which is also what an empty
+  // card returns, and caches that for the TTL -- so do not subtract it from
+  // sdTotalBytes() to get free space. Use sdFreeBytes(), which cannot make
+  // that mistake. Kept in this shape because it predates sdFreeBytes and its
+  // contract is upstream's; the failure now announces itself on Serial.
   uint64_t sdUsedBytes();
+
+  // Free bytes on the card, and whether the volume could actually answer.
+  //
+  // Separate from sdUsedBytes() on purpose. That one returns 0 when
+  // freeClusterCount() fails, which is indistinguishable from a card with
+  // nothing on it -- so `sdTotalBytes() - sdUsedBytes()` reports a FAILURE as
+  // an almost-empty card. That is the one direction the error can point that
+  // turns "check before writing" into "write anyway", which is the whole
+  // reason a caller asks. Here a failure is false and out is untouched.
+  bool sdFreeBytes(uint64_t& out);
   std::vector<String> listFiles(const char* path = "/", int maxFiles = 200);
   // Read the entire file at `path` into a String. Returns empty string on failure.
   String readFile(const char* path);
@@ -100,6 +115,12 @@ class SDCardManager {
   uint64_t cachedUsedBytes = 0;
   uint32_t cachedUsedBytesAt = 0;
   bool cachedUsedBytesValid = false;
+  uint64_t cachedFreeBytes = 0;
+  // Whether the last refresh actually got an answer, as opposed to caching a
+  // zero it could not vouch for.
+  bool cachedFreeBytesValid = false;
+  // One FAT walk per TTL, shared by both accessors above.
+  bool refreshFreeClusters();
 
   // All filesystem ops route through one FsVolume& so the backend is swappable.
   // SPI boards: `sd` (SdFs is-a FsVolume). SDMMC boards: a bare FsVolume mounted

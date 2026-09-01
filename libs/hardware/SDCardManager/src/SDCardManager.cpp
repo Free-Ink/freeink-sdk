@@ -369,23 +369,52 @@ bool SDCardManager::openFileForWrite(const char* moduleName, const String& path,
 
 uint64_t SDCardManager::sdTotalBytes() const { return cachedTotalBytes; }
 
-uint64_t SDCardManager::sdUsedBytes() {
-  if (!initialized) return 0;
+// Shared by sdUsedBytes() and sdFreeBytes() so both read ONE cached answer.
+// freeClusterCount() walks the FAT on FAT32 without a valid FSInfo, which is
+// seconds on a large card, so it must not run twice for one question.
+bool SDCardManager::refreshFreeClusters() {
+  if (!initialized) return false;
   const uint32_t now = millis();
-  if (!cachedUsedBytesValid || (now - cachedUsedBytesAt) >= USED_BYTES_CACHE_TTL_MS) {
-    const int32_t freeClusters = vol().freeClusterCount();
-    const uint64_t clusterCount = vol().clusterCount();
-    if (freeClusters < 0) {
-      cachedUsedBytes = 0;
-    } else {
-      const uint64_t cappedFree = (static_cast<uint64_t>(freeClusters) > clusterCount)
-                                      ? clusterCount
-                                      : static_cast<uint64_t>(freeClusters);
-      cachedUsedBytes = (clusterCount - cappedFree) * vol().bytesPerCluster();
-    }
-    cachedUsedBytesValid = true;
-    cachedUsedBytesAt = now;
+  if (cachedUsedBytesValid && (now - cachedUsedBytesAt) < USED_BYTES_CACHE_TTL_MS) {
+    return cachedFreeBytesValid;
   }
+  const int32_t freeClusters = vol().freeClusterCount();
+  const uint64_t clusterCount = vol().clusterCount();
+  cachedUsedBytesAt = now;
+  cachedUsedBytesValid = true;
+  if (freeClusters < 0) {
+    // sdUsedBytes() reports this as 0 used, which is also what an empty card
+    // reports, and it is cached as a valid answer for the whole TTL -- so a
+    // retry inside the window gets the same confident zero without asking
+    // again. Nothing in this fork reads it, and sdFreeBytes() below refuses to
+    // conflate the two, but a future caller reaching past it would get a
+    // plausible number. Say so out loud rather than leaving the trace to the
+    // absence of one. Once per refresh, so the TTL bounds the noise.
+    if (Serial) Serial.printf("[%lu] [SD] free-cluster query FAILED; used-bytes will read 0, which is a lie\n", millis());
+    cachedUsedBytes = 0;
+    cachedFreeBytes = 0;
+    cachedFreeBytesValid = false;
+    return false;
+  }
+  const uint64_t cappedFree =
+      (static_cast<uint64_t>(freeClusters) > clusterCount) ? clusterCount : static_cast<uint64_t>(freeClusters);
+  cachedUsedBytes = (clusterCount - cappedFree) * vol().bytesPerCluster();
+  cachedFreeBytes = cappedFree * vol().bytesPerCluster();
+  cachedFreeBytesValid = true;
+  return true;
+}
+
+bool SDCardManager::sdFreeBytes(uint64_t& out) {
+  if (!refreshFreeClusters()) return false;
+  out = cachedFreeBytes;
+  return true;
+}
+
+uint64_t SDCardManager::sdUsedBytes() {
+  // Unchanged contract: 0 when the volume cannot answer, which several callers
+  // already treat as "unknown or empty". sdFreeBytes() is the one that tells
+  // those two apart.
+  refreshFreeClusters();
   return cachedUsedBytes;
 }
 

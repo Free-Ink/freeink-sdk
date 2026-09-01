@@ -249,13 +249,12 @@ void Uc8179Driver::streamPlaneXor(EpdBus& bus, uint8_t ramCmd, const uint8_t* lh
   uint8_t row[128];
   const uint16_t wb = _wb <= sizeof(row) ? _wb : sizeof(row);
   bus.cmd(ramCmd);
-  bus.beginTxn();
+  auto txn = bus.beginTxn();
   for (int y = static_cast<int>(_h) - 1; y >= 0; y--) {
     const uint32_t offset = static_cast<uint32_t>(y) * _wb;
     for (uint16_t x = 0; x < wb; x++) row[x] = static_cast<uint8_t>(lhs[offset + x] ^ rhs[offset + x]);
-    bus.rawWriteBytes(row, wb);
+    txn.writeBytes(row, wb);
   }
-  bus.endTxn();
   memset(row, 0xFF, wb);
   for (uint16_t y = _h; y < _tresH; y++) bus.data(row, wb);
 }

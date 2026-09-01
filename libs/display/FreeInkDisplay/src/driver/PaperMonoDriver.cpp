@@ -301,14 +301,13 @@ void PaperMonoDriver::writePlane(EpdBus& bus, uint8_t command, const uint8_t* da
   // A 180-degree 1-bpp raster rotation is a byte-order reversal plus a bit
   // reversal inside every byte. Stream it in bounded chunks so no second
   // framebuffer is required and keep CS asserted for the whole RAM write.
-  bus.beginTxn();
+  auto txn = bus.beginTxn();
   for (uint32_t sent = 0; sent < BUFFER_SIZE; sent += ROTATE_CHUNK_BYTES) {
     const uint16_t count =
         static_cast<uint16_t>((BUFFER_SIZE - sent) < ROTATE_CHUNK_BYTES ? (BUFFER_SIZE - sent) : ROTATE_CHUNK_BYTES);
     for (uint16_t i = 0; i < count; ++i) ROTATE_CHUNK[i] = REVERSE_BITS_LUT[data[BUFFER_SIZE - 1 - sent - i]];
-    bus.rawWriteBytes(ROTATE_CHUNK, count);
+    txn.writeBytes(ROTATE_CHUNK, count);
   }
-  bus.endTxn();
 }
 
 void PaperMonoDriver::writePlaneWindow(EpdBus& bus, uint8_t command, const uint8_t* data, uint16_t x, uint16_t y,

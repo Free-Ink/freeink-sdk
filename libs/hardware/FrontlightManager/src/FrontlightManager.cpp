@@ -128,7 +128,8 @@ bool attachChannel(int8_t gpio, uint8_t ch, uint32_t freq, uint8_t bits) {
   if (ledc_timer_config(&timer) != ESP_OK) {
     // Unreachable for the shipped profile (the static_assert above), so this is
     // the belt for a runtime-selected board. Say WHY: begin()'s ok=0 on its own
-    // names no cause, and that is what took this one three releases to find.
+    // names no cause, which is most of why this one reached two published
+    // releases with a session reading the log on an affected device.
     LOG_ERR("FrontlightMgr", "RC_FAST cannot clock %u Hz at %u-bit (needs %llu Hz <= %u); light stays dark", freq,
             bits, static_cast<unsigned long long>(static_cast<uint64_t>(freq) << bits),
             static_cast<unsigned>(SOC_CLK_RC_FAST_FREQ_APPROX));

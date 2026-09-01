@@ -18,8 +18,16 @@
 
 class FrontlightManager {
  public:
-  // Bring up the PWM channel(s). No-op if the board has no frontlight.
-  void begin();
+  // Bring up the PWM channel(s), and say whether the light can now be driven.
+  //
+  // FALSE means every later setBrightness()/on()/setColorTemperature() will be
+  // accepted and do nothing: the board has no frontlight, or its channels
+  // would not configure. Check it. Until 2026-08-31 this returned void, so a
+  // consumer had no way to tell a light that came up from one that did not,
+  // and the X4 Pro shipped two releases whose LEDC channels never attached
+  // while the firmware logged "Frontlight up" on the way past. Every signal
+  // short of a human eye reported success, which is why it survived a release.
+  bool begin();
 
   // Set brightness as a 0-100 percentage, mapped to duty through a perceptual
   // gamma-1.6554 curve (1% is the smallest non-zero duty step, not 1% linear

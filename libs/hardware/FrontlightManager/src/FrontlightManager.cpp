@@ -165,14 +165,14 @@ void writeChannel(int8_t /*gpio*/, uint8_t ch, uint32_t duty) { ledcWrite(ch, du
 }  // namespace
 #endif
 
-void FrontlightManager::begin() {
+bool FrontlightManager::begin() {
 #if FREEINK_CAP_FRONTLIGHT
   const auto& fl = BoardConfig::ACTIVE.frontlight;
 #if FREEINK_DEVICE_EEGO_A4
   const auto& i2c = BoardConfig::ACTIVE.i2cFrontlight;
   if (BoardConfig::ACTIVE.board == BoardConfig::Board::EegoA4 &&
       i2c.controller == BoardConfig::I2cFrontlightController::Lm3630a) {
-    if (i2c.sda < 0 || i2c.scl < 0 || i2c.enable < 0 || i2c.address == 0) return;
+    if (i2c.sda < 0 || i2c.scl < 0 || i2c.enable < 0 || i2c.address == 0) return false;
     Wire.begin(i2c.sda, i2c.scl, i2c.i2cHz);
     Wire.setTimeOut(256);
     pinMode(i2c.enable, OUTPUT);
@@ -187,20 +187,20 @@ void FrontlightManager::begin() {
     Wire.beginTransmission(i2c.address);
     const bool detected = Wire.endTransmission() == 0;
     digitalWrite(i2c.enable, LOW);
-    if (!detected) return;
+    if (!detected) return false;
 
     _begun = true;
     _brightness = 0;
-    return;
+    return true;
   }
 #endif
   if (fl.viaPm1Pwm) {
     pm1FrontlightAttach(fl.pwmFrequency);
     _begun = true;
     setBrightness(0);
-    return;
+    return true;
   }
-  if (fl.gpio == BoardConfig::PIN_UNASSIGNED) return;
+  if (fl.gpio == BoardConfig::PIN_UNASSIGNED) return false;
 
   bool attachOk = attachChannel(fl.gpio, LEDC_CH_COOL, fl.pwmFrequency, fl.pwmResolutionBits);
   if (fl.gpioWarm != BoardConfig::PIN_UNASSIGNED) {
@@ -238,6 +238,9 @@ void FrontlightManager::begin() {
   _begun = true;
   setBrightness(0);
   LOG_INF("FrontlightMgr", "begin: attached gpio=%d warm=%d ok=%d", fl.gpio, fl.gpioWarm, attachOk ? 1 : 0);
+  return attachOk;
+#else
+  return false;
 #endif
 }
 

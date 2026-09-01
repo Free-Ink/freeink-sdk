@@ -45,7 +45,9 @@ struct ListProps {
   // pin tens of KB of ListItems + label strings for rows that are never
   // drawn. list() only touches indexes in [topIndex, topIndex + visible],
   // so the caller must keep the window covering that range (refresh it after
-  // viewport changes, before list()). 0 = items is the full array.
+  // viewport changes, before list()). Set props.nav for a window whose top may
+  // enter the last fixed-height page; otherwise list() may clamp top below the
+  // supplied window. 0 = items is the full array.
   uint16_t itemsWindowFirst = 0;
   // Number of ListItems supplied in `items` when it is a virtual window.
   // Set this whenever itemsWindowFirst is non-zero (or the supplied array is
@@ -239,6 +241,8 @@ struct ListNav {
   }
 
   // Pull the viewport the minimal amount so the selection is visible.
+  // selected and top must both use absolute row indexes; callers that keep a
+  // focus sentinel in selected must translate before calling follow().
   void follow(const int count) {
     followPending = true; // confirmed (or corrected) by onListRendered()
     const uint16_t rows =

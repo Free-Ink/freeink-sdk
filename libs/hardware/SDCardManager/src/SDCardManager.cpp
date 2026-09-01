@@ -381,21 +381,39 @@ bool SDCardManager::refreshFreeClusters() {
   const int32_t freeClusters = vol().freeClusterCount();
   const uint64_t clusterCount = vol().clusterCount();
   cachedUsedBytesAt = now;
-  cachedUsedBytesValid = true;
   if (freeClusters < 0) {
     // sdUsedBytes() reports this as 0 used, which is also what an empty card
-    // reports, and it is cached as a valid answer for the whole TTL -- so a
-    // retry inside the window gets the same confident zero without asking
-    // again. Nothing in this fork reads it, and sdFreeBytes() below refuses to
-    // conflate the two, but a future caller reaching past it would get a
+    // reports. Nothing in this fork reads it, and sdFreeBytes() below refuses
+    // to conflate the two, but a future caller reaching past it would get a
     // plausible number. Say so out loud rather than leaving the trace to the
-    // absence of one. Once per refresh, so the TTL bounds the noise.
+    // absence of one.
+    //
+    // This used to read "and it is cached as a valid answer for the whole TTL,
+    // so a retry inside the window gets the same confident zero". That was
+    // true, and it was the bug fixed just below: the failure is no longer
+    // memoised, so a retry re-queries. The log line is therefore once per
+    // FAILED ATTEMPT rather than once per TTL -- user-paced, since only a
+    // button press drives it.
     if (Serial) Serial.printf("[%lu] [SD] free-cluster query FAILED; used-bytes will read 0, which is a lie\n", millis());
     cachedUsedBytes = 0;
     cachedFreeBytes = 0;
     cachedFreeBytesValid = false;
+    // Do NOT memoise the failure. A cache stores ANSWERS, and "the card did not
+    // answer" is not one -- caching it made the guard above return the stale
+    // false for the whole TTL without re-querying, so an app's TRY AGAIN could
+    // not succeed for 20 seconds. That is worst on a NO ROOM screen: the user
+    // deletes a book, retries inside the window, is told there is still no
+    // room, and reasonably concludes deleting did not help. The screen punishes
+    // the correct response, and no wording rescues a button that cannot work.
+    //
+    // Chosen over a force flag on the retry path: a flag puts cache knowledge
+    // in every caller and can be used to defeat the TTL entirely, which is the
+    // seconds-long walk this cache exists to prevent. Leaving a failure
+    // uncached costs one re-query per user-paced button press.
+    cachedUsedBytesValid = false;
     return false;
   }
+  cachedUsedBytesValid = true;
   const uint64_t cappedFree =
       (static_cast<uint64_t>(freeClusters) > clusterCount) ? clusterCount : static_cast<uint64_t>(freeClusters);
   cachedUsedBytes = (clusterCount - cappedFree) * vol().bytesPerCluster();

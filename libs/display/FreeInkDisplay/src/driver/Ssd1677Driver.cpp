@@ -97,6 +97,7 @@ static const Ssd1677Config& ssd1677StickyConfig() {
              // black under the grayscale LUT (black frame on every AA/cover refresh)
       true,  // grayPowerUpFirst: vendor sequences power down after every refresh, so
              // settle the rails before the short gray LUT phases (see Ssd1677Config)
+      true,  // enableAbsoluteLut
   };
   return cfg;
 }

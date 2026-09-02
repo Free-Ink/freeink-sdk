@@ -10,7 +10,11 @@ namespace freeink {
 struct LgfxEpdPowerHooks {
   bool (*prepare)();
   bool (*powerOn)();
-  void (*powerOff)();
+  // Returns false if the rails could not be proven down (e.g. an I2C write to a
+  // power expander failed). The caller leaves the cached rail state UNKNOWN on
+  // false so the next transition re-issues the hook instead of trusting a stale
+  // belief; see FreeInkBusEPD::powerControl.
+  bool (*powerOff)();
 };
 
 // LovyanGFX parallel-EPD wiring. Geometry is not here; it comes from the active

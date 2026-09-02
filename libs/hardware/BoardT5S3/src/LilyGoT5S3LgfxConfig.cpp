@@ -125,14 +125,20 @@ bool prepareEpdPower() {
   return ok;
 }
 
-void epdPowerOff() {
-  BoardT5S3::writePca9535Pin(PCA9535_IO10_EP_OE, false);
-  BoardT5S3::writePca9535Pin(PCA9535_IO11_EP_MODE, false);
-  BoardT5S3::writePca9535Pin(PCA9535_IO13_TPS_PWRUP, false);
-  BoardT5S3::writePca9535Pin(PCA9535_IO14_VCOM_CTRL, false);
+// Every write is checked, symmetrically with epdPowerOn. Discarding them made
+// power-DOWN the one unverified half of the rail lifecycle: an I2C hiccup here
+// left the TPS65185 live with nothing able to notice, and the board could then
+// deep-sleep with the EPD PMIC powered.
+bool epdPowerOff() {
+  bool ok = true;
+  ok &= BoardT5S3::writePca9535Pin(PCA9535_IO10_EP_OE, false);
+  ok &= BoardT5S3::writePca9535Pin(PCA9535_IO11_EP_MODE, false);
+  ok &= BoardT5S3::writePca9535Pin(PCA9535_IO13_TPS_PWRUP, false);
+  ok &= BoardT5S3::writePca9535Pin(PCA9535_IO14_VCOM_CTRL, false);
   delay(1);
-  BoardT5S3::writePca9535Pin(PCA9535_IO15_TPS_WAKEUP, false);
+  ok &= BoardT5S3::writePca9535Pin(PCA9535_IO15_TPS_WAKEUP, false);
   digitalWrite(EP_STV, LOW);
+  return ok;
 }
 
 bool epdPowerOn() {

@@ -198,10 +198,18 @@ bool SDCardManager::begin() {
   return initialized;
 }
 
-// SdFat's card object already IS a block device: SdCardInterface derives from
-// FsBlockDeviceInterface and implements the same readSector(s)/writeSector(s)
-// contract SdmmcBlockDevice does. So the SPI path needs no second driver for
-// USB-MSC — it only needs the volume dropped while the card session stays up.
+// SdFat's card object already IS a block device: with USE_BLOCK_DEVICE_INTERFACE
+// (or HAS_SDIO_CLASS) set, SdSpiCard derives from FsBlockDeviceInterface and
+// implements the same readSector(s)/writeSector(s) contract SdmmcBlockDevice
+// does. So the SPI path needs no second driver for USB-MSC — it only needs the
+// volume dropped while the card session stays up.
+//
+// Without that option SdSpiCard is a plain concrete class with no such base, so
+// there is nothing to hand out. The build hook (inject_build_flags.py) turns the
+// option on whenever FREEINK_CAP_USB_MSC is set, so the stubs below are what a
+// board that never asked for USB Drive links.
+#if USE_BLOCK_DEVICE_INTERFACE || HAS_SDIO_CLASS
+
 FsBlockDeviceInterface* SDCardManager::rawBlockDevice() { return initialized ? sd.card() : nullptr; }
 
 FsBlockDeviceInterface* SDCardManager::detachFilesystemForRawAccess() {
@@ -220,7 +228,14 @@ FsBlockDeviceInterface* SDCardManager::detachFilesystemForRawAccess() {
   cachedUsedBytesValid = false;
   return card;
 }
-#endif
+
+#else  // USE_BLOCK_DEVICE_INTERFACE || HAS_SDIO_CLASS
+
+FsBlockDeviceInterface* SDCardManager::rawBlockDevice() { return nullptr; }
+FsBlockDeviceInterface* SDCardManager::detachFilesystemForRawAccess() { return nullptr; }
+
+#endif  // USE_BLOCK_DEVICE_INTERFACE || HAS_SDIO_CLASS
+#endif  // FREEINK_SD_SDMMC
 
 bool SDCardManager::ready() const {
   return initialized;

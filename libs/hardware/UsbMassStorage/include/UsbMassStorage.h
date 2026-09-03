@@ -35,6 +35,20 @@ class UsbMassStorage {
   bool active() const { return _active; }
   UsbMassStorageState state() const;
   bool hostConnected() const;
+  // True while the USB bus is idle (no SOF for >3 ms), which is what the device
+  // sees when the cable is pulled.
+  //
+  // Needed because tud_mounted() CANNOT report an unplug on the ESP32-S3:
+  // Arduino's tinyusb init passes otg_io_conf = NULL (esp32-hal-tinyusb.c), so
+  // no VBUS line is routed to the OTG core and IDF forces B-session-valid on.
+  // The core therefore never detects session end, and state() stays Connected
+  // forever after the cable is gone. Bus suspend is detected by the core itself
+  // and is unaffected.
+  //
+  // A host suspending an idle bus looks identical, so this is a HINT, not a
+  // verdict: callers must require it to persist before acting on it, and should
+  // prefer a physical VBUS reading where the board has one.
+  bool hostSuspended() const;
   // Soft-disconnect the USB device from the host. Call from application/task
   // context, never from an MSC callback; end() still owns final teardown.
   bool disconnectHost() const;
@@ -64,6 +78,7 @@ class UsbMassStorage {
   UsbMassStorageState state() const { return UsbMassStorageState::Idle; }
   bool hostConnected() const { return false; }
   bool disconnectHost() const { return false; }
+  bool hostSuspended() const { return false; }
 };
 }  // namespace freeink
 

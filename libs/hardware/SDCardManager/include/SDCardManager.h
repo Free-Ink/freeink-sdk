@@ -75,16 +75,20 @@ class SDCardManager {
   using PowerHook = void (*)();
   void setPowerHook(PowerHook hook) { _powerHook = hook; }
 
-#if FREEINK_SD_SDMMC
-  // The raw SDMMC block device (512-byte sector I/O) backing the volume, for
-  // exposing the card over USB-MSC ("USB Transfer" mode). Null until begin()
-  // succeeds. The returned pointer implements SdFat's FsBlockDeviceInterface.
+  // The raw block device (512-byte sector I/O) backing the volume, for exposing
+  // the card over USB-MSC ("USB Transfer" mode). Null until begin() succeeds.
   // Do NOT touch the filesystem while the card is handed to the USB host.
-  freeink::SdmmcBlockDevice* rawBlockDevice() { return _dev; }
-  // End the FsVolume mount while keeping the native block device alive for a
-  // raw USB-MSC owner. The caller must reinitialize the manager after the
-  // owner releases the card.
+  //
+  // Both backends answer this: SDMMC boards hand back their native esp-idf
+  // device, SPI boards hand back SdFat's own SdCard (SdCardInterface derives
+  // from FsBlockDeviceInterface, so the card object IS a block device — no
+  // second driver is needed for the SPI path).
+  FsBlockDeviceInterface* rawBlockDevice();
+  // End the FsVolume mount while keeping the block device alive for a raw
+  // USB-MSC owner. The caller must reinitialize the manager (begin()) after the
+  // owner releases the card. Returns null when nothing is mounted.
   FsBlockDeviceInterface* detachFilesystemForRawAccess();
+#if FREEINK_SD_SDMMC
   // Stop the card for deep sleep: unmount the volume, stop the SDMMC host, and
   // float the bus pads so their pull-ups stop back-feeding the card's VDD net
   // through sleep. Idempotent; call only after all file users have stopped. A

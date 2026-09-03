@@ -211,13 +211,26 @@
 #define FREEINK_CAP_WARMLIGHT (FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_MURPHY_M4 || FREEINK_DEVICE_EEGO_A4)
 #endif
 // USB Mass Storage ("USB Transfer" mode): exposes the SD card to a host over
-// USB-MSC. OPT-IN (default off), NOT board-derived: it forces the build into
-// USB-OTG mode (ARDUINO_USB_MODE=0 + CONFIG_TINYUSB_MSC_ENABLED), which changes
-// how the USB serial console works — so a board enables it in its OWN env
-// alongside those flags (e.g. X4 Pro adds -DFREEINK_CAP_USB_MSC=1
-// -DARDUINO_USB_MODE=0 -DARDUINO_USB_CDC_ON_BOOT=1). Native-USB (ESP32-S3/C3
-// OTG) targets only. When 0, UsbMassStorage links stub bodies and pulls in no
-// TinyUSB/MSC code. Requires SDMMC/SPI storage exposing a block device.
+// USB-MSC. OPT-IN (default off), NOT board-derived, so a board enables it in
+// its OWN env (e.g. -DFREEINK_CAP_USB_MSC=1). Native-USB (ESP32-S3/C3 OTG)
+// targets only. When 0, UsbMassStorage links stub bodies and pulls in no
+// TinyUSB/MSC code.
+//
+// ARDUINO_USB_MODE=0 is one way to reach the OTG PHY, not a requirement of this
+// library. A firmware can equally keep ARDUINO_USB_MODE=1 — so USB Serial/JTAG
+// stays the board's normal USB personality for monitoring and flashing — and
+// switch the shared PHY to OTG at runtime for the duration of a transfer,
+// handing it back before it reboots out of the mode. X4 Pro and LilyGo T5 S3
+// both ship that way in CrossPoint.
+//
+// What this DOES require is the platform's prebuilt Arduino core, whose TinyUSB
+// component is built with CONFIG_TINYUSB_MSC_ENABLED: an env that rebuilds the
+// core from source (custom_sdkconfig / custom_component_remove) drops that
+// component and USBMSC will not link.
+//
+// Storage must expose a 512-byte-sector block device. Both SDCardManager
+// backends do — SDMMC natively, and SPI through SdFat's own SdCard — so this is
+// no longer an SDMMC-only capability.
 #ifndef FREEINK_CAP_USB_MSC
 #define FREEINK_CAP_USB_MSC 0
 #endif

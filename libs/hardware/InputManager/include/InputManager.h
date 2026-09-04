@@ -355,6 +355,7 @@ class InputManager {
   unsigned long confirmBackPressStart;
   bool confirmBackPhysicalPressed;
   bool confirmBackLongPressActive;
+  bool confirmBackSleepActive;
   unsigned long confirmPowerPressStart;
   bool confirmPowerPhysicalPressed;
   bool confirmPowerLongPressActive;
@@ -416,7 +417,8 @@ class InputManager {
 
   static constexpr int ADC_NO_BUTTON = 3900;
   static constexpr unsigned long DEBOUNCE_DELAY = 5;
-  static constexpr unsigned long CONFIRM_BACK_HOLD_MS = 650;
+  static constexpr unsigned long CONFIRM_BACK_HOLD_MS = 500;
+  static constexpr unsigned long CONFIRM_SLEEP_HOLD_MS = 4000;
   static constexpr unsigned long CONFIRM_POWER_HOLD_MS = 400;
   static constexpr unsigned long TWO_BUTTON_HOLD_MS = 650;
 

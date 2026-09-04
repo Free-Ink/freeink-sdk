@@ -128,6 +128,7 @@ class FreeInkDisplay {
   void writeGrayscalePlaneStrip(GrayPlane plane, const uint8_t* rows, uint16_t yStart, uint16_t numRows);
   bool supportsBusyGrayscaleStaging() const;
   void prepareGrayscaleTarget();
+  bool supportsGrayscale() const;
   bool supportsStripGrayscale() const;
   // True when displayGrayscaleBase() defers the base activation so the gray
   // planes join it in one waveform (Paper Mono) - see PanelDriver.

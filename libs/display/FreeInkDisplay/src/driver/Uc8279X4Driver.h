@@ -79,6 +79,7 @@ class Uc8279X4Driver : public PanelDriver {
 
   void requestResync(uint8_t settlePasses) override;
   void skipInitialResync() override;
+  bool supportsGrayscale() const override { return true; }
 
   // --- 4-level grayscale (anti-aliasing) ---
   // External-LUT path (ported from the UC8179 sibling). CrossPoint supplies DELTA

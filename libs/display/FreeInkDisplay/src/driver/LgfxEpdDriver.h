@@ -40,6 +40,7 @@ class LgfxEpdDriver : public PanelDriver {
 
   // 16-gray path: the facade streams LSB/MSB 1-bpp planes (whole or in strips);
   // displayGray combines them with the B/W base into the panel's 8-bit gray canvas.
+  bool supportsGrayscale() const override { return true; }
   bool supportsStripGrayscale() const override { return true; }
   void copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) override;
   void copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) override;

@@ -56,6 +56,9 @@
 #if FREEINK_DRIVER_PAPER_MONO
 #include "driver/PaperMonoDriver.h"
 #endif
+#if FREEINK_DRIVER_GDEY075T7
+#include "driver/Gdey075t7Driver.h"
+#endif
 
 namespace freeink {
 namespace {
@@ -163,6 +166,8 @@ void FreeInkDisplay::selectDriver() {
 #endif
 #if FREEINK_DRIVER_UC8279C
       _driver = &uc8279cA4Driver();
+#elif FREEINK_DRIVER_GDEY075T7
+      _driver = &gdey075t7Driver();
 #elif FREEINK_DRIVER_SSD1677
       _driver = &ssd1677Driver();
 #elif FREEINK_DRIVER_PAPER_MONO
@@ -781,7 +786,7 @@ void FreeInkDisplay::displayGrayBuffer(bool turnOffScreen, const unsigned char* 
 #endif
   // Inverted mode deliberately renders a crisp BW page. Writing normal
   // grayscale planes afterward would partially undo the output inversion.
-  if (_inverted) return;
+  if (_inverted || !_driver || !_driver->supportsGrayscale()) return;
   syncPendingAsync();
   _shadowValid = false;
   _redRamSynced = false;  // grayscale leaves RED holding a gray plane, not the BW baseline
@@ -789,7 +794,7 @@ void FreeInkDisplay::displayGrayBuffer(bool turnOffScreen, const unsigned char* 
 }
 
 void FreeInkDisplay::displayGrayCalibration(uint16_t customX, uint16_t customY, uint16_t customW, uint16_t customH) {
-  if (_inverted) return;
+  if (_inverted || !_driver || !_driver->supportsGrayscale()) return;
   syncPendingAsync();
   _shadowValid = false;
   _redRamSynced = false;
@@ -799,14 +804,14 @@ void FreeInkDisplay::displayGrayCalibration(uint16_t customX, uint16_t customY, 
 void FreeInkDisplay::refreshDisplay(RefreshMode mode, bool turnOffScreen) { displayBuffer(mode, turnOffScreen); }
 
 void FreeInkDisplay::copyGrayscaleBuffers(const uint8_t* lsbBuffer, const uint8_t* msbBuffer) {
-  if (_inverted) return;
+  if (_inverted || !_driver || !_driver->supportsGrayscale()) return;
   syncPendingAsync();  // RAM writes must not race a deferred refresh
   _driver->copyGrayscaleLsb(_bus, lsbBuffer);
   _driver->copyGrayscaleMsb(_bus, msbBuffer);
 }
 
 void FreeInkDisplay::displayGrayscaleBase(RefreshMode fallback, bool turnOffScreen) {
-  if (_inverted || _inversionDirty) {
+  if (_inverted || _inversionDirty || !_driver || !_driver->supportsGrayscale()) {
     displayBuffer(fallback, turnOffScreen);
     return;
   }
@@ -816,32 +821,32 @@ void FreeInkDisplay::displayGrayscaleBase(RefreshMode fallback, bool turnOffScre
 }
 
 void FreeInkDisplay::preconditionGrayscale() {
-  if (_inverted) return;
+  if (_inverted || !_driver || !_driver->supportsGrayscale()) return;
   syncPendingAsync();
   _driver->preconditionGrayscale(_bus, 0, 0, getDisplayWidth(), getDisplayHeight());
 }
 
 void FreeInkDisplay::preconditionGrayscale(uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
-  if (_inverted) return;
+  if (_inverted || !_driver || !_driver->supportsGrayscale()) return;
   syncPendingAsync();
   _driver->preconditionGrayscale(_bus, x, y, w, h);
 }
 
 void FreeInkDisplay::copyGrayscaleLsbBuffers(const uint8_t* lsbBuffer) {
-  if (_inverted) return;
+  if (_inverted || !_driver || !_driver->supportsGrayscale()) return;
   syncPendingAsync();
   _driver->copyGrayscaleLsb(_bus, lsbBuffer);
 }
 
 void FreeInkDisplay::copyGrayscaleMsbBuffers(const uint8_t* msbBuffer) {
-  if (_inverted) return;
+  if (_inverted || !_driver || !_driver->supportsGrayscale()) return;
   syncPendingAsync();
   _driver->copyGrayscaleMsb(_bus, msbBuffer);
 }
 
 void FreeInkDisplay::writeGrayscalePlaneStrip(GrayPlane plane, const uint8_t* rows, uint16_t yStart,
                                               uint16_t numRows) {
-  if (_inverted) return;
+  if (_inverted || !_driver || !_driver->supportsGrayscale()) return;
   // Paper Mono retains these bytes in PSRAM and performs no bus access here, so
   // staging can overlap the B/W waveform. Other drivers may write controller
   // RAM and must drain the pending refresh first.
@@ -858,6 +863,10 @@ void FreeInkDisplay::prepareGrayscaleTarget() {
   if (!_inverted && _driver && _driver->supportsBusyGrayscaleStaging()) {
     _driver->prepareGrayscaleTarget(frameBuffer);
   }
+}
+
+bool FreeInkDisplay::supportsGrayscale() const {
+  return !_inverted && _driver && _driver->supportsGrayscale();
 }
 
 bool FreeInkDisplay::supportsStripGrayscale() const {

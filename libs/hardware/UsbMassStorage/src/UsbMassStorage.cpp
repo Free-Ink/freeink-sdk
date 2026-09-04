@@ -12,6 +12,7 @@
 
 extern "C" bool tud_mounted(void);
 extern "C" bool tud_disconnect(void);
+extern "C" bool tud_suspended(void);
 
 namespace freeink {
 namespace {
@@ -189,6 +190,8 @@ bool UsbMassStorage::hostConnected() const {
 }
 
 bool UsbMassStorage::disconnectHost() const { return _active && tud_disconnect(); }
+
+bool UsbMassStorage::hostSuspended() const { return _active && tud_suspended(); }
 
 void UsbMassStorage::markAccessed() const {
   auto current = _state.load();

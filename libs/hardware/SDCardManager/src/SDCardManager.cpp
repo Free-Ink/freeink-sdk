@@ -65,6 +65,8 @@ bool SDCardManager::begin() {
   return initialized;
 }
 
+FsBlockDeviceInterface* SDCardManager::rawBlockDevice() { return _dev; }
+
 FsBlockDeviceInterface* SDCardManager::detachFilesystemForRawAccess() {
   if (!initialized || !_dev) return nullptr;
   _vol.end();
@@ -195,7 +197,45 @@ bool SDCardManager::begin() {
 
   return initialized;
 }
-#endif
+
+// SdFat's card object already IS a block device: with USE_BLOCK_DEVICE_INTERFACE
+// (or HAS_SDIO_CLASS) set, SdSpiCard derives from FsBlockDeviceInterface and
+// implements the same readSector(s)/writeSector(s) contract SdmmcBlockDevice
+// does. So the SPI path needs no second driver for USB-MSC — it only needs the
+// volume dropped while the card session stays up.
+//
+// Without that option SdSpiCard is a plain concrete class with no such base, so
+// there is nothing to hand out. The build hook (inject_build_flags.py) turns the
+// option on whenever FREEINK_CAP_USB_MSC is set, so the stubs below are what a
+// board that never asked for USB Drive links.
+#if USE_BLOCK_DEVICE_INTERFACE || HAS_SDIO_CLASS
+
+FsBlockDeviceInterface* SDCardManager::rawBlockDevice() { return initialized ? sd.card() : nullptr; }
+
+FsBlockDeviceInterface* SDCardManager::detachFilesystemForRawAccess() {
+  if (!initialized) return nullptr;
+  auto* const card = sd.card();
+  if (!card) return nullptr;
+  // FsVolume::end() ONLY — deliberately not sd.end(), which would also call
+  // SdCard::end() and tear down the card session the USB host is about to read
+  // through. The card stays initialized and selected; remounting later goes
+  // back through begin(), whose sd.begin() re-runs SdCard::begin() on the same
+  // (factory-owned, statically allocated) card object.
+  sd.FsVolume::end();
+  initialized = false;
+  cachedTotalBytes = 0;
+  cachedUsedBytes = 0;
+  cachedUsedBytesValid = false;
+  return card;
+}
+
+#else  // USE_BLOCK_DEVICE_INTERFACE || HAS_SDIO_CLASS
+
+FsBlockDeviceInterface* SDCardManager::rawBlockDevice() { return nullptr; }
+FsBlockDeviceInterface* SDCardManager::detachFilesystemForRawAccess() { return nullptr; }
+
+#endif  // USE_BLOCK_DEVICE_INTERFACE || HAS_SDIO_CLASS
+#endif  // FREEINK_SD_SDMMC
 
 bool SDCardManager::ready() const {
   return initialized;

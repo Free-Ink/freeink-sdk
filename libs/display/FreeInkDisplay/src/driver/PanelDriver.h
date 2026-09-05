@@ -100,6 +100,7 @@ class PanelDriver {
   virtual void seedPreviousFrame(EpdBus& bus, const uint8_t* buf) { (void)bus; (void)buf; }
 
   // --- grayscale (dual-plane LSB/MSB) ---
+  virtual bool supportsGrayscale() const { return false; }
   virtual bool supportsStripGrayscale() const { return false; }
   // True when displayGrayscaleBase() DEFERS the base activation so the gray
   // planes join it in a single waveform (Paper Mono). Hosts should then route the
@@ -135,9 +136,11 @@ class PanelDriver {
   }
   virtual void prepareGrayscaleTarget(const uint8_t* bw) { (void)bw; }
   virtual void displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut, bool factoryMode) {
+    (void)bus;
+    (void)fb;
+    (void)turnOff;
     (void)lut;
     (void)factoryMode;
-    display(bus, fb, nullptr, RefreshMode::Fast, turnOff);
   }
   // Diagnostic four-gray comparison. The full frame is first rendered with
   // the controller's flashing OTP waveform; `custom*` is then rebuilt with the

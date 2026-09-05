@@ -388,6 +388,34 @@ void EpdBus::waitRefreshComplete(const char* tag) {
   }
 }
 
+void EpdBus::sendPlane(uint8_t ramCmd, const uint8_t* plane, uint32_t sizeBytes) {
+  cmd(ramCmd);
+  beginTxn();
+  uint32_t offset = 0;
+  while (offset < sizeBytes) {
+    const uint16_t n = static_cast<uint16_t>(sizeBytes - offset < 4096 ? sizeBytes - offset : 4096);
+    rawWriteBytes(plane + offset, n);
+    offset += n;
+  }
+  endTxn();
+}
+
+void EpdBus::sendPlaneInverted(uint8_t ramCmd, const uint8_t* plane, uint32_t sizeBytes) {
+  uint8_t chunk[256];
+  cmd(ramCmd);
+  beginTxn();
+  uint32_t offset = 0;
+  while (offset < sizeBytes) {
+    const uint16_t n = static_cast<uint16_t>(sizeBytes - offset < sizeof(chunk) ? sizeBytes - offset : sizeof(chunk));
+    for (uint16_t i = 0; i < n; ++i) {
+      chunk[i] = static_cast<uint8_t>(~plane[offset + i]);
+    }
+    rawWriteBytes(chunk, n);
+    offset += n;
+  }
+  endTxn();
+}
+
 void EpdBus::sendPlaneFlipped(uint8_t ramCmd, const uint8_t* plane, uint16_t height, uint16_t widthBytes) {
   cmd(ramCmd);  // own CS pulse
   beginTxn();   // single CS-low burst for the whole plane

@@ -8,6 +8,9 @@
 #if FREEINK_DEVICE_PAPERMONO
 #include <PaperMonoBoard.h>
 #endif
+#if FREEINK_DEVICE_WS397
+#include <Axp2101.h>
+#endif
 
 // Consumer escape hatch for boards whose EPD power/reset live behind glue the
 // SDK doesn't know. Weak REFERENCES only — an SDK-internal implementation
@@ -23,12 +26,14 @@ namespace {
 void boardEpdPower(bool enabled) {
 #if FREEINK_DEVICE_PAPERMONO
   freeink::papermono::setEpdPower(enabled);
+#elif FREEINK_DEVICE_WS397
+  freeink::axp2101::setEpdPower(enabled);  // ALDO3, not a GPIO
 #else
   if (freeink_board_epd_power) freeink_board_epd_power(enabled);
 #endif
 }
 bool boardEpdPowerAvailable() {
-#if FREEINK_DEVICE_PAPERMONO
+#if FREEINK_DEVICE_PAPERMONO || FREEINK_DEVICE_WS397
   return true;
 #else
   return freeink_board_epd_power != nullptr;

@@ -672,6 +672,11 @@ static const Ssd1677Config& ssd1677ActiveConfig() { return FREEINK_SSD1677_CONFI
 static const Ssd1677Config& ssd1677ActiveConfig() {
   switch (BoardConfig::ACTIVE.board) {
     case BoardConfig::Board::Sticky: return ssd1677StickyConfig();
+    // Waveshare ESP32-S3-ePaper-3.97: the vendor driver's bring-up is byte-identical
+    // to Seeed's (booster AE C7 C3 C0 80, border 0x01, 0x22 = F7 full / FF partial /
+    // D7 fast), so it runs the same config. Grayscale LUT is Sticky's — same panel
+    // class, but tune here if a unit shows banding.
+    case BoardConfig::Board::WsEpaper397: return ssd1677StickyConfig();
     // X4 Pro runs on the stock X4/GDEQ0426T82 config — same controller and panel
     // class, confirmed painting on hardware. No custom LUT or drive voltages needed.
     // Layers the fast-DU shortcut only when the build opts in (ssd1677X4ProConfig).

@@ -75,6 +75,13 @@ class Uc8279X4Driver : public PanelDriver {
   void display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) override;
   bool displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) override;
   void displayFinish(EpdBus& bus, const uint8_t* fb) override;
+  // Refresh only a rectangular region. Without this the base PanelDriver
+  // implementation repaints the whole panel, which costs ~554 ms on this glass
+  // and makes per-keystroke updates unusable. Falls back to a full Fast refresh
+  // whenever a differential partial would be invalid (no synced OLD plane, a
+  // pending full clear, or a non-byte-aligned x/w).
+  void displayWindow(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, uint16_t x, uint16_t y, uint16_t w,
+                     uint16_t h, bool turnOff) override;
   bool supportsAsyncDisplay() const override { return true; }
 
   void requestResync(uint8_t settlePasses) override;
@@ -168,6 +175,10 @@ class Uc8279X4Driver : public PanelDriver {
   bool _pendingRefresh = false;
   bool _pendingTurnOff = false;
   bool _pendingPartial = false;
+  // Set by displayWindow() for the duration of one refresh; consumed by
+  // displayStart() when it builds the PTL (0x90) descriptor.
+  bool _winActive = false;
+  uint16_t _winX = 0, _winY = 0, _winW = 0, _winH = 0;
 };
 
 PanelDriver& uc8279X4Driver();

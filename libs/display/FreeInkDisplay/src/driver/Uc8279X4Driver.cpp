@@ -456,14 +456,19 @@ bool Uc8279X4Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t*
   if (fast) {
     // Stock NEVER issues PTIN without a PTL (0x90) window — with PTL unset the
     // DU scans but develops nothing (first field unit: 443 ms DRF, no image).
-    // Full-screen window; gate coords carry the 120-gate visible offset.
-    const uint16_t xEnd = _w - 1;
-    const uint16_t yStart = _cfg.gateOffset;
-    const uint16_t yEnd = _cfg.gateOffset + _h - 1;
+    // Gate coords carry the 120-gate visible offset, so framebuffer row y is
+    // panel gate line (gateOffset + y). Whole panel unless displayWindow() set
+    // a region for this refresh.
+    const uint16_t xStart = _winActive ? static_cast<uint16_t>(_winX) : 0;
+    const uint16_t xEnd = _winActive ? static_cast<uint16_t>(_winX + _winW - 1) : static_cast<uint16_t>(_w - 1);
+    const uint16_t yTop = _winActive ? _winY : 0;
+    const uint16_t yBot = _winActive ? static_cast<uint16_t>(_winY + _winH - 1) : static_cast<uint16_t>(_h - 1);
+    const uint16_t yStart = static_cast<uint16_t>(_cfg.gateOffset + yTop);
+    const uint16_t yEnd = static_cast<uint16_t>(_cfg.gateOffset + yBot);
     bus.cmd(CMD_PARTIAL_IN);
     bus.cmd(CMD_PARTIAL_WINDOW);
-    bus.data(0x00);
-    bus.data(0x00);  // x start, byte-aligned (& 0xF8)
+    bus.data(static_cast<uint8_t>(xStart >> 8));
+    bus.data(static_cast<uint8_t>(xStart & 0xF8));  // x start, byte-aligned
     bus.data(static_cast<uint8_t>(xEnd >> 8));
     bus.data(static_cast<uint8_t>(xEnd | 0x07));
     bus.data(static_cast<uint8_t>(yStart >> 8));
@@ -487,6 +492,37 @@ bool Uc8279X4Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t*
   _pendingTurnOff = turnOff;
   _pendingRefresh = true;
   return true;
+}
+
+// Refresh a single rectangle instead of the whole panel.
+//
+// The heavy cost on this glass is the DRF waveform, which scans gate lines; the
+// two full-plane SPI uploads (DTM2 before, DTM1 after) are unchanged and remain
+// the fixed floor. Narrowing the PTL window narrows the scan.
+//
+// Any condition that would make a differential DU invalid falls back to the
+// ordinary whole-panel Fast path rather than producing a wrong image.
+void Uc8279X4Driver::displayWindow(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, uint16_t x, uint16_t y,
+                                   uint16_t w, uint16_t h, bool turnOff) {
+  const bool alignable = (x % 8 == 0) && (w % 8 == 0);
+  const bool inBounds = w > 0 && h > 0 && (uint32_t)x + w <= _w && (uint32_t)y + h <= _h;
+  const bool diffValid = _oldPlaneValid && !_needFullClear;
+  if (!fb || !alignable || !inBounds || !diffValid) {
+    display(bus, fb, prev, RefreshMode::Fast, turnOff);
+    return;
+  }
+
+  _winActive = true;
+  _winX = x;
+  _winY = y;
+  _winW = w;
+  _winH = h;
+  // displayStart() builds the PTL from the window; displayFinish() rides out the
+  // waveform, issues PTOUT and re-syncs the OLD plane from the full framebuffer,
+  // so the next partial still diffs against a complete baseline.
+  const bool deferred = displayStart(bus, fb, prev, RefreshMode::Fast, turnOff);
+  if (deferred) displayFinish(bus, fb);
+  _winActive = false;
 }
 
 void Uc8279X4Driver::displayFinish(EpdBus& bus, const uint8_t* fb) {

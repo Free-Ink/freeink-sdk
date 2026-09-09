@@ -53,6 +53,8 @@ class Uc8279Driver : public PanelDriver {
   // run the OEM XTF_PRE_BW_MID "AA-pre-BW(mid)" settle before the gray planes.
   bool supportsStripGrayscale() const override { return true; }
   bool supportsAsyncGrayscaleBase() const override { return false; }
+  // factoryMode passes run the stock XTH4 four-tone bank on absolute planes.
+  bool supportsAbsoluteGrayPlanes() const override { return true; }
   void displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, RefreshMode fallback, bool turnOff) override;
   void preconditionGrayscale(EpdBus& bus, uint16_t x, uint16_t y, uint16_t w, uint16_t h) override;
   void copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) override;
@@ -72,6 +74,8 @@ class Uc8279Driver : public PanelDriver {
   void loadBank(EpdBus& bus, const uint8_t (*bank)[43]);
   // Load the raw (non-prefixed) 49-byte XTF_AA grayscale bank: 0x20+i then table.
   void loadXtfAa(EpdBus& bus);
+  // Load the raw 49-byte XTH4 four-tone bank for absolute planes (see .cpp).
+  void loadXth4(EpdBus& bus);
   // Blocking PON -> DRF -> wait (-> POF) used by the grayscale paths.
   void triggerGrayRefresh(EpdBus& bus, bool turnOff);
   // Enter the full 792x528 PTL partial window (PTIN + PTL). ALL RAM plane writes

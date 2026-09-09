@@ -182,6 +182,9 @@ class FreeInkDisplay {
   // True when the selected driver can use an ordinary deferred B/W refresh as
   // the base for a following grayscale pass.
   bool supportsAsyncGrayscaleBase() const;
+  // True when displayGrayBuffer(factoryMode=true) consumes absolute planes
+  // (plane0 = white|dark gray, plane1 = white|light gray) - see PanelDriver.
+  bool supportsAbsoluteGrayPlanes() const;
 
   // ------------------------------------------------------------------------
   // CrossPoint EInkDisplay compatibility surface.

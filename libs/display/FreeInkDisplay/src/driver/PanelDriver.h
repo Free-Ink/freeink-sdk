@@ -158,6 +158,14 @@ class PanelDriver {
     (void)numRows;
   }
   virtual void prepareGrayscaleTarget(const uint8_t* bw) { (void)bw; }
+  // True when displayGray(factoryMode=true) runs an absolute four-tone waveform
+  // that consumes ABSOLUTE planes instead of the differential LSB/MSB masks:
+  // plane0 (Lsb) bit set = white or dark gray, plane1 (Msb) bit set = white or
+  // light gray, so both set = white and both clear = black. Hosts must render
+  // the planes in that format for factoryMode passes on such drivers; plain
+  // black-and-white content is simply the B/W frame in both planes.
+  // Non-factory passes keep the mask encoding.
+  virtual bool supportsAbsoluteGrayPlanes() const { return false; }
   virtual void displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut, bool factoryMode) {
     (void)lut;
     (void)factoryMode;

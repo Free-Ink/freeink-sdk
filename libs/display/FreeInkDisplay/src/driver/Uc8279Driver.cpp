@@ -77,6 +77,22 @@ void Uc8279Driver::loadXtfAa(EpdBus& bus) {
   }
 }
 
+void Uc8279Driver::loadXth4(EpdBus& bus) {
+  // Stock XTH4 four-tone bank for factoryMode image passes. The host supplies
+  // ABSOLUTE planes (plane0 = white|dark, plane1 = white|light), so the
+  // (old,new) pair per pixel is black=(0,0) BB, dark=(1,0) WB, light=(0,1) BW,
+  // white=(1,1) WW. The stock table order is VCOM, then the rows that settle
+  // to black, light gray, dark gray and white; register them to the pair that
+  // selects each level. Measured on ZHX368: levels come out in order and the
+  // 8-gate-line banding of the short AA nudge drops below 1% of range.
+  // Registers: VCOM 0x20, WW 0x21, BW 0x22, WB 0x23, BB 0x24.
+  static constexpr uint8_t kReg[5] = {0x20, 0x24, 0x22, 0x23, 0x21};
+  for (int t = 0; t < 5; t++) {
+    bus.cmd(kReg[t]);
+    bus.data(kUc8279X3_Xth4[t], 49);
+  }
+}
+
 void Uc8279Driver::grayWindowIn(EpdBus& bus) {
   // PTIN + the full-panel PTL (same 792x528 window the init sets): X 0..791,
   // Y 0..527 in gate space, PT_SCAN=1. Keeps plane writes/refresh at 99-byte
@@ -292,17 +308,21 @@ void Uc8279Driver::writeGrayscalePlaneStrip(EpdBus& bus, GrayPlane plane, const 
 void Uc8279Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut,
                                bool factoryMode) {
   (void)fb;
-  (void)lut;  // waveform is the built-in XTF_AA bank
+  (void)lut;  // waveform is a built-in bank: XTF_AA nudge, or XTH4 for factoryMode
   if (!_lsbValid) return;
   // Differential grayscale leaves the gray bank/planes loaded, so the next B/W
   // turn must revert first; factory absolute mode self-cleans.
   _inGrayscaleMode = !factoryMode;
   // PSR REG=1 (external LUT) is already set from init and untouched by the B/W
-  // path, so just load the AA bank + CDI and refresh (FUN_42015108/42013be0).
+  // path, so just load the bank + CDI and refresh (FUN_42015108/42013be0).
   // The refresh MUST run in the partial window (like the plane writes); also
   // resets PTL to full after any per-strip writeGrayscalePlaneStrip windows.
   grayWindowIn(bus);
-  loadXtfAa(bus);
+  if (factoryMode) {
+    loadXth4(bus);  // absolute planes, ~1 s four-tone refresh
+  } else {
+    loadXtfAa(bus);
+  }
   bus.cmd(CMD_VCOM_DATA_INTERVAL);
   bus.data(_firstRefresh ? kUc8279X3_CdiFirst : kUc8279X3_CdiLater);
   triggerGrayRefresh(bus, turnOff);

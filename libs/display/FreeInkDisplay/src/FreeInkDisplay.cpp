@@ -567,6 +567,10 @@ bool FreeInkDisplay::supportsAsyncRefresh() const {
   return !_inverted && !_inversionDirty && _driver != nullptr && _driver->supportsAsyncDisplay();
 }
 
+bool FreeInkDisplay::supportsAbsoluteGrayPlanes() const {
+  return !_inverted && _driver != nullptr && _driver->supportsAbsoluteGrayPlanes();
+}
+
 bool FreeInkDisplay::supportsAsyncGrayscaleBase() const {
   return !_inverted && !_inversionDirty && _driver != nullptr && _driver->supportsAsyncGrayscaleBase();
 }

@@ -58,11 +58,14 @@
 //     CDI (0x97/0xD7 via FUN_42013c7e) -> PON -> DRF -> wait ("gray wait").
 //   E0=02 / E5=5A appear ONLY in the optional AA pre-conditioning pass
 //   (FUN_42015944, "AA-pre-BW(mid)"), which runs XTF_PRE_BW_MID BEFORE the
-//   grayscale frame — not part of any plain B/W refresh. XTH4 is an alternate
-//   4-gray table set. Wired into Uc8279Driver's grayscale path (mirrors the
-//   UC8253 X3 sibling): copyGrayscaleLsb/Msb + writeGrayscalePlaneStrip load
-//   the planes, displayGrayscaleBase/preconditionGrayscale run XTF_PRE_BW_MID,
-//   displayGray runs XTF_AA. PENDING HARDWARE VALIDATION.
+//   grayscale frame — not part of any plain B/W refresh. XTH4 is the stock
+//   four-tone image waveform (~80 frames, DC-balanced per table); it drives
+//   to an absolute level and is used by displayGray(factoryMode) with absolute
+//   planes (see Uc8279Driver::loadXth4 for the register assignment). Wired
+//   into Uc8279Driver's grayscale path (mirrors the UC8253 X3 sibling):
+//   copyGrayscaleLsb/Msb + writeGrayscalePlaneStrip load the planes,
+//   displayGrayscaleBase/preconditionGrayscale run XTF_PRE_BW_MID, displayGray
+//   runs XTF_AA (differential masks) or XTH4 (factoryMode, absolute planes).
 
 #include <stdint.h>
 

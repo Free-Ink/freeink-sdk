@@ -130,6 +130,24 @@ static const Ssd1677Config& ssd1677StickyTextConfig() {
   return cfg;
 }
 
+// Waveshare ESP32-S3-ePaper-3.97. Bring-up is byte-identical to the Sticky's, so
+// it starts from that config and adds the vendor's fast clean: EPD_3IN97_Init_Fast
+// writes 0x1A = 0x6A and EPD_3IN97_TurnOnDisplay_Fast activates 0x22 = 0xD7, a
+// ~1.5 s full-panel clean against 0xF7's ~2.1 s. 0xD7 leaves the load-temperature
+// bit clear, so the 0x1A byte written just before it is what selects the OTP
+// waveform — under 0xF7 (bit5 set) the sensor read overwrites it and the write is
+// a no-op. FULL keeps 0xF7 for the manual "clean the panel" refresh.
+static const Ssd1677Config& ssd1677Ws397Config() {
+  static const Ssd1677Config cfg = [] {
+    Ssd1677Config c = ssd1677StickyConfig();
+    c.halfSeqOverride = 0xD7;
+    c.halfRefreshTemp = 0x6A;
+    c.grayPowerDownAfter = true;
+    return c;
+  }();
+  return cfg;
+}
+
 #if FREEINK_DEVICE_METALIO_EINK4
 // GDEM0397T81 settings from metalio-hw-test. B/W refreshes use its OTP waveforms
 // via the vendor 0x22 sequence values; the vendor's separately supplied partial
@@ -1340,11 +1358,10 @@ static const Ssd1677Config& ssd1677ActiveConfig() {
     case BoardConfig::Board::MetalioEInk4: return ssd1677MetalioConfig();
 #endif
     case BoardConfig::Board::Sticky: return ssd1677StickyTextConfig();
-    // Waveshare ESP32-S3-ePaper-3.97: the vendor driver's bring-up is byte-identical
-    // to Seeed's (booster AE C7 C3 C0 80, border 0x01, 0x22 = F7 full / FF partial /
-    // D7 fast), so it runs the same config. Grayscale LUT is Sticky's — same panel
+    // Waveshare ESP32-S3-ePaper-3.97: Sticky's config plus the vendor's 0xD7/0x6A
+    // fast clean (see ssd1677Ws397Config). Grayscale LUT is Sticky's — same panel
     // class, but tune here if a unit shows banding.
-    case BoardConfig::Board::WsEpaper397: return ssd1677StickyConfig();
+    case BoardConfig::Board::WsEpaper397: return ssd1677Ws397Config();
 #if FREEINK_DEVICE_PICCO
     // Onyx Picco / BOOX Tiles: per-panel config picked from the panel's user ID
     // (see ssd1677PiccoConfig).

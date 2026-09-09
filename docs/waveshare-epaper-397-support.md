@@ -36,8 +36,43 @@ guess:
 The controller is SSD1677-class and the vendor bring-up is byte-identical to the
 Seeed Sticky's — booster `AE C7 C3 C0 80`, driver output scan `0x02`, data entry
 `0x01`, border `0x01`, and update sequences `0x22 = F7` (full) / `FF` (partial) /
-`D7` (fast). `ssd1677ActiveConfig()` therefore returns `ssd1677StickyConfig()` for
-this board, including its grayscale LUT.
+`D7` (fast). `ssd1677Ws397Config()` is therefore `ssd1677StickyConfig()` plus the
+vendor's fast clean, and reuses its grayscale LUT.
+
+### Refresh sequences
+
+| CrossPoint mode | `0x22` | `0x3C` | Vendor equivalent | Cost |
+|---|---|---|---|---|
+| FAST (page turn) | `FF` | `80` | `EPD_3IN97_Display_Partial` | ~407 ms |
+| HALF (periodic clean, boot paint) | `D7` after `0x1A = 6A` | `01` | `Init_Fast` + `TurnOnDisplay_Fast` | ~1.5 s |
+| FULL (manual refresh) | `F7` | `01` | `EPD_3IN97_Display` | ~2.1 s |
+
+HALF is the board's own config field, not the Sticky's: `EPD_3IN97_Init_Fast`
+writes `0x1A = 0x6A` and activates `0x22 = 0xD7`. `0xD7` leaves the
+load-temperature bit clear, so that `0x1A` byte is what selects the OTP waveform —
+under the Sticky's `0xF7` (bit 5 set) the sensor read overwrites it and the `0x1A`
+write is a no-op. The periodic every-N-pages clean and the first paint after
+boot/wake both take this path.
+
+### Why a page turn is two waveforms
+
+With text anti-aliasing on, one page turn drives the panel twice, and both passes
+are visible:
+
+1. **B/W partial** — `0x22 = FF`, ~407 ms. Paints the whole page, aliased.
+2. **Grayscale** — external LUT via `0x32`, `0x22 = CC`, ~226 ms. Drives only the
+   AA edge pixels.
+
+That split is structural, not a bug. The AA LUT's first group (`lut_grayscale_sticky`
+level `00`, both plane bits clear) is all zeros — no drive. Pure black and pure
+white both land in that group, so the gray pass *cannot* paint the page body; it
+only darkens the two intermediate levels the B/W pass left as solid pixels. This is
+why `combinesGrayscaleBase()` stays false for SSD1677 (only Paper Mono merges base
+and grays into one waveform).
+
+The vendor demo looks smoother because it only ever does step 1. Turning off
+**Settings -> text anti-aliasing** gives exactly that: one `0xFF` partial per page,
+no second pass.
 
 ## AXP2101 (Axp2101.h)
 
@@ -108,8 +143,14 @@ Bring-up on a unit, reading an EPUB end to end:
 
 ## Pending hardware validation
 
-* **Grayscale LUT** — reused from the Sticky; retune if a unit shows banding on
-  covers.
+* **Grayscale LUT** — reused from the Sticky. `setCustomLut()` force-writes the X4's
+  voltage tail (VGH `0x17`, VSH1 `0x41`, VSH2 `0xA8`, VSL `0x32`, VCOM `0x30`) over
+  this module's OTP calibration on every AA refresh, so mid-grays are the thing to
+  check: read a page of AA text and open a cover. Banding or mid-grays collapsing
+  toward B/W means retuning VCOM (byte 109) in single steps first, then VSH1
+  (byte 106) — in a ws397 copy of the LUT, not the shared Sticky one.
+* **HALF at `0xD7`/`0x6A`** — matches the vendor's fast-update init, but has not been
+  timed on a unit yet.
 * **Battery curve** — the AXP2101 fuel gauge learns its curve at runtime; SoC may
   be coarse until it has seen a full charge cycle.
 * **SPI clock** — 20 MHz is the vendor value and it is NOT worth raising: a page

@@ -1205,7 +1205,8 @@ void Ssd1677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
     // sequence (its enable bits are a no-op on already-up rails).
     if (_cfg.grayPowerUpFirst) powerOn(bus);
     // Sticky AA follows the caller's power policy on either board.
-    refresh(bus, RefreshMode::Fast, turnOff || (_cfg.piccoWaveforms && selectedLut != lut_grayscale_sticky));
+    refresh(bus, RefreshMode::Fast,
+            turnOff || _cfg.grayPowerDownAfter || (_cfg.piccoWaveforms && selectedLut != lut_grayscale_sticky));
   }
 
   setCustomLut(bus, false, nullptr);

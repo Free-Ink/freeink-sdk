@@ -586,11 +586,13 @@ void Ssd1677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
     // ignore RED RAM and break 4-level grayscale.
     bus.cmd(CMD_DISPLAY_UPDATE_CTRL1);
     bus.data(CTRL1_NORMAL);
+    // Keep rails on after the factory gray paint. Running ANALOG_OFF/CLOCK_OFF in
+    // the same activation can disturb settled gray particles and reintroduce smear.
     bus.cmd(CMD_DISPLAY_UPDATE_CTRL2);
-    bus.data(0xC7);  // CLOCK_ON|ANALOG_ON|DISPLAY_START|ANALOG_OFF|CLOCK_OFF
+    bus.data(0xCC);  // CLOCK_ON|ANALOG_ON|MODE_SELECT|DISPLAY_START
     bus.cmd(CMD_MASTER_ACTIVATION);
-    bus.waitBusy("factory_gray");
-    _isScreenOn = false;  // 0xC7 always powers down after the update
+    bus.waitRefreshComplete("factory_gray");
+    _isScreenOn = true;
   } else {
     // Settled rails before the gray waveform (no-op where the panel is already
     // on, i.e. the X4's fast path). refresh() then runs the 0xCC external-LUT

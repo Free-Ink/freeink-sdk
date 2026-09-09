@@ -21,6 +21,10 @@ struct ListItem {
   // value string is ignored when set. Activation stays row-level via action.
   bool toggle = false;
   bool toggleChecked = false;
+  // Optional section heading drawn immediately before this selectable row.
+  // It shares the row's logical index and interaction value. Kept last so
+  // existing aggregate initializers remain source-compatible.
+  const char *sectionHeading = nullptr;
 };
 
 struct ListNav;
@@ -41,7 +45,9 @@ struct ListProps {
   // pin tens of KB of ListItems + label strings for rows that are never
   // drawn. list() only touches indexes in [topIndex, topIndex + visible],
   // so the caller must keep the window covering that range (refresh it after
-  // viewport changes, before list()). 0 = items is the full array.
+  // viewport changes, before list()). Set props.nav for a window whose top may
+  // enter the last fixed-height page; otherwise list() may clamp top below the
+  // supplied window. 0 = items is the full array.
   uint16_t itemsWindowFirst = 0;
   // Number of ListItems supplied in `items` when it is a virtual window.
   // Set this whenever itemsWindowFirst is non-zero (or the supplied array is
@@ -164,6 +170,14 @@ struct ListNav {
   // yet). With variable-height rows this is the real page size, unlike the
   // fixed-height visibleRows estimate.
   int drawnRows = 0;
+  // props.count that drawnRows was measured against. A caller that reloads
+  // its data (a File Browser folder, a filtered list) keeps the same nav, so
+  // a measurement from a different row set must not be trusted as this list's
+  // page size. list() sets it alongside the feedback below. It only catches a
+  // reload that CHANGES the count: same-count new content (a rename, a
+  // re-sort) still inherits the old measurement, which is close enough
+  // because the next layout corrects it.
+  int drawnCount = 0;
   // A follow() is awaiting confirmation from onListRendered() that the
   // selection was actually drawn. Swipe scrolling (scrollBy) never sets this:
   // the selection is allowed off-screen there by design.
@@ -178,12 +192,30 @@ struct ListNav {
     visibleRows = 1;
     followOnBuild = true;
     drawnRows = 0;
+    drawnCount = 0;
     followPending = false;
     rebuildNeeded = false;
   }
 
+  // Whether drawnRows describes a layout of `count` rows.
+  bool trusts(const int count) const {
+    return drawnRows > 0 && (drawnCount == 0 || drawnCount == count);
+  }
+
   // Real rows per page once a build has run; the fixed-height estimate before.
+  // Unchecked: it trusts the last measurement whatever list it was taken on.
+  // Callers that know their current count should use pageRowsFor(count).
   int pageRows() const { return drawnRows > 0 ? drawnRows : visibleRows; }
+
+  // pageRows() for a caller that knows the list's current count: a
+  // measurement taken on a different count belongs to another row set, so it
+  // falls back to the estimate. Every clamp and page step (here, in list(),
+  // and in callers) must agree on this rule, or one of them scrolls to a
+  // viewport another one refuses to draw. drawnCount 0 means "not recorded"
+  // (a caller driving onListRendered() itself), which stays trusted.
+  int pageRowsFor(const int count) const {
+    return trusts(count) ? drawnRows : visibleRows;
+  }
 
 
   // Layout feedback from list(): the effective top it drew from, how many
@@ -226,7 +258,7 @@ struct ListNav {
   // tail rows unreachable (and fight onListRendered's follow correction).
   bool scrollBy(const int deltaRows, const int count) {
     const int pageSize =
-        drawnRows > 0 && drawnRows < visibleRows ? drawnRows : visibleRows;
+        trusts(count) && drawnRows < visibleRows ? drawnRows : visibleRows;
     int maxTop = count - pageSize;
     if (maxTop < 0)
       maxTop = 0;
@@ -242,6 +274,8 @@ struct ListNav {
   }
 
   // Pull the viewport the minimal amount so the selection is visible.
+  // selected and top must both use absolute row indexes; callers that keep a
+  // focus sentinel in selected must translate before calling follow().
   void follow(const int count) {
     followPending = true; // confirmed (or corrected) by onListRendered()
     const uint16_t rows =
@@ -311,7 +345,32 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
       props.scrollIndicatorInset < 0 ? 0 : props.scrollIndicatorInset;
   const int16_t rowInset = props.rowInset < 0 ? 0 : props.rowInset;
   const uint16_t visible = listVisibleRows(rect, rowH, rowGap);
-  const bool overflows = props.count > visible;
+  // A nav-managed list reports how many indexes its last layout actually laid
+  // out. Variable-height rows (wrapped labels/subtitles) routinely fit fewer
+  // than the fixed-height `visible` estimate, so a list whose count is within
+  // that estimate can still be clipped. Treating it as non-overflowing would
+  // pin `top` at 0 below, discarding both swipe scrolling and the nav's
+  // follow correction: the clipped tail rows would be unreachable by any
+  // input, and the scroll indicator would never appear.
+  // The measurement only speaks for the row set it was taken on, so a caller
+  // that reloaded its data (same nav, new items) falls back to the estimate.
+  const bool measured =
+      props.nav != nullptr && props.nav->trusts(props.count);
+  const bool measuredClip = measured && props.nav->drawnRows < props.count;
+  const bool overflows = props.count > visible || measuredClip;
+  // Page size for the scroll indicator: the measured rows when the layout
+  // fits fewer than the estimate, so a clipped list still shows a thumb.
+  const uint16_t pageRows = measured && props.nav->drawnRows < visible
+                                ? static_cast<uint16_t>(props.nav->drawnRows)
+                                : visible;
+  // A nav-managed list always keeps the indicator's strip clear, whether or
+  // not this pass draws one. Its overflow state is discovered by measuring,
+  // so a strip that came and went would (a) leave the widened rows of an
+  // earlier pass on screen, because callers repaint the rebuild pass over the
+  // first one without clearing, and (b) measure the layout at a width the
+  // list does not always draw with, which can report a clip that full-width
+  // rows would not have had - and measuredClip then latches it.
+  const bool reserveScrollStrip = overflows || props.nav != nullptr;
   uint16_t top = props.topIndex;
   if (top > props.count - 1)
     top = props.count - 1;
@@ -329,22 +388,26 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
       overflows ? static_cast<uint16_t>(top + visible) : props.count;
 
   Rect rowArea = rect;
+  // Width the reserved strip took from the rows, 0 when none was taken.
+  int16_t stripCut = 0;
   if (rowInset > 0) {
     rowArea.x = static_cast<int16_t>(rowArea.x + rowInset);
     rowArea.width = static_cast<int16_t>(rowArea.width - rowInset * 2);
   }
-  if (props.scrollIndicator && overflows && scrollW > 0) {
+  if (props.scrollIndicator && reserveScrollStrip && scrollW > 0) {
     // Rows only give up width when the row inset margin doesn't already
     // clear the track (plus its bezel inset) plus 2px of air.
     const int16_t needed = static_cast<int16_t>(scrollW + scrollInset + 2);
     if (rowInset < needed) {
-      const int16_t cut = static_cast<int16_t>(needed - rowInset);
-      rowArea.width = static_cast<int16_t>(rowArea.width - cut);
+      stripCut = static_cast<int16_t>(needed - rowInset);
+      rowArea.width = static_cast<int16_t>(rowArea.width - stripCut);
       if (scrollLeft)
-        rowArea.x = static_cast<int16_t>(rowArea.x + cut);
+        rowArea.x = static_cast<int16_t>(rowArea.x + stripCut);
     }
-    drawListScrollIndicator(frame.target(), rect, props.count, visible, top,
-                            scrollW, scrollLeft ? 1 : 0, scrollInset);
+    if (overflows) {
+      drawListScrollIndicator(frame.target(), rect, props.count, pageRows, top,
+                              scrollW, scrollLeft ? 1 : 0, scrollInset);
+    }
   }
 
   // Cursor-based layout: section header rows are shorter than item rows, so
@@ -460,8 +523,26 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
     } else if (labelLines > 1) {
       itemH = static_cast<int16_t>(rowH + labelLh * (labelLines - 1));
     }
-    if (static_cast<int16_t>(cursorY + itemH) > rowArea.bottom())
+    const bool hasSectionHeading = item.sectionHeading != nullptr && item.sectionHeading[0] != '\0';
+    const int16_t sectionPad = hasSectionHeading && i != top ? props.sectionGap : 0;
+    const int16_t sectionH =
+        hasSectionHeading ? static_cast<int16_t>(sectionPad + headerH + rowGap) : 0;
+    if (static_cast<int16_t>(cursorY + sectionH + itemH) > rowArea.bottom())
       break;
+    if (hasSectionHeading) {
+      cursorY = static_cast<int16_t>(cursorY + sectionPad);
+      Rect headerRow{static_cast<int16_t>(rowArea.x + sidePad), cursorY,
+                     static_cast<int16_t>(rowArea.width - sidePad * 2),
+                     headerLh};
+      frame.target().text(headerRow, item.sectionHeading, props.headerText);
+      if (props.headerUnderline) {
+        frame.target().fill(Rect{headerRow.x,
+                                 static_cast<int16_t>(cursorY + headerLh + 2),
+                                 headerRow.width, 1},
+                            Paint::solid(props.headerText.color));
+      }
+      cursorY = static_cast<int16_t>(cursorY + headerH + rowGap);
+    }
     ++drawnRows;
     ++consumedIndexes;
     if (props.selectedIndex == static_cast<int16_t>(i))
@@ -490,8 +571,20 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
       // (findTouch skips disabled interactions).
       const State hitState = static_cast<State>(
           static_cast<int>(state) & ~static_cast<int>(StateDisabled));
-      frame.hit(
-          ensureMinTouchRect(row, frame.device().minTouchSize, frame.screen()),
+      // A reserved strip with no indicator in it is empty screen, so the row
+      // stays touchable across it: a nav list that fits would otherwise lose
+      // a band at the edge that no longer snaps back (ensureMinTouchRect only
+      // closes gaps under EDGE_SNAP_PX). Hugging rows keep their own width,
+      // and so does a drag-masked row, whose position maps through this rect.
+      Rect hitRow = row;
+      if (!overflows && stripCut > 0 && !props.hugContents &&
+          !acceptsInput(props.inputMask, InputDrag)) {
+        hitRow.width = static_cast<int16_t>(hitRow.width + stripCut);
+        if (scrollLeft)
+          hitRow.x = static_cast<int16_t>(hitRow.x - stripCut);
+      }
+      frame.hit(ensureMinTouchRect(hitRow, frame.device().minTouchSize,
+                                   frame.screen()),
           props.action, item.actionValue, props.inputMask, hitState);
     }
     state = frame.stateFor(props.action, item.actionValue, state);
@@ -696,8 +789,22 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
     }
   }
 
-  if (props.nav)
+  if (props.nav) {
+    // First build after a reset(): the nav had no measured page size yet, so
+    // the checks above ran on the fixed-height estimate alone. If this layout
+    // clipped a list that estimate called non-overflowing, ask for one rebuild
+    // so the same render pass repaints with the scroll indicator. The next
+    // pass has drawnRows > 0, so this cannot loop.
+    const bool clipDiscovered = props.nav->drawnRows == 0 &&
+                                consumedIndexes > 0 &&
+                                consumedIndexes < props.count &&
+                                props.count <= visible;
     props.nav->onListRendered(top, consumedIndexes, selectedDrawn);
+    if (consumedIndexes > 0)
+      props.nav->drawnCount = props.count;
+    if (clipDiscovered)
+      props.nav->rebuildNeeded = true;
+  }
 
   if (props.partialTrailingRow && visible > 0) {
     // First index the loop above did NOT lay out. With wrapped rows fewer

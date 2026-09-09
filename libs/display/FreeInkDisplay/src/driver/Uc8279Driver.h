@@ -53,6 +53,7 @@ class Uc8279Driver : public PanelDriver {
   // run the OEM XTF_PRE_BW_MID "AA-pre-BW(mid)" settle before the gray planes.
   bool supportsGrayscale() const override { return true; }
   bool supportsStripGrayscale() const override { return true; }
+  bool supportsAsyncGrayscaleBase() const override { return false; }
   void displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, RefreshMode fallback, bool turnOff) override;
   void preconditionGrayscale(EpdBus& bus, uint16_t x, uint16_t y, uint16_t w, uint16_t h) override;
   void copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) override;
@@ -87,8 +88,8 @@ class Uc8279Driver : public PanelDriver {
   uint32_t _bufferSize;
 
   bool _isScreenOn = false;
-  bool _firstRefresh = true;   // CDI 0x97 on the first refresh after init, 0xD7 after
-  bool _oldPlaneValid = false; // DTM1 holds a real previous frame (differential baseline)
+  bool _firstRefresh = true;    // CDI 0x97 on the first refresh after init, 0xD7 after
+  bool _oldPlaneValid = false;  // DTM1 holds a real previous frame (differential baseline)
   bool _forceFullSyncNext = false;
   // Boot initial-full budget: force GC (strong clear) for this many content
   // paints after begin(), so the first screen after the splash is a real clear

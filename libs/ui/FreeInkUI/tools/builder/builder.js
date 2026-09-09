@@ -9,6 +9,7 @@ const devices = [
   { id: "sticky", label: "Sticky 800x480", width: 800, height: 480 },
   { id: "m5paper", label: "M5Paper 540x960", width: 540, height: 960 },
   { id: "lilygo", label: "LilyGo 960x540", width: 960, height: 540 },
+  { id: "papermono", label: "PaperMono 480x800", width: 480, height: 800 },
 ];
 
 const supported = new Set([

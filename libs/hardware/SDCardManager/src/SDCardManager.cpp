@@ -2,6 +2,7 @@
 
 #include <BoardConfig.h>
 #include <driver/gpio.h>
+#include <esp_task_wdt.h>
 #include <SPI.h>
 #include <new>
 
@@ -273,12 +274,37 @@ bool SDCardManager::readFileToStream(const char* path, Print& out, const size_t 
   uint8_t buf[localBufSize];
   const size_t toRead = (chunkSize == 0) ? localBufSize : (chunkSize < localBufSize ? chunkSize : localBufSize);
 
+  // A big file streams for longer than the task watchdog allows, and nothing in
+  // this loop ever blocks long enough for the caller to feed it. Measured on a
+  // LilyGo T5 S3 Pro, 2026-09-06: a 733 kB file served over WebDAV reset the
+  // board 16 s into the transfer, 545 kB of it already delivered, with
+  // `task_wdt: - loopTask (CPU 1)` and this function in the backtrace.
+  //
+  // The yield belongs here rather than in the caller, which sees one call and
+  // has no place to put it. Budgeted by time, not per chunk: chunks are 256
+  // bytes, so that file is ~2900 iterations and a tick of delay on each would
+  // add ~2.9 s to every large read. Every 100 ms costs ~160 ms in total.
+  //
+  // `esp_task_wdt_reset()` is what actually feeds the watchdog -- `vTaskDelay`
+  // does not -- but it logs an error when the calling task is not subscribed,
+  // so ask once, quietly, instead of on every pass.
+  constexpr uint32_t yieldIntervalMs = 100;
+  const bool watchdogWatchesThisTask = (esp_task_wdt_status(nullptr) == ESP_OK);
+  uint32_t lastYieldMs = millis();
+
   while (f.available()) {
     const int r = f.read(buf, toRead);
-    if (r > 0) {
-      out.write(buf, static_cast<size_t>(r));
-    } else {
+    if (r <= 0) {
       break;
+    }
+    out.write(buf, static_cast<size_t>(r));
+
+    if (millis() - lastYieldMs >= yieldIntervalMs) {
+      if (watchdogWatchesThisTask) {
+        esp_task_wdt_reset();
+      }
+      vTaskDelay(1);  // let every other task on this core run
+      lastYieldMs = millis();
     }
   }
 

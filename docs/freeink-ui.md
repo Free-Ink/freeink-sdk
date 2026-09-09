@@ -977,6 +977,26 @@ freeink::ui::list(ui, rect, props);
 visible and clamps to the valid range, so GPIO up/down navigation gets correct
 scrolling for free.
 
+Rows are not all the same height: a wrapped label or subtitle grows one, so a
+layout routinely fits fewer indexes than `listVisibleRows()` estimates. Screens
+that scroll (swipe or button navigation) should therefore own a `ListNav` and
+call `nav.syncToProps(body, rowHeight, rowGap, count, props)` right before
+`list()`. `list()` reports the viewport it actually laid out back through
+`props.nav`, which gives the nav the real page size (`pageRows()`, the delta to
+page by) and lets it keep a clipped tail reachable. Because that feedback
+arrives only after a layout, a nav-managed screen must render in a small loop:
+
+```cpp
+for (int pass = 0; pass < 8; ++pass) {
+  app.render();
+  if (!nav.consumeRebuildNeeded()) break;
+}
+```
+
+Without the loop a clipped list can paint one frame with the selection or the
+scroll indicator missing. Callers repaint each pass over the previous one, so
+`list()` keeps the row geometry stable across the passes of a single render.
+
 ### Dialogs
 
 `optionDialog` composes a panel, up to three text slots, and a row (or

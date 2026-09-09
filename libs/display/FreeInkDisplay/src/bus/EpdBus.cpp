@@ -1,5 +1,6 @@
 #include "EpdBus.h"
 
+#include <BoardConfig.h>
 #include <driver/gpio.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
@@ -109,6 +110,17 @@ void EpdBus::begin(const EpdPins& pins, uint32_t spiHz, BusyPolarity busy, int8_
 }
 
 void EpdBus::reset(uint16_t extraSettleMs) {
+  if (BoardConfig::isOnePage()) {
+    // OnePage shares GPIO27 between EPD reset and the SD/MIC power rail.
+    // Pulsing it low after Storage.begin() cuts power to the mounted SD card,
+    // causing subsequent SD reads to fail. Keep the rail powered; SSD1677
+    // performs CMD_SOFT_RESET immediately after.
+    if (_pins.rst >= 0) {
+      digitalWrite(_pins.rst, HIGH);
+    }
+    return;
+  }
+
   const auto setReset = [this](bool high) {
     if (_pins.rst >= 0) {
       digitalWrite(_pins.rst, high ? HIGH : LOW);

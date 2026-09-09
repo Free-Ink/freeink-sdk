@@ -169,10 +169,10 @@ class InputManager {
   // Self-clears; async tap, single-swipe, multi-touch-swipe, and rotation
   // queues are gated by the same latch.
   void suppressTouchContact();
-  // True if a touch press or release happened this frame. Coarse "the user
-  // touched the screen" signal (the touch analogue of wasAnyPressed/Released)
-  // for resetting idle/sleep timers and restoring CPU frequency. False on
-  // non-touch boards.
+  // True if a screen-touch press/release or standalone capacitive home-key
+  // event happened this frame. Coarse touch-input signal (the touch analogue
+  // of wasAnyPressed/Released) for resetting idle/sleep timers and restoring
+  // CPU frequency. False on non-touch boards.
   bool wasTouchActivity() const;
   // True on the press edge of the GT911 capacitive home key (controllers
   // without one never report it). Cleared each #update().

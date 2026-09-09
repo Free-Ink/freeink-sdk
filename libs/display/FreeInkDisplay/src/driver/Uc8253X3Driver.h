@@ -30,10 +30,10 @@ struct Uc8253LutBank {
 };
 
 struct Uc8253X3Config {
-  Uc8253LutBank normal;  // condition-pass / settle (CDI 0xA9)
-  Uc8253LutBank half;    // scrub (CDI 0xA9)
-  Uc8253LutBank fast;    // turbo differential (CDI 0x29)
-  Uc8253LutBank full;    // OEM full / factory (CDI 0x29)
+  Uc8253LutBank normal;    // condition-pass / settle (CDI 0xA9)
+  Uc8253LutBank half;      // scrub (CDI 0xA9)
+  Uc8253LutBank fast;      // turbo differential (CDI 0x29)
+  Uc8253LutBank full;      // OEM full / factory (CDI 0x29)
   Uc8253LutBank gc;        // OEM 4-level grayscale nudge (CDI 0x29)
   Uc8253LutBank preBwMid;  // OEM grayscale preconditioning settle (CDI 0xA9)
   uint8_t lutLen;          // bytes per LUT sent to the controller (42)
@@ -63,6 +63,7 @@ class Uc8253X3Driver : public PanelDriver {
 
   bool supportsGrayscale() const override { return true; }
   bool supportsStripGrayscale() const override { return true; }
+  bool supportsAsyncGrayscaleBase() const override { return false; }
   void displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, RefreshMode fallback, bool turnOff) override;
   void preconditionGrayscale(EpdBus& bus, uint16_t x, uint16_t y, uint16_t w, uint16_t h) override;
   void copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) override;

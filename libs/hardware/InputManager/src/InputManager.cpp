@@ -737,7 +737,11 @@ unsigned long InputManager::lastTouchHeldMs() const {
 
 bool InputManager::wasTouchActivity() const {
 #if FREEINK_CAP_TOUCH
-  return touchPressedEvent || touchReleasedEvent;
+  const bool screenActivity = touchPressedEvent || touchReleasedEvent;
+  const bool homeKeyActivity = touchHomeKeyEvent || touchHomeKeyTapEvent || touchHomeKeyLongEvent;
+  // A held screen contact already owns this activity lifecycle. Do not let a
+  // simultaneous Home-key edge retire screen-contact suppression early.
+  return screenActivity || (!touchPressed && homeKeyActivity);
 #else
   return false;
 #endif

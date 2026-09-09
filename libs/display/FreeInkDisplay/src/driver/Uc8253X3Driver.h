@@ -61,6 +61,7 @@ class Uc8253X3Driver : public PanelDriver {
   void displayFinish(EpdBus& bus, const uint8_t* fb) override;
   bool supportsAsyncDisplay() const override { return true; }
 
+  bool supportsGrayscale() const override { return true; }
   bool supportsStripGrayscale() const override { return true; }
   bool supportsAsyncGrayscaleBase() const override { return false; }
   void displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, RefreshMode fallback, bool turnOff) override;

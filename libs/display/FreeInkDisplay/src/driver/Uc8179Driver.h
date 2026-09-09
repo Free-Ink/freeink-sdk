@@ -80,6 +80,7 @@ class Uc8179Driver : public PanelDriver {
   // with the displayed B/W base to recover Factory.bin's absolute 2-bit planes,
   // then sends plane0 -> DTM 0x10 and plane1 -> DTM 0x13. Full-buffer path only
   // (supportsStripGrayscale stays false; conversion needs the complete base).
+  bool supportsGrayscale() const override { return true; }
   void displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, RefreshMode fallback, bool turnOff) override;
   void preconditionGrayscale(EpdBus& bus, uint16_t x, uint16_t y, uint16_t w, uint16_t h) override;
   void copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) override;

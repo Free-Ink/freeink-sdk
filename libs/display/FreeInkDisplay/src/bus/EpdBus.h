@@ -94,6 +94,11 @@ class EpdBus {
   // instead of polling, without the SDK knowing the wake mechanics.
   void setBusyWaitSliceHook(bool (*sliceHook)(int8_t busyPin, uint8_t busyLevel)) { _busyWaitSliceHook = sliceHook; }
 
+  // Send `ramCmd` then `plane` (normal top-to-bottom scan order) as ONE CS-low
+  // data burst.
+  void sendPlane(uint8_t ramCmd, const uint8_t* plane, uint32_t sizeBytes);
+  void sendPlaneInverted(uint8_t ramCmd, const uint8_t* plane, uint32_t sizeBytes);
+
   // Send `ramCmd` then `plane` Y-flipped (gate order, bottom row first) as ONE
   // CS-low data burst — required by UC8253 DTM writes which must not toggle CS
   // mid-stream. (cmd uses its own CS pulse, matching the OEM sequence.)

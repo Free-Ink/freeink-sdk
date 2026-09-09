@@ -55,6 +55,7 @@ class PaperMonoDriver final : public PanelDriver {
   void displayFinish(EpdBus& bus, const uint8_t* fb) override;
   void seedPreviousFrame(EpdBus& bus, const uint8_t* buf) override;
 
+  bool supportsGrayscale() const override { return true; }
   bool supportsStripGrayscale() const override { return true; }
   bool combinesGrayscaleBase() const override { return true; }
   void displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, RefreshMode fallback, bool turnOff) override;

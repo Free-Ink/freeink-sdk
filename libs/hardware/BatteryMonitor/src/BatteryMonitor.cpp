@@ -321,6 +321,13 @@ int chargeActiveLevel() {
 
 BatteryMonitor::BatteryMonitor(int8_t adcPin, float dividerMultiplier, int8_t chargeStatusPin)
     : _adcPin(adcPin), _dividerMultiplier(dividerMultiplier), _chargeStatusPin(chargeStatusPin) {
+  if (_adcPin >= 0) {
+#if defined(ARDUINO_ARCH_ESP32)
+    pinMode(_adcPin, INPUT);
+    analogReadResolution(12);
+    analogSetPinAttenuation(_adcPin, ADC_11db);
+#endif
+  }
   if (_chargeStatusPin >= 0) {
     pinMode(_chargeStatusPin, BoardConfig::ACTIVE.batteryChargeStatusActiveHigh ? INPUT : INPUT_PULLUP);
   }
@@ -467,7 +474,35 @@ uint16_t BatteryMonitor::readMillivolts() const {
     delay(5);
     mv = analogReadMilliVolts(_adcPin);
     digitalWrite(ce, activeHigh ? HIGH : LOW);  // resume charging
+  } else if (BoardConfig::ACTIVE.power.batteryDividerEnable >= 0) {
+    const int8_t en = BoardConfig::ACTIVE.power.batteryDividerEnable;
+    const bool activeHigh = BoardConfig::ACTIVE.power.batteryDividerEnableActiveHigh;
+    pinMode(en, OUTPUT);
+    digitalWrite(en, activeHigh ? HIGH : LOW);  // enable divider circuit
+    delay(10);
+#if defined(ARDUINO_ARCH_ESP32)
+    pinMode(_adcPin, INPUT);
+    analogReadResolution(12);
+    analogSetPinAttenuation(_adcPin, ADC_11db);
+#endif
+    uint32_t sum = 0;
+    constexpr int SAMPLES = 4;
+    for (int i = 0; i < SAMPLES; ++i) {
+      int sample = analogReadMilliVolts(_adcPin);
+      if (sample <= 0) {
+        const int raw = analogRead(_adcPin);
+        sample = (raw * 3100) / 4095;
+      }
+      sum += sample;
+      delay(2);
+    }
+    mv = static_cast<uint16_t>(sum / SAMPLES);
+    digitalWrite(en, activeHigh ? LOW : HIGH);  // disable divider circuit to save power
   } else {
+#if defined(ARDUINO_ARCH_ESP32)
+    pinMode(_adcPin, INPUT);
+    analogSetPinAttenuation(_adcPin, ADC_11db);
+#endif
     mv = analogReadMilliVolts(_adcPin);
   }
 #endif
@@ -580,6 +615,14 @@ constexpr uint16_t LIION_NOTCH_MV[11] = {
 constexpr uint16_t NOTCH_HYSTERESIS_MV = 8;
 
 uint16_t BatteryMonitor::percentageFromMillivolts(uint16_t millivolts) {
+  if (BoardConfig::isReTerminalE1001()) {
+    if (millivolts == 0) return 0;
+    const float v = millivolts / 1000.0f;
+    float pct = (v - 3.3f) / (4.2f - 3.3f) * 100.0f;
+    if (pct < 0.0f) pct = 0.0f;
+    if (pct > 100.0f) pct = 100.0f;
+    return static_cast<uint16_t>(pct + 0.5f);
+  }
   // A failed read reports 0 mV, which lands on 0% here. That is deliberate: the
   // cubic this table replaced evaluated to +7501 at 0 V and clamped to a
   // confident 100%, so an I2C or ADC failure showed a full battery.
@@ -594,6 +637,9 @@ uint16_t BatteryMonitor::percentageFromMillivolts(uint16_t millivolts) {
 }
 
 uint16_t BatteryMonitor::percentageFromMillivolts(uint16_t millivolts, uint16_t previousPercent) {
+  if (BoardConfig::isReTerminalE1001()) {
+    return percentageFromMillivolts(millivolts);
+  }
   const uint16_t notch = percentageFromMillivolts(millivolts);
   if (previousPercent > 100) return notch;  // no usable history
   const uint16_t previousNotch = static_cast<uint16_t>((previousPercent / 10) * 10);

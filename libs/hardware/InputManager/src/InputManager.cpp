@@ -82,6 +82,7 @@ InputManager::InputManager()
       confirmBackPressStart(0),
       confirmBackPhysicalPressed(false),
       confirmBackLongPressActive(false),
+      confirmBackSleepActive(false),
       confirmPowerPressStart(0),
       confirmPowerPhysicalPressed(false),
       confirmPowerLongPressActive(false),
@@ -368,34 +369,55 @@ void InputManager::updateConfirmBackHold(const unsigned long currentTime) {
   const bool pressed = isDigitalPressed(BoardConfig::ACTIVE.input.confirm);
   const uint8_t nonSharedState = getDigitalState();
   bool emitConfirmClick = false;
+  bool emitBackClick = false;
 
   if (pressed && !confirmBackPhysicalPressed) {
     confirmBackPhysicalPressed = true;
     confirmBackLongPressActive = false;
+    confirmBackSleepActive = false;
     confirmBackPressStart = currentTime;
   }
 
   uint8_t nextState = nonSharedState;
-  if (pressed && currentTime - confirmBackPressStart >= CONFIRM_BACK_HOLD_MS) {
-    confirmBackLongPressActive = true;
-    nextState |= (1 << BTN_BACK);
+  if (pressed) {
+    const unsigned long heldTime = currentTime - confirmBackPressStart;
+    if (heldTime >= CONFIRM_SLEEP_HOLD_MS) {
+      confirmBackSleepActive = true;
+      nextState |= (1 << BTN_POWER);
+    }
   }
 
   if (!pressed && confirmBackPhysicalPressed) {
     confirmBackPhysicalPressed = false;
-    if (!confirmBackLongPressActive) {
-      emitConfirmClick = true;
-      buttonPressStart = confirmBackPressStart;
-      buttonPressFinish = currentTime;
+    const unsigned long duration = currentTime - confirmBackPressStart;
+    if (!confirmBackSleepActive) {
+      if (duration >= CONFIRM_BACK_HOLD_MS) {
+        emitBackClick = true;
+        buttonPressStart = confirmBackPressStart;
+        buttonPressFinish = currentTime;
+      } else {
+        emitConfirmClick = true;
+        buttonPressStart = confirmBackPressStart;
+        buttonPressFinish = currentTime;
+      }
     }
     confirmBackLongPressActive = false;
+    confirmBackSleepActive = false;
   }
 
   applyStateChange(nextState, currentTime);
 
+  if (pressedEvents & (1 << BTN_POWER)) {
+    powerButtonPressStart = confirmBackPressStart;
+  }
+
   if (emitConfirmClick) {
     pressedEvents |= (1 << BTN_CONFIRM);
     releasedEvents |= (1 << BTN_CONFIRM);
+  }
+  if (emitBackClick) {
+    pressedEvents |= (1 << BTN_BACK);
+    releasedEvents |= (1 << BTN_BACK);
   }
 }
 

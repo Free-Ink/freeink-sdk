@@ -688,6 +688,53 @@ static const KeyboardLayout EN_SHIFT_LANG_LAYOUT{EN_SHIFT_LANG_ROWS, 4};
 static const KeyboardLayout EN_LANG_NUM_LAYOUT{EN_LANG_NUM_ROWS, 5};
 static const KeyboardLayout EN_SHIFT_LANG_NUM_LAYOUT{EN_SHIFT_LANG_NUM_ROWS, 5};
 
+// The order of the diacritics row is inspired by VNI Input Method
+// (https://en.wikipedia.org/wiki/VNI).
+static const KeyboardKey VI_DIAC_ROW[] = {
+    K("\xE2\x97\x8C\xCC\x81", "\xCC\x81", 0x0301),  // ◌́  sắc
+    K("\xE2\x97\x8C\xCC\x80", "\xCC\x80", 0x0300),  // ◌̀  huyền
+    K("\xE2\x97\x8C\xCC\x89", "\xCC\x89", 0x0309),  // ◌̉  hỏi
+    K("\xE2\x97\x8C\xCC\x83", "\xCC\x83", 0x0303),  // ◌̃  ngã
+    K("\xE2\x97\x8C\xCC\xA3", "\xCC\xA3", 0x0323),  // ◌̣  nặng
+    K("\xE2\x97\x8C\xCC\x82", "\xCC\x82", 0x0302),  // ◌̂  mũ
+    K("ơ",  "\xC6\xA1", 0x01A1),                    // ơ
+    K("ư",  "\xC6\xB0", 0x01B0),                    // ư
+    K("ă",  "\xC4\x83", 0x0103),                    // ă
+    K("đ",  "\xC4\x91", 0x0111),                    // đ
+};
+
+// Uppercase diacritic row — combining mark labels are identical (marks are
+// script-neutral); base-modifier keys become their uppercase equivalents.
+static const KeyboardKey VI_DIAC_SHIFT_ROW[] = {
+    K("\xE2\x97\x8C\xCC\x81", "\xCC\x81", 0x0301),  // ◌́  sắc
+    K("\xE2\x97\x8C\xCC\x80", "\xCC\x80", 0x0300),  // ◌̀  huyền
+    K("\xE2\x97\x8C\xCC\x89", "\xCC\x89", 0x0309),  // ◌̉  hỏi
+    K("\xE2\x97\x8C\xCC\x83", "\xCC\x83", 0x0303),  // ◌̃  ngã
+    K("\xE2\x97\x8C\xCC\xA3", "\xCC\xA3", 0x0323),  // ◌̣  nặng
+    K("\xE2\x97\x8C\xCC\x82", "\xCC\x82", 0x0302),  // ◌̂  mũ
+    K("Ơ",  "\xC6\xA0", 0x01A0),                    // Ơ
+    K("Ư",  "\xC6\xAF", 0x01AF),                    // Ư
+    K("Ă",  "\xC4\x82", 0x0102),                    // Ă
+    K("Đ",  "\xC4\x90", 0x0110),                    // Đ
+};
+
+static const KeyboardRow VI_ROWS[] = {
+    {VI_DIAC_ROW,       10, 0},
+    {EN_ROW1,          10, 0},
+    {EN_ROW2,           9, 1},
+    {EN_ROW3,           9, 0},
+    {LANG_ROW4,         4, 0},
+};
+static const KeyboardRow VI_SHIFT_ROWS[] = {
+    {VI_DIAC_SHIFT_ROW, 10, 0},
+    {EN_SHIFT_ROW1,    10, 0},
+    {EN_SHIFT_ROW2,     9, 1},
+    {EN_SHIFT_ROW3,     9, 0},
+    {LANG_ROW4,         4, 0},
+};
+static const KeyboardLayout VI_LAYOUT{VI_ROWS, 5};
+static const KeyboardLayout VI_SHIFT_LAYOUT{VI_SHIFT_ROWS, 5};
+
 #undef K
 #undef K2
 #undef KS
@@ -722,6 +769,12 @@ const KeyboardLayout& builtinKeyboardLayout(KeyboardLayoutId id, bool shifted, b
   }
   // Hebrew has no case, so shift is ignored -- there is only one letter layer.
   if (id == KeyboardLayoutId::HebrewIl) return numberRow ? HE_NUM_LAYOUT : HE_LAYOUT;
+  if (id == KeyboardLayoutId::QwertyVi) {
+    // VI layout is already 5 rows tall due to the diacritics row. Adding a 6th
+    // number row takes up too much vertical space on the e-ink screen. Users
+    // can still type numbers via the "?123" symbols layer.
+    return shifted ? VI_SHIFT_LAYOUT : VI_LAYOUT;
+  }
   if (id == KeyboardLayoutId::QwertyEn && langKey) {
     if (shifted) return numberRow ? EN_SHIFT_LANG_NUM_LAYOUT : EN_SHIFT_LANG_LAYOUT;
     return numberRow ? EN_LANG_NUM_LAYOUT : EN_LANG_LAYOUT;

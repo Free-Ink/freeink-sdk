@@ -38,6 +38,9 @@ enum class KeyboardLayoutId : uint8_t {
   // Hebrew: no letter case, so a single layer and no shift key. Right-to-left
   // is the renderer's job -- the layout inserts code points in logical order.
   HebrewIl,
+  // Vietnamese QWERTY: standard QWERTY rows plus a dedicated diacritic row
+  // (tone marks and base-letter modifiers) above the top letter row.
+  QwertyVi,
 };
 
 struct KeyboardKey {

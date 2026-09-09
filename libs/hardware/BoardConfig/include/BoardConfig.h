@@ -2390,6 +2390,12 @@ inline bool isWsEpaper397() { return ACTIVE.board == Board::WsEpaper397; }
 inline bool isPicco() { return ACTIVE.board == Board::Picco; }
 inline bool hasTouch() { return ACTIVE.touch.controller != TouchController::None; }
 inline bool hasHomeKey() { return ACTIVE.touch.hasHomeKey; }
+// Front Left/Right keys. Their absence means a side rocker (three side keys +
+// BOOT, e.g. the Waveshare 3.97) rather than a row of keys under the screen, so
+// there is no second axis for a key grid and no front-button row to label.
+inline bool hasHorizontalKeys() {
+  return ACTIVE.input.left != PIN_UNASSIGNED || ACTIVE.input.right != PIN_UNASSIGNED;
+}
 inline bool hasPwmFrontlight() { return ACTIVE.frontlight.gpio != PIN_UNASSIGNED || ACTIVE.frontlight.viaPm1Pwm; }
 inline bool hasI2cFrontlight() { return ACTIVE.i2cFrontlight.controller != I2cFrontlightController::None; }
 inline bool hasColorTemperatureFrontlight() {

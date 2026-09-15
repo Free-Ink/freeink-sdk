@@ -358,6 +358,7 @@ tight. Each defaults on when an included device needs it; force with `=0`/`=1`:
 | `FREEINK_CAP_RTC` | real-time clock (Rtc lib: PCF8563 / DS3231 / RX8130 over I²C, per profile) | on for X3, Sticky, X4 Pro, X4 Classic, and Paper Mono |
 | `FREEINK_CAP_TEMP_HUMIDITY` | temperature + humidity (EnvironmentSensor lib: SHT40 over I²C) | on for Sticky |
 | `FREEINK_CAP_IMU` | 6-axis IMU (Imu lib: LSM6DS3TR-C over I²C) | on for Sticky |
+| `FREEINK_CAP_HAPTIC` | consumer-controlled vibration ([HapticManager](docs/haptics.md): intensity, pulses, patterns) | on for Metalio E-Ink 4 |
 | `FREEINK_CAP_BUZZER` | LEDC PWM tone buzzer (Buzzer lib: tone/beep on `audio.buzzer`) | on for Sticky, Murphy, and Paper Mono |
 | `FREEINK_CAP_LED` | RGB LEDs (LedManager: addressable chains, or the Paper Mono's discrete PMIC/expander-driven LED) | on for M5 and Paper Mono |
 | `FREEINK_CAP_NET_TLS13` | wolfSSL TLS 1.3 (≡ `FREEINK_NET_WOLFSSL`) | off |
@@ -861,6 +862,7 @@ libs/
   hardware/SDCardManager/   SD storage (SdFat-over-SPI or native SDMMC)
   hardware/PowerManager/    per-SoC deep-sleep wake-on-power-button
   hardware/MemoryManager/   on-demand cache-sink reclaim + heap reporting
+  hardware/HapticManager/     Consumer-controlled PWM vibration and patterns
   hardware/FrontlightManager/  PWM frontlight (LEDC or PMIC-PWM)
   hardware/LedManager/      RGB LEDs (M5 PaperColor addressable, Paper Mono discrete)
   hardware/AudioManager/    I2S codec WAV playback (Murphy, M5 PaperColor)

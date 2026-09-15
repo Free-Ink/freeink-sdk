@@ -1,0 +1,10 @@
+{
+  "name": "HapticManager",
+  "version": "1.0.0",
+  "description": "Consumer-controlled vibration: PWM intensity, asynchronous pulses and copied patterns, gated by FREEINK_CAP_HAPTIC.",
+  "keywords": "haptic, vibration, motor, pwm",
+  "authors": [{"name": "FreeInk SDK Contributors"}],
+  "dependencies": {},
+  "platforms": "espressif32",
+  "frameworks": ["arduino"]
+}

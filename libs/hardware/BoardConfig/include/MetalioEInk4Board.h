@@ -89,6 +89,8 @@ inline bool setAmplifier(bool enabled) {
   return ensureBooted() && setOutput(PIN_AMP_SELECT, false) && setOutput(PIN_AMP_ENABLE, enabled);
 }
 
+// Legacy blocking GPIO pulse. Prefer HapticManager for new consumers.
+// Do not mix this helper with an attached HapticManager PWM output.
 inline void vibrate(uint16_t durationMs = 35) {
   if (!ensureBooted()) return;
   digitalWrite(VIBRATION_GPIO, HIGH);

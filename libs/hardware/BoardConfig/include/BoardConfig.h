@@ -299,6 +299,10 @@
 #define FREEINK_CAP_IMU \
   (FREEINK_DEVICE_X3 || FREEINK_DEVICE_STICKY || FREEINK_DEVICE_X4CLASSIC || FREEINK_DEVICE_WS397)
 #endif
+// Consumer-triggered vibration output; independent of audio and input events.
+#ifndef FREEINK_CAP_HAPTIC
+#define FREEINK_CAP_HAPTIC (FREEINK_DEVICE_METALIO_EINK4)
+#endif
 // LEDC PWM buzzer (tone beeper). The Buzzer lib drives the AudioConfig.buzzer
 // pin; on for boards that wire one (Sticky GPIO48, Murphy GPIO46, PaperS3
 // GPIO21). Separate from FREEINK_CAP_AUDIO — a buzzer is a tone device, not a
@@ -699,6 +703,14 @@ struct ViewableInsets {
   uint8_t left = 3;
 };
 
+// GPIO-driven vibration motor, PWM duty controls drive strength.
+// Frequency is board configuration, not the pattern repetition rate.
+struct HapticConfig {
+  int8_t gpio = PIN_UNASSIGNED;
+  bool activeHigh = true;
+  uint32_t pwmFrequency = 20000;
+};
+
 struct BoardProfile {
   Board board;
   const char* name;
@@ -752,6 +764,7 @@ struct BoardProfile {
   // I2C frontlight (LM3630A). Defaulted so existing profiles need no change;
   // a board with one sets it (EEGO A4).
   I2cFrontlightConfig i2cFrontlight = NO_I2C_FRONTLIGHT;
+  HapticConfig haptic = {};
 };
 
 constexpr TouchConfig NO_TOUCH = {TouchController::None,
@@ -1572,7 +1585,8 @@ constexpr BoardProfile METALIO_EINK4 = {
     {38, 40, 39, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, 1},
     {41, 42, 400000, 0x55, 0},
     {MicInput::None, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, true},
-    {41, 42, 400000, 0x51, 0, 0, 0, RtcType::Pcf8563, ImuType::None}, 1.25f};
+    {41, 42, 400000, 0x51, 0, 0, 0, RtcType::Pcf8563, ImuType::None}, 1.25f,
+    {}, 0, {}, false, NO_I2C_FRONTLIGHT, {44, true, 20000}};
 
 // --- Xteink X4 Pro — ESP32-S3, 800x480 EPD + GT911 touch + warm/cold frontlight ---
 // Recovered from the OEM flash dump (x4pro_flash_dump.bin); full evidence and confidence
@@ -2111,6 +2125,7 @@ inline void releaseSdRail() {
   }
 }
 inline bool hasMic() { return ACTIVE.mic.input != MicInput::None; }
+inline bool hasHaptics() { return ACTIVE.haptic.gpio != PIN_UNASSIGNED; }
 inline bool hasBuzzer() { return ACTIVE.audio.buzzer != PIN_UNASSIGNED; }
 inline bool hasRtc() { return ACTIVE.sensors.rtcAddr != 0; }
 inline bool hasTempHumidity() { return ACTIVE.sensors.tempHumidityAddr != 0; }

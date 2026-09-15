@@ -15,10 +15,11 @@ Support is compiled and host-tested; physical hardware validation is pending.
 | microSD | Native 1-bit SDMMC through SDCardManager |
 | BQ27220, address 0x55 | Battery percentage, voltage and charge direction via BatteryMonitor |
 | PCF8563, address 0x51 | Rtc |
-| GPIO44 motor | Explicit `freeink::metalio::vibrate()` helper |
+| GPIO44 motor | [HapticManager](haptics.md): consumer-triggered intensity, pulses and patterns |
 | Power controller | Explicit `freeink::metalio::powerOff()` pulse helper |
 
-Touch, RTC, the battery gauge and SDMMC capabilities enable automatically.
+Touch, RTC, haptics, the battery gauge and SDMMC capabilities enable automatically.
+Haptic playback is explicitly requested by the consumer; touch does not trigger it.
 Set `USE_BLOCK_DEVICE_INTERFACE=1` for SdFat's SDMMC block-device interface.
 There is no frontlight in the supplied board configuration.
 
@@ -80,7 +81,8 @@ The CST816S may NACK until touched. Initialization therefore does not require
 an ID-register response; IRQ pulses are latched and expired contacts/failed
 reads release input. See [Espressif's CST816S notes](https://github.com/espressif/esp-bsp/blob/master/components/lcd_touch/esp_lcd_touch_cst816s/README.md).
 
-For hardware power-off, finish all display work, call `display.deepSleep()`,
+For hardware power-off, call `HapticManager::getInstance().end()` if using haptics,
+finish all display work, call `display.deepSleep()`,
 close/unmount storage, then call `freeink::metalio::powerOff()` from your hardware
 task. This disables the amp, waits 280 ms, and issues one high/low/high shutdown
 pulse with 100 ms intervals. The caller may repeat the pulse if USB keeps the

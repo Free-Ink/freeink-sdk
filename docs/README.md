@@ -13,6 +13,7 @@ Device build flags and dependencies are in [platformio.sample.ini](../platformio
 | [Deferred refresh migration](deferred-refresh-migration.md) | Split refresh interface and consumer migration |
 | [MCU portability](consumer-mcu-portability.md) | Runtime profiles, GPIO wakeup, and C3/S3 differences |
 | [BLE keyboard host](ble-keyboard-host.md) | Enabling and using BLE HID input |
+| [Haptic feedback](haptics.md) | Consumer-triggered vibration, PWM intensity and asynchronous patterns |
 | [Testing](testing.md) | Local host regression suites and validation limits |
 
 ## Board support

@@ -27,6 +27,7 @@ for the full device list.
 - [EEGO A4](eego-a4-support.md)
 - [LilyGo T5 S3](lilygo-t5s3-support.md)
 - [M5Stack PaperS3](m5stack-papers3-support.md)
+- [Metalio E-Ink 4](metalio-eink4-support.md)
 - [OnePage ESP32-C61](onepage-c61-support.md)
 - [Waveshare ESP32-S3-ePaper-3.97](waveshare-epaper-397-support.md)
 

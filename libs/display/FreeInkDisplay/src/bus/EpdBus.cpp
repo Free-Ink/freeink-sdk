@@ -24,6 +24,13 @@ namespace {
 // EPD power/reset for boards without direct GPIOs: SDK board support first,
 // then the consumer hooks.
 void boardEpdPower(bool enabled) {
+#if FREEINK_DEVICE_METALIO_EINK4
+  if (BoardConfig::isMetalioEInk4()) {
+    // Shared screen/SD rail must stay on until hardware power-off.
+    if (enabled) freeink::metalio::ensureBooted();
+    return;
+  }
+#endif
 #if FREEINK_DEVICE_PAPERMONO
   freeink::papermono::setEpdPower(enabled);
 #elif FREEINK_DEVICE_WS397
@@ -33,6 +40,9 @@ void boardEpdPower(bool enabled) {
 #endif
 }
 bool boardEpdPowerAvailable() {
+#if FREEINK_DEVICE_METALIO_EINK4
+  if (BoardConfig::isMetalioEInk4()) return true;
+#endif
 #if FREEINK_DEVICE_PAPERMONO || FREEINK_DEVICE_WS397
   return true;
 #else

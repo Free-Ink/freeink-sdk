@@ -76,6 +76,13 @@ void holdRailOff(int8_t pin, uint8_t offLevel) {
 
 void PowerManager::powerDownRailsForSleep() {
   const auto& b = BoardConfig::ACTIVE;
+#if FREEINK_DEVICE_METALIO_EINK4
+  if (BoardConfig::isMetalioEInk4()) {
+    metalio::setAmplifier(false);
+    digitalWrite(metalio::VIBRATION_GPIO, LOW);
+    // Keep the shared display/SD rail up, as required by the vendor shutdown.
+  }
+#endif
 #if FREEINK_DEVICE_WS397
   // The EPD rail is an AXP2101 LDO, not a GPIO, so holdRailOff() below cannot
   // reach it — drop it here or the panel stays powered all through deep sleep.

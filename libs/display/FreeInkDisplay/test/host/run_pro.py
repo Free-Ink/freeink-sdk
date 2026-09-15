@@ -29,7 +29,7 @@ with tempfile.TemporaryDirectory(prefix="freeink-pro-test-") as directory:
         exe = root / ("single" if single else "dual")
         command = [os.environ.get("CXX", "c++"), "-std=c++17", "-Wall", "-Wextra",
                    "-Wno-unused-parameter", "-Wno-unused-function", "-DBOARD_HAS_PSRAM=1",
-                   "-DARDUINO=1", "-I"+str(root), "-I"+str(root / "include")]
+                   "-DARDUINO=1", "-DFREEINK_DEVICE_METALIO_EINK4=1", "-I"+str(root), "-I"+str(root / "include")]
         if single:
             command += ["-DEINK_DISPLAY_SINGLE_BUFFER_MODE=1"]
         command += [str(HERE / "test_pro.cpp"), str(root / "src/FreeInkDisplay.cpp")]
@@ -37,3 +37,4 @@ with tempfile.TemporaryDirectory(prefix="freeink-pro-test-") as directory:
         subprocess.run(command + ["-o", str(exe)], check=True)
         subprocess.run([str(exe)], check=True)
         subprocess.run([str(exe), "sticky"], check=True)
+        subprocess.run([str(exe), "metalio"], check=True)

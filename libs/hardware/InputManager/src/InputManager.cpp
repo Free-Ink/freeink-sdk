@@ -90,6 +90,9 @@ InputManager::InputManager()
       twoButtonLongPressActive(false) {}
 
 void InputManager::begin() {
+#if FREEINK_DEVICE_METALIO_EINK4
+  if (BoardConfig::isMetalioEInk4()) freeink::metalio::ensureBooted();
+#endif
   if (BoardConfig::ACTIVE.inputStyle == BoardConfig::InputStyle::XteinkAdcLadder) {
     pinMode(BUTTON_ADC_PIN_1, INPUT);
     pinMode(BUTTON_ADC_PIN_2, INPUT);
@@ -331,6 +334,13 @@ bool InputManager::isDigitalPressed(const int8_t pin) const { return pin >= 0 &&
 
 uint8_t InputManager::getDigitalState() const {
   uint8_t state = 0;
+#if FREEINK_DEVICE_METALIO_EINK4
+  if (BoardConfig::isMetalioEInk4()) {
+    const uint16_t pins = freeink::metalio::readButtons();
+    if (!(pins & (1u << freeink::metalio::PIN_VOLUME_UP))) state |= (1 << BTN_UP);
+    if (!(pins & (1u << freeink::metalio::PIN_VOLUME_DOWN))) state |= (1 << BTN_DOWN);
+  }
+#endif
 
   if (BoardConfig::ACTIVE.inputStyle != BoardConfig::InputStyle::DigitalConfirmBackHold &&
       BoardConfig::ACTIVE.inputStyle != BoardConfig::InputStyle::DigitalConfirmPowerHold) {
@@ -1221,6 +1231,10 @@ void InputManager::beginTouch() {
   if (t.controller == BoardConfig::TouchController::None) {
     return;
   }
+  if (t.controller == BoardConfig::TouchController::Cst816s) {
+    beginCst816s();
+    return;
+  }
   if (t.controller == BoardConfig::TouchController::Gt911) {
     beginGt911();
     return;
@@ -1266,7 +1280,9 @@ uint8_t InputManager::serviceTouch() {
     resetMultiTouchGesture();
   }
 
-  if (t.controller == BoardConfig::TouchController::Gt911) {
+  if (t.controller == BoardConfig::TouchController::Cst816s) {
+    pollCst816s(now);
+  } else if (t.controller == BoardConfig::TouchController::Gt911) {
     pollGt911(now);
   } else if (t.controller == BoardConfig::TouchController::Ft5x06) {
     pollFt5x06(now);
@@ -1288,6 +1304,7 @@ uint8_t InputManager::serviceTouch() {
     touchLongPressEvent = true;
   }
 
+  if (t.controller == BoardConfig::TouchController::Cst816s) return cstVirtualButtons;
   return (t.synthesizeConfirm && now < touchIrqPulseUntil) ? (1 << BTN_CONFIRM) : 0;
 #else
   return 0;
@@ -1481,6 +1498,113 @@ void InputManager::beginFt5x06() {
       "cipher=0x%02X fw=0x%02X vendor=0x%02X irq=%d\n",
       touchDataEnabled, wrMode, rdId, wrIrq, id[0], id[3], id[5], t.irq);
 #endif
+}
+
+// CST816S can NACK until the first touch: never gate availability on an ID
+// probe. Its 0x02..0x06 point frame uses the same packing as FT5x06, but its
+// interrupt/sleep behavior and off-screen cover keys need their own poll path.
+namespace {
+volatile bool cstInterrupt = false;
+void IRAM_ATTR cstTouchInterrupt() { cstInterrupt = true; }
+}
+
+void InputManager::beginCst816s() {
+  const auto& t = BoardConfig::ACTIVE.touch;
+#if FREEINK_DEVICE_METALIO_EINK4
+  if (BoardConfig::isMetalioEInk4() && !freeink::metalio::ensureBooted()) return;
+#endif
+  if (t.sda < 0 || t.scl < 0 || !t.i2cAddress) return;
+  if (!Wire.begin(t.sda, t.scl, 400000)) return;
+  Wire.setTimeOut(10);
+  cstVirtualButtons = 0;
+  cstInterrupt = false;
+  if (t.irq >= 0) {
+    pinMode(t.irq, INPUT_PULLUP);
+    attachInterrupt(digitalPinToInterrupt(t.irq), cstTouchInterrupt, FALLING);
+  }
+  touchDataEnabled = true;
+}
+
+void InputManager::pollCst816s(const unsigned long now) {
+  const auto& t = BoardConfig::ACTIVE.touch;
+  if (now < touchReadAt) return;
+  touchReadAt = now + TOUCH_SAMPLE_DELAY_MS;
+  const bool active = touchPressed || touchHomeKeyDown || cstVirtualButtons;
+  const bool fresh = cstInterrupt || t.irq < 0 || digitalRead(t.irq) == LOW;
+  if (!active && !fresh) return;
+  cstInterrupt = false;
+  const auto release = [&]() {
+    if (touchPressed) {
+      touchPressed = false;
+      touchPoint.valid = false;
+      touchReleasedEvent = true;
+      lastTouchHeldDurationMs = now - touchDownPoint.timestamp;
+    }
+    if (touchHomeKeyDown) {
+      if (!touchHomeKeyLongFired) touchHomeKeyTapEvent = true;
+      touchHomeKeyDown = false;
+      touchHomeKeyLongFired = false;
+    }
+    cstVirtualButtons = 0;
+  };
+  // Re-reading CST816S can return the last sample after its event ends.
+  // A stale successful read must not keep a contact pressed forever either.
+  if (active && !fresh && now - cstLastSample >= 100) { release(); return; }
+  uint8_t data[5] = {};
+  if (!ft5x06ReadReg(0x02, data, sizeof(data))) {
+    // The device goes silent again after release; don't latch a key/contact.
+    if (active && now - cstLastSample >= 100) release();
+    return;
+  }
+  if (fresh) cstLastSample = now;
+  if (!(data[0] & 0x0F) || (data[1] >> 6) == 1) {
+    release();
+    return;
+  }
+  const uint16_t rawX = ((data[1] & 0x0F) << 8) | data[2];
+  const uint16_t rawY = ((data[3] & 0x0F) << 8) | data[4];
+  if (BoardConfig::isMetalioEInk4() && rawY >= 800) {
+    // Vendor cover key centers: HOME=(80,900), NEXT=(240,900), PREV=(400,900).
+    // Ignore invalid off-panel samples rather than clamping them into screen taps.
+    if (rawY < 860 || rawY > 940 || rawX > 479) { release(); return; }
+    if (touchPressed) { suppressTouchContact(); release(); }
+    if (rawX < 160) {
+      cstVirtualButtons = 0;
+      if (!touchHomeKeyDown) {
+        touchHomeKeyDown = true;
+        touchHomeKeyEvent = true;
+        touchHomeKeyDownAt = now;
+        touchHomeKeyLongFired = false;
+      } else if (!touchHomeKeyLongFired && now - touchHomeKeyDownAt >= HOME_KEY_LONG_PRESS_MS) {
+        touchHomeKeyLongEvent = true;
+        touchHomeKeyLongFired = true;
+      }
+    } else {
+      if (touchHomeKeyDown) release();
+      cstVirtualButtons = (1 << (rawX < 320 ? BTN_DOWN : BTN_UP));
+    }
+    return;
+  }
+  if (touchHomeKeyDown || cstVirtualButtons) release();
+  const uint16_t x = t.swapXY ? rawY : rawX;
+  const uint16_t y = t.swapXY ? rawX : rawY;
+  if (x < t.rawMinX || x > t.rawMaxX || y < t.rawMinY || y > t.rawMaxY) { release(); return; }
+  touchPoint = {true, mapTouchAxis(x, t.rawMinX, t.rawMaxX, t.rawMaxX - t.rawMinX),
+                     mapTouchAxis(y, t.rawMinY, t.rawMaxY, t.rawMaxY - t.rawMinY), now};
+  if (t.flipX) touchPoint.x = t.rawMaxX - t.rawMinX - touchPoint.x;
+  if (t.flipY) touchPoint.y = t.rawMaxY - t.rawMinY - touchPoint.y;
+  if (!touchPressed) {
+    touchPressed = true;
+    touchPressedEvent = true;
+    touchDownPoint = touchUpPoint = touchPoint;
+    touchMovedBeyondTapSlop = touchMovedBeyondTapReleaseSlop = false;
+  } else {
+    touchUpPoint = touchPoint;
+    const int dx = absInt(int(touchPoint.x) - int(touchDownPoint.x));
+    const int dy = absInt(int(touchPoint.y) - int(touchDownPoint.y));
+    if (dx > TOUCH_TAP_SLOP_PX || dy > TOUCH_TAP_SLOP_PX) touchMovedBeyondTapSlop = true;
+    if (dx > TOUCH_TAP_RELEASE_SLOP_PX || dy > TOUCH_TAP_RELEASE_SLOP_PX) touchMovedBeyondTapReleaseSlop = true;
+  }
 }
 
 void InputManager::pollFt5x06(const unsigned long now) {

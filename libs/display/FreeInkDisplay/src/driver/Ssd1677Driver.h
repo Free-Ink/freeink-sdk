@@ -55,6 +55,10 @@ struct Ssd1677Config {
   bool grayPowerUpFirst = false;
   // Configurations supporting the factory four-tone LUT advertise it.
   bool absoluteGrayscale = false;
+  // Boards without characterized grayscale waveforms must not advertise AA.
+  bool overlayGrayscale = true;
+  bool writeSecondUpdateControlByte = false;  // append zero to CMD 0x21
+  bool restoreInternalTemperature = false;    // CMD 0x18=0x80 after warmed HALF
 };
 
 // Standard config (Xteink X4 / GDEQ0426T82). Panel mounting (mirror/180°) is NOT
@@ -92,7 +96,7 @@ class Ssd1677Driver : public PanelDriver {
   GrayscaleCapabilities grayscaleCapabilities(GrayscaleMode mode = GrayscaleMode::Overlay) const override {
     if (mode == GrayscaleMode::Absolute && _cfg.absoluteGrayscale)
       return {GrayscaleEncoding::AbsolutePlanes, GrayscaleBase::Combined, true, false, false};
-    if (mode != GrayscaleMode::Overlay) return {};
+    if (mode != GrayscaleMode::Overlay || !_cfg.overlayGrayscale) return {};
     return {GrayscaleEncoding::OverlayMasks, GrayscaleBase::Separate, true, true, false};
   }
   void copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) override;

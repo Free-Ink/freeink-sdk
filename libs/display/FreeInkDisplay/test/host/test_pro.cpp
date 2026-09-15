@@ -533,7 +533,46 @@ static void testStickyAbsolute() {
   display.releaseBuffers();
 }
 
-int main(int argc, char**) {
+static void testMetalio() {
+  BoardConfig::ACTIVE.board = BoardConfig::Board::MetalioEInk4;
+  auto& driver = static_cast<Ssd1677Driver&>(ssd1677Driver());
+  EpdBus bus;
+  driver.begin(bus);
+  assert(lastRegister(bus, 0x3C) == 0x01);
+  assert(!driver.grayscaleCapabilities(GrayscaleMode::Absolute).supported());
+  assert(!driver.grayscaleCapabilities().supported());
+  const auto bw = frame(42);
+  bus.clear();
+  // Cold FAST becomes a clean HALF, using Metalio's temperature, not X4's.
+  driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, false);
+  assert(lastRegister(bus, 0x22) == 0xD7);
+  assert(lastRegister(bus, 0x1A) == 0x6A);
+  bus.clear();
+  driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, false);
+  assert(lastRegister(bus, 0x22) == 0xFC);
+  assert(lastRegister(bus, 0x18) == 0x80);
+  assert(lastRegister(bus, 0x3C) == 0x80);
+  for (const auto& w : bus.writes) if (w.command == 0x21) assert(w.bytes == Bytes({0, 0}));
+  assert(driver._isScreenOn);
+  bus.clear();
+  driver.displayGray(bus, bw.data(), false, nullptr, false);
+  assert(lastRegister(bus, 0x22) == 0xF7);  // unsupported legacy AA safely falls back
+  bus.clear();
+  driver.displayStart(bus, bw.data(), bw.data(), RefreshMode::Fast, true);
+  assert(lastRegister(bus, 0x22) == 0xFC);
+  driver.displayFinish(bus, bw.data());
+  assert(lastRegister(bus, 0x22) == 0x03);
+  assert(!driver._isScreenOn);
+  driver.deepSleep(bus);
+  assert(lastRegister(bus, 0x10) == 0x03);
+}
+
+int main(int argc, char** argv) {
+  if (argc > 1 && std::strcmp(argv[1], "metalio") == 0) {
+    testMetalio();
+    std::puts("Metalio refresh, temperature, grayscale fallback and async power-down passed");
+    return 0;
+  }
   if (argc > 1) {
     testStickyAbsolute();
     std::puts("Sticky absolute capability, activation, power-down and B/W recovery passed");

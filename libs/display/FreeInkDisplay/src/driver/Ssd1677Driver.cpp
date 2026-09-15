@@ -102,6 +102,17 @@ static const Ssd1677Config& ssd1677StickyConfig() {
   return cfg;
 }
 
+#if FREEINK_DEVICE_METALIO_EINK4
+// GDEM0397T81 settings from metalio-hw-test. Use its OTP waveforms:
+// the separately supplied partial LUT has 113 initializers for a 112-byte array.
+static const Ssd1677Config& ssd1677MetalioConfig() {
+  static const Ssd1677Config cfg = {
+      {0xAE, 0xC7, 0xC3, 0xC0, 0x80}, 0x02, 0x01, 0x6A, nullptr,
+      0xF7, 0xFC, 0xD7, 0x01, 0x80, 0x01, 0x80, false, false, false, true, true};
+  return cfg;
+}
+#endif
+
 // ── Reusable per-board waveform shortcuts ────────────────────────────────────
 // Opt-in optimizations a board can layer onto a base Ssd1677Config when its
 // specific panel is known to tolerate them. Each is a pure copy-and-tweak so a
@@ -273,6 +284,11 @@ void Ssd1677Driver::refresh(EpdBus& bus, RefreshMode mode, bool turnOff, bool as
 #endif
   bus.cmd(CMD_DISPLAY_UPDATE_CTRL1);
   bus.data((mode == RefreshMode::Fast) ? CTRL1_NORMAL : CTRL1_BYPASS_RED);
+  if (_cfg.writeSecondUpdateControlByte) bus.data(0x00);
+  if (_cfg.restoreInternalTemperature && mode != RefreshMode::Half) {
+    bus.cmd(CMD_TEMP_SENSOR_CONTROL);
+    bus.data(0x80);
+  }
 
   // Per-board absolute update sequence (vendor 0x22 values). When set, it selects
   // the panel's waveform directly — including load-temperature and the partial/DU
@@ -601,7 +617,11 @@ void Ssd1677Driver::writeGrayscalePlaneStrip(EpdBus& bus, GrayPlane plane, const
 
 void Ssd1677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut,
                                 bool factoryMode) {
-  (void)fb;
+  if (!_cfg.overlayGrayscale && !_cfg.absoluteGrayscale && lut == nullptr) {
+    // Legacy callers may bypass capability negotiation; fall back to B/W.
+    display(bus, fb, nullptr, RefreshMode::Full, turnOff);
+    return;
+  }
 
   // Differential mode marks grayscale content on the panel (the next BW update
   // must not diff against the gray planes); factory absolute mode self-cleans.
@@ -711,6 +731,9 @@ static const Ssd1677Config& ssd1677ActiveConfig() { return FREEINK_SSD1677_CONFI
 // use the X4/GDEQ0426T82 defaults.
 static const Ssd1677Config& ssd1677ActiveConfig() {
   switch (BoardConfig::ACTIVE.board) {
+#if FREEINK_DEVICE_METALIO_EINK4
+    case BoardConfig::Board::MetalioEInk4: return ssd1677MetalioConfig();
+#endif
     case BoardConfig::Board::Sticky: return ssd1677StickyConfig();
     // Waveshare ESP32-S3-ePaper-3.97: the vendor driver's bring-up is byte-identical
     // to Seeed's (booster AE C7 C3 C0 80, border 0x01, 0x22 = F7 full / FF partial /

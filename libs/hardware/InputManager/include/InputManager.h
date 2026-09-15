@@ -319,6 +319,10 @@ class InputManager {
   void updateTouchFromIrq(unsigned long now,
                           int irqRaw);  // CHSC6x I2C poll + touch-bit gate
   void pollGt911(unsigned long now);    // GT911 polled read
+  void beginCst816s();
+  void pollCst816s(unsigned long now);
+  uint8_t cstVirtualButtons = 0;
+  unsigned long cstLastSample = 0;
   void beginFt5x06();
   void pollFt5x06(unsigned long now);
   bool ft5x06WriteReg(uint8_t reg, uint8_t value);

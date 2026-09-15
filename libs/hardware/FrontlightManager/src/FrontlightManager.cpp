@@ -5,8 +5,8 @@
 
 #include <M5Pm1.h>
 #include <Wire.h>
+#include <driver/gpio.h>  // gpio_hold_en/dis in prepareForDeepSleep()/begin()
 #ifdef FREEINK_FRONTLIGHT_LS
-#include <driver/gpio.h>
 #include <driver/ledc.h>
 // esp_sleep_sub_mode_config lives in a private IDF header (no public API exists
 // for balancing the refcounted RC_FAST keep-on the LEDC driver takes for
@@ -120,9 +120,15 @@ void writeChannel(int8_t /*gpio*/, uint8_t ch, uint32_t duty) {
   ledc_set_duty(LEDC_LOW_SPEED_MODE, static_cast<ledc_channel_t>(ch), duty);
   ledc_update_duty(LEDC_LOW_SPEED_MODE, static_cast<ledc_channel_t>(ch));
 }
+void detachChannel(int8_t /*gpio*/, uint8_t ch) {
+  // Stop the timer output on this channel; the idle level it parks at is
+  // irrelevant because parkPinForSleep() takes the pad over immediately after.
+  ledc_stop(LEDC_LOW_SPEED_MODE, static_cast<ledc_channel_t>(ch), 0);
+}
 #elif defined(ARDUINO) && ESP_ARDUINO_VERSION_MAJOR >= 3
 bool attachChannel(int8_t gpio, uint8_t /*ch*/, uint32_t freq, uint8_t bits) { return ledcAttach(gpio, freq, bits); }
 void writeChannel(int8_t gpio, uint8_t /*ch*/, uint32_t duty) { ledcWrite(gpio, duty); }
+void detachChannel(int8_t gpio, uint8_t /*ch*/) { ledcDetach(gpio); }
 #else
 bool attachChannel(int8_t gpio, uint8_t ch, uint32_t freq, uint8_t bits) {
   ledcSetup(ch, freq, bits);
@@ -130,7 +136,35 @@ bool attachChannel(int8_t gpio, uint8_t ch, uint32_t freq, uint8_t bits) {
   return true;
 }
 void writeChannel(int8_t /*gpio*/, uint8_t ch, uint32_t duty) { ledcWrite(ch, duty); }
+void detachChannel(int8_t gpio, uint8_t /*ch*/) { ledcDetachPin(gpio); }
 #endif
+
+// Release a pad hold left by a previous prepareForDeepSleep(). gpio_hold_en
+// survives the deep-sleep wake reset, and a held pad silently ignores both the
+// LEDC routing and any GPIO write -- the light would never come back on.
+void releasePinHold(int8_t gpio) {
+  if (gpio == BoardConfig::PIN_UNASSIGNED) return;
+  gpio_hold_dis(static_cast<gpio_num_t>(gpio));
+}
+
+// Hand the pad from LEDC back to plain GPIO, drive the LED's INACTIVE level and
+// latch it for deep sleep. Deliberately not left to
+// esp_sleep_config_gpio_isolate(): an isolated pad floats, and what the light
+// then does depends on an external pull that is a board-layout detail (on a
+// board whose PWM gates a boost converter's EN pin through a pull-up, floating
+// reads as ON). A lit frontlight is by far the largest load a sleeping reader
+// can carry, so it gets driven off explicitly rather than assumed off. LEDC is
+// stopped first, or the peripheral output keeps overriding the GPIO write at the
+// pad.
+void parkPinForSleep(int8_t gpio, uint8_t ch, bool activeHigh) {
+  if (gpio == BoardConfig::PIN_UNASSIGNED) return;
+  detachChannel(gpio, ch);
+  const auto g = static_cast<gpio_num_t>(gpio);
+  gpio_hold_dis(g);
+  pinMode(gpio, OUTPUT);
+  digitalWrite(gpio, activeHigh ? LOW : HIGH);
+  gpio_hold_en(g);
+}
 }  // namespace
 #endif
 
@@ -170,6 +204,12 @@ void FrontlightManager::begin() {
     return;
   }
   if (fl.gpio == BoardConfig::PIN_UNASSIGNED) return;
+
+  // prepareForDeepSleep() latched these pads at the LED's off level, and the
+  // hold survives the wake reset. Release it before LEDC claims the pins, or the
+  // frontlight is dead after the first sleep/wake cycle.
+  releasePinHold(fl.gpio);
+  releasePinHold(fl.gpioWarm);
 
   bool attachOk = attachChannel(fl.gpio, LEDC_CH_COOL, fl.pwmFrequency, fl.pwmResolutionBits);
   if (fl.gpioWarm != BoardConfig::PIN_UNASSIGNED) {
@@ -435,6 +475,21 @@ void FrontlightManager::setBrightnessLevel(uint8_t level) {
   apply();
 #else
   (void)level;
+#endif
+}
+
+void FrontlightManager::prepareForDeepSleep() {
+#if FREEINK_CAP_FRONTLIGHT
+  const auto& fl = BoardConfig::ACTIVE.frontlight;
+  if (fl.viaPm1Pwm) {
+    // Paper Mono: the PWM lives in the M5PM1, so there is no ESP pad to park.
+    // Zero the duty (clearing the channel-enable bit) so the AW9967 is dark even
+    // if the EPD rail feeding it is still up when we sleep.
+    if (_begun) pm1FrontlightWrite(0);
+    return;
+  }
+  parkPinForSleep(fl.gpio, LEDC_CH_COOL, fl.activeHigh);
+  parkPinForSleep(fl.gpioWarm, LEDC_CH_WARM, fl.activeHigh);
 #endif
 }
 

@@ -363,6 +363,18 @@ void FrontlightManager::apply() {
   } else if (!_useLevel) {
     totalDuty = perceptualDuty(_brightness, full);
   }
+  // Boost-EN floor. On a light whose PWM gates a boost converter's EN pin, an
+  // on-time under the boost's start-up window produces NO light, so the dim end
+  // of any curve must land on the physical floor, not on one LSB -- that is how
+  // a plain gamma curve can black the light out at every ordinary reading
+  // brightness. Remap (0, full] onto [holdFloor, full]: the curve keeps its
+  // shape, 1% becomes the dimmest level the hardware can actually sustain, and
+  // boards with no floor configured are untouched (holdFloor == 0 leaves the
+  // identity mapping).
+  const uint32_t holdFloor = (full * fl.minHoldPermille + 500u) / 1000u;
+  if (totalDuty > 0 && holdFloor > 0) {
+    totalDuty = holdFloor + static_cast<uint32_t>((static_cast<uint64_t>(totalDuty) * (full - holdFloor)) / full);
+  }
   uint32_t warmDuty = 0;
   uint32_t coolDuty = totalDuty;
   if (dual) {
@@ -372,6 +384,21 @@ void FrontlightManager::apply() {
 #ifdef FREEINK_FRONTLIGHT_LS
   updateLsKeepAlive(totalDuty != 0);
 #endif
+  // Kick-start: a boost sustains below the duty it can ignite from. Turning on
+  // from dark into the hold band gets a brief burst at the ignition floor, then
+  // settles to the target -- which is what lets minHoldPermille sit below
+  // minStartPermille and 1% reach a level the boost could never start at.
+  const uint32_t startFloor = (full * fl.minStartPermille + 500u) / 1000u;
+  if (_lastTotalDuty == 0 && totalDuty > 0 && startFloor > 0 && totalDuty < startFloor) {
+    const uint32_t kickWarm = dual ? (startFloor * _warmPercent + 50u) / 100u : 0;
+    writeChannel(fl.gpio, LEDC_CH_COOL, physicalDuty(startFloor - kickWarm, full, fl.activeHigh));
+    if (dual) {
+      writeChannel(fl.gpioWarm, LEDC_CH_WARM, physicalDuty(kickWarm, full, fl.activeHigh));
+    }
+    delay(30);  // one boost soft-start; the output cap carries the dip that follows
+  }
+  _lastTotalDuty = totalDuty;
+
   writeChannel(fl.gpio, LEDC_CH_COOL, physicalDuty(coolDuty, full, fl.activeHigh));
 
   if (dual) {

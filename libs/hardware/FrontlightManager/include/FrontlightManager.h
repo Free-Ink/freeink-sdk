@@ -151,6 +151,9 @@ class FrontlightManager {
   uint8_t _brightness = 0;
   uint8_t _brightnessLevel = 0;
   bool _useLevel = false;
+  // Duty written by the previous apply(); 0 = the light was off. The off->on
+  // edge is what arms the boost kick-start (see apply()).
+  uint32_t _lastTotalDuty = 0;
   uint8_t _lastBrightness = 50;
   uint8_t _warmPercent = 50;  // neutral by default
 };

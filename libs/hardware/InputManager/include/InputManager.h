@@ -128,6 +128,15 @@ class InputManager {
   // Press edge with the touch-down position normalized in the panel's native
   // frame.
   bool wasTouchPressedAt(float& nx, float& ny) const;
+  // Off-screen capacitive page keys only; excludes physical buttons sharing
+  // BTN_UP/BTN_DOWN. Bit positions match the button indices.
+  uint8_t capacitivePageButtonMask() const {
+#if FREEINK_CAP_TOUCH
+    return cstVirtualButtons;
+#else
+    return 0;
+#endif
+  }
   // True while the current touch is still a tap candidate: finger down,
   // movement remains within tap slop. Writes the original touch-down position
   // and held time.

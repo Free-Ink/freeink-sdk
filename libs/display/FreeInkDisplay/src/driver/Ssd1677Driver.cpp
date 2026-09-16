@@ -106,13 +106,16 @@ static const Ssd1677Config& ssd1677StickyConfig() {
 // GDEM0397T81 settings from metalio-hw-test. B/W refreshes use its OTP waveforms
 // via the vendor 0x22 sequence values; the vendor's separately supplied partial
 // LUT is unusable (113 initializers for a 112-byte array), so grayscale/AA uses
-// the X4 factory LUT instead — same SSD1677 controller and 800x480 geometry, and
-// the external-LUT path never touches OTP. borderWaveformGray matches the X4's
-// 0xC0 written alongside that LUT.
+// the X4 waveforms instead — same SSD1677 controller and 800x480 geometry, and
+// the external-LUT path never touches OTP. Both LUTs are the Metalio forks with
+// the per-module voltage tail (VSH1 bumped for darker dark tones — see
+// Ssd1677Luts.h). borderWaveformGray matches the X4's 0xC0 written alongside
+// that LUT.
 static const Ssd1677Config& ssd1677MetalioConfig() {
   static const Ssd1677Config cfg = {
-      {0xAE, 0xC7, 0xC3, 0xC0, 0x80}, 0x02, 0x01, 0x6A, lut_grayscale,
-      0xF7, 0xFC, 0xD7, 0x01, 0x80, 0x01, 0xC0, false, true, true, true, true, true};
+      {0xAE, 0xC7, 0xC3, 0xC0, 0x80}, 0x02, 0x01, 0x6A, lut_grayscale_metalio,
+      0xF7, 0xFC, 0xD7, 0x01, 0x80, 0x01, 0xC0, false, true, true, true, true, true,
+      lut_factory_quality_metalio};
   return cfg;
 }
 #endif
@@ -658,7 +661,8 @@ void Ssd1677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
 
   const unsigned char* selectedLut = lut;
   if (selectedLut == nullptr) {
-    selectedLut = factoryMode ? lut_factory_quality : _cfg.grayLut;
+    selectedLut = factoryMode ? (_cfg.factoryGrayLut ? _cfg.factoryGrayLut : lut_factory_quality)
+                              : _cfg.grayLut;
   }
   setCustomLut(bus, true, selectedLut);
 

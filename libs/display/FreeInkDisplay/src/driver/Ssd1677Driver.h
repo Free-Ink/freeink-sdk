@@ -60,6 +60,9 @@ struct Ssd1677Config {
   bool writeSecondUpdateControlByte = false;  // append zero to CMD 0x21
   bool restoreInternalTemperature = false;    // CMD 0x18=0x80 after warmed HALF
   bool blackPulseClean = false;  // HALF: two partials old -> black -> new (Metalio demo)
+  // Factory absolute 4-level LUT override; nullptr selects lut_factory_quality.
+  // Boards with a per-module voltage tail (Metalio) point this at their copy.
+  const unsigned char* factoryGrayLut = nullptr;
 };
 
 // Standard config (Xteink X4 / GDEQ0426T82). Panel mounting (mirror/180°) is NOT

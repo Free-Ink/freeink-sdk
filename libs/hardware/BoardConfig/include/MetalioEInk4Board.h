@@ -18,6 +18,7 @@ constexpr uint8_t PIN_VOLUME_UP = 8;
 constexpr uint8_t PIN_TOUCH_RESET = 9;
 constexpr uint8_t PIN_POWER_PULSE = 11;
 constexpr int VIBRATION_GPIO = 44;
+constexpr int SD_DAT3_GPIO = 46;  // input-only; held high even with 1-bit SDMMC
 
 inline bool writeRegister(uint8_t reg, uint16_t value) {
   Wire.beginTransmission(EXPANDER_ADDR);

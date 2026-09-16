@@ -17,6 +17,29 @@ namespace freeink {
 bool SdmmcBlockDevice::begin(const BoardConfig::SdmmcPins& pins) {
   if (pins.busWidth == 0) return false;
 
+#if FREEINK_DEVICE_METALIO_EINK4
+  if (BoardConfig::isMetalioEInk4()) {
+    // Vendor InitializeSdCard(): DAT3/CD must stay high during CMD0 even in
+    // 1-bit mode. GPIO46 has a reset pull-down and isn't touched by the slot
+    // driver when d3 is NC. Keep it INPUT, never add it as an SDMMC output.
+    gpio_hold_dis(static_cast<gpio_num_t>(metalio::SD_DAT3_GPIO));
+    gpio_config_t dat3 = {};
+    dat3.pin_bit_mask = uint64_t(1) << metalio::SD_DAT3_GPIO;
+    dat3.mode = GPIO_MODE_INPUT;
+    dat3.pull_up_en = GPIO_PULLUP_ENABLE;
+    dat3.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    dat3.intr_type = GPIO_INTR_DISABLE;
+    const esp_err_t err = gpio_config(&dat3);
+    if (err != ESP_OK) {
+      if (Serial) Serial.printf("[%lu] [SD] Metalio DAT3 pull-up failed: %s\n", millis(), esp_err_to_name(err));
+      return false;
+    }
+    delay(1);
+    if (Serial) Serial.printf("[%lu] [SD] Metalio DAT3/CD GPIO46=%d (expected 1)\n", millis(),
+                              gpio_get_level(static_cast<gpio_num_t>(metalio::SD_DAT3_GPIO)));
+  }
+#endif
+
   // Host config matches the OEM (recovered from app1's mountSD via Ghidra): full
   // default capability flags (0x37) with the actual width selected via slot.width
   // only, and the data clock at 40 MHz. The read timeouts we chased earlier were a

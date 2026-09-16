@@ -62,8 +62,11 @@ vibration output in the sample. Do not enable a UART receiver on that pin while
 using the motor. Expander names such as P11 mean **P1.1 (bit 9)**, not bit 11.
 
 GPIO46 is SD DAT3 and input-only. It is not assigned as a data/output pin in
-1-bit mode; the board must keep DAT3 high through its pull-up so the card does
-not enter SPI mode.
+1-bit mode. Before SDMMC initialization the SDK configures it as an input with
+pull-up enabled and pull-down disabled, matching the vendor demo. This matters
+because GPIO46 defaults to a weak pull-down and the unused DAT3 line must still
+be high during card initialization. The startup log reports its level (expected
+1). External board pull-ups remain preferable for reliable operation.
 
 ## Startup, touch and power
 

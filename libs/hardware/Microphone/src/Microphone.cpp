@@ -8,6 +8,9 @@
 
 #include <driver/gpio.h>
 #include <driver/i2s_pdm.h>
+#if FREEINK_DEVICE_METALIO_EINK4
+#include <MetalioAudio.h>
+#endif
 
 namespace freeink {
 
@@ -21,7 +24,20 @@ void setMicPower(const BoardConfig::MicConfig& mic, bool on) {
 }  // namespace
 
 bool Microphone::begin(uint32_t sampleRate) {
-  if (begun_) return true;
+  if (begun_) return sampleRate_ == sampleRate;
+#if FREEINK_DEVICE_METALIO_EINK4
+  if (BoardConfig::ACTIVE.mic.input == BoardConfig::MicInput::MetalioModule) {
+    if (sampleRate != metalio::AUDIO_RATE || !metalio::acquireAudio(this, true)) return false;
+    if (!metalio::startAudio(this, true)) {
+      metalio::releaseAudio(this, true);
+      return false;
+    }
+    rxChan_ = metalio::audioBus().rx;
+    sampleRate_ = sampleRate;
+    begun_ = true;
+    return true;
+  }
+#endif
   const BoardConfig::MicConfig& mic = BoardConfig::ACTIVE.mic;
   if (mic.input != BoardConfig::MicInput::Pdm || mic.clk == BoardConfig::PIN_UNASSIGNED ||
       mic.data == BoardConfig::PIN_UNASSIGNED) {
@@ -63,6 +79,20 @@ bool Microphone::begin(uint32_t sampleRate) {
 
 int Microphone::read(int16_t* dst, size_t maxSamples, uint32_t timeoutMs) {
   if (!begun_ || !rxChan_ || !dst || maxSamples == 0) return -1;
+#if FREEINK_DEVICE_METALIO_EINK4
+  if (BoardConfig::ACTIVE.mic.input == BoardConfig::MicInput::MetalioModule) {
+    // Bounded scratch space; callers can pump read() for larger recordings.
+    int32_t slots[64];
+    const size_t frames = maxSamples < 32 ? maxSamples : 32;
+    size_t bytes = 0;
+    const esp_err_t err = i2s_channel_read(static_cast<i2s_chan_handle_t>(rxChan_), slots,
+                                          frames * 2 * sizeof(int32_t), &bytes, timeoutMs);
+    if (err != ESP_OK && err != ESP_ERR_TIMEOUT) return -1;
+    const size_t count = bytes / (2 * sizeof(int32_t));
+    for (size_t i = 0; i < count; ++i) dst[i] = metalio::inputSample(slots[i * 2]);
+    return static_cast<int>(count);
+  }
+#endif
   size_t bytesRead = 0;
   const esp_err_t err = i2s_channel_read(static_cast<i2s_chan_handle_t>(rxChan_), dst,
                                          maxSamples * sizeof(int16_t), &bytesRead, pdMS_TO_TICKS(timeoutMs));
@@ -72,6 +102,15 @@ int Microphone::read(int16_t* dst, size_t maxSamples, uint32_t timeoutMs) {
 }
 
 void Microphone::end() {
+#if FREEINK_DEVICE_METALIO_EINK4
+  if (BoardConfig::ACTIVE.mic.input == BoardConfig::MicInput::MetalioModule) {
+    metalio::releaseAudio(this, true);
+    rxChan_ = nullptr;
+    begun_ = false;
+    sampleRate_ = 0;
+    return;
+  }
+#endif
   if (rxChan_) {
     i2s_channel_disable(static_cast<i2s_chan_handle_t>(rxChan_));
     i2s_del_channel(static_cast<i2s_chan_handle_t>(rxChan_));

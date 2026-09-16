@@ -1,9 +1,10 @@
 #pragma once
 
-// FreeInk microphone capture (PDM input).
+// FreeInk microphone capture (PDM or Metalio module I2S input).
 //
 // Captures 16-bit mono PCM from the PDM microphone described by
 // BoardConfig::ACTIVE.mic, using the ESP-IDF i2s_pdm RX driver. This is the
+// Metalio uses a shared slave I2S transport instead of PDM. This is the
 // input counterpart to AudioManager (which is output-only): a board can have a
 // mic without an output codec, so the two are independent capabilities
 // (FREEINK_CAP_MIC vs FREEINK_CAP_AUDIO).
@@ -26,15 +27,18 @@ class Microphone {
   // 8 kHz and higher — pass a rate to begin() to override.
   static constexpr uint32_t kDefaultSampleRate = 16000;
 
-  // Powers the mic rail and starts the i2s_pdm RX channel at sampleRate.
+  // Powers the mic rail and starts capture at sampleRate. Metalio supports
+  // 16 kHz only and shares its duplex I2S bus with AudioManager. Serialize
+  // begin/end with AudioManager lifecycle calls; do not end during read().
   // Returns false if the active board has no mic or bring-up fails.
   bool begin(uint32_t sampleRate = kDefaultSampleRate);
 
-  // True when the active board declares a PDM mic and begin() succeeded.
+  // True when the active board declares a supported mic and begin() succeeded.
   bool present() const { return begun_; }
 
   // Read up to maxSamples 16-bit mono samples into dst. Blocks up to timeoutMs
-  // for data. Returns samples read (0 = timeout/no data, <0 = error/not begun).
+  // for data. Metalio returns at most 32 samples per call; pump read() for
+  // larger recordings. Returns samples read (0 = timeout/no data, <0 = error/not begun).
   int read(int16_t* dst, size_t maxSamples, uint32_t timeoutMs = 100);
 
   // Stops the RX channel and powers the mic rail down. begin() restarts it.

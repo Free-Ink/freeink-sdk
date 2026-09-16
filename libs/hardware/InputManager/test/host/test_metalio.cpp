@@ -18,7 +18,7 @@ int main() {
   static_assert(BoardConfig::MAX_FRAMEBUFFER_BYTES == 48000);
   static_assert(FREEINK_MCU_S3 && FREEINK_DRIVER_SSD1677 && FREEINK_CAP_TOUCH);
   static_assert(FREEINK_CAP_RTC && FREEINK_SD_SDMMC && FREEINK_BATTERY_I2C_GAUGE);
-  static_assert(!FREEINK_CAP_FRONTLIGHT && !FREEINK_CAP_AUDIO && !FREEINK_CAP_IMU);
+  static_assert(!FREEINK_CAP_FRONTLIGHT && FREEINK_CAP_AUDIO && FREEINK_CAP_MIC && FREEINK_CAP_IMU);
   static_assert(BoardConfig::METALIO_EINK4.display.dc == 13);
   static_assert(BoardConfig::METALIO_EINK4.display.rst == 18);
   static_assert(BoardConfig::METALIO_EINK4.sdmmc.busWidth == 1);

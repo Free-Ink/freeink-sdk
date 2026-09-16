@@ -16,19 +16,26 @@ Support is compiled and host-tested; physical hardware validation is pending.
 | BQ27220, address 0x55 | Battery percentage, voltage and charge direction via BatteryMonitor |
 | PCF8563, address 0x51 | Rtc |
 | GPIO44 motor | [HapticManager](haptics.md): consumer-triggered intensity, pulses and patterns |
+| Speaker | AudioManager: 16 kHz, 16-bit PCM WAV; software volume and looping |
+| SC7A20H accelerometer | Imu: XYZ acceleration in g, ±2 g / 100 Hz, sleep/wake |
+| Microphone | Microphone: 16 kHz mono PCM capture, shared duplex I²S |
 | Power controller | Explicit `freeink::metalio::powerOff()` pulse helper |
 
-Touch, RTC, haptics, the battery gauge and SDMMC capabilities enable automatically.
+Touch, RTC, haptics, audio, microphone, IMU, the battery gauge and SDMMC capabilities enable automatically.
 Haptic playback is explicitly requested by the consumer; touch does not trigger it.
 Set `USE_BLOCK_DEVICE_INTERFACE=1` for SdFat's SDMMC block-device interface.
 There is no frontlight in the supplied board configuration.
 
-The external Bluetooth audio module, 4G modem, charger configuration,
-accelerometer and expander LED have no Metalio SDK backend in this port.
-`CAP_AUDIO`, `CAP_MIC`, `CAP_IMU`, and `CAP_LED` remain off. The sample's audio
-path includes UART module control as well as I²S; it is not a generic I²S DAC.
-`setAmplifier(bool)` provides explicit ESP32-route amp control without enabling
-an unsupported audio driver. The charger is left in its existing hardware state;
+The 4G modem, charger configuration and expander LED have no Metalio SDK backend
+in this port. `FREEINK_CAP_LED` remains off.
+
+The SC7A20H identity was confirmed by the board owner. Its
+[Imu backend](metalio-accelerometer.md) probes 0x19 then 0x18 on the shared
+SDA41/SCL42 bus. This is an accelerometer-only device: gyro readings are zero.
+The interrupt on expander P1.4 is not used by the polling backend.
+
+The [audio backend](metalio-audio.md) controls the external module over UART
+and streams slave I²S. Bluetooth pairing/routing features are not exposed. The charger is left in its existing hardware state;
 charge direction is read from the gauge, not from a guessed charger register map.
 
 ## Pins and source discrepancies
@@ -84,7 +91,8 @@ reads release input. See [Espressif's CST816S notes](https://github.com/espressi
 For hardware power-off, call `HapticManager::getInstance().end()` if using haptics,
 finish all display work, call `display.deepSleep()`,
 close/unmount storage, then call `freeink::metalio::powerOff()` from your hardware
-task. This disables the amp, waits 280 ms, and issues one high/low/high shutdown
+task. Call `AudioManager::powerDown()` and `Microphone::end()` before sleeping
+or pulsing hardware power-off. This disables the amp, waits 280 ms, and issues one high/low/high shutdown
 pulse with 100 ms intervals. The caller may repeat the pulse if USB keeps the
 device powered. Do not cut P0.5 first: it is shared by the screen and card, and
 the sample explicitly keeps it powered during panel shutdown. `powerOff()` does
@@ -124,6 +132,8 @@ a byte. These B/W tables also do not establish grayscale support.
 
 ```sh
 sh libs/hardware/InputManager/test/host/run_metalio.sh
+sh libs/hardware/AudioManager/test/host/run_metalio.sh
+sh libs/hardware/Imu/test/host/run.sh
 python3 libs/display/FreeInkDisplay/test/host/run_pro.py
 ```
 
@@ -131,5 +141,6 @@ Tests exercise the actual board profile, expander sequencing/retries, touch and
 cover keys, input failures, refresh commands, B/W fallback and deferred shutdown.
 An Arduino ESP32-S3 firmware linking display, input, SD, battery, RTC and power
 managers was also compiled. Before release, validate DC/RST wiring, panel quality,
-all touch corners and held cover keys, SD access, battery values, RTC, and power
+all touch corners and held cover keys, SD access, battery values, RTC, accelerometer
+axis orientation and sleep current, and power
 off/wake on a physical unit.

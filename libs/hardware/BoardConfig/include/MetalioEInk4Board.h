@@ -4,6 +4,7 @@
 // Expander indices 8..15 mean P1.0..P1.7, not ESP GPIO numbers.
 #include <Arduino.h>
 #include <Wire.h>
+#include <mutex>
 
 namespace freeink {
 namespace metalio {
@@ -40,6 +41,8 @@ inline bool readRegister(uint8_t reg, uint16_t& value) {
 // from the firmware's hardware task, never an ISR.
 inline bool setOutput(uint8_t pin, bool high) {
   if (pin > 15) return false;
+  static std::mutex outputMutex;
+  std::lock_guard<std::mutex> lock(outputMutex);
   uint16_t value;
   if (!readRegister(2, value)) return false;
   const uint16_t mask = uint16_t(1) << pin;

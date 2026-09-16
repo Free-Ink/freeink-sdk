@@ -9,6 +9,8 @@
 // AudioConfig::output: ES8388 (Murphy M3, OEM-recovered register sequence)
 // and ES8311 (M5 PaperColor, mirroring M5Unified's speaker bring-up — the
 // codec clocks itself from BCLK, plus the AW8737A amp on its ampEnable pin).
+// Metalio uses an external UART-controlled module clocking a shared 16 kHz
+// slave I2S bus with Microphone; its 32-bit slots carry converted 16-bit PCM.
 //
 // Playback runs in a dedicated FreeRTOS task (priority above typical workers,
 // like the OEM "musicTask"), so play() returns immediately; with loop=true the
@@ -21,6 +23,7 @@
 #include <Arduino.h>
 
 #include <functional>
+#include <atomic>
 
 namespace freeink {
 
@@ -34,16 +37,19 @@ class AudioManager {
     std::function<bool(size_t pos)> seek;
   };
 
+  // Control methods must be serialized by the consumer (one control task).
   // Initializes the codec + enable pin. Returns false when the active board
   // has no audio path (callers can treat audio as absent).
   bool begin();
   bool present() const;
 
-  // Analog output volume, 0-100 (maps onto the codec's OUT1/OUT2 registers).
+  // Output volume, 0-100 (codec registers, or software gain on Metalio).
   void setVolume(uint8_t percent);
 
   // Starts WAV playback (16-bit PCM, mono or stereo, 8-48 kHz). Stops any
-  // current playback first. loop=true replays until stop().
+  // current playback first. loop=true replays until stop(). Metalio accepts
+  // 16 kHz only, matching its external module clock. Callbacks must return
+  // promptly; stop() waits for the playback task to finish.
   bool play(const WavSource& source, bool loop);
 
   // Convenience: play from a memory buffer (e.g. an embedded default sound).
@@ -52,7 +58,8 @@ class AudioManager {
   void stop();
   bool isPlaying() const { return playing_; }
 
-  // Codec power-down (CHIPPOWER off). begin() restores it.
+  // Codec power-down. Metalio releases speaker ownership of the shared I2S
+  // bus; microphone capture may continue. begin() restores it.
   void powerDown();
 
  private:
@@ -66,6 +73,7 @@ class AudioManager {
 
   static void taskEntry(void* self);
   void taskLoop();
+  void taskLoopMetalio();
   bool parseWavHeader(const WavSource& source, WavInfo& info);
   bool ensureI2s(uint32_t sampleRate);
   void teardownI2s();
@@ -75,9 +83,10 @@ class AudioManager {
   void codecMute(bool mute);
   void setAmp(bool on);
 
+  std::atomic<uint8_t> volume_{100};
   bool begun_ = false;
-  volatile bool playing_ = false;
-  volatile bool stopRequested_ = false;
+  std::atomic<bool> playing_{false};
+  std::atomic<bool> stopRequested_{false};
   TaskHandle_t task_ = nullptr;
 
   WavSource source_;

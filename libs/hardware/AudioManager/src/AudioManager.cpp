@@ -10,6 +10,9 @@
 #include <driver/i2s_std.h>
 
 #include <memory>
+#if FREEINK_DEVICE_METALIO_EINK4
+#include <MetalioAudio.h>
+#endif
 
 namespace freeink {
 
@@ -62,7 +65,8 @@ uint16_t readLE16(const uint8_t* p) { return (uint16_t)p[0] | ((uint16_t)p[1] <<
 bool AudioManager::present() const {
   return BoardConfig::ACTIVE.audio.output == BoardConfig::AudioOutput::I2sEs8388 ||
          BoardConfig::ACTIVE.audio.output == BoardConfig::AudioOutput::I2sEs8311 ||
-         BoardConfig::ACTIVE.audio.output == BoardConfig::AudioOutput::I2sDac;
+         BoardConfig::ACTIVE.audio.output == BoardConfig::AudioOutput::I2sDac ||
+         BoardConfig::ACTIVE.audio.output == BoardConfig::AudioOutput::MetalioModule;
 }
 
 bool AudioManager::codecWrite(uint8_t reg, uint8_t value) {
@@ -109,6 +113,12 @@ bool AudioManager::begin() {
   if (begun_) return true;
   const auto& cfg = BoardConfig::ACTIVE.audio;
   if (!present()) return false;
+#if FREEINK_DEVICE_METALIO_EINK4
+  if (cfg.output == BoardConfig::AudioOutput::MetalioModule) {
+    begun_ = metalio::acquireAudio(this, false);
+    return begun_;
+  }
+#endif
 
   if (cfg.ampEnable != BoardConfig::PIN_UNASSIGNED) {
     pinMode(cfg.ampEnable, OUTPUT);
@@ -130,6 +140,7 @@ bool AudioManager::begin() {
 
 void AudioManager::setVolume(uint8_t percent) {
   if (percent > 100) percent = 100;
+  volume_.store(percent);
   const auto& cfg = BoardConfig::ACTIVE.audio;
   if (cfg.codecAddr == 0) return;
   if (cfg.output == BoardConfig::AudioOutput::I2sEs8311) {
@@ -158,6 +169,12 @@ void AudioManager::codecMute(bool mute) {
 }
 
 void AudioManager::setAmp(bool on) {
+#if FREEINK_DEVICE_METALIO_EINK4
+  if (BoardConfig::ACTIVE.audio.output == BoardConfig::AudioOutput::MetalioModule) {
+    if (!metalio::setAmplifier(on)) log_e("Metalio amplifier control failed");
+    return;
+  }
+#endif
   const auto& cfg = BoardConfig::ACTIVE.audio;
   if (cfg.ampEnable == BoardConfig::PIN_UNASSIGNED) return;
   digitalWrite(cfg.ampEnable, on ? HIGH : LOW);
@@ -167,6 +184,13 @@ void AudioManager::powerDown() {
   const auto& cfg = BoardConfig::ACTIVE.audio;
   if (!begun_) return;
   stop();
+#if FREEINK_DEVICE_METALIO_EINK4
+  if (cfg.output == BoardConfig::AudioOutput::MetalioModule) {
+    teardownI2s();
+    begun_ = false;
+    return;
+  }
+#endif
   if (cfg.output == BoardConfig::AudioOutput::I2sEs8311) {
     // Like M5Unified's disable path: drop the amp and the codec rail.
     setAmp(false);
@@ -216,6 +240,15 @@ bool AudioManager::parseWavHeader(const WavSource& source, WavInfo& info) {
 }
 
 bool AudioManager::ensureI2s(uint32_t sampleRate) {
+#if FREEINK_DEVICE_METALIO_EINK4
+  if (BoardConfig::ACTIVE.audio.output == BoardConfig::AudioOutput::MetalioModule) {
+    if (sampleRate != metalio::AUDIO_RATE || !metalio::startAudio(this, false)) return false;
+    txChan_ = metalio::audioBus().tx;
+    chanEnabled_ = true;
+    currentRate_ = sampleRate;
+    return true;
+  }
+#endif
   const auto& cfg = BoardConfig::ACTIVE.audio;
   i2s_chan_handle_t tx = (i2s_chan_handle_t)txChan_;
 
@@ -272,6 +305,15 @@ bool AudioManager::ensureI2s(uint32_t sampleRate) {
 }
 
 void AudioManager::teardownI2s() {
+#if FREEINK_DEVICE_METALIO_EINK4
+  if (BoardConfig::ACTIVE.audio.output == BoardConfig::AudioOutput::MetalioModule) {
+    metalio::releaseAudio(this, false);
+    txChan_ = nullptr;
+    chanEnabled_ = false;
+    currentRate_ = 0;
+    return;
+  }
+#endif
   if (!txChan_) return;
   i2s_chan_handle_t tx = (i2s_chan_handle_t)txChan_;
   if (chanEnabled_) i2s_channel_disable(tx);
@@ -282,6 +324,7 @@ void AudioManager::teardownI2s() {
 }
 
 bool AudioManager::play(const WavSource& source, bool loop) {
+  if (!source.read || !source.seek) return false;
   if (!begun_ && !begin()) return false;
   stop();
 
@@ -290,12 +333,16 @@ bool AudioManager::play(const WavSource& source, bool loop) {
     log_e("unsupported WAV (need 16-bit PCM, 1-2ch, 8-48 kHz)");
     return false;
   }
+#if FREEINK_DEVICE_METALIO_EINK4
+  if (BoardConfig::ACTIVE.audio.output == BoardConfig::AudioOutput::MetalioModule &&
+      (info.sampleRate != metalio::AUDIO_RATE || info.dataLength == 0 ||
+       info.dataLength % (info.channels * sizeof(int16_t)) != 0)) return false;
+#endif
+  if (!source.seek(info.dataStart)) return false;
   if (!ensureI2s(info.sampleRate)) {
     log_e("i2s setup failed");
     return false;
   }
-  if (!source.seek(info.dataStart)) return false;
-
   // Unmute the DAC (stop() mutes it). Codec writes stay on the caller's core
   // so the shared I2C bus is never touched from the audio task. The speaker
   // amp comes up in the playback task once silence is flowing — enabling it
@@ -311,6 +358,12 @@ bool AudioManager::play(const WavSource& source, bool loop) {
   // Same shape as the OEM "musicTask" (high priority, core 0 — the Arduino
   // loop owns core 1); 8K stack covers the on-stack sample buffers.
   if (xTaskCreatePinnedToCore(taskEntry, "audio_play", 8192, this, 10, &task_, 0) != pdPASS) {
+#if FREEINK_DEVICE_METALIO_EINK4
+    if (BoardConfig::ACTIVE.audio.output == BoardConfig::AudioOutput::MetalioModule) {
+      metalio::stopAudio(this, false);
+      chanEnabled_ = false;
+    }
+#endif
     playing_ = false;
     task_ = nullptr;
     return false;
@@ -319,6 +372,7 @@ bool AudioManager::play(const WavSource& source, bool loop) {
 }
 
 bool AudioManager::playBuffer(const uint8_t* data, size_t len, bool loop) {
+  if (!data || len == 0) return false;
   // Shared offset state lives in the lambdas; play() copies them.
   auto offset = std::make_shared<size_t>(0);
   WavSource src;
@@ -338,6 +392,17 @@ bool AudioManager::playBuffer(const uint8_t* data, size_t len, bool loop) {
 }
 
 void AudioManager::stop() {
+#if FREEINK_DEVICE_METALIO_EINK4
+  if (BoardConfig::ACTIVE.audio.output == BoardConfig::AudioOutput::MetalioModule) {
+    if (!begun_) return;
+    stopRequested_ = true;
+    // Source callbacks must return promptly. Never release a channel while the
+    // worker still uses it, even if a consumer callback is slow.
+    while (playing_) vTaskDelay(pdMS_TO_TICKS(1));
+    setAmp(false);
+    return;
+  }
+#endif
   if (!playing_) return;
   stopRequested_ = true;
   // The task deletes itself; wait for it to drain (bounded).
@@ -352,7 +417,77 @@ void AudioManager::stop() {
 
 void AudioManager::taskEntry(void* self) { static_cast<AudioManager*>(self)->taskLoop(); }
 
+#if FREEINK_DEVICE_METALIO_EINK4
+void AudioManager::taskLoopMetalio() {
+  auto tx = static_cast<i2s_chan_handle_t>(txChan_);
+  // Fixed stack buffers, no allocations in the streaming loop. 128 frames
+  // accommodate partial source reads without changing sample alignment.
+  uint8_t input[512];
+  int32_t slots[256] = {};
+  const size_t frameBytes = wav_.channels * sizeof(int16_t);
+  size_t consumed = 0;
+  bool ok = true;
+  auto writeAll = [&](const void* data, size_t bytes) {
+    const auto* p = static_cast<const uint8_t*>(data);
+    while (bytes && !stopRequested_) {
+      size_t written = 0;
+      // ESP-IDF takes milliseconds here, not FreeRTOS ticks. Missing external
+      // clocks must time out instead of trapping stop()/powerDown().
+      const auto err = i2s_channel_write(tx, p, bytes, &written, 100);
+      if (err != ESP_OK || written == 0 || written > bytes) return false;
+      p += written;
+      bytes -= written;
+    }
+    return bytes == 0;
+  };
+  ok = writeAll(slots, sizeof(slots));
+  if (ok && !stopRequested_) ok = metalio::setAmplifier(true);
+  while (ok && !stopRequested_) {
+    if (consumed == wav_.dataLength) {
+      if (!loop_ || !source_.seek(wav_.dataStart)) break;
+      consumed = 0;
+    }
+    size_t want = wav_.dataLength - consumed;
+    const size_t capacity = 128 * frameBytes;
+    if (want > capacity) want = capacity;
+    size_t filled = 0;
+    while (filled < want && !stopRequested_) {
+      const int n = source_.read(input + filled, want - filled);
+      if (n <= 0 || static_cast<size_t>(n) > want - filled) { ok = false; break; }
+      filled += n;
+    }
+    if (!ok || stopRequested_) break;
+    const uint8_t volume = volume_.load();
+    for (size_t i = 0; i < filled / frameBytes; ++i) {
+      const auto* p = input + i * frameBytes;
+      const int16_t left = static_cast<int16_t>(readLE16(p));
+      const int16_t right = wav_.channels == 1 ? left : static_cast<int16_t>(readLE16(p + 2));
+      slots[i * 2] = metalio::outputSample(left, volume);
+      slots[i * 2 + 1] = metalio::outputSample(right, volume);
+    }
+    ok = writeAll(slots, filled / frameBytes * 2 * sizeof(int32_t));
+    consumed += filled;
+  }
+  // Push enough silence to drain the default six DMA descriptors on normal
+  // completion. A stop request skips draining for responsive cancellation.
+  memset(slots, 0, sizeof(slots));
+  for (int i = 0; ok && i < 24 && !stopRequested_; ++i) ok = writeAll(slots, sizeof(slots));
+  setAmp(false);
+  metalio::stopAudio(this, false);
+  chanEnabled_ = false;
+  task_ = nullptr;
+  playing_ = false;
+  vTaskDelete(nullptr);
+}
+#endif
+
 void AudioManager::taskLoop() {
+#if FREEINK_DEVICE_METALIO_EINK4
+  if (BoardConfig::ACTIVE.audio.output == BoardConfig::AudioOutput::MetalioModule) {
+    taskLoopMetalio();
+    return;
+  }
+#endif
   i2s_chan_handle_t tx = (i2s_chan_handle_t)txChan_;
   uint8_t inBuf[READ_CHUNK];
   // Mono is duplicated into both slots, so the out buffer is 2x.

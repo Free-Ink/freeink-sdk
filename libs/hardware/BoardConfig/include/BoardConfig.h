@@ -276,13 +276,13 @@
 #define FREEINK_CAP_COLOR (FREEINK_DEVICE_M5)
 #endif
 #ifndef FREEINK_CAP_AUDIO
-#define FREEINK_CAP_AUDIO (FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_M5)
+#define FREEINK_CAP_AUDIO (FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_M5 || FREEINK_DEVICE_METALIO_EINK4)
 #endif
-// Microphone capture (PDM in). Separate from FREEINK_CAP_AUDIO (output): the
+// Microphone capture (PDM or module I2S). Separate from FREEINK_CAP_AUDIO (output): the
 // Sticky has a PDM mic but no output codec. The Microphone lib compiles its
-// i2s_pdm RX path only when this is set; otherwise it links stub bodies.
+// capture path only when this is set; otherwise it links stub bodies.
 #ifndef FREEINK_CAP_MIC
-#define FREEINK_CAP_MIC (FREEINK_DEVICE_STICKY || FREEINK_DEVICE_PAPERMONO)
+#define FREEINK_CAP_MIC (FREEINK_DEVICE_STICKY || FREEINK_DEVICE_PAPERMONO || FREEINK_DEVICE_METALIO_EINK4)
 #endif
 // On-board I2C sensors. Each lib (Rtc / EnvironmentSensor / Imu) compiles its
 // I2C driver only when its flag is set; otherwise it links stub bodies.
@@ -297,7 +297,7 @@
 #endif
 #ifndef FREEINK_CAP_IMU
 #define FREEINK_CAP_IMU \
-  (FREEINK_DEVICE_X3 || FREEINK_DEVICE_STICKY || FREEINK_DEVICE_X4CLASSIC || FREEINK_DEVICE_WS397)
+  (FREEINK_DEVICE_X3 || FREEINK_DEVICE_STICKY || FREEINK_DEVICE_X4CLASSIC || FREEINK_DEVICE_WS397 || FREEINK_DEVICE_METALIO_EINK4)
 #endif
 // Consumer-triggered vibration output; independent of audio and input events.
 #ifndef FREEINK_CAP_HAPTIC
@@ -443,7 +443,7 @@ enum class TouchController : uint8_t { None, Chsc6x, Gt911, Ft5x06, Ft6336u, Gsl
 // recovered from the OEM firmware dump; see the consumer's audio notes.
 // M5 PaperColor ships an ES8311 mono codec + AW8737A speaker amp — the
 // contract comes from the official pin map and M5Unified's speaker bring-up.
-enum class AudioOutput : uint8_t { None, I2sDac, I2sEs8388, I2sEs8311, PwmBuzzer };
+enum class AudioOutput : uint8_t { None, I2sDac, I2sEs8388, I2sEs8311, PwmBuzzer, MetalioModule };
 
 // Optional addressable RGB LED strip. PaperColor has two RGB LEDs on GPIO21
 // behind the M5PM1 LDO3V3 RGB rail.
@@ -639,7 +639,7 @@ struct LedConfig {
 
 // Microphone input path (MicInput::None disables it). PDM mics (e.g. the Sticky's
 // MSM261DDB020) need a clock out + data in; `enable` powers the mic rail.
-enum class MicInput : uint8_t { None, Pdm };
+enum class MicInput : uint8_t { None, Pdm, MetalioModule };
 struct MicConfig {
   MicInput input;
   int8_t clk;     // PDM clock (output to mic)
@@ -649,7 +649,7 @@ struct MicConfig {
 };
 
 enum class RtcType : uint8_t { None, Pcf8563, Ds3231, Rx8130, Pcf85063 };
-enum class ImuType : uint8_t { None, Lsm6ds3, Qmi8658 };
+enum class ImuType : uint8_t { None, Lsm6ds3, Qmi8658, Sc7a20h };
 
 // On-board I2C sensors sharing one bus (e.g. the Sticky's RTC + temp/humidity +
 // IMU on SDA1/SCL0, the same bus as its fuel gauge). Each addr is 0 when that
@@ -1580,12 +1580,15 @@ constexpr BoardProfile METALIO_EINK4 = {
     // Portrait digitizer -> native landscape: x=rawY, y=479-rawX.
     {TouchController::Cst816s, 41, 42, 1, PIN_UNASSIGNED, 0x15,
      0, 799, 0, 479, false, 0, true, false, PIN_UNASSIGNED, true, false, true, true},
-    NO_FRONTLIGHT, NO_AUDIO, NO_LEDS, NO_FLIP,
+    NO_FRONTLIGHT,
+    {AudioOutput::MetalioModule, 6, 43, 7, PIN_UNASSIGNED, PIN_UNASSIGNED, true,
+     PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, 0, PIN_UNASSIGNED},
+    NO_LEDS, NO_FLIP,
     // GPIO46 is input-only DAT3, unused in 1-bit mode; requires board pull-up.
     {38, 40, 39, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, 1},
     {41, 42, 400000, 0x55, 0},
-    {MicInput::None, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, true},
-    {41, 42, 400000, 0x51, 0, 0, 0, RtcType::Pcf8563, ImuType::None}, 1.25f,
+    {MicInput::MetalioModule, 6, 17, PIN_UNASSIGNED, true},
+    {41, 42, 400000, 0x51, 0, 0x19, 0, RtcType::Pcf8563, ImuType::Sc7a20h}, 1.25f,
     {}, 0, {}, false, NO_I2C_FRONTLIGHT, {44, true, 20000}};
 
 // --- Xteink X4 Pro — ESP32-S3, 800x480 EPD + GT911 touch + warm/cold frontlight ---

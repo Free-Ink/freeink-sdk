@@ -113,11 +113,18 @@ Default refresh settings follow the sample's internal controller waveforms:
 | Mode | Update register 0x22 | Border 0x3C |
 |---|---|---|
 | Full | 0xF7 | 0x01 |
-| Half | 0xD7, temperature 0x6A | 0x01 |
+| Half | Two 0xFC partial updates: previous → black → target | 0x80 |
 | Fast / window | 0xFC | 0x80 |
 
 A first FAST request becomes HALF to establish the initial screen contents.
-Full/fast restore internal temperature sensing after HALF. A requested power-down
+HALF follows `lv_adapter_display.cc::PeriodicBlackPulseClear` in the demo:
+one black pulse avoids the repeated flashes of the controller's 0xD7 waveform.
+Explicit FULL remains available for recovery. Both controller image-memory planes
+are synchronized after completion, including deferred updates, so the next partial
+starts with the displayed image as its baseline. Physical ghosting and refresh
+quality still require validation on the panel.
+
+Full/fast use internal temperature sensing. A requested power-down
 after 0xFC occurs after BUSY completes, including deferred refreshes. Deep sleep
 uses mode 0x03. Grayscale is not advertised, and legacy grayscale calls without
 a supplied LUT fall back to B/W.
@@ -130,6 +137,15 @@ put `0x22` into the gate-voltage register instead of `0x17`. Neither custom tabl
 is enabled by default. Obtain a corrected partial table and validate the drive
 sequence before replacing the sample's working OTP path; do not silently drop
 a byte. These B/W tables also do not establish grayscale support.
+
+## USB SD-card export
+
+CrossPoint's `metalio_eink4` target enables `FREEINK_CAP_USB_MSC=1`, using the
+same USB Drive workflow as X4 Pro. Select **File Transfer → USB Drive** to expose
+the SD card to a computer. Eject the drive on the computer before leaving transfer
+mode. CrossPoint stops local filesystem access during export and restarts when
+leaving it to restore normal USB serial operation. Other SDK consumers opt in to
+`UsbMassStorage` explicitly; this is USB mass-storage device mode.
 
 ## Verification
 

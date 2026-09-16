@@ -22,6 +22,14 @@ static uint8_t lastRegister(const EpdBus& bus, uint8_t command) {
   return 0;
 }
 
+static const Bytes& lastPlane(const EpdBus& bus, uint8_t command) {
+  for (auto i = bus.writes.rbegin(); i != bus.writes.rend(); ++i)
+    if (i->command == command) return i->bytes;
+  assert(false);
+  static const Bytes empty;
+  return empty;
+}
+
 static Bytes frame(unsigned seed) {
   Bytes b(48000);
   for (size_t i=0; i<b.size(); ++i) b[i]=uint8_t((i*37 + i/100*11 + seed) ^ (i>>8));
@@ -539,14 +547,26 @@ static void testMetalio() {
   EpdBus bus;
   driver.begin(bus);
   assert(lastRegister(bus, 0x3C) == 0x01);
-  assert(!driver.grayscaleCapabilities(GrayscaleMode::Absolute).supported());
-  assert(!driver.grayscaleCapabilities().supported());
+  assert(driver.grayscaleCapabilities(GrayscaleMode::Absolute).supported());
+  assert(driver.grayscaleCapabilities().supported());
   const auto bw = frame(42);
   bus.clear();
-  // Cold FAST becomes a clean HALF, using Metalio's temperature, not X4's.
+  // Cold FAST uses the demo's two-partial black pulse, never OTP D7.
   driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, false);
-  assert(lastRegister(bus, 0x22) == 0xD7);
-  assert(lastRegister(bus, 0x1A) == 0x6A);
+  assert(lastRegister(bus, 0x22) == 0xFC);
+  unsigned activations = 0;
+  std::vector<Bytes> oldPlanes;
+  for (const auto& w : bus.writes) {
+    if (w.command == 0x20) ++activations;
+    if (w.command == 0x26) oldPlanes.push_back(w.bytes);
+    if (w.command == 0x22) assert(w.bytes == Bytes({0xFC}));
+    assert(w.command != 0x1A);
+  }
+  assert(activations == 2 && bus.waits == 2);
+  assert(oldPlanes.size() == 3);
+  assert(oldPlanes[0] == Bytes(bw.size(), 0xFF));
+  assert(oldPlanes[1] == Bytes(bw.size(), 0x00));
+  assert(oldPlanes[2] == bw);
   bus.clear();
   driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, false);
   assert(lastRegister(bus, 0x22) == 0xFC);
@@ -556,13 +576,33 @@ static void testMetalio() {
   assert(driver._isScreenOn);
   bus.clear();
   driver.displayGray(bus, bw.data(), false, nullptr, false);
-  assert(lastRegister(bus, 0x22) == 0xF7);  // unsupported legacy AA safely falls back
+  // X4 external-LUT AA path: LUT + voltage tail written, border parked at 0xC0,
+  // absolute 0xCC activation.
+  assert(lastRegister(bus, 0x22) == 0xCC);
+  assert(lastRegister(bus, 0x3C) == 0xC0);
+  bool lutWritten = false;
+  for (const auto& w : bus.writes) if (w.command == 0x32) lutWritten = true;
+  assert(lutWritten);
+  // Exit grayscale the way the facade does so the next FAST isn't promoted.
+  driver.cleanupGrayscaleBuffers(bus, bw.data());
   bus.clear();
   driver.displayStart(bus, bw.data(), bw.data(), RefreshMode::Fast, true);
   assert(lastRegister(bus, 0x22) == 0xFC);
   driver.displayFinish(bus, bw.data());
   assert(lastRegister(bus, 0x22) == 0x03);
   assert(!driver._isScreenOn);
+  // Deferred FAST must resync both planes from the frame retained by the facade.
+  assert(lastPlane(bus, 0x24) == bw && lastPlane(bus, 0x26) == bw);
+  bus.clear();
+  driver.displayStart(bus, bw.data(), nullptr, RefreshMode::Half, true);
+  assert(bus.waits == 1);  // black pulse done; target waveform still pending
+  unsigned pulses = 0;
+  for (const auto& w : bus.writes) if (w.command == 0x20) ++pulses;
+  assert(pulses == 2);
+  assert(lastPlane(bus, 0x26) == Bytes(bw.size(), 0));
+  driver.displayFinish(bus, bw.data());
+  assert(lastPlane(bus, 0x26) == bw && lastPlane(bus, 0x24) == bw);
+  assert(lastRegister(bus, 0x22) == 0x03);
   driver.deepSleep(bus);
   assert(lastRegister(bus, 0x10) == 0x03);
 }

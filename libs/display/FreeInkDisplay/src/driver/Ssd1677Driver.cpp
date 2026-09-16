@@ -103,12 +103,16 @@ static const Ssd1677Config& ssd1677StickyConfig() {
 }
 
 #if FREEINK_DEVICE_METALIO_EINK4
-// GDEM0397T81 settings from metalio-hw-test. Use its OTP waveforms:
-// the separately supplied partial LUT has 113 initializers for a 112-byte array.
+// GDEM0397T81 settings from metalio-hw-test. B/W refreshes use its OTP waveforms
+// via the vendor 0x22 sequence values; the vendor's separately supplied partial
+// LUT is unusable (113 initializers for a 112-byte array), so grayscale/AA uses
+// the X4 factory LUT instead — same SSD1677 controller and 800x480 geometry, and
+// the external-LUT path never touches OTP. borderWaveformGray matches the X4's
+// 0xC0 written alongside that LUT.
 static const Ssd1677Config& ssd1677MetalioConfig() {
   static const Ssd1677Config cfg = {
-      {0xAE, 0xC7, 0xC3, 0xC0, 0x80}, 0x02, 0x01, 0x6A, nullptr,
-      0xF7, 0xFC, 0xD7, 0x01, 0x80, 0x01, 0x80, false, false, false, true, true};
+      {0xAE, 0xC7, 0xC3, 0xC0, 0x80}, 0x02, 0x01, 0x6A, lut_grayscale,
+      0xF7, 0xFC, 0xD7, 0x01, 0x80, 0x01, 0xC0, false, true, true, true, true, true};
   return cfg;
 }
 #endif
@@ -416,8 +420,15 @@ bool Ssd1677Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* 
 }
 
 void Ssd1677Driver::displayFinish(EpdBus& bus, const uint8_t* fb) {
-  (void)fb;  // X4 post-waveform needs nothing from the host frame
   bus.waitRefreshComplete("refresh");
+  if (_pendingFrameSync && fb) {
+    // The facade retains the displayed frame until finish (or supplies its
+    // shadow). Never rewrite the differential baseline during the waveform.
+    setRamArea(bus, 0, 0, _w, _h);
+    writeRam(bus, CMD_WRITE_RAM_BW, fb, _bufferSize);
+    writeRam(bus, CMD_WRITE_RAM_RED, fb, _bufferSize);
+  }
+  _pendingFrameSync = false;
   if (_pendingPowerOff) {
     _pendingPowerOff = false;
     powerOffController(bus);
@@ -426,6 +437,8 @@ void Ssd1677Driver::displayFinish(EpdBus& bus, const uint8_t* fb) {
 
 void Ssd1677Driver::displayImpl(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff,
                                 bool async) {
+  const bool cold = _needsInitialFull;
+  _pendingFrameSync = _cfg.blackPulseClean && async;
   if (_needsGrayClear) {
     if (mode == RefreshMode::Fast) mode = _cfg.halfSeqOverride ? RefreshMode::Half : RefreshMode::Full;
     _needsGrayClear = false;
@@ -478,26 +491,42 @@ void Ssd1677Driver::displayImpl(EpdBus& bus, const uint8_t* fb, const uint8_t* p
 
   setRamArea(bus, 0, 0, _w, _h);
 
-  if (mode != RefreshMode::Fast) {
+  if (_cfg.blackPulseClean && mode == RefreshMode::Half) {
+    // metalio-hw-test lv_adapter_display.cc::PeriodicBlackPulseClear: avoid
+    // the multi-flash OTP D7 waveform, using old -> black -> target via FC.
+    // Cold controller RAM has no valid previous image; the demo seeds white.
+    if (cold) bus.fillPlane(CMD_WRITE_RAM_RED, 0xFF, _h, _wb);
+    else if (prev) writeRam(bus, CMD_WRITE_RAM_RED, prev, _bufferSize);
+    bus.fillPlane(CMD_WRITE_RAM_BW, 0x00, _h, _wb);
+    refresh(bus, RefreshMode::Fast, false, false);
+    setRamArea(bus, 0, 0, _w, _h);
+    bus.fillPlane(CMD_WRITE_RAM_BW, 0x00, _h, _wb);
+    bus.fillPlane(CMD_WRITE_RAM_RED, 0x00, _h, _wb);
     writeRam(bus, CMD_WRITE_RAM_BW, fb, _bufferSize);
-    writeRam(bus, CMD_WRITE_RAM_RED, fb, _bufferSize);
+    // Only the final phase may defer completion or power down.
+    refresh(bus, RefreshMode::Fast, turnOff, async);
   } else {
-    writeRam(bus, CMD_WRITE_RAM_BW, fb, _bufferSize);
-    if (prev != nullptr) {
-      // Dual-buffer: RED holds the previous frame for the differential compare.
-      // Single-buffer (prev == nullptr): RED already holds it from last refresh.
-      writeRam(bus, CMD_WRITE_RAM_RED, prev, _bufferSize);
+    if (mode != RefreshMode::Fast) {
+      writeRam(bus, CMD_WRITE_RAM_BW, fb, _bufferSize);
+      writeRam(bus, CMD_WRITE_RAM_RED, fb, _bufferSize);
+    } else {
+      writeRam(bus, CMD_WRITE_RAM_BW, fb, _bufferSize);
+      if (prev != nullptr) {
+        // Dual-buffer: RED holds the previous frame for the differential compare.
+        // Single-buffer (prev == nullptr): RED already holds it from last refresh.
+        writeRam(bus, CMD_WRITE_RAM_RED, prev, _bufferSize);
+      }
     }
-  }
 
-  refresh(bus, mode, turnOff, async);
+    refresh(bus, mode, turnOff, async);
+  }
 
   // Stock X4 syncs both controller RAM planes after activation. Do the same in
   // single-buffer mode so the next differential update starts from a matched
   // BW/RED baseline instead of assuming BW survived the refresh unchanged.
   // (Async updates always come with a facade-owned prev, so this never runs
   // while a refresh is still in flight.)
-  if (prev == nullptr && !async) {
+  if ((prev == nullptr || _cfg.blackPulseClean) && !async) {
     setRamArea(bus, 0, 0, _w, _h);
     writeRam(bus, CMD_WRITE_RAM_BW, fb, _bufferSize);
     writeRam(bus, CMD_WRITE_RAM_RED, fb, _bufferSize);

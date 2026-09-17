@@ -760,7 +760,18 @@ void BleKeyboardHost::onReportIngest(const uint8_t* data, size_t len) {
   // page or place the code at a non-standard byte. When the keyboard slots produced
   // nothing and the device doesn't look like a pure keyboard, scan the report for a
   // representative code and surface it (edge-detected so one press == one event).
-  const bool tryGeneric = !emittedKb && (g_hasConsumerPage || !g_hasKeyboardPage || n < 7);
+  //
+  // Requires !keyboardShaped. Nearly every modern keyboard also exposes a
+  // Consumer Control page for its media keys, so g_hasConsumerPage alone let the
+  // heuristic run on ordinary boot-keyboard frames. Every key RELEASE produces a
+  // keyboard-shaped report that emits nothing, the fallback then scanned that
+  // frame for a "representative code", and a keyboard with a constant byte in
+  // its report (the Keychron K2 HE holds 0x39 in byte 2 of every frame) turned
+  // each release into a phantom key event. A frame that parsed as a boot
+  // keyboard has already been handled by the code above; emitting nothing there
+  // means "the key was released", not "unknown device code".
+  const bool tryGeneric =
+      !emittedKb && !keyboardShaped && (g_hasConsumerPage || !g_hasKeyboardPage || n < 7);
   if (tryGeneric) {
     size_t codeIdx = 0;
     const uint8_t code = extractPrimaryCode(p, n, &codeIdx);

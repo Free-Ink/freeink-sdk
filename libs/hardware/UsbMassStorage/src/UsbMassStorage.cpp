@@ -13,6 +13,7 @@
 extern "C" bool tud_mounted(void);
 extern "C" bool tud_suspended(void);
 extern "C" bool tud_disconnect(void);
+extern "C" bool tud_suspended(void);
 
 namespace freeink {
 namespace {

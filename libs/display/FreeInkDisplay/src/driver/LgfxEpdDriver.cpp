@@ -107,9 +107,32 @@ class FreeInkLgfxEpd : public lgfx::LGFX_Device {
 
 FreeInkLgfxEpd g_dev;
 
+// Set from the active config in begin(); see
+// LgfxEpdConfig::cleanBankNeedsFreshBackground for the panel property it names.
+bool g_cleanBankNeedsFreshBackground = false;
+
+// Whether the fastest slot holds a bank that drives nothing: a single 0u word.
+//
+// Derived from the config rather than declared by the board, because it IS the
+// config -- a board that parks a real waveform there simply does not qualify and
+// pays for the fallback in normalizeForCleanBank(). Set in begin().
+bool g_noDriveBankAvailable = false;
+
+// Whether the refresh this driver queued last went out through the clean bank.
+// g_lastBaseEpdMode is that history already, so this reads it rather than keeping
+// a second flag that could disagree with it.
+bool lastPushUsedCleanBank();
+
+// Which LovyanGFX bank each of our three refresh modes goes out under.
+//
+// Half and Full both take the clean bank, and neither is ever downgraded: they
+// are the modes whose purpose is to scrub, and a host spends them on exactly the
+// transitions where a differential refresh is the wrong answer. Where the panel
+// needs the background made fresh first, normalizeForCleanBank() does that
+// without changing which bank the refresh itself uses.
 lgfx::epd_mode::epd_mode_t epdModeFor(RefreshMode m) {
   switch (m) {
-    case RefreshMode::Full: return lgfx::epd_mode::epd_text;
+    case RefreshMode::Full:
     case RefreshMode::Half: return lgfx::epd_mode::epd_text;
     default: return lgfx::epd_mode::epd_fast;
   }
@@ -197,12 +220,56 @@ void overlayCanvasGray() {
 // page refreshed with those modes flashed when its AA pass ran.
 lgfx::epd_mode::epd_mode_t g_lastBaseEpdMode = lgfx::epd_mode::epd_fast;
 
+bool lastPushUsedCleanBank() { return g_lastBaseEpdMode == lgfx::epd_mode::epd_text; }
+
 void pushCanvas(lgfx::epd_mode::epd_mode_t epdMode) {
   if (!g_canvas) return;
   g_dev.waitDisplay();
   g_dev.setEpdMode(epdMode);
   g_canvas->pushSprite(0, 0);  // commits to the panel; Panel_EPD runs the refresh
   g_dev.waitDisplay();
+}
+
+// Re-tag every pixel so the clean-bank refresh that follows scrubs the whole
+// screen rather than only the ink.
+//
+// Panel_EPD's epd_text branch skips a pixel that is already requested white under
+// that same bank, and `white` embeds the bank's LUT offset -- so the condition is
+// cleared for every pixel at once by one full-screen write through ANY OTHER
+// bank. Nothing has to reach the glass; only the offset stored in the reserved
+// half of _step_framebuf has to change.
+//
+// That is what makes a no-drive bank the right instrument. blit_dmabuf treats a
+// zero LUT entry as "this pixel is finished" -- it loads the reserved request and
+// marks the pixel idle instead of driving it -- so a bank that is a single 0u
+// word is a complete refresh that takes ONE frame and never touches the ink,
+// while still leaving its own offset behind. Measured at 187 ms on an ED047TC2
+// against 1239 ms for a full differential refresh, and invisible on the glass.
+//
+// It has to be epd_fastest rather than epd_quality, even though both slots tend
+// to be spare. The fast modes take the flg_fast branch, which writes
+// d[0] = s0 - 0x8000 and goes straight to the bank; the others prepend
+// lut_eraser, so the pixel would run the eraser's two-frame nudge and then stop
+// with nothing driving it home -- a half-inverted screen that never resolves.
+//
+// A board with no such slot drives the white rail through the differential bank
+// instead: a real refresh, so a real cost, but known-good (it is the drive every
+// page turn makes) and on the glass it reads as the white flash a scrub is
+// expected to open with.
+//
+// Either way this writes the panel's own buffer and not the canvas, so the frame
+// the caller is about to push survives untouched.
+void normalizeForCleanBank() {
+  if (!g_cleanBankNeedsFreshBackground || !lastPushUsedCleanBank()) return;
+  const auto bank = g_noDriveBankAvailable ? lgfx::epd_mode::epd_fastest : lgfx::epd_mode::epd_fast;
+  g_dev.waitDisplay();
+  g_dev.setEpdMode(bank);
+  g_dev.setAutoDisplay(false);
+  g_dev.fillScreen(g_dev.color888(255, 255, 255));
+  g_dev.setAutoDisplay(true);
+  g_dev.display();  // covers the rect fillScreen accumulated
+  g_dev.waitDisplay();
+  g_lastBaseEpdMode = bank;
 }
 
 }  // namespace
@@ -225,6 +292,8 @@ void LgfxEpdDriver::begin(EpdBus& bus) {
   g_dev.init();
   g_dev.setRotation(_cfg.rotation);
   g_dev.setEpdMode(lgfx::epd_mode::epd_fast);
+  g_cleanBankNeedsFreshBackground = _cfg.cleanBankNeedsFreshBackground;
+  g_noDriveBankAvailable = _cfg.lutFastest != nullptr && _cfg.lutFastestStep == 1 && _cfg.lutFastest[0] == 0u;
   allocCanvas(BoardConfig::ACTIVE.displayWidth, BoardConfig::ACTIVE.displayHeight);
 #endif
 }
@@ -234,7 +303,9 @@ void LgfxEpdDriver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev,
   (void)prev;
 #if FREEINK_DRIVER_LGFX_EPD
   fillCanvasBW(fb);  // expand the 1-bpp frame into the gray canvas
-  g_lastBaseEpdMode = epdModeFor(mode);
+  const auto epdMode = epdModeFor(mode);
+  if (epdMode == lgfx::epd_mode::epd_text) normalizeForCleanBank();
+  g_lastBaseEpdMode = epdMode;
   pushCanvas(g_lastBaseEpdMode);
   if (turnOff) g_dev.sleep();
 #else

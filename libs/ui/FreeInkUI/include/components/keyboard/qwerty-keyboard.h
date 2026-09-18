@@ -39,6 +39,8 @@ struct QwertyKeyboardProps {
   int16_t altHintRightPadding = 10;
   int16_t altLabelGap = 4;
   int16_t digitLabelOffsetX = -4;
+  // Kept last to preserve positional aggregate initialization compatibility.
+  Paint background = Paint::none();
 };
 
 // Mirror a KeyboardEntry's layer state into the props for this frame.
@@ -70,6 +72,7 @@ void qwertyKeyboard(Frame<MaxInteractions>& frame, Rect rect, const QwertyKeyboa
   keyboardProps.altHintRightPadding = props.altHintRightPadding;
   keyboardProps.altLabelGap = props.altLabelGap;
   keyboardProps.digitLabelOffsetX = props.digitLabelOffsetX;
+  keyboardProps.background = props.background;
   keyboardProps.keyStyles = props.keyStyles;
   keyboardProps.padding = props.padding;
   keyboardProps.gap = props.gap;

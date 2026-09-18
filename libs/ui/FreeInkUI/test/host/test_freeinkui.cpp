@@ -3398,6 +3398,53 @@ void testLocalizedKeyboardLayout() {
   CHECK_EQ(draw.countKind(FakeDrawTarget::Op::Stroke), 0u);
 }
 
+void testKeyboardBackground() {
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice();
+  InputSnapshot input;
+  InteractionBuffer<4> interactions;
+  Frame<4> frame(draw, device, input, interactions);
+  const KeyboardKey key{"A", "A", KeyKind::Normal, StateNormal, 'A'};
+  const KeyboardRow row{&key, 1, 0};
+  const KeyboardLayout layout{&row, 1};
+  KeyboardProps props;
+  props.layout = &layout;
+  props.keyAction = 1;
+  props.padding = Insets{4, 4, 4, 4};
+
+  const Rect panel{10, 20, 100, 60};
+  keyboard(frame, panel, props);
+  CHECK_EQ(draw.ops[0].kind, FakeDrawTarget::Op::Fill);
+  CHECK_EQ(draw.ops[0].color, Color::White);
+  CHECK_EQ(draw.ops[0].rect.x, panel.x + props.padding.left);
+
+  draw.opCount = 0;
+  props.background = Paint::dither(Color::LightGray);
+  keyboard(frame, panel, props);
+
+  CHECK_EQ(draw.ops[0].kind, FakeDrawTarget::Op::Fill);
+  CHECK_EQ(draw.ops[0].rect.x, panel.x);
+  CHECK_EQ(draw.ops[0].rect.y, panel.y);
+  CHECK_EQ(draw.ops[0].rect.width, panel.width);
+  CHECK_EQ(draw.ops[0].rect.height, panel.height);
+  CHECK_EQ(draw.ops[0].paint, PaintKind::Dither);
+  CHECK_EQ(draw.ops[0].color, Color::LightGray);
+  CHECK_EQ(draw.ops[1].kind, FakeDrawTarget::Op::Fill);
+  CHECK_EQ(draw.ops[1].color, Color::White);
+
+  FakeDrawTarget qwertyDraw;
+  InteractionBuffer<40> qwertyInteractions;
+  Frame<40> qwertyFrame(qwertyDraw, device, input, qwertyInteractions);
+  QwertyKeyboardProps qwertyProps;
+  qwertyProps.keyAction = 1;
+  qwertyProps.background = Paint::dither(Color::LightGray);
+  qwertyKeyboard(qwertyFrame, panel, qwertyProps);
+  CHECK_EQ(qwertyDraw.ops[0].kind, FakeDrawTarget::Op::Fill);
+  CHECK_EQ(qwertyDraw.ops[0].rect.x, panel.x);
+  CHECK_EQ(qwertyDraw.ops[0].rect.y, panel.y);
+  CHECK_EQ(qwertyDraw.ops[0].color, Color::LightGray);
+}
+
 void testSymbolKeyboardPages() {
   // `shifted` pages the symbols layers: page one ("?123") and page two ("#+=").
   const KeyboardLayout& page1 = builtinKeyboardLayout(KeyboardLayoutId::QwertyEn, false, true);
@@ -5330,6 +5377,7 @@ int main() {
   testLvglParityControls();
   testQwertyKeyboardComponent();
   testLocalizedKeyboardLayout();
+  testKeyboardBackground();
   testSymbolKeyboardPages();
   testKeyboardLayoutVariants();
   testKeyboardEntry();

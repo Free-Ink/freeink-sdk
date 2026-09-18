@@ -111,6 +111,10 @@ struct KeyboardProps {
   int16_t altHintRightPadding = 10;
   int16_t altLabelGap = 4;
   int16_t digitLabelOffsetX = -6;
+  // Optional panel fill drawn behind the keys. The gaps and padding expose
+  // this paint, allowing keys to stand apart from the surrounding screen.
+  // Kept last to preserve positional aggregate initialization compatibility.
+  Paint background = Paint::none();
 };
 
 // Preferred total height for touch entry. Size each row independently so a
@@ -534,8 +538,10 @@ void keyboard(Frame<MaxInteractions>& frame, Rect rect, const KeyboardProps& pro
   TextStyle keyText = props.labelText;
   keyText.align = TextAlign::Center;
   keyText.maxLines = 1;
+  const Rect panelRect = rect;
   rect = rect.inset(props.padding);
   if (rect.empty() || rect.width < 10 || rect.height < 10) return;
+  if (props.background.kind != PaintKind::None) frame.target().fill(panelRect, props.background);
   const int16_t gap = props.gap < 0 ? 0 : props.gap;
   const int16_t rowGap = props.rowGap < 0 ? 0 : props.rowGap;
   const int16_t rowH =

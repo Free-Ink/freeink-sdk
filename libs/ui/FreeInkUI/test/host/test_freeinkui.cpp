@@ -3398,6 +3398,78 @@ void testLocalizedKeyboardLayout() {
   CHECK_EQ(draw.countKind(FakeDrawTarget::Op::Stroke), 0u);
 }
 
+void testKeyboardUniformRowWidths() {
+  DeviceContext device = makeDevice(800, 480);
+  InputSnapshot input;
+  {
+    FakeDrawTarget draw;
+    InteractionBuffer<1> interactions;
+    Frame<1> frame(draw, device, input, interactions);
+    KeyboardKey keys[10];
+    for (int16_t i = 0; i < 10; ++i) keys[i].value = i;
+    const KeyboardRow row{keys, 10, 0};
+    const KeyboardLayout layout{&row, 1};
+    KeyboardProps props;
+    props.layout = &layout;
+    props.padding = Insets{};
+    props.gap = 6;
+
+    keyboard(frame, Rect{0, 0, 101, 60}, props);
+
+    CHECK_EQ(draw.ops[0].rect.x, 0);
+    CHECK_EQ(draw.ops[0].rect.width, 4);
+    CHECK_EQ(draw.ops[9].rect.width, 11);
+    CHECK_EQ(draw.ops[9].rect.right(), 101);
+  }
+
+  {
+    FakeDrawTarget draw;
+    InteractionBuffer<1> interactions;
+    Frame<1> frame(draw, device, input, interactions);
+    KeyboardKey keys[10];
+    for (int16_t i = 0; i < 10; ++i) keys[i].value = i;
+    const KeyboardRow row{keys, 10, 0};
+    const KeyboardLayout layout{&row, 1};
+    KeyboardProps props;
+    props.layout = &layout;
+    props.padding = Insets{};
+    props.gap = 6;
+    props.uniformKeyWidth = true;
+
+    keyboard(frame, Rect{0, 0, 101, 60}, props);
+
+    CHECK_EQ(draw.ops[0].rect.x, 3);
+    for (size_t i = 1; i < 10; ++i) {
+      CHECK_EQ(draw.ops[i].rect.width, draw.ops[0].rect.width);
+    }
+    CHECK_EQ(draw.ops[9].rect.right(), 97);
+  }
+
+  {
+    FakeDrawTarget draw;
+    InteractionBuffer<64> interactions;
+    Frame<64> frame(draw, device, input, interactions);
+    KeyboardProps props;
+    props.layout = &builtinKeyboardLayout(KeyboardLayoutId::QwertyEn, false, false, true);
+    props.keyAction = 1;
+    props.padding = Insets{};
+    props.gap = 6;
+    props.minTouchSize = 28;
+    props.uniformKeyWidth = true;
+
+    keyboard(frame, Rect{100, 0, 600, 300}, props);
+
+    const int16_t characterWidth = interactions.data()[0].rect.width;
+    CHECK_EQ(interactions.data()[9].rect.width, characterWidth);   // 0
+    CHECK_EQ(interactions.data()[10].rect.width, characterWidth);  // q
+    CHECK_EQ(interactions.data()[19].rect.width, characterWidth);  // p
+    CHECK_EQ(interactions.data()[20].rect.width, characterWidth);  // a
+    CHECK_EQ(interactions.data()[28].rect.width, characterWidth);  // l
+    CHECK_EQ(interactions.data()[29].rect.width, characterWidth);  // z
+    CHECK_EQ(interactions.data()[35].rect.width, characterWidth);  // m
+  }
+}
+
 void testKeyboardBackground() {
   FakeDrawTarget draw;
   DeviceContext device = makeDevice();
@@ -4076,6 +4148,7 @@ void testKeyboardTypography() {
   props.numberRow = true;
   props.labelText.font = FONT_SLOT_TITLE;
   props.controlText.font = FONT_SLOT_BODY;
+  props.spaceLabel = "Space";
   props.keyAction = 1;
   qwertyKeyboard(frame, Rect{0, 400, 480, 400}, props);
   int letters = 0, controls = 0, alternates = 0;
@@ -4087,7 +4160,7 @@ void testKeyboardTypography() {
     if (op.font == FONT_SLOT_SMALL) ++alternates;
   }
   CHECK_EQ(letters, 36); // 26 letters plus 10 digits
-  CHECK_EQ(controls, 3); // mode, Shift, OK
+  CHECK_EQ(controls, 4);  // mode, Shift, Space, OK
   CHECK_EQ(alternates, 10);
   CHECK_EQ(draw.countKind(FakeDrawTarget::Op::Stroke), 0u);
 }
@@ -5377,6 +5450,7 @@ int main() {
   testLvglParityControls();
   testQwertyKeyboardComponent();
   testLocalizedKeyboardLayout();
+  testKeyboardUniformRowWidths();
   testKeyboardBackground();
   testSymbolKeyboardPages();
   testKeyboardLayoutVariants();

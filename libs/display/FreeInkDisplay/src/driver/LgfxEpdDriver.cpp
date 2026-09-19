@@ -225,6 +225,28 @@ void LgfxEpdDriver::begin(EpdBus& bus) {
   g_dev.init();
   g_dev.setRotation(_cfg.rotation);
   g_dev.setEpdMode(lgfx::epd_mode::epd_fast);
+  // Report the waveform budget, because nothing else will. A board that overruns
+  // it does not fail at init -- it fails later, per pixel, by never completing a
+  // refresh (see LGFX_EPD_LUT_BLOCKS_MAX). A board regenerating its own tables
+  // needs this number at the moment it changes them, not after the panel goes
+  // dark; and the byte figure is worth printing alongside because Panel_EPD sizes
+  // _lut_2pixel as blocks * 256 * sizeof(uint16_t) but indexes it as bytes, so
+  // half of that internal DMA allocation is never touched.
+  {
+    const size_t lutBlocks = lgfxEpdLutBlocks(_cfg);
+    const size_t lutBytes = lutBlocks * 256u * sizeof(uint16_t);
+    if (lutBlocks > LGFX_EPD_LUT_BLOCKS_MAX) {
+      Serial.printf(
+          "[epd] WAVEFORM BUDGET EXCEEDED: %u LUT blocks > %u. Refreshes will truncate mid-waveform and the panel "
+          "will appear dead. Shorten a bank and regenerate.\n",
+          static_cast<unsigned>(lutBlocks), static_cast<unsigned>(LGFX_EPD_LUT_BLOCKS_MAX));
+    } else {
+      Serial.printf("[epd] LUT budget %u/%u blocks (%u spare), %u B internal DMA of which %u B is upstream slack\n",
+                    static_cast<unsigned>(lutBlocks), static_cast<unsigned>(LGFX_EPD_LUT_BLOCKS_MAX),
+                    static_cast<unsigned>(LGFX_EPD_LUT_BLOCKS_MAX - lutBlocks), static_cast<unsigned>(lutBytes),
+                    static_cast<unsigned>(lutBytes / 2u));
+    }
+  }
   allocCanvas(BoardConfig::ACTIVE.displayWidth, BoardConfig::ACTIVE.displayHeight);
 #endif
 }

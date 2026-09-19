@@ -52,6 +52,7 @@ class FakeDrawTarget : public DrawTarget {
     Rotation rotation;
     FontId font = 0;
     TextAlign align = TextAlign::Left;
+    const uint8_t* bitmapData = nullptr;
   };
 
   Op ops[256]{};
@@ -93,8 +94,9 @@ class FakeDrawTarget : public DrawTarget {
       ops[opCount - 1].align = style.align;
     }
   }
-  void bitmap(Rect rect, BitmapRef, BitmapMode, Paint foreground, Rotation rotation) override {
+  void bitmap(Rect rect, BitmapRef bitmap, BitmapMode, Paint foreground, Rotation rotation) override {
     record(Op::Bitmap, rect, foreground, 0, CornersAll, rotation);
+    if (opCount) ops[opCount - 1].bitmapData = bitmap.data;
   }
 
   size_t countKind(Op::Kind kind) const {
@@ -3350,22 +3352,27 @@ void testQwertyKeyboardComponent() {
 
   CHECK_EQ(interactions.count(), 31u);
   CHECK_EQ(interactions.data()[0].value, static_cast<int16_t>('q'));
-  CHECK_EQ(interactions.data()[28].action, 401);
-  CHECK_EQ(interactions.data()[26].action, 403);
+  CHECK_EQ(interactions.data()[19].action, 401);
+  CHECK_EQ(interactions.data()[27].action, 403);
   CHECK_EQ(interactions.data()[29].value, QWERTY_KEY_SPACE);
   CHECK_EQ(interactions.data()[30].action, 404);
-  // Full-width rows use 51px letter keys and include the 2px edge padding
-  // in their outer touch targets.
+  // Full-width rows keep the character keys aligned while the compact
+  // Shift/Delete controls occupy one-and-a-half character-key units.
   CHECK_EQ(interactions.data()[10].rect.x, 0);
-  CHECK_EQ(interactions.data()[10].rect.width, 53);
+  CHECK_EQ(interactions.data()[10].rect.width, 52);
   CHECK_EQ(interactions.data()[19].rect.x, 0);
-  CHECK_EQ(interactions.data()[19].rect.width, 53);
-  CHECK_EQ(draw.countKind(FakeDrawTarget::Op::Bitmap), 1u);
+  CHECK(interactions.data()[19].rect.width > interactions.data()[20].rect.width);
+  CHECK_EQ(interactions.data()[19].rect.width, interactions.data()[27].rect.width);
+  CHECK_EQ(draw.countKind(FakeDrawTarget::Op::Bitmap), 2u);
+  bool sawDelete = false;
+  bool sawShift = false;
   for (size_t i = 0; i < draw.opCount; ++i) {
     if (draw.ops[i].kind != FakeDrawTarget::Op::Bitmap) continue;
-    CHECK_EQ(draw.ops[i].rect.width, 28);
-    CHECK_EQ(draw.ops[i].rect.height, 28);
+    sawDelete |= draw.ops[i].rect.width == 28 && draw.ops[i].rect.height == 28;
+    sawShift |= draw.ops[i].rect.width == 24 && draw.ops[i].rect.height == 24;
   }
+  CHECK(sawDelete);
+  CHECK(sawShift);
   CHECK_EQ(draw.countKind(FakeDrawTarget::Op::Stroke), 0u);
 
   InputSnapshot tap;
@@ -3373,6 +3380,27 @@ void testQwertyKeyboardComponent() {
   tap.touchX = 250;
   tap.touchY = 145;
   CHECK_EQ(interactions.route(tap).value, QWERTY_KEY_SPACE);
+
+  draw.opCount = 0;
+  interactions.clear();
+  keyboard.langKey = true;
+  keyboard.langAction = 405;
+  qwertyKeyboard(frame, Rect{0, 0, 480, 160}, keyboard);
+
+  CHECK_EQ(interactions.count(), 32u);
+  CHECK_EQ(interactions.data()[29].value, QWERTY_KEY_LANG);
+  CHECK_EQ(interactions.data()[29].action, 405);
+  CHECK_EQ(draw.countKind(FakeDrawTarget::Op::Bitmap), 3u);
+  size_t compactIconCount = 0;
+  bool sawGlobe = false;
+  const uint8_t* globeData = lucideGlobeIcon24().data;
+  for (size_t i = 0; i < draw.opCount; ++i) {
+    if (draw.ops[i].kind != FakeDrawTarget::Op::Bitmap) continue;
+    if (draw.ops[i].rect.width == 24 && draw.ops[i].rect.height == 24) ++compactIconCount;
+    sawGlobe |= draw.ops[i].bitmapData == globeData;
+  }
+  CHECK_EQ(compactIconCount, 2u);  // Shift and globe.
+  CHECK(sawGlobe);
 }
 
 void testLocalizedKeyboardLayout() {
@@ -3393,7 +3421,7 @@ void testLocalizedKeyboardLayout() {
 
   CHECK_EQ(interactions.count(), 32u);
   CHECK_EQ(interactions.data()[19].value, 1201);  // Spanish ñ key has a stable non-ASCII key id.
-  CHECK_EQ(interactions.data()[27].action, 412);
+  CHECK_EQ(interactions.data()[28].action, 412);
   CHECK_EQ(interactions.data()[31].action, 413);
   CHECK_EQ(draw.countKind(FakeDrawTarget::Op::Stroke), 0u);
 }
@@ -3465,8 +3493,10 @@ void testKeyboardUniformRowWidths() {
     CHECK_EQ(interactions.data()[19].rect.width, characterWidth);  // p
     CHECK_EQ(interactions.data()[20].rect.width, characterWidth);  // a
     CHECK_EQ(interactions.data()[28].rect.width, characterWidth);  // l
-    CHECK_EQ(interactions.data()[29].rect.width, characterWidth);  // z
-    CHECK_EQ(interactions.data()[35].rect.width, characterWidth);  // m
+    CHECK(interactions.data()[29].rect.width > characterWidth);   // Shift
+    CHECK_EQ(interactions.data()[30].rect.width, characterWidth);  // z
+    CHECK_EQ(interactions.data()[36].rect.width, characterWidth);  // m
+    CHECK_EQ(interactions.data()[37].rect.width, interactions.data()[29].rect.width);  // Delete
   }
 }
 
@@ -3602,10 +3632,23 @@ void testKeyboardLayoutVariants() {
             CHECK(nav.syncToValue(layout, key.value));
             CHECK_EQ(nav.logicalIndex(layout), static_cast<int16_t>(index)); // also catches duplicate IDs
             if (key.kind == KeyKind::Shift) {
-              CHECK_EQ(row, layout.rowCount - 1);
+              CHECK_EQ(row, symbols ? layout.rowCount - 1 : layout.rowCount - 2);
+              if (!symbols) {
+                CHECK(hasCase);
+                CHECK_EQ(col, 0);
+                CHECK_EQ(key.widthUnits, 3);
+              } else {
+                CHECK_EQ(key.widthUnits, 4);
+              }
               CHECK_EQ(hit.action, 401);
             }
-            if (key.kind == KeyKind::Lang) CHECK_EQ(hit.action, 403);
+            if (key.kind == KeyKind::Lang) {
+              CHECK_EQ(row, layout.rowCount - 1);
+              CHECK_EQ(col, 1);
+              CHECK_EQ(hit.action, 403);
+            }
+            if (key.kind == KeyKind::Delete) CHECK_EQ(key.widthUnits, 3);
+            if (key.kind == KeyKind::Normal) CHECK_EQ(key.widthUnits, 2);
             if (key.kind == KeyKind::Normal || key.kind == KeyKind::Space) {
               char buffer[32] = {};
               KeyboardEntry entry;
@@ -4160,7 +4203,8 @@ void testKeyboardTypography() {
     if (op.font == FONT_SLOT_SMALL) ++alternates;
   }
   CHECK_EQ(letters, 36); // 26 letters plus 10 digits
-  CHECK_EQ(controls, 4);  // mode, Shift, Space, OK
+  CHECK_EQ(controls, 3);  // mode, Space, OK; Shift is an icon
+  CHECK_EQ(draw.countKind(FakeDrawTarget::Op::Bitmap), 2u);  // Shift and Delete
   CHECK_EQ(alternates, 10);
   CHECK_EQ(draw.countKind(FakeDrawTarget::Op::Stroke), 0u);
 }

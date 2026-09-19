@@ -632,14 +632,15 @@ void keyboard(Frame<MaxInteractions>& frame, Rect rect, const KeyboardProps& pro
     }
     button(frame, keyRect, bp);
 
-    // Delete and the script switch carry a glyph instead of a word: both mean
-    // the same thing in every language, and the switch key in particular has
-    // no label the table could hold — which layout comes next is the app's
-    // state, not the table's.
-    if (key.kind == KeyKind::Delete || key.kind == KeyKind::Lang) {
+    // Delete, Shift, and the script switch use universal glyphs. Symbol-page
+    // Shift keys keep their explicit "#+=" / "123" labels.
+    const bool iconShift = key.kind == KeyKind::Shift && !key.label && !props.shiftLabel;
+    if (key.kind == KeyKind::Delete || key.kind == KeyKind::Lang || iconShift) {
       const Paint ink = styles.resolve(frame.stateFor(action, key.value, state)).foreground;
       const int16_t maxSize = keyRect.height < keyRect.width ? keyRect.height : keyRect.width;
-      const BitmapRef icon = key.kind == KeyKind::Delete ? lucideDeleteIcon28() : lucideGlobeIcon32();
+      const BitmapRef icon = key.kind == KeyKind::Delete
+                                 ? lucideDeleteIcon28()
+                                 : (key.kind == KeyKind::Lang ? lucideGlobeIcon24() : lucideArrowBigUpIcon24());
       const int16_t nativeSize = static_cast<int16_t>(icon.width < icon.height ? icon.width : icon.height);
       const int16_t iconSize = nativeSize < maxSize ? nativeSize : maxSize;
       frame.target().bitmap(centeredRect(keyRect, Size{iconSize, iconSize}), icon, BitmapMode::Contain, ink);

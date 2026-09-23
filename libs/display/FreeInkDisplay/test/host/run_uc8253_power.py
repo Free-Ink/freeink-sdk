@@ -106,7 +106,33 @@ int main() {
    d.display(bus,fb.data(),nullptr,freeink::RefreshMode::Full,false);
    assert(bus.newPlane == fb && bus.oldPlane == fb);
  }
- std::cout << "PASS: UC8253 cold power-on, warm Full, and power-off/wake\\n";
+ // A grayscale base after an AA page must not run as a differential. The reader's AA pass
+ // leaves greys on the glass that cleanupGrayscaleBuffers() restores the RAM around but does
+ // not remove; the differential base then gives those pixels the gentle WW settle and the
+ // absolute gray pass idles the endpoints, so the page's text outline survives onto the next
+ // grayscale image (X3, 2026-09-23). The clean branch costs one extra refresh: display(Half)
+ // plus the settle, versus the differential's single settle -- which is how the two are told
+ // apart here.
+ const auto absolute = freeink::GrayscaleMode::Absolute;
+ d.display(bus,fb.data(),nullptr,freeink::RefreshMode::Fast,false);          // B/W base, as the reader pushes it
+ d.copyGrayscaleLsb(bus, fb.data());
+ d.copyGrayscaleMsb(bus, fb.data());
+ d.displayGray(bus, fb.data(), false, nullptr, false);                        // overlay gc nudge: greys now on glass
+ d.cleanupGrayscaleBuffers(bus, fb.data());                                   // RAM restored; glass untouched
+ auto before = bus.refreshes;
+ d.beginGrayscale(bus, fb.data(), absolute, freeink::RefreshMode::Half, false);
+ assert(bus.refreshes == before + 2);                                         // clean base, not differential
+ d.copyGrayscaleLsb(bus, fb.data());
+ d.copyGrayscaleMsb(bus, fb.data());
+ d.displayGray(bus, fb.data(), false, nullptr, true);                         // absolute pass: greys on glass again
+ d.cleanupGrayscaleBuffers(bus, fb.data());
+ // A half drives every pixel to its target, which is what retires the claim: the next
+ // grayscale base may diff again.
+ d.display(bus,fb.data(),nullptr,freeink::RefreshMode::Half,false);
+ before = bus.refreshes;
+ d.beginGrayscale(bus, fb.data(), absolute, freeink::RefreshMode::Half, false);
+ assert(bus.refreshes == before + 1);                                         // differential base
+ std::cout << "PASS: UC8253 cold power-on, warm Full, power-off/wake, and clean gray base after AA\\n";
 }
 """)
     exe = root / "test_uc8253_power"

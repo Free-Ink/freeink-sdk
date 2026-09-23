@@ -1,0 +1,13 @@
+{
+  "name": "BoardEMinimal78",
+  "version": "0.1.0",
+  "description": "FreeInk board support for the e-Minimal 7.8\" reader: the IT8951 wiring and per-panel values (It8951Config) for the Waveshare 7.8inch e-Paper HAT on an ESP32-S3 N16R8.",
+  "keywords": "eminimal, waveshare, it8951, epaper, board",
+  "authors": [{"name": "FreeInk SDK Contributors"}],
+  "dependencies": {
+    "BoardConfig": "*",
+    "EInkDisplay": "*"
+  },
+  "platforms": "espressif32",
+  "frameworks": ["arduino"]
+}

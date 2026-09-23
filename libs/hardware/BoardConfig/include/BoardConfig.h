@@ -78,14 +78,17 @@
 #ifndef FREEINK_DEVICE_WS397
 #define FREEINK_DEVICE_WS397 0
 #endif
+#ifndef FREEINK_DEVICE_EMINIMAL
+#define FREEINK_DEVICE_EMINIMAL 0
+#endif
 
 // --- 2) Coherence: exactly one MCU family, at least one device ---------------
 #if !(FREEINK_DEVICE_X4 || FREEINK_DEVICE_X3 || FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_X4CLASSIC || FREEINK_DEVICE_M5 || \
       FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_DELINK || FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_M5PAPER ||               \
       FREEINK_DEVICE_STICKY || FREEINK_DEVICE_PAPERMONO || FREEINK_DEVICE_PAPERS3 || FREEINK_DEVICE_MURPHY_M4 ||         \
-      FREEINK_DEVICE_EEGO_A4 || FREEINK_DEVICE_ONEPAGE || FREEINK_DEVICE_WS397)
+      FREEINK_DEVICE_EEGO_A4 || FREEINK_DEVICE_ONEPAGE || FREEINK_DEVICE_WS397 || FREEINK_DEVICE_EMINIMAL)
 #error \
-    "FreeInk: no device selected. Pass at least one -DFREEINK_DEVICE_<NAME> (X4, X3, X4PRO, X4CLASSIC, M5, MURPHY, DELINK, LILYGO, M5PAPER, STICKY, PAPERMONO, PAPERS3, MURPHY_M4, EEGO_A4, ONEPAGE, WS397) in your build env — see platformio.sample.ini."
+    "FreeInk: no device selected. Pass at least one -DFREEINK_DEVICE_<NAME> (X4, X3, X4PRO, X4CLASSIC, M5, MURPHY, DELINK, LILYGO, M5PAPER, STICKY, PAPERMONO, PAPERS3, MURPHY_M4, EEGO_A4, ONEPAGE, WS397, EMINIMAL) in your build env — see platformio.sample.ini."
 #endif
 // Each device belongs to one MCU family; a binary targets exactly one. X3/X4 are
 // ESP32-C3; M5 PaperColor/Murphy/de-link/LilyGo are ESP32-S3; M5Paper v1.1 is the
@@ -96,7 +99,7 @@
 #define FREEINK_MCU_S3                                                                                    \
   (FREEINK_DEVICE_M5 || FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_DELINK || FREEINK_DEVICE_LILYGO ||        \
    FREEINK_DEVICE_STICKY || FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_X4CLASSIC || FREEINK_DEVICE_PAPERMONO ||  \
-   FREEINK_DEVICE_PAPERS3 || FREEINK_DEVICE_MURPHY_M4 || FREEINK_DEVICE_EEGO_A4 || FREEINK_DEVICE_WS397)
+   FREEINK_DEVICE_PAPERS3 || FREEINK_DEVICE_MURPHY_M4 || FREEINK_DEVICE_EEGO_A4 || FREEINK_DEVICE_WS397 || FREEINK_DEVICE_EMINIMAL)
 #define FREEINK_MCU_ESP32 (FREEINK_DEVICE_M5PAPER)
 #if (FREEINK_MCU_C3 + FREEINK_MCU_C61 + FREEINK_MCU_S3 + FREEINK_MCU_ESP32) != 1
 #error \
@@ -174,7 +177,11 @@
 #endif
 // M5Paper v1.1: ED047TC1 behind an IT8951E timing controller (its own framebuffer
 // SRAM, 16-bit-word SPI with MISO reads). The driver owns its SPI end to end.
-#if FREEINK_DEVICE_M5PAPER
+// e-Minimal 7.8" joins M5Paper here: the panel sits behind the same IT8951E
+// timing controller. This is the FIRST S3 target upstream to enable this driver —
+// every other S3 board drives its panel directly. See the porting note on
+// EMINIMAL_78 below.
+#if FREEINK_DEVICE_M5PAPER || FREEINK_DEVICE_EMINIMAL
 #define FREEINK_DRIVER_IT8951 1
 #else
 #define FREEINK_DRIVER_IT8951 0
@@ -329,9 +336,11 @@
 // internal DRAM but 8MB PSRAM, and the 63KB 540x960 framebuffer does not fit in
 // .bss alongside the firmware. Every other device keeps the static DRAM array.
 // (The prebuilt Arduino-ESP32 libs disable BSS-in-PSRAM, so this is a runtime
-// heap allocation, not EXT_RAM_BSS_ATTR.)
+// heap allocation, not EXT_RAM_BSS_ATTR.) e-Minimal 7.8" joins them: its
+// 1872x1404 framebuffer is 329KB, more than the S3's whole internal heap, and
+// the facade keeps two of them.
 #ifndef FREEINK_FB_PSRAM
-#define FREEINK_FB_PSRAM (FREEINK_DEVICE_M5PAPER || FREEINK_DEVICE_PAPERMONO)
+#define FREEINK_FB_PSRAM (FREEINK_DEVICE_M5PAPER || FREEINK_DEVICE_PAPERMONO || FREEINK_DEVICE_EMINIMAL)
 #endif
 
 // SD transport. de-link (4-bit) and X4 Pro (1-bit) are wired for SDMMC; SdFat
@@ -342,7 +351,7 @@
 #ifndef FREEINK_SD_SDMMC
 #define FREEINK_SD_SDMMC                                                                            \
   (FREEINK_DEVICE_DELINK || FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_X4CLASSIC || FREEINK_DEVICE_PAPERMONO || \
-   FREEINK_DEVICE_MURPHY_M4 || FREEINK_DEVICE_WS397)
+   FREEINK_DEVICE_MURPHY_M4 || FREEINK_DEVICE_WS397 || FREEINK_DEVICE_EMINIMAL)
 #endif
 
 // Serial log transport hint for consumer firmware. Boards can share the same MCU
@@ -400,6 +409,7 @@ enum class Board : uint8_t {
   EegoA4,     // EEGO Reader A4: ESP32-S3, UC8279C 768x552 SPI panel, GSLX680 touch, PCF8563 RTC
   OnePage,    // OnePage: ESP32-C61, SSD1677 800x480 SPI panel, 4-key ADC ladder + 3 side keys
   WsEpaper397,  // Waveshare ESP32-S3-ePaper-3.97: SSD1677 800x480, 3 keys + BOOT, AXP2101 PMIC
+  EMinimal78,   // e-Minimal 7.8": ESP32-S3 N16R8 + IT8951 1872x1404, 4 buttons, SDMMC 1-bit
 };
 
 // How the board reports button presses.
@@ -1311,6 +1321,99 @@ constexpr BoardProfile M5PAPER_V11 = {
     // via holdPowerRails() or the board powers off when USB is unplugged.
     {2}};
 
+// --- e-Minimal 7.8" (Waveshare 7.8inch e-Paper HAT, IT8951E) — ESP32-S3 N16R8 --
+// A DIY 7.8" reader: ESP32-S3-WROOM-1 N16R8 (16MB flash, 8MB octal PSRAM) driving
+// a Waveshare 1872x1404 16-grey HAT through its IT8951E timing controller, five
+// buttons, no touch, no frontlight, microSD on 1-bit SDMMC.
+//
+// The panel vendor is irrelevant to this driver: It8951Driver speaks the
+// controller's protocol, and geometry comes from GET_DEV_INFO rather than a
+// constant. What differs between IT8951 boards is wiring and per-panel values,
+// and all of it is already injectable through It8951Config
+// (-DFREEINK_IT8951_CONFIG) without touching the driver:
+//
+//   miso     This board does NOT share a bus with the SD card the way M5Paper
+//            does -- the card is on SDMMC -- so it supplies its own MISO (17).
+//            The IT8951 needs it for GET_DEV_INFO and register reads.
+//   vcomMv   Waveshare ships VCOM per panel, printed on the FPC: -1.92 V on
+//            this one, while the controller arrived set to -2.50 V and ghosted.
+//            Copying another panel's VCOM is a known way to get poor contrast
+//            or damage. An SPI-set VCOM does not survive a reset either, so the
+//            driver writes it on every begin().
+//   rotation IT8951_ROTATE_AUTO picks 0/90 from the reported orientation, which
+//            is what lands a landscape framebuffer upright on a portrait read.
+//   modes    The mode numbers belong to the panel's LUT. This one reports
+//            "M841": A2 is 6 and DU4 is 7, the reverse of M5Paper's LUT.
+//
+// The values live in libs/hardware/BoardEMinimal78 (eminimal78It8951Config),
+// which It8951Driver.cpp selects for this device unless the build injects
+// -DFREEINK_IT8951_CONFIG. Add that library to lib_deps.
+//
+// FIRST S3 TARGET ON THIS DRIVER. Every other S3 board here drives its panel
+// directly; only M5Paper v1.1, a classic ESP32, had used It8951Driver. The
+// driver body is plain Arduino SPIClass (beginTransaction / transfer16 /
+// writeBytes) and needed no MCU-specific change.
+//
+// PINS CONFIRMED ON THE BENCH (G2, 2026-09-18): GET_DEV_INFO reads 1872x1404,
+// full frames load and every waveform mode refreshes the glass on this wiring
+// at 10 MHz (13.3 clean too; 16 marginal on jumpers; 20 corrupts long reads).
+// GPIO 33-37 are octal PSRAM on an N16R8 and must stay clear -- they are free
+// on an N8 part, which is why generic S3 pinouts recommend them.
+constexpr BoardProfile EMINIMAL_78 = {
+    Board::EMinimal78,
+    "eminimal_78",
+    InputStyle::DigitalButtons,
+    DisplayController::IT8951,
+    1872,  // native landscape framebuffer, the orientation GET_DEV_INFO reports;
+    1404,  // the reading UI is portrait and rotates onto it, as M5Paper does
+    // sclk, mosi, cs, dc, rst, busy(HRDY), powerEnable.
+    // No DC: the IT8951's 16-bit preamble carries the command/data distinction.
+    // No RST: M5Paper leaves it unassigned too; wire it only if hard recovery needs it.
+    {14, 16, 18, PIN_UNASSIGNED, PIN_UNASSIGNED, 38, 39},
+    0,  // displaySpiHz: unused by It8951Driver, which owns its SPI and takes the
+        // clock from It8951Config.spiHz (10 MHz, swept at G2).
+    // SdPins bus entries unused — the card is on SDMMC below; kept unassigned so
+    // a stray SPI mount cannot half-work and confuse the diagnosis. The entry is
+    // retained for powerEnable=GPIO21, which the SDMMC mount path drives: a PNP
+    // high-side switch on the card's 3V3 (base LOW = on, 10k base pull-up holds
+    // the card OFF while the pin floats at boot). Trailing false = active-LOW,
+    // so SdmmcBlockDevice's HIGH->LOW pulse is a power-cycle then power-on, and
+    // the sleep path parks it HIGH to cut the rail.
+    {PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, 21, false, 0, false},
+    // back, confirm, left, right, up, down, power, powerActiveHigh.
+    // Five buttons, active-low with internal pull-ups. Left/right unassigned:
+    // the spec's controls are Prev/Next/Select/Back plus Power, mapped
+    // up/down/confirm/back/power. Power is its own key on 15 (RTC-capable, the
+    // ext1 wake source): a hold wakes (HalGPIO::verifyPowerButtonWakeup) and a
+    // hold opens the power menu, so a tap in a bag does nothing. Back's long
+    // press is Home in CrossPoint, which is why sleep is not on Back.
+    {7, 6, PIN_UNASSIGNED, PIN_UNASSIGNED, 4, 5, 15, false},
+    // batteryAdc: GPIO 8 = ADC1_CH7 (ADC2 is arbitrated with WiFi and fails
+    // during hotspot/join). 2 x 470k divider from the cell with 100 nF across
+    // the lower leg — the S3's sample-and-hold starves on a 470k source without
+    // it. Bench: a 10k pot across 3V3 stands in for the cell until one exists.
+    8,
+    PIN_UNASSIGNED,  // batteryChargeStatus
+    2.0f,            // batteryDividerMultiplier: equal legs, so cell = 2 x ADC
+    PIN_UNASSIGNED,  // usbDetect — reserved GPIO 9 from the charger's 5 V input via
+                     // 100k/100k; when it is wired, exempt EMINIMAL from the
+                     // AfterUSBPower re-sleep in main.cpp first
+    NO_TOUCH,        // buttons only, by design: touch on e-ink fights the refresh cycle
+    NO_FRONTLIGHT,
+    NO_AUDIO,
+    NO_LEDS,
+    NO_FLIP,
+    // clk, cmd, d0, d1, d2, d3, busWidth. 1-bit measured at 1.94 MB/s (323 ms per
+    // 2bpp page) on the bench; 4-bit is untested and would need D1-D3 broken out.
+    {12, 11, 13, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, 1},
+    NO_GAUGE,
+    NO_MIC,
+    NO_SENSORS,
+    // uiScale: ~300 PPI, far denser than the ~220-235 PPI boards above, so chrome
+    // sized for those would render about a third smaller here. Provisional until
+    // it can be judged on glass.
+    1.5f,
+    {}};  // no power latch: this board has no main-power MOSFET to hold
 // --- M5Stack PaperS3 4.7" (ED047TC1 raw-parallel EPD) — ESP32-S3 ---------------
 // The S3 successor to M5Paper v1.1: the same 960x540 16-gray ED047TC1 glass, but
 // with NO IT8951 — the S3 drives the panel directly over the 8-bit parallel bus,
@@ -1852,13 +1955,16 @@ constexpr uint32_t MAX_FRAMEBUFFER_BYTES = cmax(
                         FREEINK_DEVICE_MURPHY_M4 ? panelBytes(MURPHY_M4) : 0u),
                    cmax(cmax(FREEINK_DEVICE_EEGO_A4 ? panelBytes(EEGO_A4) : 0u,
                              FREEINK_DEVICE_ONEPAGE ? panelBytes(ONEPAGE) : 0u),
-                        FREEINK_DEVICE_WS397 ? panelBytes(WS_EPAPER_397) : 0u)))));
+                        cmax(FREEINK_DEVICE_WS397 ? panelBytes(WS_EPAPER_397) : 0u,
+                             FREEINK_DEVICE_EMINIMAL ? panelBytes(EMINIMAL_78) : 0u))))));
 
 // Compile-time default device — the profile ACTIVE starts as. With a single
 // device in the build this is the only device; with several same-MCU devices it
 // is the boot default until the consumer calls selectDevice().
 #if FREEINK_DEVICE_WS397
 constexpr BoardProfile DEFAULT_DEVICE = WS_EPAPER_397;
+#elif FREEINK_DEVICE_EMINIMAL
+constexpr BoardProfile DEFAULT_DEVICE = EMINIMAL_78;
 #elif FREEINK_DEVICE_ONEPAGE
 constexpr BoardProfile DEFAULT_DEVICE = ONEPAGE;
 #elif FREEINK_DEVICE_PAPERMONO
@@ -1947,6 +2053,11 @@ inline bool selectDevice(Board which) {
       ACTIVE = M5PAPER_V11;
       break;
 #endif
+#if FREEINK_DEVICE_EMINIMAL
+    case Board::EMinimal78:
+      ACTIVE = EMINIMAL_78;
+      break;
+#endif
 #if FREEINK_DEVICE_STICKY
     case Board::Sticky:
       ACTIVE = STICKY;
@@ -2010,6 +2121,7 @@ inline bool isPaperMono() { return ACTIVE.board == Board::PaperMono; }
 inline bool isEegoA4() { return ACTIVE.board == Board::EegoA4; }
 inline bool isOnePage() { return ACTIVE.board == Board::OnePage; }
 inline bool isWsEpaper397() { return ACTIVE.board == Board::WsEpaper397; }
+inline bool isEMinimal78() { return ACTIVE.board == Board::EMinimal78; }
 inline bool hasTouch() { return ACTIVE.touch.controller != TouchController::None; }
 inline bool hasHomeKey() { return ACTIVE.touch.hasHomeKey; }
 inline bool hasPwmFrontlight() { return ACTIVE.frontlight.gpio != PIN_UNASSIGNED || ACTIVE.frontlight.viaPm1Pwm; }

@@ -966,27 +966,33 @@ void FreeInkDisplay::cleanupGrayscaleWithPreviousBuffer() {
   // the next push against). Handing over a frame that was never displayed makes the next refresh
   // drive the wrong pixels -- ghosting, arriving one page later than the cause.
   //
-  // frameBufferActive is that frame. When it is null the fallback is only sometimes right, and the
-  // two cases are NOT interchangeable:
+  // frameBufferActive is that frame, and it is the ONLY candidate. frameBuffer is never a
+  // substitute, in either of the two ways the secondary can be away:
   //
-  //   released  -- releaseSecondaryBuffer() seeds frameBuffer from the displayed frame before
-  //                freeing, so frameBuffer IS the panel content and the fallback is correct.
-  //   LENT      -- borrowSecondaryBuffer() hands the block out with no such seeding, so frameBuffer
-  //                is the write buffer: the frame from two refreshes ago, or a half-rendered page.
+  //   LENT      -- borrowSecondaryBuffer() hands the block out without seeding anything, so
+  //                frameBuffer is the write buffer: the previously displayed frame, or a
+  //                half-rendered page.
+  //   released  -- a host that seeds frameBuffer from the displayed frame before freeing (the
+  //                CrossPoint HAL does) makes it briefly correct, but that happens upstream of
+  //                this call. Every caller of this function is the tail (or the abort point) of
+  //                a grayscale plane pass, and those passes clear frameBuffer to 0x00 and render
+  //                a plane into it -- twice. By the time we get here the "seeded" frame is an
+  //                LSB/MSB PLANE, and handing it over rebases the controller's previous-frame RAM
+  //                from the page's own glyph plane.
   //
-  // In the lent case there is no valid previous frame to restore from, so do nothing rather than
-  // restore from a lie. Nothing is lost: the next full push reseeds the canvas from the real frame
-  // (fillCanvasBW() at the top of the display path), so this is a skipped cleanup, not a skipped
-  // repaint.
+  // With no baseline, say so instead of inventing one: every driver implements bw == nullptr as
+  // "drop the synced claim and take a clean/full sync on the next push" (Uc8253X3: _redRamSynced
+  // = false; Uc8179/Uc8279X4: _needFullClear; Uc8279: _forceFullSyncNext; the rest reload
+  // wholesale anyway). Returning early would leave a driver believing its RAM still mirrors the
+  // panel while it physically holds the two planes this pass just wrote.
   //
-  // Easy to miss because it needs a consumer that borrows the secondary for long enough to span a
-  // grayscale cleanup; it surfaced downstream once background work started borrowing it during
-  // reading rather than only between screens.
-  const uint8_t* baseline = frameBufferActive ? frameBufferActive : (_secondaryLent ? nullptr : frameBuffer);
-  if (!baseline) return;
+  // Host test: test_pro.cpp testGrayCleanupBaseline -- released and lent stream nothing into
+  // controller RAM and leave the driver needing a clean sync; it fails on the fallback above.
+  const uint8_t* baseline = frameBufferActive;
   if (!_inverted) {
     _driver->cleanupGrayscaleBuffers(_bus, baseline);
   }
+  if (!baseline) return;
   if (frameBuffer && frameBuffer != baseline) memcpy(frameBuffer, baseline, bufferSize);
 }
 #endif

@@ -961,11 +961,33 @@ void FreeInkDisplay::cleanupGrayscaleBuffers(const uint8_t* bwBuffer) {
 #ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
 void FreeInkDisplay::cleanupGrayscaleWithPreviousBuffer() {
   cancelGrayscalePass();
-  const uint8_t* baseline = frameBufferActive ? frameBufferActive : frameBuffer;
+  // The baseline must be the frame that is ON THE PANEL: drivers restore their diff state from it
+  // (LgfxEpdDriver seeds its canvas with fillCanvasBW(), and that canvas is what Panel_EPD diffs
+  // the next push against). Handing over a frame that was never displayed makes the next refresh
+  // drive the wrong pixels -- ghosting, arriving one page later than the cause.
+  //
+  // frameBufferActive is that frame. When it is null the fallback is only sometimes right, and the
+  // two cases are NOT interchangeable:
+  //
+  //   released  -- releaseSecondaryBuffer() seeds frameBuffer from the displayed frame before
+  //                freeing, so frameBuffer IS the panel content and the fallback is correct.
+  //   LENT      -- borrowSecondaryBuffer() hands the block out with no such seeding, so frameBuffer
+  //                is the write buffer: the frame from two refreshes ago, or a half-rendered page.
+  //
+  // In the lent case there is no valid previous frame to restore from, so do nothing rather than
+  // restore from a lie. Nothing is lost: the next full push reseeds the canvas from the real frame
+  // (fillCanvasBW() at the top of the display path), so this is a skipped cleanup, not a skipped
+  // repaint.
+  //
+  // Easy to miss because it needs a consumer that borrows the secondary for long enough to span a
+  // grayscale cleanup; it surfaced downstream once background work started borrowing it during
+  // reading rather than only between screens.
+  const uint8_t* baseline = frameBufferActive ? frameBufferActive : (_secondaryLent ? nullptr : frameBuffer);
+  if (!baseline) return;
   if (!_inverted) {
     _driver->cleanupGrayscaleBuffers(_bus, baseline);
   }
-  if (frameBuffer && baseline && frameBuffer != baseline) memcpy(frameBuffer, baseline, bufferSize);
+  if (frameBuffer && frameBuffer != baseline) memcpy(frameBuffer, baseline, bufferSize);
 }
 #endif
 

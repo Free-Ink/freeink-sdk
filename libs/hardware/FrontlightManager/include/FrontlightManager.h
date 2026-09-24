@@ -35,6 +35,29 @@ class FrontlightManager {
   void off();
   void on();
 
+  // Two sleep paths, for two different questions. Both are kept: neither
+  // subsumes the other.
+  //
+  //   prepareForDeepSleep()  every board. Parks the pad at the LED's INACTIVE
+  //                          level, so it is correct on active-low lights too,
+  //                          and covers the PM1 path that has no ESP pad at all.
+  //   park()/releaseOnWake() LEDC boards built with FREEINK_FRONTLIGHT_LS. Also
+  //                          hands back the RC_FAST KEEP_ALIVE clock that keeps
+  //                          LIGHT sleep shallow, which is not a deep-sleep
+  //                          concern and is not what the other one does.
+
+  // Park the light for deep sleep: stop the PWM, then drive and LATCH the output
+  // pin(s) at the LED's inactive level (gpio_hold_en, so the level survives the
+  // sleep). Call it on the way into deep sleep, before the rails go down.
+  //
+  // Not the same as off(): off() writes a zero duty, but the pad is still owned
+  // by LEDC and sleep entry hands it to esp_sleep_config_gpio_isolate(), which
+  // floats it -- what the light does then is down to an external pull, a
+  // board-layout detail. A frontlight left lit is the single largest load a
+  // sleeping reader can carry, so it is driven off rather than assumed off.
+  // begin() releases the hold on the next boot.
+  void prepareForDeepSleep();
+
   // Cut frontlight leakage through deep sleep: drive the LED pads LOW and hold
   // them (so the level survives deep sleep via gpio_deep_sleep_hold_en), and
   // release the LEDC KEEP_ALIVE clock. Call from the consumer's sleep path just
@@ -128,6 +151,9 @@ class FrontlightManager {
   uint8_t _brightness = 0;
   uint8_t _brightnessLevel = 0;
   bool _useLevel = false;
+  // Duty written by the previous apply(); 0 = the light was off. The off->on
+  // edge is what arms the boost kick-start (see apply()).
+  uint32_t _lastTotalDuty = 0;
   uint8_t _lastBrightness = 50;
   uint8_t _warmPercent = 50;  // neutral by default
 };

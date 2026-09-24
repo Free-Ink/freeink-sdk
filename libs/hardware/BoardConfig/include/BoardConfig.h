@@ -591,6 +591,19 @@ struct FrontlightConfig {
   // on. pwmFrequency still applies (PM1 PWM_FREQ register); resolution is the
   // PM1's fixed 12 bits.
   bool viaPm1Pwm = false;
+  // Boost-driver floors, in permille of full duty. Zero on boards whose LED
+  // hangs directly off the PWM pin, which leaves the dimming curve untouched.
+  //
+  // On a board that PWMs a boost converter's EN pin, an on-time shorter than the
+  // boost's start-up window produces NO light rather than dim light, so a
+  // perceptual dimming curve has to land its bottom on the boost's floor rather
+  // than on one duty LSB.
+  //   minStartPermille: lowest duty the boost reliably IGNITES from cold.
+  //   minHoldPermille:  lowest duty it stays lit at once running (<= start;
+  //                     FrontlightManager bridges the gap with a brief kick at
+  //                     start level when turning on into the hold band).
+  uint16_t minStartPermille = 0;
+  uint16_t minHoldPermille = 0;
 };
 
 // I2C frontlight controller (LM3630A on the EEGO A4). The controller is driven

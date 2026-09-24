@@ -569,13 +569,12 @@ void Ssd1677Driver::writeGrayRam(EpdBus& bus, uint8_t command, const uint8_t* da
   // absolute encoding is black=00/white=11, so complement each host plane.
   uint8_t chunk[128];
   bus.cmd(command);
-  bus.beginTxn();
+  auto txn = bus.beginTxn();
   for (uint32_t offset = 0; offset < len; offset += sizeof(chunk)) {
     const uint16_t count = (len - offset < sizeof(chunk)) ? len - offset : sizeof(chunk);
     for (uint16_t i = 0; i < count; ++i) chunk[i] = static_cast<uint8_t>(~data[offset + i]);
-    bus.rawWriteBytes(chunk, count);
+    txn.writeBytes(chunk, count);
   }
-  bus.endTxn();
 }
 
 void Ssd1677Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {

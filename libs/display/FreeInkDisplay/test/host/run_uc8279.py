@@ -72,9 +72,8 @@ public:
   void waitRefreshComplete(const char*) {}
   struct Pins { int8_t busy=0; };
   Pins pins() const { return {}; }
-  void beginTxn() {}
-  void endTxn() {}
-  void rawWriteBytes(const uint8_t*, size_t) {}
+  struct Transaction { void writeBytes(const uint8_t*, size_t) {} void end() {} };
+  Transaction beginTxn() { return {}; }
 };
 }
 ''')

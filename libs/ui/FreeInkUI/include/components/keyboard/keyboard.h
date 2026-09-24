@@ -60,6 +60,9 @@ struct KeyboardRow {
   const KeyboardKey* keys = nullptr;
   uint8_t count = 0;
   uint8_t insetUnits = 0;
+  // Keep this row's character keys uniform, but size them independently of
+  // wider rows in the same layout (for example, ten digits above twelve letters).
+  bool independentKeyWidth = false;
 };
 
 struct KeyboardLayout {
@@ -566,7 +569,7 @@ void keyboard(Frame<MaxInteractions>& frame, Rect rect, const KeyboardProps& pro
         hasCharacterKey |= key.kind == KeyKind::Normal;
         units = static_cast<uint16_t>(units + (key.widthUnits ? key.widthUnits : 1));
       }
-      if (!hasCharacterKey || units == 0) continue;
+      if (!hasCharacterKey || units == 0 || layoutRow.independentKeyWidth) continue;
       const int16_t candidate = static_cast<int16_t>((rect.width - gap * (layoutRow.count - 1)) / units);
       if (uniformUnitW == 0 || candidate < uniformUnitW) uniformUnitW = candidate;
     }
@@ -711,8 +714,10 @@ void keyboard(Frame<MaxInteractions>& frame, Rect rect, const KeyboardProps& pro
       units = static_cast<uint16_t>(units + (layoutRow.keys[col].widthUnits ? layoutRow.keys[col].widthUnits : 1));
     }
     const int16_t gapWidth = static_cast<int16_t>(gap * (layoutRow.count - 1));
-    const bool useUniformWidth = props.uniformKeyWidth && hasCharacterKey && uniformUnitW > 0;
-    const int16_t unitW = useUniformWidth ? uniformUnitW : static_cast<int16_t>((rect.width - gapWidth) / units);
+    const int16_t ownUnitW = static_cast<int16_t>((rect.width - gapWidth) / units);
+    const bool useUniformWidth =
+        props.uniformKeyWidth && hasCharacterKey && (layoutRow.independentKeyWidth ? ownUnitW > 0 : uniformUnitW > 0);
+    const int16_t unitW = useUniformWidth && !layoutRow.independentKeyWidth ? uniformUnitW : ownUnitW;
     const int16_t usedWidth = static_cast<int16_t>(unitW * units + gapWidth);
     const int16_t y = static_cast<int16_t>(rect.y + row * (rowH + rowGap));
     int16_t x = static_cast<int16_t>(rect.x + layoutRow.insetUnits * unitW);

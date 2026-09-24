@@ -3510,6 +3510,33 @@ void testKeyboardUniformRowWidths() {
   }
 }
 
+void testWideScriptNumberRowWidth() {
+  DeviceContext device = makeDevice(480, 300);
+  InputSnapshot input;
+  for (const KeyboardLayoutId id : {KeyboardLayoutId::CyrillicRu, KeyboardLayoutId::CyrillicUk,
+                                    KeyboardLayoutId::CyrillicBe, KeyboardLayoutId::CyrillicKk,
+                                    KeyboardLayoutId::ArabicAr}) {
+    FakeDrawTarget draw;
+    InteractionBuffer<64> interactions;
+    Frame<64> frame(draw, device, input, interactions);
+    KeyboardProps props;
+    props.layout = &builtinKeyboardLayout(id, false, false, true);
+    props.keyAction = 1;
+    props.padding = Insets{4, 4, 4, 4};
+    props.gap = 6;
+    props.uniformKeyWidth = true;
+
+    keyboard(frame, Rect{0, 0, 480, 300}, props);
+
+    CHECK_EQ(interactions.data()[0].rect.width, 40);   // Ten digits fill the width, like English.
+    CHECK_EQ(interactions.data()[9].rect.width, 40);
+    CHECK_EQ(interactions.data()[10].rect.width, 32);  // Twelve letters still fit uniformly.
+    CHECK_EQ(interactions.data()[21].rect.width, 32);
+    CHECK_EQ(interactions.data()[0].rect.x, 13);
+    CHECK_EQ(interactions.data()[9].rect.right(), 467);
+  }
+}
+
 void testKeyboardBackground() {
   FakeDrawTarget draw;
   DeviceContext device = makeDevice();
@@ -5505,6 +5532,7 @@ int main() {
   testQwertyKeyboardComponent();
   testLocalizedKeyboardLayout();
   testKeyboardUniformRowWidths();
+  testWideScriptNumberRowWidth();
   testKeyboardBackground();
   testSymbolKeyboardPages();
   testKeyboardLayoutVariants();

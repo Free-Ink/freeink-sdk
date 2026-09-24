@@ -36,11 +36,11 @@ struct QwertyKeyboardProps {
   ActionId langAction = NO_ACTION;
   TextStyle controlText{};
   int16_t rowGap = 6;
-  // Kept last to preserve positional aggregate initialization compatibility.
-  Paint background = Paint::none();
   int16_t altHintRightPadding = 10;
   int16_t altLabelGap = 4;
   int16_t digitLabelOffsetX = -4;
+  // Appended fields preserve positional aggregate initialization.
+  Paint background = Paint::none();
   const char* spaceLabel = nullptr;
   bool uniformKeyWidth = false;
 };

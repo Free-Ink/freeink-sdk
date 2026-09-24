@@ -106,15 +106,15 @@ struct KeyboardProps {
   TextStyle controlText{};
   // Vertical separation is independent of the horizontal key gap.
   int16_t rowGap = 6;
-  // Optional panel fill drawn behind the keys. The gaps and padding expose
-  // this paint, allowing keys to stand apart from the surrounding screen.
-  // Kept last to preserve positional aggregate initialization compatibility.
-  Paint background = Paint::none();
   // Geometry for keys with alternate hints. digitLabelOffsetX is signed:
   // negative moves a primary digit left, positive moves it right.
   int16_t altHintRightPadding = 10;
   int16_t altLabelGap = 4;
   int16_t digitLabelOffsetX = -6;
+  // Appended fields preserve positional aggregate initialization.
+  // Optional panel fill drawn behind the keys. The gaps and padding expose
+  // this paint, allowing keys to stand apart from the surrounding screen.
+  Paint background = Paint::none();
   // Optional localized text for the space key. Null keeps the compact glyph.
   const char* spaceLabel = nullptr;
   // Give every character key the same width across rows. Rows containing

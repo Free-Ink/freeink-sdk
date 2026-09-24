@@ -928,6 +928,7 @@ bool FreeInkDisplay::displayGrayscaleBase(GrayscaleMode mode, RefreshMode fallba
   if (!caps.supported()) return false;
   if (_inversionDirty && (mode == GrayscaleMode::Overlay || caps.base == GrayscaleBase::Separate))
     displayBuffer(fallback, turnOffScreen);
+  DisplayPmLock pmLock;
   syncPendingAsync();
   _shadowValid = false;
   _grayPassFailed = false;

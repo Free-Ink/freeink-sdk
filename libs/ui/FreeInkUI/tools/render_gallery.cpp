@@ -1,6 +1,8 @@
 #include <FreeInkUI.h>
+#include <FreeInkApp.h>
 #include <FreeInkUIDisplayTarget.h>
 
+#include "keyboard_gallery_font.h"
 #include "gallery_font.h"   // kNotoSansSmallFont — a compact font for thumbnails
 
 #include <cstdint>
@@ -20,6 +22,7 @@ struct Canvas {
   int16_t widthBytes;
   std::vector<uint8_t> fb;
   DisplayTarget target;
+  DeviceContext device;
 
   // Render at native landscape orientation (no rotation). The 4-arg DisplayTarget
   // ctor now auto-rotates a landscape panel (width > height) to Portrait for
@@ -79,6 +82,9 @@ void writeManifest(const char* path) {
       "  \"schema\": 1,\n"
       "  \"generatedBy\": \"libs/ui/FreeInkUI/tools/render_gallery.cpp\",\n"
       "  \"images\": [\n"
+      "    {\"file\": \"freeinkui-catalog.svg\", \"category\": \"catalog\", \"title\": \"Horizontal catalog shelves\", \"components\": [\"catalogCover\", \"coverShelf\", \"catalogPage\"]},\n"
+      "    {\"file\": \"freeinkui-publication.svg\", \"category\": \"publication\", \"title\": \"Borrow a publication\", \"components\": [\"publicationHeader\", \"publicationAvailability\", \"publicationPage\"]},\n"
+      "    {\"file\": \"freeinkui-publication-hold.svg\", \"category\": \"publication\", \"title\": \"Publication on hold\", \"components\": [\"publicationPage\"]},\n"
       "    {\n"
       "      \"file\": \"freeinkui-settings.svg\",\n"
       "      \"category\": \"settings\",\n"
@@ -114,6 +120,9 @@ void writeManifest(const char* path) {
       "    {\"component\": \"button\", \"category\": \"controls\", \"file\": \"freeinkui-components/button.svg\"},\n"
       "    {\"component\": \"checkbox\", \"category\": \"controls\", \"file\": \"freeinkui-components/checkbox.svg\"},\n"
       "    {\"component\": \"slider\", \"category\": \"controls\", \"file\": \"freeinkui-components/slider.svg\"},\n"
+      "    {\"component\": \"capsuleSlider\", \"category\": \"controls\", \"file\": \"freeinkui-components/capsule-slider.svg\"},\n"
+      "    {\"component\": \"sliderRow\", \"category\": \"controls\", \"file\": \"freeinkui-components/slider-row.svg\"},\n"
+      "    {\"component\": \"tileGrid\", \"category\": \"controls\", \"file\": \"freeinkui-components/tile-grid.svg\"},\n"
       "    {\"component\": \"settingRow\", \"category\": \"settings\", \"file\": \"freeinkui-components/setting-row.svg\"},\n"
       "    {\"component\": \"toggleRow\", \"category\": \"settings\", \"file\": \"freeinkui-components/toggle-row.svg\"},\n"
       "    {\"component\": \"stepperRow\", \"category\": \"settings\", \"file\": \"freeinkui-components/stepper-row.svg\"},\n"
@@ -140,7 +149,8 @@ void writeManifest(const char* path) {
       "    {\"component\": \"optionDialog\", \"category\": \"overlays\", \"file\": \"freeinkui-components/option-dialog.svg\"},\n"
       "    {\"component\": \"messagePanel\", \"category\": \"overlays\", \"file\": \"freeinkui-components/message-panel.svg\"},\n"
       "    {\"component\": \"toast\", \"category\": \"overlays\", \"file\": \"freeinkui-components/toast.svg\"},\n"
-      "    {\"component\": \"popup\", \"category\": \"overlays\", \"file\": \"freeinkui-components/popup.svg\"}\n"
+      "    {\"component\": \"popup\", \"category\": \"overlays\", \"file\": \"freeinkui-components/popup.svg\"},\n"
+      "    {\"component\": \"sheet\", \"category\": \"overlays\", \"file\": \"freeinkui-components/sheet.svg\"}\n"
       "  ]\n"
       "}\n";
 }
@@ -158,7 +168,8 @@ DeviceContext deviceFor(const Canvas& c) {
 template <size_t N>
 Frame<N> makeFrame(Canvas& c, InteractionBuffer<N>& interactions) {
   static InputSnapshot input;
-  return Frame<N>(c.target, deviceFor(c), input, interactions);
+  c.device = deviceFor(c);
+  return Frame<N>(c.target, c.device, input, interactions);
 }
 
 TextStyle text(FontId font = 0, TextAlign align = TextAlign::Left, uint8_t maxLines = 1) {
@@ -231,6 +242,54 @@ void renderPalette(const std::string& dir) {
     props.action = 1;
     props.radius = 2;
     slider(frame, Rect{rect.x, static_cast<int16_t>(rect.y + 30), rect.width, 34}, props);
+  });
+
+  renderComponent(dir, "capsule-slider.svg", "capsuleSlider", [](auto& frame, Rect rect) {
+    CapsuleSliderProps props;
+    props.value = 62;
+    props.max = 100;
+    props.action = 1;
+    capsuleSlider(frame, Rect{rect.x, static_cast<int16_t>(rect.y + 26), rect.width, 44}, props);
+  });
+
+  renderComponent(dir, "slider-row.svg", "sliderRow", [](auto& frame, Rect rect) {
+    SliderRowProps props;
+    props.label = "Brightness";
+    props.value = "62%";
+    props.sliderValue = 62;
+    props.sliderAction = 1;
+    props.decrement = 2;
+    props.increment = 2;
+    props.toggleAction = 3;
+    props.labelText = text();
+    props.labelText.bold = true;
+    props.buttonText = text(0, TextAlign::Center);
+    props.buttonText.bold = true;
+    props.buttonRadius = 12;
+    sliderRow(frame, Rect{rect.x, static_cast<int16_t>(rect.y + 14), rect.width, 84}, props);
+  });
+
+  renderComponent(dir, "tile-grid.svg", "tileGrid", [](auto& frame, Rect rect) {
+    TileGridItem items[2];
+    items[0].label = "Night mode";
+    items[0].value = 0;
+    items[0].state = StateChecked;
+    items[1].label = "Refresh";
+    items[1].value = 1;
+    TileGridProps props;
+    props.items = items;
+    props.count = 2;
+    props.action = 1;
+    props.tileHeight = 64;
+    props.radius = 12;
+    props.text = text(0, TextAlign::Center);
+    tileGrid(frame, Rect{rect.x, static_cast<int16_t>(rect.y + 22), rect.width, 64}, props);
+  });
+
+  renderComponent(dir, "sheet.svg", "sheet", [](auto& frame, Rect rect) {
+    SheetProps props;
+    props.grabberInset = 10;
+    sheet(frame, Rect{rect.x, rect.y, rect.width, 100}, props);
   });
 
   renderComponent(dir, "stepper-row.svg", "stepperRow", [](auto& frame, Rect rect) {
@@ -324,17 +383,36 @@ void renderPalette(const std::string& dir) {
     keyGrid(frame, rect, props);
   });
 
-  renderComponent(dir, "qwerty-keyboard.svg", "qwertyKeyboard", [](auto& frame, Rect rect) {
+  {
+    // Show the keyboard at device scale, including the dedicated number row.
+    Canvas c(480, 800);
+    c.target.setFont(FONT_SLOT_BODY, kNotoSansFont);
+    c.target.setFont(FONT_SLOT_TITLE, kKeyboardGalleryFont);
+    InteractionBuffer<64> interactions;
+    const DeviceContext device = deviceFor(c);
+    InputSnapshot input;
+    Frame<64> frame(c.target, device, input, interactions);
+    title(c.target, Rect{16, 10, 448, 22}, "qwertyKeyboard");
     QwertyKeyboardProps props;
     props.keyAction = 1;
     props.shiftAction = 2;
     props.modeAction = 3;
     props.deleteAction = 4;
     props.okAction = 5;
-    props.selectedIndex = 5;
-    props.labelText = text(0, TextAlign::Center);
-    qwertyKeyboard(frame, rect, props);
-  });
+    props.numberRow = true;
+    props.selectedIndex = 0;
+    props.labelText = text(FONT_SLOT_TITLE, TextAlign::Center);
+    props.controlText = text(FONT_SLOT_BODY, TextAlign::Center);
+    props.altText = text(FONT_SLOT_SMALL, TextAlign::Right);
+    ThemeTokens theme;
+    Screen<64> screen(frame, theme);
+    screen.qwertyKeyboard(props, 0, LayoutAnchor::Bottom);
+    TextFieldProps entry;
+    entry.text = "Hello";
+    entry.textStyle = text(FONT_SLOT_TITLE);
+    textField(frame, Rect{2, static_cast<int16_t>(screen.contentRect().bottom() - 58), 476, 52}, entry);
+    writeSvg(c, (dir + "/freeinkui-components/qwerty-keyboard.svg").c_str());
+  }
 
   renderComponent(dir, "gesture-bar.svg", "gestureBar", [](auto& frame, Rect rect) {
     GestureBarProps props;
@@ -759,8 +837,112 @@ void renderLibrary(const char* path) {
   writeSvg(c, path);
 }
 
+bool paintCatalogCover(DrawTarget& target, Rect rect, const CatalogItem& item, void*) {
+  const bool dark = item.value % 2 == 0;
+  target.fill(rect, Paint::solid(dark ? Color::Black : Color::White));
+  target.stroke(rect, Paint::solid(Color::Black), 1);
+  const Paint ink = Paint::solid(dark ? Color::White : Color::Black);
+  const int16_t center = static_cast<int16_t>(rect.x + rect.width / 2);
+  for (int i = 0; i < 5; ++i) {
+    const int16_t y = static_cast<int16_t>(rect.y + 16 + i * 16);
+    target.line(Point{static_cast<int16_t>(rect.x + 12), y},
+                Point{static_cast<int16_t>(rect.right() - 12), y}, 1, ink);
+  }
+  target.line(Point{center, static_cast<int16_t>(rect.y + 12)},
+              Point{center, static_cast<int16_t>(rect.y + 100)}, 3, ink);
+  return true;
+}
+
+void renderCatalog(const char* path) {
+  Canvas c(480, 800);
+  InteractionBuffer<32> interactions;
+  auto frame = makeFrame(c, interactions);
+  title(c.target, Rect{20, 16, 440, 32}, "Library                         Browse catalog");
+  CatalogItem books[9];
+  const char* names[] = {"The Secret Garden", "A Room of One's Own", "The Time Machine",
+                        "Little Women", "The Odyssey", "Pride and Prejudice",
+                        "The War of the Worlds", "Jane Eyre", "The Blue Castle"};
+  const char* authors[] = {"F. H. Burnett", "Virginia Woolf", "H. G. Wells",
+                          "L. M. Alcott", "Homer", "Jane Austen",
+                          "H. G. Wells", "Charlotte Bronte", "L. M. Montgomery"};
+  for (int i = 0; i < 9; ++i) { books[i].title = names[i]; books[i].author = authors[i]; books[i].value = i; }
+  CatalogWindow windows[3];
+  CoverShelfProps shelves[3];
+  const char* headings[] = {"Popular this week", "Rediscover the classics", "New in the catalog"};
+  for (int i = 0; i < 3; ++i) {
+    shelves[i].title = headings[i];
+    shelves[i].items = books + i * 3;
+    shelves[i].count = 6 - i * 2;
+    shelves[i].window = &windows[i];
+    shelves[i].cardWidth = 128;
+    shelves[i].card.action = 70;
+    shelves[i].card.radius = 4;
+    shelves[i].card.coverPainter = paintCatalogCover;
+    shelves[i].next.label = ">";
+    shelves[i].next.action = 71;
+    shelves[i].next.value = i;
+    shelves[i].previous.label = "<";
+    shelves[i].previous.action = 72;
+    shelves[i].previous.value = i;
+    shelves[i].seeAll.label = "See all";
+    shelves[i].seeAll.action = 73;
+    shelves[i].seeAll.value = i;
+    shelves[i].navigationWidth = 44;
+    shelves[i].seeAllWidth = 64;
+    shelves[i].gap = 8;
+  }
+  CatalogWindow window;
+  CatalogPageProps page;
+  page.shelves = shelves;
+  page.count = 3;
+  page.window = &window;
+  page.shelfHeight = 300;
+  page.previous.label = "Previous groups";
+  page.previous.action = 74;
+  page.next.label = "More groups";
+  page.next.action = 75;
+  // Focus the first book to demonstrate button-navigation feedback.
+  catalogPage(frame, Rect{12, 64, 456, 720}, page);
+  interactions.setFocusedIndex(2);
+  interactions.clear();
+  c.clear();
+  title(c.target, Rect{20, 16, 440, 32}, "Library                         Browse catalog");
+  catalogPage(frame, Rect{12, 64, 456, 720}, page);
+  writeSvg(c, path);
+}
+
+void renderPublication(const char* path, bool held) {
+  Canvas c(480, 800);
+  c.target.setFont(FONT_SLOT_TITLE, kNotoSansFont);
+  InteractionBuffer<16> interactions;
+  auto frame = makeFrame(c, interactions);
+  title(c.target, Rect{20, 16, 440, 32}, "< Library                         Book details");
+  PublicationPageProps page;
+  page.book.title = "The Secret Garden";
+  page.book.author = "Frances Hodgson Burnett";
+  page.book.format = "EBOOK / EPUB";
+  page.book.titleText = text(FONT_SLOT_TITLE);
+  page.availability.status = held ? "On hold" : "Available to borrow";
+  page.availability.copies = held ? "0 of 8 copies available" : "3 of 8 copies available";
+  page.availability.holds = held ? "You are #3 in line / 12 holds" : "No waiting list";
+  page.availability.loan = held ? "We'll notify you when it's ready." : "Borrow for 21 days";
+  page.metadata = "Published 1911 / English";
+  page.description = "When Mary Lennox arrives at her uncle's house on the Yorkshire moors, "
+      "she finds a place full of secrets. Beyond a locked door in the garden wall, "
+      "a forgotten world is waiting to come alive.\n\n"
+      "A story of friendship, discovery, and the quiet power of growing things.";
+  page.primary.label = held ? "Manage hold" : "Borrow book";
+  page.primary.action = 60;
+  page.secondary.label = "Read sample";
+  page.secondary.action = 61;
+  page.more.label = "Full description";
+  page.more.action = 62;
+  publicationPage(frame, Rect{4, 64, 472, 732}, page);
+  writeSvg(c, path);
+}
+
 void renderOverlays(const char* path) {
-  Canvas c(640, 460);
+  Canvas c(640, static_cast<int16_t>(286 + keyboardPreferredHeight(440, 4) + 24));
   InteractionBuffer<96> interactions;
   auto frame = makeFrame(c, interactions);
   title(c.target, Rect{16, 12, 608, 24}, "Overlays, dialogs, keyboard, and actions");
@@ -817,8 +999,12 @@ void renderOverlays(const char* path) {
   keyboard.deleteAction = 40;
   keyboard.okAction = 41;
   keyboard.selectedIndex = 2;
-  keyboard.labelText = text(0, TextAlign::Center);
-  qwertyKeyboard(frame, Rect{20, 286, 440, 146}, keyboard);
+  c.target.setFont(FONT_SLOT_BODY, kNotoSansFont);
+  c.target.setFont(FONT_SLOT_TITLE, kKeyboardGalleryFont);
+  keyboard.labelText = text(FONT_SLOT_TITLE, TextAlign::Center);
+  keyboard.controlText = text(FONT_SLOT_BODY, TextAlign::Center);
+  keyboard.altText = text(FONT_SLOT_SMALL, TextAlign::Right);
+  qwertyKeyboard(frame, Rect{20, 286, 440, keyboardPreferredHeight(440, 4)}, keyboard);
 
   GestureBarProps gestures;
   gestures.left = GestureBarButton{"Back", {}, {}, 42};
@@ -848,6 +1034,9 @@ int main(int argc, char** argv) {
   renderReader((dir + "/freeinkui-reader.svg").c_str());
   renderLibrary((dir + "/freeinkui-library.svg").c_str());
   renderOverlays((dir + "/freeinkui-overlays.svg").c_str());
+  renderPublication((dir + "/freeinkui-publication.svg").c_str(), false);
+  renderPublication((dir + "/freeinkui-publication-hold.svg").c_str(), true);
+  renderCatalog((dir + "/freeinkui-catalog.svg").c_str());
   renderPalette(dir);
   writeManifest((dir + "/freeinkui-gallery.json").c_str());
   return 0;

@@ -53,7 +53,7 @@ head -c 4096 /dev/zero > "$BUILD_DIR/fixtures/garbage.bin"
 python3 ../fixtures/gen_omnibus.py "$BUILD_DIR/fixtures/omnibus.epub" 1700 >/dev/null
 
 # --- build ------------------------------------------------------------------
-INCLUDES="-I../../include -I../../third_party/expat -I../../third_party/miniz -I../../third_party/libunibreak -I../../third_party/pngle -I../../third_party/tjpgd -I../../third_party/stb"
+INCLUDES="-I../../include -I../../third_party/expat -I../../third_party/miniz -I../../third_party/libunibreak -I../../third_party/pngle -I../../third_party/tjpgd -I../../third_party/stb -I../../../../font/FreeInkFont/include -I../../../../font/FreeInkFont/third_party/stb"
 CC_FLAGS="-O1 -std=c99 $INCLUDES"
 for src in miniz_impl expat_xmlparse expat_xmlrole expat_xmltok unibreak_impl pngle_impl tjpgd_impl; do
   cc $CC_FLAGS -c "../../src/vendor/$src.c" -o "$BUILD_DIR/obj/$src.o"
@@ -62,7 +62,7 @@ done
 CORE_SRCS="../../src/FreeInkBook.cpp ../../src/BookCatalog.cpp ../../src/epub/ZipCatalog.cpp ../../src/epub/XmlSax.cpp \
   ../../src/epub/PackageParsers.cpp ../../src/epub/ImageProbe.cpp ../../src/text/EntityFilter.cpp \
   ../../src/text/Hyphenator.cpp ../../src/css/Css.cpp ../../src/layout/ChapterLayout.cpp \
-  ../../src/cache/PageCache.cpp ../../src/render/ImageRenderer.cpp ../../src/render/TtfFont.cpp ../../src/render/PageRenderer.cpp"
+  ../../src/cache/PageCache.cpp ../../src/render/ImageRenderer.cpp ../../../../font/FreeInkFont/src/TtfFont.cpp ../../src/render/PageRenderer.cpp"
 
 c++ -std=c++17 -Wall -Wextra -Werror $INCLUDES \
   $CORE_SRCS test_freeinkbook.cpp "$BUILD_DIR"/obj/*.o \

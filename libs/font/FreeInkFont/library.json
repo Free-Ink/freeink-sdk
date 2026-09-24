@@ -1,0 +1,15 @@
+{
+  "name": "FreeInkFont",
+  "version": "0.1.0",
+  "description": "Standalone TTF/OTF font engine (outline rasterization, advances, kerning, ligatures, per-codepoint fallback) with arena-bounded, no-heap caching. Decoupled from any layout or book engine so any consumer can render real fonts.",
+  "keywords": "font, ttf, otf, freetype, stb_truetype, glyph, eink, epaper, rasterizer",
+  "authors": [{"name": "FreeInk SDK Contributors"}],
+  "dependencies": {},
+  "platforms": "*",
+  "frameworks": "*",
+  "build": {
+    "flags": ["-I third_party/stb", "-I third_party/freetype/include"]
+  },
+  "license": "MIT",
+  "export": {"exclude": ["test"]}
+}

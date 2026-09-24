@@ -1,7 +1,9 @@
 #include "RecoveryBoot.h"
 
 #include <Arduino.h>
+#include <BoardConfig.h>
 #include <InputManager.h>
+#include <SDCardManager.h>
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
 #include <esp_rom_crc.h>
@@ -13,7 +15,7 @@ namespace freeink {
 namespace recovery {
 namespace {
 
-// --- Recovery combo: Back + Up ---------------------------------------------
+// --- Recovery combo: Back + Up (default) ------------------------------------
 // The two buttons sit on different ADC ladders (Back on GPIO1, Up on GPIO2),
 // which is the only kind of two-button combo the ladder can report at once —
 // buttons sharing a pin (e.g. Back+Right) collapse to a single reading. Reading
@@ -26,14 +28,15 @@ namespace {
 constexpr int kSettleSamples = 16;  // max polls while debounce warms up
 constexpr int kConfirmSamples = 5;  // consecutive holds required (~30 ms)
 
-bool comboHeld() {
+bool comboHeld(int8_t button1, int8_t button2) {
+  if (button1 < 0) return false;
   InputManager input;
   input.begin();
   int consecutive = 0;
   for (int i = 0; i < kSettleSamples; ++i) {
     input.update();  // applies debounce; currentState lags the first poll or two
-    const bool held =
-        input.isPressed(InputManager::BTN_BACK) && input.isPressed(InputManager::BTN_UP);
+    const bool held = input.isPressed(static_cast<uint8_t>(button1)) &&
+                      (button2 < 0 || input.isPressed(static_cast<uint8_t>(button2)));
     consecutive = held ? consecutive + 1 : 0;
     if (consecutive >= kConfirmSamples) return true;
     delay(6);
@@ -42,10 +45,10 @@ bool comboHeld() {
 }
 
 // --- otadata switch ---------------------------------------------------------
-// Self-contained copy of the apps' OtaBootSwitch: point the bootloader at `dest`
-// by writing a fresh otadata entry into the inactive slot. Bypasses
-// esp_ota_set_boot_partition's esp_image_verify (which rejects patched Xteink
-// images). Layout per esp_flash_partitions.h; CRC covers ota_seq only.
+// Point the bootloader at `dest` by writing a fresh otadata entry into the
+// inactive slot. Bypasses esp_ota_set_boot_partition's esp_image_verify (which
+// rejects patched Xteink images). Layout per esp_flash_partitions.h; CRC covers
+// ota_seq only.
 struct __attribute__((packed)) SelectEntry {
   uint32_t ota_seq;
   uint8_t seq_label[20];
@@ -70,7 +73,65 @@ bool hasApp(const esp_partition_t* p) {
   return esp_partition_read(p, 0, &magic, sizeof(magic)) == ESP_OK && magic == 0xE9;
 }
 
-bool switchTo(const esp_partition_t* dest) {
+// The plain hatch: repoint otadata at slot 0 and reboot into it. No-op (returns)
+// when slot 0 is empty or is already the running slot.
+void switchToSlot0AndReboot() {
+  // Recovery firmware lives in ota_0 (default upload offset 0x10000).
+  const esp_partition_t* hatch =
+      esp_partition_find_first(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_0, nullptr);
+  if (!hatch) return;
+
+  const esp_partition_t* running = esp_ota_get_running_partition();
+  if (running && running->address == hatch->address) return;  // already the recovery slot
+  if (!hasApp(hatch)) return;                                 // nothing bootable there
+
+  if (switchBootPartition(hatch)) {
+    delay(50);
+    esp_restart();
+  }
+}
+
+void serialProgress(size_t written, size_t total, void*) {
+  static size_t lastDecile = SIZE_MAX;
+  const size_t decile = total ? (written * 10) / total : 0;
+  if (decile == lastDecile) return;
+  lastDecile = decile;
+  if (Serial) {
+    Serial.printf("[%lu] [FLASH] %u%% (%u / %u bytes)\n", millis(),
+                  static_cast<unsigned>(decile * 10), static_cast<unsigned>(written),
+                  static_cast<unsigned>(total));
+  }
+}
+
+// Mount the SD card and, if the update image is present, flash it and reboot
+// into it. Returns (false) when there is no card, no update file, or the flash
+// failed — the caller then falls back to the slot-0 hatch.
+bool trySdUpdateAndReboot(const SdUpdateOptions& options) {
+  // A flash takes tens of seconds; on battery-latched boards the user will have
+  // released the power button long before it finishes, so latch the rails first.
+  BoardConfig::holdPowerRails();
+  BoardConfig::releaseSdRail();
+  if (!SdMan.begin()) return false;
+  if (!SdMan.exists(options.path)) return false;
+
+  if (Serial) Serial.printf("[%lu] [FLASH] combo held, flashing %s\n", millis(), options.path);
+  const firmware::ProgressCb cb = options.onProgress ? options.onProgress : serialProgress;
+  void* ctx = options.onProgress ? options.progressCtx : nullptr;
+  if (firmware::flashFromSdPath(options.path, cb, ctx) != firmware::Result::OK) return false;
+
+  if (options.renameOnSuccess) {
+    const String flashed = String(options.path) + ".flashed";
+    SdMan.remove(flashed.c_str());
+    SdMan.rename(options.path, flashed.c_str());
+  }
+  delay(50);
+  esp_restart();
+  return true;  // unreachable
+}
+
+}  // namespace
+
+bool switchBootPartition(const esp_partition_t* dest) {
   if (!dest) return false;
   const esp_partition_t* otadata =
       esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_OTA, nullptr);
@@ -118,24 +179,15 @@ bool switchTo(const esp_partition_t* dest) {
   return true;
 }
 
-}  // namespace
-
 void checkBootCombo() {
-  if (!comboHeld()) return;
+  if (!comboHeld(InputManager::BTN_BACK, InputManager::BTN_UP)) return;
+  switchToSlot0AndReboot();
+}
 
-  // Recovery firmware lives in ota_0 (default upload offset 0x10000).
-  const esp_partition_t* hatch =
-      esp_partition_find_first(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_0, nullptr);
-  if (!hatch) return;
-
-  const esp_partition_t* running = esp_ota_get_running_partition();
-  if (running && running->address == hatch->address) return;  // already the recovery slot
-  if (!hasApp(hatch)) return;                                  // nothing bootable there
-
-  if (switchTo(hatch)) {
-    delay(50);
-    esp_restart();
-  }
+void checkBootCombo(const SdUpdateOptions& options) {
+  if (!comboHeld(options.button1, options.button2)) return;
+  if (trySdUpdateAndReboot(options)) return;  // reboots on success
+  switchToSlot0AndReboot();
 }
 
 }  // namespace recovery

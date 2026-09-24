@@ -3,12 +3,31 @@
   "version": "0.1.0",
   "description": "Streaming EPUB container, layout, and pagination engine with arena-bounded memory for FreeInk applications.",
   "keywords": "epub, ebook, eink, epaper, layout, typography",
-  "authors": [{"name": "FreeInk SDK Contributors"}],
-  "dependencies": {},
+  "authors": [
+    {
+      "name": "FreeInk SDK Contributors"
+    }
+  ],
+  "dependencies": {
+    "FreeInkFont": "*"
+  },
   "platforms": "*",
   "frameworks": "*",
   "build": {
-    "flags": ["-I third_party/expat", "-I third_party/miniz", "-I third_party/libunibreak", "-I third_party/pngle", "-I third_party/tjpgd", "-I third_party/stb"]
+    "flags": [
+      "-I third_party/expat",
+      "-I third_party/miniz",
+      "-I third_party/libunibreak",
+      "-I third_party/pngle",
+      "-I third_party/tjpgd",
+      "-I third_party/stb",
+      "-I ../../font/FreeInkFont/include",
+      "-I ../../font/FreeInkFont/third_party/stb"
+    ]
   },
-  "export": {"exclude": ["test"]}
+  "export": {
+    "exclude": [
+      "test"
+    ]
+  }
 }

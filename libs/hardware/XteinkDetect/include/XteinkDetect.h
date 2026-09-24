@@ -43,31 +43,28 @@ bool detectXteinkIsX3();
 
 // --- X3 display-controller fingerprint ---------------------------------------
 // Newer X3 production units ship a UC8279d panel controller instead of the
-// UC8253 (same board, glass and pinout). The two are told apart by reading the
-// UC8279's VER (0x70: reserved 0x00 + CHIP_VER + 24-bit LUT_VER) and FLG
-// (0x71: status, BUSY_N=1 when idle) registers over a bit-banged half-duplex
-// 4-wire SPI on the X3 display pins, after a hardware reset pulse. The UC8253
-// either doesn't answer 0x70 (bus floats) or answers with a different byte
-// shape, so a matching UC8279 signature in two independent passes confirms the
-// new controller; anything else conservatively resolves to the shipping
-// UC8253. Safe to call before FreeInkDisplay::begin() — the pins are released
-// afterwards and the driver re-resets the panel.
+// UC8253 (same board, glass and pinout). Follows stock X3 V6.3.15: RESET high
+// 10 ms / low 50 ms / high 50 ms, wait up to 300 ms for BUSY high, then read
+// three VER (0x70) bytes with SDA sampled while SCLK is high. Byte 2 = 0x66
+// selects UC8279; 0xFF assumes UC8253; other IDs are Inconclusive (use UC8253).
+// A BUSY timeout is diagnostic and does not suppress the read, matching stock.
+// No FLG/MTP signature is required. Safe before FreeInkDisplay::begin(); pins
+// are released afterwards and the driver re-resets the panel.
 enum class X3DisplayVerdict : uint8_t { Uc8253Assumed, Uc8279Confirmed, Inconclusive };
 
-// Probe the X3 display controller. Optionally reports the raw VER bytes and
-// FLG byte from the first pass (for bring-up logging / threshold tuning on new
-// hardware). Only meaningful on a confirmed X3; in builds without
+// Probe using the fixed X3 pins, independent of the current ACTIVE profile.
+// Reports three raw VER bytes with the remaining two zero-filled. The legacy
+// FLG out-param is zero (not read). Only meaningful on a confirmed X3; without
 // FREEINK_DEVICE_X3 this is a no-op returning Uc8253Assumed.
 X3DisplayVerdict detectX3DisplayController(uint8_t verBytes[5] = nullptr, uint8_t* flg = nullptr);
 
 // --- Board-agnostic display-controller fingerprint ---------------------------
 // Newer production runs of several Xteink panels swap their default controller
 // for an UltraChip sibling that shares the UC81xx KW-mode command set: the X3's
-// UC8253 -> UC8279d, and the X4 / X4 Pro's SSD1677 -> UC8179. All UC81xx parts
-// answer a VER (0x70) / FLG (0x71) read; the SSD-family and UC8253 parts do not
-// answer 0x70 the same way, so a matching UC81xx signature in two independent
-// passes confirms the sibling silicon. Unlike detectX3DisplayController (which
-// hard-codes the X3 C3 pinout), this reads the pins from BoardConfig::ACTIVE,
+// UC8253 -> UC8279d, and the X4 / X4 Pro's SSD1677 -> UC8179. X3 follows the
+// stock three-byte VER selection above; X4-family profiles retain the two-pass
+// VER/FLG fingerprint. Unlike detectX3DisplayController (which hard-codes the
+// X3 C3 pinout), this reads the pins from BoardConfig::ACTIVE,
 // so it works on any Xteink profile — including the S3 X4 Pro, where the X3 I2C
 // probe would be unsafe. Bit-bangs a half-duplex 4-wire SPI after a reset pulse
 // and leaves the pins released; safe to call before FreeInkDisplay::begin().
@@ -94,6 +91,10 @@ struct XteinkDisplayProbeDiag {
   // the panel shows nothing.
   bool mtpValid = false;
   uint8_t mtp[48] = {0};
+  // X3 reads only three VER bytes and leaves flg/mtp zero (not sampled).
+  // X4-family probes read five VER bytes plus FLG and may capture MTP.
+  uint8_t verBytesRead = 0;
+  bool busyTimedOut = false;  // bounded stock X3 identification wait expired
 };
 const XteinkDisplayProbeDiag& getXteinkDisplayProbeDiag();
 

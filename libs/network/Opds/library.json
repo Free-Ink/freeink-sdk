@@ -1,0 +1,11 @@
+{
+  "name": "Opds",
+  "version": "1.0.0",
+  "description": "FreeInk OPDS client core: OpdsClient orchestration (feed fetch, 401 auth handshake, token refresh, indirect acquisition, OpenSearch, publication docs) over an injected transport, plus OPDS 1.x (Atom) + 2.0 (JSON) feed parsing with language-map title resolution, authentication documents, and OAuth password + implicit (headless HTML login) flows.",
+  "keywords": "opds, catalog, ebooks, atom, oauth",
+  "authors": [{"name": "FreeInk SDK Contributors"}],
+  "dependencies": {"JsonSax": "*", "SecureNet": "*"},
+  "platforms": "espressif32",
+  "frameworks": ["arduino"],
+  "notes": "OPDS 1.x parsing needs expat (XML_*). The consuming project must provide an expat library on the include/link path. OAuth implicit login needs FREEINK_NET_WOLFSSL (SecureHttpClient)."
+}

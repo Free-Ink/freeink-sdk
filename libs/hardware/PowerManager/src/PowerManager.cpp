@@ -2,14 +2,34 @@
 
 #include <Arduino.h>
 #include <BoardConfig.h>
+#include <driver/gpio.h>
 #include <esp_sleep.h>
+#include <esp_system.h>
 #include <soc/soc_caps.h>
+#if FREEINK_DEVICE_WS397
+#include <Axp2101.h>
+#endif
 
 namespace freeink {
 namespace {
 int8_t powerPin() { return BoardConfig::ACTIVE.input.power; }
 bool powerActiveHigh() { return BoardConfig::ACTIVE.input.powerActiveHigh; }
+
+// Records a deepSleep() abort (see deepSleep()) across the esp_restart() that
+// follows it, so the next boot can report it via takeAbortedSleepInfo().
+// RTC_NOINIT_ATTR survives esp_restart() (a warm reset, same RTC-memory domain)
+// but is garbage on a cold boot -- magic-guarded like main.cpp's silentRebootMagic.
+constexpr uint32_t ABORTED_SLEEP_MAGIC = 0x41424f52;  // 'ABOR'
+
+struct AbortedSleepRecord {
+  bool aborted;
+  int wakeupCause;
+  int wakePinLevel;
+};
 }  // namespace
+
+RTC_NOINIT_ATTR uint32_t abortedSleepMagic;
+RTC_NOINIT_ATTR AbortedSleepRecord abortedSleepRecord;
 
 void PowerManager::armWakeOnPins(uint64_t gpioMask, bool wakeLow) {
 #if SOC_PM_SUPPORT_EXT1_WAKEUP
@@ -72,6 +92,11 @@ void holdRailOff(int8_t pin, uint8_t offLevel) {
 
 void PowerManager::powerDownRailsForSleep() {
   const auto& b = BoardConfig::ACTIVE;
+#if FREEINK_DEVICE_WS397
+  // The EPD rail is an AXP2101 LDO, not a GPIO, so holdRailOff() below cannot
+  // reach it — drop it here or the panel stays powered all through deep sleep.
+  axp2101::setEpdPower(false);
+#endif
   // Keep RESET defined through deep sleep, but never drive an unpowered panel's
   // input HIGH: on boards with a gated EPD rail (Sticky), that can back-power the
   // controller through its RESET protection diode and turn sleep into a
@@ -92,16 +117,45 @@ void PowerManager::powerDownRailsForSleep() {
 
 void PowerManager::deepSleep() {
   esp_sleep_config_gpio_isolate();
+#if !FREEINK_MCU_C61
   gpio_deep_sleep_hold_en();
+#endif
   esp_deep_sleep_start();
-  while (true) {
-  }  // esp_deep_sleep_start() does not return; satisfy [[noreturn]]
+  // esp_deep_sleep_start() does not return in normal operation -- reaching
+  // this line means sleep entry was rejected/aborted by the SoC rather than
+  // the next boot being a fresh wake. A busy-loop here draws full-clock
+  // current (~20-30mA) indefinitely and never responds to the power button,
+  // making an aborted sleep entry indistinguishable from a real drain bug.
+  // Record the abort (RTC_NOINIT_ATTR survives the reset below) so the next
+  // boot can report it via takeAbortedSleepInfo(), then reset for real via
+  // esp_restart() -- itself [[noreturn]], satisfying this function's contract.
+  const int8_t pin = powerPin();
+  abortedSleepRecord.aborted = true;
+  abortedSleepRecord.wakeupCause = static_cast<int>(esp_sleep_get_wakeup_cause());
+  abortedSleepRecord.wakePinLevel = pin >= 0 ? digitalRead(pin) : -1;
+  abortedSleepMagic = ABORTED_SLEEP_MAGIC;
+  esp_restart();
 }
 
 void PowerManager::deepSleepUntilPowerButton() {
   waitForPowerButtonRelease();
   armPowerButtonWakeup();
   deepSleep();
+}
+
+PowerManager::AbortedSleepInfo PowerManager::takeAbortedSleepInfo() {
+  AbortedSleepInfo info;
+  if (abortedSleepMagic == ABORTED_SLEEP_MAGIC && abortedSleepRecord.aborted) {
+    info.aborted = true;
+    info.wakeupCause = abortedSleepRecord.wakeupCause;
+    info.wakePinLevel = abortedSleepRecord.wakePinLevel;
+  }
+  // Clear so a stale record doesn't get reported again on a later boot, and
+  // re-stamp the magic so an uninitialized cold-boot read still reports false
+  // rather than following a garbage `aborted` bit.
+  abortedSleepRecord.aborted = false;
+  abortedSleepMagic = ABORTED_SLEEP_MAGIC;
+  return info;
 }
 
 }  // namespace freeink

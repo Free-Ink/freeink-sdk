@@ -1,6 +1,6 @@
-// FreeInkBook — stb_truetype-backed BookFont with arena-bounded caches.
+// FreeInkBook — stb_truetype-backed Font with arena-bounded caches.
 
-#include "render/TtfFont.h"
+#include "TtfFont.h"
 
 #include <string.h>
 
@@ -18,7 +18,7 @@
 #endif
 
 namespace freeink {
-namespace book {
+namespace font {
 
 namespace {
 
@@ -182,17 +182,17 @@ const GlyphBitmap* TtfFont::rasterize(uint32_t codepoint, uint16_t sizePx) {
 
 // --- FontChain -----------------------------------------------------------------
 
-bool FontChain::add(RenderFont* font, uint8_t styleFlags) {
+bool FontChain::add(RasterFont* font, uint8_t styleFlags) {
   if (font == nullptr || count_ >= 8) return false;
   entries_[count_++] = {font, static_cast<uint8_t>(styleFlags & (StyleBold | StyleItalic))};
   coverage_ |= entries_[count_ - 1].flags == 0 ? 0x04 : entries_[count_ - 1].flags;
   return true;
 }
 
-RenderFont* FontChain::fontFor(uint32_t codepoint, uint8_t styleFlags,
+RasterFont* FontChain::fontFor(uint32_t codepoint, uint8_t styleFlags,
                                uint8_t* faceFlagsOut) {
   const uint8_t want = styleFlags & (StyleBold | StyleItalic);
-  RenderFont* best = nullptr;
+  RasterFont* best = nullptr;
   uint8_t bestFlags = 0;
   int bestScore = -1;
   for (uint8_t i = 0; i < count_; ++i) {
@@ -218,7 +218,7 @@ RenderFont* FontChain::fontFor(uint32_t codepoint, uint8_t styleFlags,
 }
 
 int16_t FontChain::advance(uint32_t codepoint, uint16_t sizePx, uint8_t styleFlags) {
-  RenderFont* font = fontFor(codepoint, styleFlags);
+  RasterFont* font = fontFor(codepoint, styleFlags);
   return font != nullptr ? font->advance(codepoint, sizePx, styleFlags) : 0;
 }
 
@@ -231,8 +231,8 @@ int16_t FontChain::ascent(uint16_t sizePx) {
 }
 
 uint32_t FontChain::ligature(uint32_t left, uint32_t right, uint8_t styleFlags) {
-  RenderFont* a = fontFor(left, styleFlags);
-  RenderFont* b = fontFor(right, styleFlags);
+  RasterFont* a = fontFor(left, styleFlags);
+  RasterFont* b = fontFor(right, styleFlags);
   if (a == nullptr || a != b) return 0;
   const uint32_t lig = a->ligature(left, right, styleFlags);
   // The ligature glyph must come from the same face or widths disagree.
@@ -250,11 +250,11 @@ bool FontChain::covers(uint32_t codepoint) {
 
 int16_t FontChain::kerning(uint32_t left, uint32_t right, uint16_t sizePx,
                            uint8_t styleFlags) {
-  RenderFont* a = fontFor(left, styleFlags);
-  RenderFont* b = fontFor(right, styleFlags);
+  RasterFont* a = fontFor(left, styleFlags);
+  RasterFont* b = fontFor(right, styleFlags);
   if (a == nullptr || a != b) return 0;
   return a->kerning(left, right, sizePx, styleFlags);
 }
 
-}  // namespace book
+}  // namespace font
 }  // namespace freeink

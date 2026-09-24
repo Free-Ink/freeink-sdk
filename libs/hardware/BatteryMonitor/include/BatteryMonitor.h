@@ -71,6 +71,21 @@ public:
     //     a board with a gauge but no charger IC (e.g. X3) still reports it.
     bool isCharging() const;
 
+    // True when external power (a USB cable or charger) is physically present.
+    //
+    // This is NOT isCharging(): a full battery stops charging while still
+    // plugged in, so isCharging() goes false with the cable still attached.
+    // Only a source that reports the input rail itself can answer this, so it
+    // is currently the BQ25896's REG0B — VBUS_STAT[7:5] plus PG_STAT — and
+    // nothing else. Boards without that charger IC cannot observe it.
+    //
+    // `known` (optional, out) is set false when the board has no way to tell,
+    // or the read failed. Callers MUST branch on it: a bare false means "no
+    // opinion" just as often as it means "unplugged", and treating the two the
+    // same is how you get a device that thinks the cable is gone because it
+    // never had a way to see it.
+    bool isExternalPowerPresent(bool* known = nullptr) const;
+
     // Percentage from a millivolt value, off a standard 1S Li-ion discharge
     // curve. The result is always a multiple of 10: voltage cannot resolve a
     // Li-ion pack any finer than that, and pretending otherwise just produces a

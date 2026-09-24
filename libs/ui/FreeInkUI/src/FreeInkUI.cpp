@@ -144,12 +144,13 @@ static const KeyboardKey EN_ROW1[] = {K("q", "q", 'q'), K("w", "w", 'w'), K("e",
 static const KeyboardKey EN_ROW2[] = {K("a", "a", 'a'), K("s", "s", 's'), K("d", "d", 'd'), K("f", "f", 'f'),
                                       K("g", "g", 'g'), K("h", "h", 'h'), K("j", "j", 'j'), K("k", "k", 'k'),
                                       K("l", "l", 'l')};
-static const KeyboardKey EN_ROW3[] = {KS("Shift", KeyKind::Shift, QWERTY_KEY_SHIFT, 2), K("z", "z", 'z'),
+static const KeyboardKey EN_ROW3[] = {K("z", "z", 'z'),
                                       K("x", "x", 'x'), K("c", "c", 'c'), K("v", "v", 'v'), K("b", "b", 'b'),
                                       K("n", "n", 'n'), K("m", "m", 'm'),
                                       KS("Del", KeyKind::Delete, QWERTY_KEY_BACKSPACE, 2)};
 static const KeyboardKey EN_ROW4[] = {KS("?123", KeyKind::Mode, QWERTY_KEY_MODE, 2),
-                                      KS("Space", KeyKind::Space, QWERTY_KEY_SPACE, 6),
+                                      KS("Shift", KeyKind::Shift, QWERTY_KEY_SHIFT, 2),
+                                      KS("Space", KeyKind::Space, QWERTY_KEY_SPACE, 4),
                                       KS("OK", KeyKind::Ok, QWERTY_KEY_ENTER, 2)};
 
 static const KeyboardKey EN_SHIFT_ROW1[] = {K("Q", "Q", 'Q'), K("W", "W", 'W'), K("E", "E", 'E'), K("R", "R", 'R'),
@@ -158,7 +159,7 @@ static const KeyboardKey EN_SHIFT_ROW1[] = {K("Q", "Q", 'Q'), K("W", "W", 'W'), 
 static const KeyboardKey EN_SHIFT_ROW2[] = {K("A", "A", 'A'), K("S", "S", 'S'), K("D", "D", 'D'), K("F", "F", 'F'),
                                             K("G", "G", 'G'), K("H", "H", 'H'), K("J", "J", 'J'), K("K", "K", 'K'),
                                             K("L", "L", 'L')};
-static const KeyboardKey EN_SHIFT_ROW3[] = {KS("Shift", KeyKind::Shift, QWERTY_KEY_SHIFT, 2), K("Z", "Z", 'Z'),
+static const KeyboardKey EN_SHIFT_ROW3[] = {K("Z", "Z", 'Z'),
                                             K("X", "X", 'X'), K("C", "C", 'C'), K("V", "V", 'V'), K("B", "B", 'B'),
                                             K("N", "N", 'N'), K("M", "M", 'M'),
                                             KS("Del", KeyKind::Delete, QWERTY_KEY_BACKSPACE, 2)};
@@ -169,13 +170,31 @@ static const KeyboardKey SYMBOL_ROW1[] = {K("1", "1", '1'), K("2", "2", '2'), K(
 static const KeyboardKey SYMBOL_ROW2[] = {K("-", "-", '-'), K("/", "/", '/'), K(":", ":", ':'), K(";", ";", ';'),
                                           K("(", "(", '('), K(")", ")", ')'), K("$", "$", '$'), K("&", "&", '&'),
                                           K("@", "@", '@')};
-static const KeyboardKey SYMBOL_ROW3[] = {KS("#+=", KeyKind::Shift, QWERTY_KEY_SHIFT, 2), K(".", ".", '.'),
+static const KeyboardKey SYMBOL_ROW3[] = {K(".", ".", '.'),
                                           K(",", ",", ','), K("?", "?", '?'), K("!", "!", '!'), K("'", "'", '\''),
                                           K("\"", "\"", '"'), K("#", "#", '#'),
                                           KS("Del", KeyKind::Delete, QWERTY_KEY_BACKSPACE, 2)};
 static const KeyboardKey SYMBOL_ROW4[] = {KS("ABC", KeyKind::Mode, QWERTY_KEY_MODE, 2),
-                                          KS("Space", KeyKind::Space, QWERTY_KEY_SPACE, 6),
+                                          KS("#+=", KeyKind::Shift, QWERTY_KEY_SHIFT, 2),
+                                          KS("Space", KeyKind::Space, QWERTY_KEY_SPACE, 4),
                                           KS("OK", KeyKind::Ok, QWERTY_KEY_ENTER, 2)};
+
+static const KeyboardKey SYMBOL_LANG_ROW4[] = {KS("ABC", KeyKind::Mode, QWERTY_KEY_MODE, 2),
+                                               KS(nullptr, KeyKind::Lang, QWERTY_KEY_LANG, 1),
+                                               KS("#+=", KeyKind::Shift, QWERTY_KEY_SHIFT, 2),
+                                               KS("Space", KeyKind::Space, QWERTY_KEY_SPACE, 3),
+                                               KS("OK", KeyKind::Ok, QWERTY_KEY_ENTER, 2)};
+
+static const KeyboardKey SYMBOL2_ROW4[] = {KS("ABC", KeyKind::Mode, QWERTY_KEY_MODE, 2),
+                                           KS("123", KeyKind::Shift, QWERTY_KEY_SHIFT, 2),
+                                           KS("Space", KeyKind::Space, QWERTY_KEY_SPACE, 4),
+                                           KS("OK", KeyKind::Ok, QWERTY_KEY_ENTER, 2)};
+
+static const KeyboardKey SYMBOL2_LANG_ROW4[] = {KS("ABC", KeyKind::Mode, QWERTY_KEY_MODE, 2),
+                                                KS(nullptr, KeyKind::Lang, QWERTY_KEY_LANG, 1),
+                                                KS("123", KeyKind::Shift, QWERTY_KEY_SHIFT, 2),
+                                                KS("Space", KeyKind::Space, QWERTY_KEY_SPACE, 3),
+                                                KS("OK", KeyKind::Ok, QWERTY_KEY_ENTER, 2)};
 
 // Second symbols page (the "#+=" layer): together with the first page it
 // covers every printable ASCII character the letter layers don't.
@@ -184,7 +203,7 @@ static const KeyboardKey SYMBOL2_ROW1[] = {K("[", "[", '['), K("]", "]", ']'), K
                                            K("+", "+", '+'), K("=", "=", '=')};
 static const KeyboardKey SYMBOL2_ROW2[] = {K("_", "_", '_'), K("\\", "\\", '\\'), K("|", "|", '|'),
                                            K("~", "~", '~'), K("`", "`", '`'), K("%", "%", '%')};
-static const KeyboardKey SYMBOL2_ROW3[] = {KS("123", KeyKind::Shift, QWERTY_KEY_SHIFT, 2), K(".", ".", '.'),
+static const KeyboardKey SYMBOL2_ROW3[] = {K(".", ".", '.'),
                                            K(",", ",", ','), K("?", "?", '?'), K("!", "!", '!'), K("'", "'", '\''),
                                            K("\"", "\"", '"'), K("#", "#", '#'),
                                            KS("Del", KeyKind::Delete, QWERTY_KEY_BACKSPACE, 2)};
@@ -195,7 +214,7 @@ static const KeyboardKey FR_ROW1[] = {K("a", "a", 'a'), K("z", "z", 'z'), K("e",
 static const KeyboardKey FR_ROW2[] = {K("q", "q", 'q'), K("s", "s", 's'), K("d", "d", 'd'), K("f", "f", 'f'),
                                       K("g", "g", 'g'), K("h", "h", 'h'), K("j", "j", 'j'), K("k", "k", 'k'),
                                       K("l", "l", 'l'), K("m", "m", 'm')};
-static const KeyboardKey FR_ROW3[] = {KS("Shift", KeyKind::Shift, QWERTY_KEY_SHIFT, 2), K("w", "w", 'w'),
+static const KeyboardKey FR_ROW3[] = {K("w", "w", 'w'),
                                       K("x", "x", 'x'), K("c", "c", 'c'), K("v", "v", 'v'), K("b", "b", 'b'),
                                       K("n", "n", 'n'), K("é", "é", 1001),
                                       KS("Del", KeyKind::Delete, QWERTY_KEY_BACKSPACE, 2)};
@@ -206,18 +225,22 @@ static const KeyboardKey DE_ROW1[] = {K("q", "q", 'q'), K("w", "w", 'w'), K("e",
 static const KeyboardKey DE_ROW2[] = {K("a", "a", 'a'), K("s", "s", 's'), K("d", "d", 'd'), K("f", "f", 'f'),
                                       K("g", "g", 'g'), K("h", "h", 'h'), K("j", "j", 'j'), K("k", "k", 'k'),
                                       K("l", "l", 'l'), K("ü", "ü", 1101)};
-static const KeyboardKey DE_ROW3[] = {KS("Shift", KeyKind::Shift, QWERTY_KEY_SHIFT, 2), K("y", "y", 'y'),
+static const KeyboardKey DE_ROW3[] = {K("y", "y", 'y'),
                                       K("x", "x", 'x'), K("c", "c", 'c'), K("v", "v", 'v'), K("b", "b", 'b'),
                                       K("n", "n", 'n'), K("m", "m", 'm'), K("ß", "ß", 1102),
                                       KS("Del", KeyKind::Delete, QWERTY_KEY_BACKSPACE, 2)};
 
-static const KeyboardKey ES_ROW1[] = {K("q", "q", 'q'), K("w", "w", 'w'), K("e", "e", 'e'), K("r", "r", 'r'),
-                                      K("t", "t", 't'), K("y", "y", 'y'), K("u", "u", 'u'), K("i", "i", 'i'),
-                                      K("o", "o", 'o'), K("p", "p", 'p')};
-static const KeyboardKey ES_ROW2[] = {K("a", "a", 'a'), K("s", "s", 's'), K("d", "d", 'd'), K("f", "f", 'f'),
-                                      K("g", "g", 'g'), K("h", "h", 'h'), K("j", "j", 'j'), K("k", "k", 'k'),
+// Vowel alts are the acute accent (á é í ó ú), the common case. ü has no key
+// of its own -- it only ever follows g (güe/güi/güito), so it rides g's alt
+// the same way ё rides е in the Cyrillic layouts (see RU_ROW1): no natural
+// key, but worth showing rather than leaving unreachable.
+static const KeyboardKey ES_ROW1[] = {K("q", "q", 'q'), K("w", "w", 'w'), KA("e", "e", 'e', "é"), K("r", "r", 'r'),
+                                      K("t", "t", 't'), K("y", "y", 'y'), KA("u", "u", 'u', "ú"), KA("i", "i", 'i', "í"),
+                                      KA("o", "o", 'o', "ó"), K("p", "p", 'p')};
+static const KeyboardKey ES_ROW2[] = {KA("a", "a", 'a', "á"), K("s", "s", 's'), K("d", "d", 'd'), K("f", "f", 'f'),
+                                      KA("g", "g", 'g', "ü"), K("h", "h", 'h'), K("j", "j", 'j'), K("k", "k", 'k'),
                                       K("l", "l", 'l'), K("ñ", "ñ", 1201)};
-static const KeyboardKey ES_ROW3[] = {KS("Shift", KeyKind::Shift, QWERTY_KEY_SHIFT, 2), K("z", "z", 'z'),
+static const KeyboardKey ES_ROW3[] = {K("z", "z", 'z'),
                                       K("x", "x", 'x'), K("c", "c", 'c'), K("v", "v", 'v'), K("b", "b", 'b'),
                                       K("n", "n", 'n'), K("m", "m", 'm'),
                                       KS("Del", KeyKind::Delete, QWERTY_KEY_BACKSPACE, 2)};
@@ -247,8 +270,7 @@ static const KeyboardKey RU_ROW2[] = {K("ф", "ф", 0x444), K("ы", "ы", 0x44B)
                                       K("а", "а", 0x430), K("п", "п", 0x43F), K("р", "р", 0x440),
                                       K("о", "о", 0x43E), K("л", "л", 0x43B), K("д", "д", 0x434),
                                       K("ж", "ж", 0x436), K("э", "э", 0x44D)};
-static const KeyboardKey RU_ROW3[] = {KS("Shift", KeyKind::Shift, QWERTY_KEY_SHIFT, 2),
-                                      K("я", "я", 0x44F),
+static const KeyboardKey RU_ROW3[] = {K("я", "я", 0x44F),
                                       K("ч", "ч", 0x447),
                                       K("с", "с", 0x441),
                                       K("м", "м", 0x43C),
@@ -267,8 +289,7 @@ static const KeyboardKey RU_SHIFT_ROW2[] = {
     K("Ф", "Ф", 0x424), K("Ы", "Ы", 0x42B), K("В", "В", 0x412), K("А", "А", 0x410),
     K("П", "П", 0x41F), K("Р", "Р", 0x420), K("О", "О", 0x41E), K("Л", "Л", 0x41B),
     K("Д", "Д", 0x414), K("Ж", "Ж", 0x416), K("Э", "Э", 0x42D)};
-static const KeyboardKey RU_SHIFT_ROW3[] = {KS("Shift", KeyKind::Shift, QWERTY_KEY_SHIFT, 2),
-                                            K("Я", "Я", 0x42F),
+static const KeyboardKey RU_SHIFT_ROW3[] = {K("Я", "Я", 0x42F),
                                             K("Ч", "Ч", 0x427),
                                             K("С", "С", 0x421),
                                             K("М", "М", 0x41C),
@@ -295,7 +316,7 @@ static const KeyboardKey FR_SHIFT_ROW1[] = {K("A", "A", 'A'), K("Z", "Z", 'Z'), 
 static const KeyboardKey FR_SHIFT_ROW2[] = {K("Q", "Q", 'Q'), K("S", "S", 'S'), K("D", "D", 'D'), K("F", "F", 'F'),
                                             K("G", "G", 'G'), K("H", "H", 'H'), K("J", "J", 'J'), K("K", "K", 'K'),
                                             K("L", "L", 'L'), K("M", "M", 'M')};
-static const KeyboardKey FR_SHIFT_ROW3[] = {KS("Shift", KeyKind::Shift, QWERTY_KEY_SHIFT, 2), K("W", "W", 'W'),
+static const KeyboardKey FR_SHIFT_ROW3[] = {K("W", "W", 'W'),
                                             K("X", "X", 'X'), K("C", "C", 'C'), K("V", "V", 'V'), K("B", "B", 'B'),
                                             K("N", "N", 'N'), K("É", "É", 1051),
                                             KS("Del", KeyKind::Delete, QWERTY_KEY_BACKSPACE, 2)};
@@ -306,18 +327,18 @@ static const KeyboardKey DE_SHIFT_ROW1[] = {K("Q", "Q", 'Q'), K("W", "W", 'W'), 
 static const KeyboardKey DE_SHIFT_ROW2[] = {K("A", "A", 'A'), K("S", "S", 'S'), K("D", "D", 'D'), K("F", "F", 'F'),
                                             K("G", "G", 'G'), K("H", "H", 'H'), K("J", "J", 'J'), K("K", "K", 'K'),
                                             K("L", "L", 'L'), K("Ü", "Ü", 1151)};
-static const KeyboardKey DE_SHIFT_ROW3[] = {KS("Shift", KeyKind::Shift, QWERTY_KEY_SHIFT, 2), K("Y", "Y", 'Y'),
+static const KeyboardKey DE_SHIFT_ROW3[] = {K("Y", "Y", 'Y'),
                                             K("X", "X", 'X'), K("C", "C", 'C'), K("V", "V", 'V'), K("B", "B", 'B'),
                                             K("N", "N", 'N'), K("M", "M", 'M'), K("ß", "ß", 1102),
                                             KS("Del", KeyKind::Delete, QWERTY_KEY_BACKSPACE, 2)};
 
-static const KeyboardKey ES_SHIFT_ROW1[] = {K("Q", "Q", 'Q'), K("W", "W", 'W'), K("E", "E", 'E'), K("R", "R", 'R'),
-                                            K("T", "T", 'T'), K("Y", "Y", 'Y'), K("U", "U", 'U'), K("I", "I", 'I'),
-                                            K("O", "O", 'O'), K("P", "P", 'P')};
-static const KeyboardKey ES_SHIFT_ROW2[] = {K("A", "A", 'A'), K("S", "S", 'S'), K("D", "D", 'D'), K("F", "F", 'F'),
-                                            K("G", "G", 'G'), K("H", "H", 'H'), K("J", "J", 'J'), K("K", "K", 'K'),
+static const KeyboardKey ES_SHIFT_ROW1[] = {K("Q", "Q", 'Q'), K("W", "W", 'W'), KA("E", "E", 'E', "É"), K("R", "R", 'R'),
+                                            K("T", "T", 'T'), K("Y", "Y", 'Y'), KA("U", "U", 'U', "Ú"), KA("I", "I", 'I', "Í"),
+                                            KA("O", "O", 'O', "Ó"), K("P", "P", 'P')};
+static const KeyboardKey ES_SHIFT_ROW2[] = {KA("A", "A", 'A', "Á"), K("S", "S", 'S'), K("D", "D", 'D'), K("F", "F", 'F'),
+                                            KA("G", "G", 'G', "Ü"), K("H", "H", 'H'), K("J", "J", 'J'), K("K", "K", 'K'),
                                             K("L", "L", 'L'), K("Ñ", "Ñ", 1251)};
-static const KeyboardKey ES_SHIFT_ROW3[] = {KS("Shift", KeyKind::Shift, QWERTY_KEY_SHIFT, 2), K("Z", "Z", 'Z'),
+static const KeyboardKey ES_SHIFT_ROW3[] = {K("Z", "Z", 'Z'),
                                             K("X", "X", 'X'), K("C", "C", 'C'), K("V", "V", 'V'), K("B", "B", 'B'),
                                             K("N", "N", 'N'), K("M", "M", 'M'),
                                             KS("Del", KeyKind::Delete, QWERTY_KEY_BACKSPACE, 2)};
@@ -336,8 +357,7 @@ static const KeyboardKey UK_ROW2[] = {K("ф", "ф", 0x444), K("і", "і", 0x456)
                                       K("а", "а", 0x430), K("п", "п", 0x43F), K("р", "р", 0x440),
                                       K("о", "о", 0x43E), K("л", "л", 0x43B), K("д", "д", 0x434),
                                       K("ж", "ж", 0x436), K("є", "є", 0x454)};
-static const KeyboardKey UK_ROW3[] = {KS("Shift", KeyKind::Shift, QWERTY_KEY_SHIFT, 2),
-                                      K("я", "я", 0x44F),
+static const KeyboardKey UK_ROW3[] = {K("я", "я", 0x44F),
                                       K("ч", "ч", 0x447),
                                       K("с", "с", 0x441),
                                       K("м", "м", 0x43C),
@@ -356,8 +376,7 @@ static const KeyboardKey UK_SHIFT_ROW2[] = {K("Ф", "Ф", 0x424), K("І", "І", 
                                             K("А", "А", 0x410), K("П", "П", 0x41F), K("Р", "Р", 0x420),
                                             K("О", "О", 0x41E), K("Л", "Л", 0x41B), K("Д", "Д", 0x414),
                                             K("Ж", "Ж", 0x416), K("Є", "Є", 0x404)};
-static const KeyboardKey UK_SHIFT_ROW3[] = {KS("Shift", KeyKind::Shift, QWERTY_KEY_SHIFT, 2),
-                                            K("Я", "Я", 0x42F),
+static const KeyboardKey UK_SHIFT_ROW3[] = {K("Я", "Я", 0x42F),
                                             K("Ч", "Ч", 0x427),
                                             K("С", "С", 0x421),
                                             K("М", "М", 0x41C),
@@ -378,8 +397,7 @@ static const KeyboardKey BE_ROW2[] = {K("ф", "ф", 0x444), K("ы", "ы", 0x44B)
                                       K("а", "а", 0x430), K("п", "п", 0x43F), K("р", "р", 0x440),
                                       K("о", "о", 0x43E), K("л", "л", 0x43B), K("д", "д", 0x434),
                                       K("ж", "ж", 0x436), K("э", "э", 0x44D)};
-static const KeyboardKey BE_ROW3[] = {KS("Shift", KeyKind::Shift, QWERTY_KEY_SHIFT, 2),
-                                      K("я", "я", 0x44F),
+static const KeyboardKey BE_ROW3[] = {K("я", "я", 0x44F),
                                       K("ч", "ч", 0x447),
                                       K("с", "с", 0x441),
                                       K("м", "м", 0x43C),
@@ -398,8 +416,7 @@ static const KeyboardKey BE_SHIFT_ROW2[] = {K("Ф", "Ф", 0x424), K("Ы", "Ы", 
                                             K("А", "А", 0x410), K("П", "П", 0x41F), K("Р", "Р", 0x420),
                                             K("О", "О", 0x41E), K("Л", "Л", 0x41B), K("Д", "Д", 0x414),
                                             K("Ж", "Ж", 0x416), K("Э", "Э", 0x42D)};
-static const KeyboardKey BE_SHIFT_ROW3[] = {KS("Shift", KeyKind::Shift, QWERTY_KEY_SHIFT, 2),
-                                            K("Я", "Я", 0x42F),
+static const KeyboardKey BE_SHIFT_ROW3[] = {K("Я", "Я", 0x42F),
                                             K("Ч", "Ч", 0x427),
                                             K("С", "С", 0x421),
                                             K("М", "М", 0x41C),
@@ -423,8 +440,7 @@ static const KeyboardKey KK_ROW2[] = {KA("ф", "ф", 0x444, "ү"), KA("ы", "ы"
                                       KA("а", "а", 0x430, "ә"), K("п", "п", 0x43F),       K("р", "р", 0x440),
                                       KA("о", "о", 0x43E, "ө"), K("л", "л", 0x43B),       K("д", "д", 0x434),
                                       K("ж", "ж", 0x436),       K("э", "э", 0x44D)};
-static const KeyboardKey KK_ROW3[] = {KS("Shift", KeyKind::Shift, QWERTY_KEY_SHIFT, 2),
-                                      K("я", "я", 0x44F),
+static const KeyboardKey KK_ROW3[] = {K("я", "я", 0x44F),
                                       K("ч", "ч", 0x447),
                                       K("с", "с", 0x441),
                                       K("м", "м", 0x43C),
@@ -445,8 +461,7 @@ static const KeyboardKey KK_SHIFT_ROW2[] = {KA("Ф", "Ф", 0x424, "Ү"), KA("Ы"
                                             KA("О", "О", 0x41E, "Ө"), K("Л", "Л", 0x41B),
                                             K("Д", "Д", 0x414),      K("Ж", "Ж", 0x416),
                                             K("Э", "Э", 0x42D)};
-static const KeyboardKey KK_SHIFT_ROW3[] = {KS("Shift", KeyKind::Shift, QWERTY_KEY_SHIFT, 2),
-                                            K("Я", "Я", 0x42F),
+static const KeyboardKey KK_SHIFT_ROW3[] = {K("Я", "Я", 0x42F),
                                             K("Ч", "Ч", 0x427),
                                             K("С", "С", 0x421),
                                             K("М", "М", 0x41C),
@@ -462,17 +477,16 @@ static const KeyboardKey KK_SHIFT_ROW3[] = {KS("Shift", KeyKind::Shift, QWERTY_K
 // there is one layer and no shift key, and its letters have no contextual
 // forms, so no shaping is needed at the table level.
 //
-// Five letters have a final form used at the end of a word. Four of them get
-// their own key, as on a physical Israeli keyboard (ן ם ך ץ). The fifth, ף,
-// does not fit the grid and long-presses off פ instead — the same
-// base-letter-holds-its-variant idea used for ё in Russian and ґ in Ukrainian.
+// All five final forms (ן ם ך ץ ף) get their own key. The top row drops the
+// geresh (') that a physical Israeli keyboard puts at its left end and shifts
+// one step left to free the slot; ' stays one tap away on the symbols layer.
 //
 // Right-to-left is handled downstream: the renderer bidi-reorders the text it
 // draws, so the keyboard only has to insert code points in logical order.
-static const KeyboardKey HE_ROW1[] = {K("/", "/", '/'),   K("'", "'", '\''), K("ק", "ק", 0x5E7),
-                                      K("ר", "ר", 0x5E8), K("א", "א", 0x5D0),  K("ט", "ט", 0x5D8),
-                                      K("ו", "ו", 0x5D5), K("ן", "ן", 0x5DF),  K("ם", "ם", 0x5DD),
-                                      KA("פ", "פ", 0x5E4, "ף")};
+static const KeyboardKey HE_ROW1[] = {K("/", "/", '/'),   K("ק", "ק", 0x5E7), K("ר", "ר", 0x5E8),
+                                      K("א", "א", 0x5D0), K("ט", "ט", 0x5D8), K("ו", "ו", 0x5D5),
+                                      K("ן", "ן", 0x5DF), K("ם", "ם", 0x5DD), K("פ", "פ", 0x5E4),
+                                      K("ף", "ף", 0x5E3)};
 static const KeyboardKey HE_ROW2[] = {K("ש", "ש", 0x5E9), K("ד", "ד", 0x5D3), K("ג", "ג", 0x5D2),
                                       K("כ", "כ", 0x5DB), K("ע", "ע", 0x5E2), K("י", "י", 0x5D9),
                                       K("ח", "ח", 0x5D7), K("ל", "ל", 0x5DC), K("ך", "ך", 0x5DA)};
@@ -483,46 +497,63 @@ static const KeyboardKey HE_ROW3[] = {K("ז", "ז", 0x5D6), K("ס", "ס", 0x5E1)
                                       K("ץ", "ץ", 0x5E5),
                                       KS("Del", KeyKind::Delete, QWERTY_KEY_BACKSPACE, 2)};
 
-// Bottom row carrying the script-switch key. Kept separate from EN_ROW4 so a
-// single-script build renders exactly as before — the key costs a slot in the
-// row, and there is no point spending it when there is nowhere to switch to.
-// Its "EN" label is a placeholder: the app overrides it per frame through
-// KeyboardProps::langLabel with the name of whatever layout comes next.
+// Full-width character rows leave Shift in the footer beside a shorter space
+// bar. Keep Delete at the end of the third row, as on a compact physical keyboard.
+// Case-less layouts omit Shift; Arabic uses that footer slot for Delete because
+// all twelve positions in its third row are letters.
 static const KeyboardKey LANG_ROW4[] = {KS("?123", KeyKind::Mode, QWERTY_KEY_MODE, 2),
-                                        KS("EN", KeyKind::Lang, QWERTY_KEY_LANG, 2),
-                                        KS("Space", KeyKind::Space, QWERTY_KEY_SPACE, 4),
+                                        KS(nullptr, KeyKind::Lang, QWERTY_KEY_LANG, 1),
+                                        KS("Shift", KeyKind::Shift, QWERTY_KEY_SHIFT, 2),
+                                        KS("Space", KeyKind::Space, QWERTY_KEY_SPACE, 3),
                                         KS("OK", KeyKind::Ok, QWERTY_KEY_ENTER, 2)};
 
-static const KeyboardRow EN_ROWS[] = {{EN_ROW1, 10, 0}, {EN_ROW2, 9, 1}, {EN_ROW3, 9, 0}, {EN_ROW4, 3, 0}};
-static const KeyboardRow EN_SHIFT_ROWS[] = {{EN_SHIFT_ROW1, 10, 0}, {EN_SHIFT_ROW2, 9, 1}, {EN_SHIFT_ROW3, 9, 0},
-                                           {EN_ROW4, 3, 0}};
-static const KeyboardRow SYMBOL_ROWS[] = {{SYMBOL_ROW1, 10, 0}, {SYMBOL_ROW2, 9, 1}, {SYMBOL_ROW3, 9, 0},
-                                         {SYMBOL_ROW4, 3, 0}};
-static const KeyboardRow SYMBOL2_ROWS[] = {{SYMBOL2_ROW1, 10, 0}, {SYMBOL2_ROW2, 6, 2}, {SYMBOL2_ROW3, 9, 0},
-                                          {SYMBOL_ROW4, 3, 0}};
-static const KeyboardRow FR_ROWS[] = {{FR_ROW1, 10, 0}, {FR_ROW2, 10, 0}, {FR_ROW3, 9, 0}, {EN_ROW4, 3, 0}};
-static const KeyboardRow DE_ROWS[] = {{DE_ROW1, 10, 0}, {DE_ROW2, 10, 0}, {DE_ROW3, 10, 0}, {EN_ROW4, 3, 0}};
-static const KeyboardRow ES_ROWS[] = {{ES_ROW1, 10, 0}, {ES_ROW2, 10, 0}, {ES_ROW3, 9, 0}, {EN_ROW4, 3, 0}};
+static const KeyboardKey HE_ROW4[] = {KS("?123", KeyKind::Mode, QWERTY_KEY_MODE, 2),
+                                      KS(nullptr, KeyKind::Lang, QWERTY_KEY_LANG, 1),
+                                      KS("Space", KeyKind::Space, QWERTY_KEY_SPACE, 5),
+                                      KS("OK", KeyKind::Ok, QWERTY_KEY_ENTER, 2)};
+
+static const KeyboardKey AR_ROW4[] = {KS("?123", KeyKind::Mode, QWERTY_KEY_MODE, 2),
+                                      KS(nullptr, KeyKind::Lang, QWERTY_KEY_LANG, 1),
+                                      KS("Del", KeyKind::Delete, QWERTY_KEY_BACKSPACE, 2),
+                                      KS("Space", KeyKind::Space, QWERTY_KEY_SPACE, 3),
+                                      KS("OK", KeyKind::Ok, QWERTY_KEY_ENTER, 2)};
+
+static const KeyboardRow EN_ROWS[] = {{EN_ROW1, 10, 0}, {EN_ROW2, 9, 0}, {EN_ROW3, 8, 0}, {EN_ROW4, 4, 0}};
+static const KeyboardRow EN_SHIFT_ROWS[] = {{EN_SHIFT_ROW1, 10, 0}, {EN_SHIFT_ROW2, 9, 0}, {EN_SHIFT_ROW3, 8, 0},
+                                           {EN_ROW4, 4, 0}};
+static const KeyboardRow SYMBOL_ROWS[] = {{SYMBOL_ROW1, 10, 0}, {SYMBOL_ROW2, 9, 0}, {SYMBOL_ROW3, 8, 0},
+                                         {SYMBOL_ROW4, 4, 0}};
+static const KeyboardRow SYMBOL_LANG_ROWS[] = {{SYMBOL_ROW1, 10, 0}, {SYMBOL_ROW2, 9, 0}, {SYMBOL_ROW3, 8, 0},
+                                         {SYMBOL_LANG_ROW4, 5, 0}};
+static const KeyboardRow SYMBOL2_ROWS[] = {{SYMBOL2_ROW1, 10, 0}, {SYMBOL2_ROW2, 6, 0}, {SYMBOL2_ROW3, 8, 0},
+                                          {SYMBOL2_ROW4, 4, 0}};
+static const KeyboardRow SYMBOL2_LANG_ROWS[] = {{SYMBOL2_ROW1, 10, 0}, {SYMBOL2_ROW2, 6, 0}, {SYMBOL2_ROW3, 8, 0},
+                                          {SYMBOL2_LANG_ROW4, 5, 0}};
+static const KeyboardRow FR_ROWS[] = {{FR_ROW1, 10, 0}, {FR_ROW2, 10, 0}, {FR_ROW3, 8, 0}, {EN_ROW4, 4, 0}};
+static const KeyboardRow DE_ROWS[] = {{DE_ROW1, 10, 0}, {DE_ROW2, 10, 0}, {DE_ROW3, 9, 0}, {EN_ROW4, 4, 0}};
+static const KeyboardRow ES_ROWS[] = {{ES_ROW1, 10, 0}, {ES_ROW2, 10, 0}, {ES_ROW3, 8, 0}, {EN_ROW4, 4, 0}};
 
 static const KeyboardLayout EN_LAYOUT{EN_ROWS, 4};
 static const KeyboardLayout EN_SHIFT_LAYOUT{EN_SHIFT_ROWS, 4};
+static const KeyboardLayout SYMBOL_LANG_LAYOUT{SYMBOL_LANG_ROWS, 4};
 static const KeyboardLayout SYMBOL_LAYOUT{SYMBOL_ROWS, 4};
+static const KeyboardLayout SYMBOL2_LANG_LAYOUT{SYMBOL2_LANG_ROWS, 4};
 static const KeyboardLayout SYMBOL2_LAYOUT{SYMBOL2_ROWS, 4};
 static const KeyboardLayout FR_LAYOUT{FR_ROWS, 4};
 static const KeyboardLayout DE_LAYOUT{DE_ROWS, 4};
 static const KeyboardLayout ES_LAYOUT{ES_ROWS, 4};
 
 // numberRow variants: the digit row prepended to each letter layer.
-static const KeyboardRow EN_NUM_ROWS[] = {{NUM_ROW, 10, 0}, {EN_ROW1, 10, 0}, {EN_ROW2, 9, 1}, {EN_ROW3, 9, 0},
-                                          {EN_ROW4, 3, 0}};
-static const KeyboardRow EN_SHIFT_NUM_ROWS[] = {{NUM_SHIFT_ROW, 10, 0}, {EN_SHIFT_ROW1, 10, 0}, {EN_SHIFT_ROW2, 9, 1},
-                                                {EN_SHIFT_ROW3, 9, 0},  {EN_ROW4, 3, 0}};
-static const KeyboardRow FR_NUM_ROWS[] = {{NUM_ROW, 10, 0}, {FR_ROW1, 10, 0}, {FR_ROW2, 10, 0}, {FR_ROW3, 9, 0},
-                                          {EN_ROW4, 3, 0}};
-static const KeyboardRow DE_NUM_ROWS[] = {{NUM_ROW, 10, 0}, {DE_ROW1, 10, 0}, {DE_ROW2, 10, 0}, {DE_ROW3, 10, 0},
-                                          {EN_ROW4, 3, 0}};
-static const KeyboardRow ES_NUM_ROWS[] = {{NUM_ROW, 10, 0}, {ES_ROW1, 10, 0}, {ES_ROW2, 10, 0}, {ES_ROW3, 9, 0},
-                                          {EN_ROW4, 3, 0}};
+static const KeyboardRow EN_NUM_ROWS[] = {{NUM_ROW, 10, 0}, {EN_ROW1, 10, 0}, {EN_ROW2, 9, 0}, {EN_ROW3, 8, 0},
+                                          {EN_ROW4, 4, 0}};
+static const KeyboardRow EN_SHIFT_NUM_ROWS[] = {{NUM_SHIFT_ROW, 10, 0}, {EN_SHIFT_ROW1, 10, 0}, {EN_SHIFT_ROW2, 9, 0},
+                                                {EN_SHIFT_ROW3, 8, 0},  {EN_ROW4, 4, 0}};
+static const KeyboardRow FR_NUM_ROWS[] = {{NUM_ROW, 10, 0}, {FR_ROW1, 10, 0}, {FR_ROW2, 10, 0}, {FR_ROW3, 8, 0},
+                                          {EN_ROW4, 4, 0}};
+static const KeyboardRow DE_NUM_ROWS[] = {{NUM_ROW, 10, 0}, {DE_ROW1, 10, 0}, {DE_ROW2, 10, 0}, {DE_ROW3, 9, 0},
+                                          {EN_ROW4, 4, 0}};
+static const KeyboardRow ES_NUM_ROWS[] = {{NUM_ROW, 10, 0}, {ES_ROW1, 10, 0}, {ES_ROW2, 10, 0}, {ES_ROW3, 8, 0},
+                                          {EN_ROW4, 4, 0}};
 
 static const KeyboardLayout EN_NUM_LAYOUT{EN_NUM_ROWS, 5};
 static const KeyboardLayout EN_SHIFT_NUM_LAYOUT{EN_SHIFT_NUM_ROWS, 5};
@@ -534,119 +565,149 @@ static const KeyboardLayout ES_NUM_LAYOUT{ES_NUM_ROWS, 5};
 // type a Wi-Fi password or a URL, so there always has to be a way back to
 // Latin. Its rows run 12/11/11 keys against Latin's 10/9/9 — callers sizing a
 // hit-test buffer from the widest layout must account for that.
-static const KeyboardRow RU_ROWS[] = {{RU_ROW1, 12, 0}, {RU_ROW2, 11, 0}, {RU_ROW3, 11, 0}, {LANG_ROW4, 4, 0}};
+static const KeyboardRow RU_ROWS[] = {{RU_ROW1, 12, 0}, {RU_ROW2, 11, 0}, {RU_ROW3, 10, 0}, {LANG_ROW4, 5, 0}};
 static const KeyboardRow RU_SHIFT_ROWS[] = {{RU_SHIFT_ROW1, 12, 0},
                                             {RU_SHIFT_ROW2, 11, 0},
-                                            {RU_SHIFT_ROW3, 11, 0},
-                                            {LANG_ROW4, 4, 0}};
+                                            {RU_SHIFT_ROW3, 10, 0},
+                                            {LANG_ROW4, 5, 0}};
 static const KeyboardRow RU_NUM_ROWS[] = {{NUM_ROW, 10, 0},
                                           {RU_ROW1, 12, 0},
                                           {RU_ROW2, 11, 0},
-                                          {RU_ROW3, 11, 0},
-                                          {LANG_ROW4, 4, 0}};
+                                          {RU_ROW3, 10, 0},
+                                          {LANG_ROW4, 5, 0}};
 static const KeyboardRow RU_SHIFT_NUM_ROWS[] = {{NUM_SHIFT_ROW, 10, 0},
                                                 {RU_SHIFT_ROW1, 12, 0},
                                                 {RU_SHIFT_ROW2, 11, 0},
-                                                {RU_SHIFT_ROW3, 11, 0},
-                                                {LANG_ROW4, 4, 0}};
+                                                {RU_SHIFT_ROW3, 10, 0},
+                                                {LANG_ROW4, 5, 0}};
 
 static const KeyboardRow UK_ROWS[] = {
-    {UK_ROW1, 12, 0}, {UK_ROW2, 11, 0}, {UK_ROW3, 11, 0}, {LANG_ROW4, 4, 0}};
+    {UK_ROW1, 12, 0}, {UK_ROW2, 11, 0}, {UK_ROW3, 10, 0}, {LANG_ROW4, 5, 0}};
 static const KeyboardRow UK_SHIFT_ROWS[] = {{UK_SHIFT_ROW1, 12, 0},
                                             {UK_SHIFT_ROW2, 11, 0},
-                                            {UK_SHIFT_ROW3, 11, 0},
-                                            {LANG_ROW4, 4, 0}};
+                                            {UK_SHIFT_ROW3, 10, 0},
+                                            {LANG_ROW4, 5, 0}};
 static const KeyboardRow UK_NUM_ROWS[] = {{NUM_ROW, 10, 0},
                                           {UK_ROW1, 12, 0},
                                           {UK_ROW2, 11, 0},
-                                          {UK_ROW3, 11, 0},
-                                          {LANG_ROW4, 4, 0}};
+                                          {UK_ROW3, 10, 0},
+                                          {LANG_ROW4, 5, 0}};
 static const KeyboardRow UK_SHIFT_NUM_ROWS[] = {{NUM_SHIFT_ROW, 10, 0},
                                                 {UK_SHIFT_ROW1, 12, 0},
                                                 {UK_SHIFT_ROW2, 11, 0},
-                                                {UK_SHIFT_ROW3, 11, 0},
-                                                {LANG_ROW4, 4, 0}};
+                                                {UK_SHIFT_ROW3, 10, 0},
+                                                {LANG_ROW4, 5, 0}};
 
 static const KeyboardRow BE_ROWS[] = {
-    {BE_ROW1, 12, 0}, {BE_ROW2, 11, 0}, {BE_ROW3, 11, 0}, {LANG_ROW4, 4, 0}};
+    {BE_ROW1, 12, 0}, {BE_ROW2, 11, 0}, {BE_ROW3, 10, 0}, {LANG_ROW4, 5, 0}};
 static const KeyboardRow BE_SHIFT_ROWS[] = {{BE_SHIFT_ROW1, 12, 0},
                                             {BE_SHIFT_ROW2, 11, 0},
-                                            {BE_SHIFT_ROW3, 11, 0},
-                                            {LANG_ROW4, 4, 0}};
+                                            {BE_SHIFT_ROW3, 10, 0},
+                                            {LANG_ROW4, 5, 0}};
 static const KeyboardRow BE_NUM_ROWS[] = {{NUM_ROW, 10, 0},
                                           {BE_ROW1, 12, 0},
                                           {BE_ROW2, 11, 0},
-                                          {BE_ROW3, 11, 0},
-                                          {LANG_ROW4, 4, 0}};
+                                          {BE_ROW3, 10, 0},
+                                          {LANG_ROW4, 5, 0}};
 static const KeyboardRow BE_SHIFT_NUM_ROWS[] = {{NUM_SHIFT_ROW, 10, 0},
                                                 {BE_SHIFT_ROW1, 12, 0},
                                                 {BE_SHIFT_ROW2, 11, 0},
-                                                {BE_SHIFT_ROW3, 11, 0},
-                                                {LANG_ROW4, 4, 0}};
+                                                {BE_SHIFT_ROW3, 10, 0},
+                                                {LANG_ROW4, 5, 0}};
 
 static const KeyboardRow KK_ROWS[] = {
-    {KK_ROW1, 12, 0}, {KK_ROW2, 11, 0}, {KK_ROW3, 11, 0}, {LANG_ROW4, 4, 0}};
+    {KK_ROW1, 12, 0}, {KK_ROW2, 11, 0}, {KK_ROW3, 10, 0}, {LANG_ROW4, 5, 0}};
 static const KeyboardRow KK_SHIFT_ROWS[] = {{KK_SHIFT_ROW1, 12, 0},
                                             {KK_SHIFT_ROW2, 11, 0},
-                                            {KK_SHIFT_ROW3, 11, 0},
-                                            {LANG_ROW4, 4, 0}};
+                                            {KK_SHIFT_ROW3, 10, 0},
+                                            {LANG_ROW4, 5, 0}};
 static const KeyboardRow KK_NUM_ROWS[] = {{NUM_ROW, 10, 0},
                                           {KK_ROW1, 12, 0},
                                           {KK_ROW2, 11, 0},
-                                          {KK_ROW3, 11, 0},
-                                          {LANG_ROW4, 4, 0}};
+                                          {KK_ROW3, 10, 0},
+                                          {LANG_ROW4, 5, 0}};
 static const KeyboardRow KK_SHIFT_NUM_ROWS[] = {{NUM_SHIFT_ROW, 10, 0},
                                                 {KK_SHIFT_ROW1, 12, 0},
                                                 {KK_SHIFT_ROW2, 11, 0},
-                                                {KK_SHIFT_ROW3, 11, 0},
-                                                {LANG_ROW4, 4, 0}};
+                                                {KK_SHIFT_ROW3, 10, 0},
+                                                {LANG_ROW4, 5, 0}};
+
+// Arabic (standard 101 arrangement). Like Hebrew: no letter case, so one layer
+// and no shift key. Right-to-left is the renderer's job -- the layout inserts
+// code points in logical order.
+//
+// All 28 letters have their own key, plus the hamza carriers (ء ئ ؤ أ إ), ta
+// marbuta and alef maqsura, which a reader types often enough that hiding them
+// behind long-press would be wrong. Only alef madda is a long-press, on أ: it is
+// the rarest of the alef forms and the row is already 12 wide, the maximum this
+// panel fits (same constraint that puts Kazakh's extra letters on long-press).
+static const KeyboardKey AR_ROW1[] = {K("ض", "ض", 0x636), K("ص", "ص", 0x635), K("ث", "ث", 0x62B),
+                                      K("ق", "ق", 0x642), K("ف", "ف", 0x641), K("غ", "غ", 0x63A),
+                                      K("ع", "ع", 0x639), K("ه", "ه", 0x647), K("خ", "خ", 0x62E),
+                                      K("ح", "ح", 0x62D), K("ج", "ج", 0x62C), K("د", "د", 0x62F)};
+static const KeyboardKey AR_ROW2[] = {K("ش", "ش", 0x634), K("س", "س", 0x633), K("ي", "ي", 0x64A),
+                                      K("ب", "ب", 0x628), K("ل", "ل", 0x644), K("ا", "ا", 0x627),
+                                      K("ت", "ت", 0x62A), K("ن", "ن", 0x646), K("م", "م", 0x645),
+                                      K("ك", "ك", 0x643), K("ط", "ط", 0x637)};
+static const KeyboardKey AR_ROW3[] = {K("ذ", "ذ", 0x630),  K("ئ", "ئ", 0x626), K("ء", "ء", 0x621),
+                                      K("ؤ", "ؤ", 0x624),  K("ر", "ر", 0x631), K("ى", "ى", 0x649),
+                                      K("ة", "ة", 0x629),  K("و", "و", 0x648), K("ز", "ز", 0x632),
+                                      K("ظ", "ظ", 0x638),  KA("أ", "أ", 0x623, "آ"), K("إ", "إ", 0x625)};
 
 static const KeyboardRow HE_ROWS[] = {
-    {HE_ROW1, 10, 0}, {HE_ROW2, 9, 1}, {HE_ROW3, 10, 0}, {LANG_ROW4, 4, 0}};
+    {HE_ROW1, 10, 0}, {HE_ROW2, 9, 0}, {HE_ROW3, 10, 0}, {HE_ROW4, 4, 0}};
 static const KeyboardRow HE_NUM_ROWS[] = {{NUM_ROW, 10, 0},
                                           {HE_ROW1, 10, 0},
-                                          {HE_ROW2, 9, 1},
+                                          {HE_ROW2, 9, 0},
                                           {HE_ROW3, 10, 0},
-                                          {LANG_ROW4, 4, 0}};
+                                          {HE_ROW4, 4, 0}};
 
 
-static const KeyboardRow FR_LANG_ROWS[] = {{FR_ROW1, 10, 0}, {FR_ROW2, 10, 0}, {FR_ROW3, 9, 0}, {LANG_ROW4, 4, 0}};
-static const KeyboardRow FR_LANG_NUM_ROWS[] = {{NUM_ROW, 10, 0}, {FR_ROW1, 10, 0}, {FR_ROW2, 10, 0}, {FR_ROW3, 9, 0}, {LANG_ROW4, 4, 0}};
-static const KeyboardRow DE_LANG_ROWS[] = {{DE_ROW1, 10, 0}, {DE_ROW2, 10, 0}, {DE_ROW3, 10, 0}, {LANG_ROW4, 4, 0}};
-static const KeyboardRow DE_LANG_NUM_ROWS[] = {{NUM_ROW, 10, 0}, {DE_ROW1, 10, 0}, {DE_ROW2, 10, 0}, {DE_ROW3, 10, 0}, {LANG_ROW4, 4, 0}};
-static const KeyboardRow ES_LANG_ROWS[] = {{ES_ROW1, 10, 0}, {ES_ROW2, 10, 0}, {ES_ROW3, 9, 0}, {LANG_ROW4, 4, 0}};
-static const KeyboardRow ES_LANG_NUM_ROWS[] = {{NUM_ROW, 10, 0}, {ES_ROW1, 10, 0}, {ES_ROW2, 10, 0}, {ES_ROW3, 9, 0}, {LANG_ROW4, 4, 0}};
+static const KeyboardRow AR_ROWS[] = {
+    {AR_ROW1, 12, 0}, {AR_ROW2, 11, 0}, {AR_ROW3, 12, 0}, {AR_ROW4, 5, 0}};
+static const KeyboardRow AR_NUM_ROWS[] = {{NUM_ROW, 10, 0},
+                                          {AR_ROW1, 12, 0},
+                                          {AR_ROW2, 11, 0},
+                                          {AR_ROW3, 12, 0},
+                                          {AR_ROW4, 5, 0}};
 
-static const KeyboardRow FR_SHIFT_ROWS[] = {{FR_SHIFT_ROW1, 10, 0}, {FR_SHIFT_ROW2, 10, 0}, {FR_SHIFT_ROW3, 9, 0}, {EN_ROW4, 3, 0}};
-static const KeyboardRow FR_SHIFT_NUM_ROWS[] = {{NUM_SHIFT_ROW, 10, 0}, {FR_SHIFT_ROW1, 10, 0}, {FR_SHIFT_ROW2, 10, 0}, {FR_SHIFT_ROW3, 9, 0}, {EN_ROW4, 3, 0}};
-static const KeyboardRow FR_SHIFT_LANG_ROWS[] = {{FR_SHIFT_ROW1, 10, 0}, {FR_SHIFT_ROW2, 10, 0}, {FR_SHIFT_ROW3, 9, 0}, {LANG_ROW4, 4, 0}};
-static const KeyboardRow FR_SHIFT_LANG_NUM_ROWS[] = {{NUM_SHIFT_ROW, 10, 0}, {FR_SHIFT_ROW1, 10, 0}, {FR_SHIFT_ROW2, 10, 0}, {FR_SHIFT_ROW3, 9, 0}, {LANG_ROW4, 4, 0}};
-static const KeyboardRow DE_SHIFT_ROWS[] = {{DE_SHIFT_ROW1, 10, 0}, {DE_SHIFT_ROW2, 10, 0}, {DE_SHIFT_ROW3, 10, 0}, {EN_ROW4, 3, 0}};
-static const KeyboardRow DE_SHIFT_NUM_ROWS[] = {{NUM_SHIFT_ROW, 10, 0}, {DE_SHIFT_ROW1, 10, 0}, {DE_SHIFT_ROW2, 10, 0}, {DE_SHIFT_ROW3, 10, 0}, {EN_ROW4, 3, 0}};
-static const KeyboardRow DE_SHIFT_LANG_ROWS[] = {{DE_SHIFT_ROW1, 10, 0}, {DE_SHIFT_ROW2, 10, 0}, {DE_SHIFT_ROW3, 10, 0}, {LANG_ROW4, 4, 0}};
-static const KeyboardRow DE_SHIFT_LANG_NUM_ROWS[] = {{NUM_SHIFT_ROW, 10, 0}, {DE_SHIFT_ROW1, 10, 0}, {DE_SHIFT_ROW2, 10, 0}, {DE_SHIFT_ROW3, 10, 0}, {LANG_ROW4, 4, 0}};
-static const KeyboardRow ES_SHIFT_ROWS[] = {{ES_SHIFT_ROW1, 10, 0}, {ES_SHIFT_ROW2, 10, 0}, {ES_SHIFT_ROW3, 9, 0}, {EN_ROW4, 3, 0}};
-static const KeyboardRow ES_SHIFT_NUM_ROWS[] = {{NUM_SHIFT_ROW, 10, 0}, {ES_SHIFT_ROW1, 10, 0}, {ES_SHIFT_ROW2, 10, 0}, {ES_SHIFT_ROW3, 9, 0}, {EN_ROW4, 3, 0}};
-static const KeyboardRow ES_SHIFT_LANG_ROWS[] = {{ES_SHIFT_ROW1, 10, 0}, {ES_SHIFT_ROW2, 10, 0}, {ES_SHIFT_ROW3, 9, 0}, {LANG_ROW4, 4, 0}};
-static const KeyboardRow ES_SHIFT_LANG_NUM_ROWS[] = {{NUM_SHIFT_ROW, 10, 0}, {ES_SHIFT_ROW1, 10, 0}, {ES_SHIFT_ROW2, 10, 0}, {ES_SHIFT_ROW3, 9, 0}, {LANG_ROW4, 4, 0}};
+static const KeyboardRow FR_LANG_ROWS[] = {{FR_ROW1, 10, 0}, {FR_ROW2, 10, 0}, {FR_ROW3, 8, 0}, {LANG_ROW4, 5, 0}};
+static const KeyboardRow FR_LANG_NUM_ROWS[] = {{NUM_ROW, 10, 0}, {FR_ROW1, 10, 0}, {FR_ROW2, 10, 0}, {FR_ROW3, 8, 0}, {LANG_ROW4, 5, 0}};
+static const KeyboardRow DE_LANG_ROWS[] = {{DE_ROW1, 10, 0}, {DE_ROW2, 10, 0}, {DE_ROW3, 9, 0}, {LANG_ROW4, 5, 0}};
+static const KeyboardRow DE_LANG_NUM_ROWS[] = {{NUM_ROW, 10, 0}, {DE_ROW1, 10, 0}, {DE_ROW2, 10, 0}, {DE_ROW3, 9, 0}, {LANG_ROW4, 5, 0}};
+static const KeyboardRow ES_LANG_ROWS[] = {{ES_ROW1, 10, 0}, {ES_ROW2, 10, 0}, {ES_ROW3, 8, 0}, {LANG_ROW4, 5, 0}};
+static const KeyboardRow ES_LANG_NUM_ROWS[] = {{NUM_ROW, 10, 0}, {ES_ROW1, 10, 0}, {ES_ROW2, 10, 0}, {ES_ROW3, 8, 0}, {LANG_ROW4, 5, 0}};
+
+static const KeyboardRow FR_SHIFT_ROWS[] = {{FR_SHIFT_ROW1, 10, 0}, {FR_SHIFT_ROW2, 10, 0}, {FR_SHIFT_ROW3, 8, 0}, {EN_ROW4, 4, 0}};
+static const KeyboardRow FR_SHIFT_NUM_ROWS[] = {{NUM_SHIFT_ROW, 10, 0}, {FR_SHIFT_ROW1, 10, 0}, {FR_SHIFT_ROW2, 10, 0}, {FR_SHIFT_ROW3, 8, 0}, {EN_ROW4, 4, 0}};
+static const KeyboardRow FR_SHIFT_LANG_ROWS[] = {{FR_SHIFT_ROW1, 10, 0}, {FR_SHIFT_ROW2, 10, 0}, {FR_SHIFT_ROW3, 8, 0}, {LANG_ROW4, 5, 0}};
+static const KeyboardRow FR_SHIFT_LANG_NUM_ROWS[] = {{NUM_SHIFT_ROW, 10, 0}, {FR_SHIFT_ROW1, 10, 0}, {FR_SHIFT_ROW2, 10, 0}, {FR_SHIFT_ROW3, 8, 0}, {LANG_ROW4, 5, 0}};
+static const KeyboardRow DE_SHIFT_ROWS[] = {{DE_SHIFT_ROW1, 10, 0}, {DE_SHIFT_ROW2, 10, 0}, {DE_SHIFT_ROW3, 9, 0}, {EN_ROW4, 4, 0}};
+static const KeyboardRow DE_SHIFT_NUM_ROWS[] = {{NUM_SHIFT_ROW, 10, 0}, {DE_SHIFT_ROW1, 10, 0}, {DE_SHIFT_ROW2, 10, 0}, {DE_SHIFT_ROW3, 9, 0}, {EN_ROW4, 4, 0}};
+static const KeyboardRow DE_SHIFT_LANG_ROWS[] = {{DE_SHIFT_ROW1, 10, 0}, {DE_SHIFT_ROW2, 10, 0}, {DE_SHIFT_ROW3, 9, 0}, {LANG_ROW4, 5, 0}};
+static const KeyboardRow DE_SHIFT_LANG_NUM_ROWS[] = {{NUM_SHIFT_ROW, 10, 0}, {DE_SHIFT_ROW1, 10, 0}, {DE_SHIFT_ROW2, 10, 0}, {DE_SHIFT_ROW3, 9, 0}, {LANG_ROW4, 5, 0}};
+static const KeyboardRow ES_SHIFT_ROWS[] = {{ES_SHIFT_ROW1, 10, 0}, {ES_SHIFT_ROW2, 10, 0}, {ES_SHIFT_ROW3, 8, 0}, {EN_ROW4, 4, 0}};
+static const KeyboardRow ES_SHIFT_NUM_ROWS[] = {{NUM_SHIFT_ROW, 10, 0}, {ES_SHIFT_ROW1, 10, 0}, {ES_SHIFT_ROW2, 10, 0}, {ES_SHIFT_ROW3, 8, 0}, {EN_ROW4, 4, 0}};
+static const KeyboardRow ES_SHIFT_LANG_ROWS[] = {{ES_SHIFT_ROW1, 10, 0}, {ES_SHIFT_ROW2, 10, 0}, {ES_SHIFT_ROW3, 8, 0}, {LANG_ROW4, 5, 0}};
+static const KeyboardRow ES_SHIFT_LANG_NUM_ROWS[] = {{NUM_SHIFT_ROW, 10, 0}, {ES_SHIFT_ROW1, 10, 0}, {ES_SHIFT_ROW2, 10, 0}, {ES_SHIFT_ROW3, 8, 0}, {LANG_ROW4, 5, 0}};
 
 // Latin layers wearing the lang-key bottom row, so a multi-script keyboard can
 // switch back. Letter rows are the plain EN tables — same QWERTY, no copies.
-static const KeyboardRow EN_LANG_ROWS[] = {{EN_ROW1, 10, 0}, {EN_ROW2, 9, 1}, {EN_ROW3, 9, 0}, {LANG_ROW4, 4, 0}};
+static const KeyboardRow EN_LANG_ROWS[] = {{EN_ROW1, 10, 0}, {EN_ROW2, 9, 0}, {EN_ROW3, 8, 0}, {LANG_ROW4, 5, 0}};
 static const KeyboardRow EN_SHIFT_LANG_ROWS[] = {{EN_SHIFT_ROW1, 10, 0},
-                                                 {EN_SHIFT_ROW2, 9, 1},
-                                                 {EN_SHIFT_ROW3, 9, 0},
-                                                 {LANG_ROW4, 4, 0}};
+                                                 {EN_SHIFT_ROW2, 9, 0},
+                                                 {EN_SHIFT_ROW3, 8, 0},
+                                                 {LANG_ROW4, 5, 0}};
 static const KeyboardRow EN_LANG_NUM_ROWS[] = {{NUM_ROW, 10, 0},
                                                {EN_ROW1, 10, 0},
-                                               {EN_ROW2, 9, 1},
-                                               {EN_ROW3, 9, 0},
-                                               {LANG_ROW4, 4, 0}};
+                                               {EN_ROW2, 9, 0},
+                                               {EN_ROW3, 8, 0},
+                                               {LANG_ROW4, 5, 0}};
 static const KeyboardRow EN_SHIFT_LANG_NUM_ROWS[] = {{NUM_SHIFT_ROW, 10, 0},
                                                      {EN_SHIFT_ROW1, 10, 0},
-                                                     {EN_SHIFT_ROW2, 9, 1},
-                                                     {EN_SHIFT_ROW3, 9, 0},
-                                                     {LANG_ROW4, 4, 0}};
+                                                     {EN_SHIFT_ROW2, 9, 0},
+                                                     {EN_SHIFT_ROW3, 8, 0},
+                                                     {LANG_ROW4, 5, 0}};
 
 static const KeyboardLayout RU_LAYOUT{RU_ROWS, 4};
 static const KeyboardLayout RU_SHIFT_LAYOUT{RU_SHIFT_ROWS, 4};
@@ -664,6 +725,8 @@ static const KeyboardLayout KK_LAYOUT{KK_ROWS, 4};
 static const KeyboardLayout KK_SHIFT_LAYOUT{KK_SHIFT_ROWS, 4};
 static const KeyboardLayout KK_NUM_LAYOUT{KK_NUM_ROWS, 5};
 static const KeyboardLayout KK_SHIFT_NUM_LAYOUT{KK_SHIFT_NUM_ROWS, 5};
+static const KeyboardLayout AR_LAYOUT{AR_ROWS, 4};
+static const KeyboardLayout AR_NUM_LAYOUT{AR_NUM_ROWS, 5};
 static const KeyboardLayout HE_LAYOUT{HE_ROWS, 4};
 static const KeyboardLayout HE_NUM_LAYOUT{HE_NUM_ROWS, 5};
 static const KeyboardLayout FR_LANG_LAYOUT{FR_LANG_ROWS, 4};
@@ -702,9 +765,12 @@ const KeyboardLayout& builtinKeyboardLayout(KeyboardLayoutId id, bool shifted, b
   // reads "#+=" on page one and "123" on page two, mirroring phone keyboards.
   // The symbols pages already carry digits, so numberRow only affects the
   // letter layers.
-  if (symbols) return shifted ? SYMBOL2_LAYOUT : SYMBOL_LAYOUT;
-  // Cyrillic is case-explicit: both layers exist and shift picks between them,
-  // unlike FR/DE/ES which keep a single letter layer.
+  if (symbols) {
+    const bool showLang = langKey || id >= KeyboardLayoutId::CyrillicRu;
+    if (showLang) return shifted ? SYMBOL2_LANG_LAYOUT : SYMBOL_LANG_LAYOUT;
+    return shifted ? SYMBOL2_LAYOUT : SYMBOL_LAYOUT;
+  }
+  // Cyrillic and Latin layouts have explicit lower- and uppercase layers.
   if (id == KeyboardLayoutId::CyrillicRu) {
     if (shifted) return numberRow ? RU_SHIFT_NUM_LAYOUT : RU_SHIFT_LAYOUT;
     return numberRow ? RU_NUM_LAYOUT : RU_LAYOUT;
@@ -723,6 +789,8 @@ const KeyboardLayout& builtinKeyboardLayout(KeyboardLayoutId id, bool shifted, b
   }
   // Hebrew has no case, so shift is ignored -- there is only one letter layer.
   if (id == KeyboardLayoutId::HebrewIl) return numberRow ? HE_NUM_LAYOUT : HE_LAYOUT;
+  // Arabic has no case either, so shift is ignored here too.
+  if (id == KeyboardLayoutId::ArabicAr) return numberRow ? AR_NUM_LAYOUT : AR_LAYOUT;
   if (id == KeyboardLayoutId::QwertyEn && langKey) {
     if (shifted) return numberRow ? EN_SHIFT_LANG_NUM_LAYOUT : EN_SHIFT_LANG_LAYOUT;
     return numberRow ? EN_LANG_NUM_LAYOUT : EN_LANG_LAYOUT;
@@ -888,7 +956,12 @@ int16_t clampInt16(int32_t value, int16_t minValue, int16_t maxValue) {
 TextStyle textStyleWithForeground(TextStyle text, Paint foreground) {
   if (foreground.kind == PaintKind::Solid) {
     text.color = foreground.color;
-    text.inverted = foreground.color == Color::White;
+    // `color` already names the ink; DisplayTarget::text() treats `inverted`
+    // as a further flip of it. Setting both made a white foreground resolve
+    // back to black, so every inverted state (the default InvertFill list
+    // selection, an active button, a selected tab) drew black-on-black and
+    // lost its label. Carry the colour, and leave the flip to the caller.
+    text.inverted = false;
   }
   return text;
 }

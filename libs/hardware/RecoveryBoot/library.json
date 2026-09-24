@@ -1,8 +1,8 @@
 {
   "name": "RecoveryBoot",
-  "version": "1.0.0",
-  "description": "FreeInk boot-time recovery hatch. Held at reset, a button combo (Back + Up) repoints otadata at OTA slot 0 and reboots into the recovery / 'escape hatch' firmware. Call recovery::checkBootCombo() as the first line of setup() in every firmware you want escapable. Self-contained otadata switch (no esp_image_verify, so it accepts patched Xteink images) plus combo detection via InputManager. No-op unless the combo is held, slot 0 holds a valid app image, and you're not already running from slot 0.",
-  "keywords": "recovery, ota, bootloader, otadata, escape-hatch, xteink",
+  "version": "1.1.0",
+  "description": "FreeInk boot-time recovery hatch and SD firmware flasher. Held at reset, a button combo (Back + Up by default) either flashes an update image straight from the SD card root (/update.bin) into the next OTA slot and reboots into it, or — with no update file present — repoints otadata at OTA slot 0 and reboots into the recovery / 'escape hatch' firmware. Call recovery::checkBootCombo() early in setup() of every firmware you want escapable/updatable. Includes a standalone flasher (firmware::flashFromSdPath) with full image validation (magic, chip_id, segment walk, XOR checksum, SHA256 trailer) and a self-contained otadata switch (no esp_image_verify, so it accepts patched Xteink images).",
+  "keywords": "recovery, ota, bootloader, otadata, escape-hatch, sd-update, flasher, xteink",
   "authors": [{"name": "FreeInk SDK Contributors"}],
   "dependencies": {},
   "platforms": "espressif32",

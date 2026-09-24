@@ -7,9 +7,7 @@ links — built as a freestanding C++17 library: no Arduino or ESP-IDF
 dependency in the core, every byte of working memory supplied by the caller,
 and the entire pipeline runs (and is regression-tested) on a desktop host.
 
-The design rationale, phase history, and prior-art notes live in
-[freeink-book-design.md](freeink-book-design.md). This document is the
-user guide.
+This guide covers integration, the module structure, and validation.
 
 ## The four rules
 

@@ -626,6 +626,15 @@ enum class SelectionStyle : uint8_t {
   Triangle,   // rows keep their normal style; triangle marker
 };
 
+// Sentinel for radius props: inherit the theme's shape token. Screen wrappers
+// substitute the matching ThemeTokens value; components rendered on a bare
+// Frame resolve it to their classic default via resolveRadius().
+inline constexpr uint8_t RADIUS_INHERIT = 0xFF;
+
+inline uint8_t resolveRadius(const uint8_t propRadius, const uint8_t fallback) {
+  return propRadius == RADIUS_INHERIT ? fallback : propRadius;
+}
+
 struct ThemeTokens {
   FontId fontSmall = 0;
   FontId fontBody = 0;
@@ -639,9 +648,15 @@ struct ThemeTokens {
   int16_t headerHeight = 44;
   int16_t footerHeight = 40;
   int16_t progressHeight = 4;
-  // List shape tokens: the theme supplies geometry (gaps, radii, insets)
-  // while rowHeight and text sizes derive from the bound fonts. Screen::list()
-  // forwards these into any ListProps field left at its inherit sentinel.
+  // Lists size each row from its content, separately from generic controls.
+  // An optional minimum supports deliberately spacious list themes.
+  int16_t listMinRowHeight = 0;
+  int16_t listRowPaddingY = 4;
+  // Touch comfort is distinct from the minimum valid hit-target size.
+  int16_t listTouchMinRowHeight = 56;
+  int16_t listTouchRowPaddingY = 8;
+  int16_t listTouchRowGap = 6;
+  // List shape tokens forwarded by Screen::resolveListProps().
   int16_t listRowGap = 0;
   uint8_t listRowRadius = 0;
   int16_t listSidePadding = 8; // text inset within a row
@@ -658,6 +673,15 @@ struct ThemeTokens {
   int16_t headerSidePadding = 6;
   uint8_t headerUnderline = 1; // bottom rule thickness; 0 = none
   TextAlign headerTitleAlign = TextAlign::Left;
+  // Control shape tokens, forwarded into any radius prop left at
+  // RADIUS_INHERIT: quick-setting tiles and slider step buttons
+  // (Screen::tileGrid()/sliderRow()), the sheet's free-edge corners
+  // (Screen::sheet()), and the capsule slider's corners — a capsuleRadius of
+  // at least half the control's height draws the classic full stadium,
+  // smaller values square it toward the theme's card language.
+  uint8_t controlRadius = 18;
+  uint8_t sheetRadius = 0;
+  uint8_t capsuleRadius = 255;
   TextStyle smallText{};
   TextStyle bodyText{};
   TextStyle titleText{};
@@ -684,6 +708,10 @@ struct ThemeDocument {
 class DrawTarget {
 public:
   virtual ~DrawTarget() = default;
+  // Optional pixel clipping in logical coordinates. Unsupported targets return
+  // false; components must then omit partially visible content.
+  virtual Rect clipRect() const { return Rect{0, 0, 32767, 32767}; }
+  virtual bool setClipRect(Rect) { return false; }
   virtual Size measureText(FontId font, const char *text,
                            TextStyle style) const = 0;
   virtual int16_t lineHeight(FontId font) const = 0;
@@ -910,6 +938,9 @@ public:
 
   void setEnabled(bool enabled) { enabled_ = enabled; }
   bool enabled() const { return enabled_; }
+
+  Rect clipRect() const override { return inner_.clipRect(); }
+  bool setClipRect(Rect rect) override { return inner_.setClipRect(rect); }
 
   Size measureText(FontId font, const char *text,
                    TextStyle style) const override {
@@ -1142,6 +1173,14 @@ private:
   // they don't have the torn-read hazard count_/interactions_ have.
   int16_t focused_ = -1;
   int16_t active_ = -1;
+  // Mirrors the last routed frame's contact, so its opening frame is visible.
+  bool contactHeld_ = false;
+  // Last x a bound drag dispatched from, -1 until the contact drags. A
+  // released drag commits from here: the release edge itself carries either
+  // the tap classifier's touch-DOWN point (contacts under the swipe
+  // threshold) or off-target -1,-1 coords, so routing the release like a tap
+  // snaps the value back to where the drag STARTED (or drops it entirely).
+  int16_t lastDragX_ = -1;
   ActionId flashAction_ = NO_ACTION; // tap-flash target (see setFlash)
   int16_t flashValue_ = 0;
 
@@ -1169,8 +1208,10 @@ private:
       if (hasState(interaction.state, StateDisabled))
         continue;
       const bool acceptsKind = acceptsInput(interaction.inputMask, kind);
+      // InputTouch is the catch-all for tap-style kinds; long-press and drag
+      // are opt-in, so a plain button never absorbs them.
       const bool acceptsTouchFallback =
-          kind != InputLongPress &&
+          kind != InputLongPress && kind != InputDrag &&
           acceptsInput(interaction.inputMask, InputTouch);
       if (!acceptsKind && !acceptsTouchFallback)
         continue;
@@ -1226,6 +1267,28 @@ private:
     ActionEvent event{};
     const size_t slotCount = count_[slot];
 
+    // touchPressed is gated on the contact first reading as a tap, which a
+    // fast drag never is. Bind on the frame the contact begins, at the point
+    // it landed — the live position would let a passing contact grab a
+    // slider. Drag-masked elements only, so taps keep press-then-release;
+    // a contact starting elsewhere clears whatever the last one bound.
+    // The latch closes on hold and opens on the release edge, never on the
+    // mere absence of a hold: render() routes a default-constructed snapshot
+    // through this same buffer on every repaint, and a drag repaints every
+    // frame. Clearing on !touchHeld would let that placeholder re-open the
+    // latch between two input frames, making every held frame read as a fresh
+    // contact — the bind below would then re-run against the live position and
+    // drop the drag the moment the finger leaves the rect.
+    const bool contactBegan = input.touchHeld && !contactHeld_;
+    if (input.touchHeld) contactHeld_ = true;
+    if (input.touchReleased) contactHeld_ = false;
+    if (contactBegan) {
+      active_ = findTouch(slot, input.touchX, input.touchY, InputDrag);
+      lastDragX_ = -1;
+    }
+
+    // Runs second so an adapter reporting both edges on one frame keeps its
+    // pressed-element highlight.
     if (input.touchPressed) {
       active_ = findTouch(slot, input.touchX, input.touchY, InputTouch);
     }
@@ -1239,11 +1302,29 @@ private:
           acceptsInput(held.inputMask, InputDrag)) {
         ActionEvent dragged = eventFor(slot, active_);
         dragged.dragPermille = dragPermilleFor(held.rect, input.touchX);
+        lastDragX_ = input.touchX;
         return dragged;
       }
     }
 
     if (input.touchReleased) {
+      // A contact that dragged commits as a drag, at the last held position
+      // (grab semantics: even off the rect). It must not fall through to the
+      // tap path below, whose coordinates are the touch-down point.
+      if (lastDragX_ >= 0 && active_ >= 0 &&
+          active_ < static_cast<int16_t>(slotCount)) {
+        const Interaction &held = interactions_[slot][active_];
+        const int16_t releaseIdx = active_;
+        active_ = -1;
+        if (!hasState(held.state, StateDisabled) &&
+            acceptsInput(held.inputMask, InputDrag)) {
+          ActionEvent released = eventFor(slot, releaseIdx);
+          released.dragPermille = dragPermilleFor(held.rect, lastDragX_);
+          lastDragX_ = -1;
+          return released;
+        }
+      }
+      lastDragX_ = -1;
       const int16_t idx =
           findTouch(slot, input.touchX, input.touchY,
                     input.longPress ? InputLongPress : InputTouch);
@@ -1629,13 +1710,43 @@ inline void setStyleRadius(StyleSet &styles, uint8_t radius) {
   styles.disabled.radius = radius;
 }
 
-inline BitmapRef lucideDeleteIcon16() {
+// Lucide's delete icon at the keyboard's native display size. Keeping the
+// raster at its rendered size avoids the jagged edges caused by enlarging the
+// old 16px mask with nearest-neighbor scaling.
+inline BitmapRef lucideDeleteIcon28() {
   static constexpr uint8_t bits[] = {
-      0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xF8, 0x01, 0xF3, 0xFD, 0xE7,
-      0xFD, 0xCF, 0x6D, 0xBF, 0x9D, 0xBF, 0x9D, 0xCF, 0x6D, 0xE7, 0xFD,
-      0xF3, 0xFD, 0xF8, 0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+      0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+      0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xC0, 0x00, 0x7F,
+      0xFF, 0x00, 0x00, 0x3F, 0xFE, 0x1F, 0xFF, 0x1F, 0xFC, 0x7F, 0xFF, 0x9F,
+      0xF8, 0xFF, 0xFF, 0x9F, 0xF1, 0xF8, 0xE3, 0x9F, 0xE3, 0xF8, 0x43, 0x9F,
+      0xC7, 0xFC, 0x07, 0x9F, 0x8F, 0xFE, 0x0F, 0x9F, 0x8F, 0xFE, 0x0F, 0x9F,
+      0xC7, 0xFC, 0x07, 0x9F, 0xE3, 0xF8, 0x43, 0x9F, 0xF1, 0xF8, 0xE3, 0x9F,
+      0xF8, 0xFF, 0xFF, 0x9F, 0xFC, 0x7F, 0xFF, 0x9F, 0xFE, 0x1F, 0xFF, 0x1F,
+      0xFF, 0x00, 0x00, 0x3F, 0xFF, 0xC0, 0x00, 0x7F, 0xFF, 0xFF, 0xFF, 0xFF,
+      0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+      0xFF, 0xFF, 0xFF, 0xFF,
   };
-  return BitmapRef{bits, 16, 16, BitmapFormat::Mask1};
+  return BitmapRef{bits, 28, 28, BitmapFormat::Mask1};
+}
+
+// Lucide's globe at 32px, the size the key sizer lands on for a keyboard row.
+// Half that is not enough: the disc, its two meridians and the equator have no
+// detail to spare, and nothing else in the set needs this much room.
+inline BitmapRef lucideGlobeIcon32() {
+  static constexpr uint8_t bits[] = {
+      0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFC, 0x3F, 0xFF,
+      0xFF, 0xE0, 0x07, 0xFF, 0xFF, 0x80, 0x01, 0xFF, 0xFE, 0x00, 0x00, 0x7F,
+      0xFC, 0x18, 0x18, 0x3F, 0xF8, 0x71, 0x8E, 0x1F, 0xF8, 0xF1, 0x8F, 0x1F,
+      0xF1, 0xE3, 0xC7, 0x8F, 0xF1, 0xE3, 0xC7, 0x8F, 0xE3, 0xE3, 0xC7, 0xC7,
+      0xE3, 0xE7, 0xE7, 0xC7, 0xE7, 0xC7, 0xE3, 0xE7, 0xC7, 0xC7, 0xE3, 0xE3,
+      0xC0, 0x00, 0x00, 0x03, 0xC0, 0x00, 0x00, 0x03, 0xC7, 0xC7, 0xE3, 0xE3,
+      0xE7, 0xC7, 0xE3, 0xE7, 0xE3, 0xE7, 0xE7, 0xC7, 0xE3, 0xE3, 0xC7, 0xC7,
+      0xF1, 0xE3, 0xC7, 0x8F, 0xF1, 0xE3, 0xC7, 0x8F, 0xF8, 0xF1, 0x8F, 0x1F,
+      0xF8, 0x71, 0x8E, 0x1F, 0xFC, 0x18, 0x18, 0x3F, 0xFE, 0x00, 0x00, 0x7F,
+      0xFF, 0x80, 0x01, 0xFF, 0xFF, 0xE0, 0x07, 0xFF, 0xFF, 0xFC, 0x3F, 0xFF,
+      0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+  };
+  return BitmapRef{bits, 32, 32, BitmapFormat::Mask1};
 }
 
 inline void drawBorderEdges(DrawTarget &target, Rect rect, Paint paint,

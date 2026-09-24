@@ -84,6 +84,28 @@ bool waitForTpsReady(uint32_t timeoutMs) {
 }
 
 bool prepareEpdPower() {
+  // Deselect the SX1262 before the EPD bus is built, and do it here rather than
+  // anywhere else, because this hook is the last thing that runs before
+  // Bus_EPD::init() (LgfxEpdDriver.cpp, FreeInkBusEPD::init()).
+  //
+  // pinPwr below is T5S3_LORA_CS (GPIO46) and has to stay a real GPIO: it is
+  // handed to the i80 driver as dc_gpio_num, and the IDF rejects a negative one
+  // (esp_lcd_panel_io_i80.c, lcd_i80_bus_configure_gpio). GPIO46 is also the
+  // LoRa radio's NSS, on the same SPI bus as the SD card. Bus_EPD::init() then
+  // makes it an output with lgfx::pinMode(), which does NOT write a level
+  // (common.cpp, the gpio_hi() there is guarded to non-output modes), so the pin
+  // keeps whatever the output register held -- 0 out of reset. That asserts the
+  // radio's chip select for the whole run, and measured on hardware 2026-09-03
+  // the SD card is unreadable whenever the radio is selected while its supply
+  // rail is off.
+  //
+  // Writing the level here survives, for the same reason the bug exists: nothing
+  // downstream sets it. Between the i80 bus setup and the pinMode that hands the
+  // pad back to plain GPIO out, the peripheral drives DC on it for a few
+  // microseconds, and that is the one window this does not cover.
+  pinMode(T5S3_LORA_CS, OUTPUT);
+  digitalWrite(T5S3_LORA_CS, HIGH);
+
   pinMode(EP_STV, OUTPUT);
   digitalWrite(EP_STV, LOW);
 
@@ -159,10 +181,20 @@ const LgfxEpdConfig& lilygoT5S3LgfxConfig() {
       {EP_D0, EP_D1, EP_D2, EP_D3, EP_D4, EP_D5, EP_D6, EP_D7},
       EP_STH,
       EP_STV,
-      T5S3_LORA_CS,
+      // pinOe: -1, not a dummy pin. This panel's real output-enable is
+      // PCA9535_IO10_EP_OE, driven by the hooks above, so LovyanGFX needs no OE
+      // of its own. It used to carry T5S3_LORA_CS as a placeholder, which put
+      // the LoRa radio's chip select on an EPD pin. lgfx tolerates -1: pinMode()
+      // returns early for a pin past GPIO_NUM_MAX and gpio_hi/gpio_lo are
+      // guarded on pin >= 0.
+      -1,
       EP_LEH,
       EP_CKH,
       EP_CKV,
+      // pinPwr: still T5S3_LORA_CS and it has to be, because this one reaches
+      // the i80 driver as dc_gpio_num and a negative value is rejected. There is
+      // no free GPIO on this board to give it instead. prepareEpdPower() above
+      // deselects it before the bus is built, which is what makes it harmless.
       T5S3_LORA_CS,
       16000000,
       8,

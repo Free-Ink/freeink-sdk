@@ -17,10 +17,10 @@ namespace freeink {
 
 // Device-tunable SSD1677 waveform/config. A board overrides only what differs.
 struct Ssd1677Config {
-  uint8_t booster[5];               // booster soft-start (CMD 0x0C)
-  uint8_t driverOutputScan;         // CMD 0x01 base scan byte (0x02); mirrorY ORs TB
-  uint8_t borderWaveformInit;        // CMD 0x3C value written during controller init
-  uint8_t halfRefreshTemp;          // temperature byte written for HALF refresh
+  uint8_t booster[5];            // booster soft-start (CMD 0x0C)
+  uint8_t driverOutputScan;      // CMD 0x01 base scan byte (0x02); mirrorY ORs TB
+  uint8_t borderWaveformInit;    // CMD 0x3C value written during controller init
+  uint8_t halfRefreshTemp;       // temperature byte written for HALF refresh
   const unsigned char* grayLut;  // 110-byte custom LUT for grayscale display
   // Absolute Display Update Control 2 (0x22) sequence values, per refresh type.
   // 0 = use the driver's built-in X4 values (incremental, keeps the panel powered
@@ -53,6 +53,8 @@ struct Ssd1677Config {
   // collapsing toward B/W). The X4 keeps the panel powered between fast
   // refreshes, so it never needs this and keeps stock behavior.
   bool grayPowerUpFirst = false;
+  // Configurations supporting the factory four-tone LUT advertise it.
+  bool absoluteGrayscale = false;
 };
 
 // Standard config (Xteink X4 / GDEQ0426T82). Panel mounting (mirror/180°) is NOT
@@ -82,9 +84,17 @@ class Ssd1677Driver : public PanelDriver {
   void displayWindow(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, uint16_t x, uint16_t y, uint16_t w,
                      uint16_t h, bool turnOff) override;
 
+  void requestResync(uint8_t) override { _needsGrayClear = true; _absoluteInput = false; }
+  void beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode mode, RefreshMode fallback, bool turnOff) override;
+
   void seedPreviousFrame(EpdBus& bus, const uint8_t* buf) override;
 
-  bool supportsStripGrayscale() const override { return true; }
+  GrayscaleCapabilities grayscaleCapabilities(GrayscaleMode mode = GrayscaleMode::Overlay) const override {
+    if (mode == GrayscaleMode::Absolute && _cfg.absoluteGrayscale)
+      return {GrayscaleEncoding::AbsolutePlanes, GrayscaleBase::Combined, true, false, false};
+    if (mode != GrayscaleMode::Overlay) return {};
+    return {GrayscaleEncoding::OverlayMasks, GrayscaleBase::Separate, true, true, false};
+  }
   void copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) override;
   void copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) override;
   void writeGrayscalePlaneStrip(EpdBus& bus, GrayPlane plane, const uint8_t* rows, uint16_t yStart,
@@ -92,22 +102,18 @@ class Ssd1677Driver : public PanelDriver {
   void displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut, bool factoryMode) override;
   void cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) override;
 
-  // No grayscaleRevert override: stock parity — the OEM firmware has no revert
-  // waveform. Grayscale exits via cleanupGrayscaleBuffers (RED resync) or a
-  // promoted single-pass HALF clean in displayImpl/displayWindow.
+  // No grayscaleRevert override. Grayscale exits via cleanupGrayscaleBuffers
+  // (RED resync) or a promoted single-pass HALF clean in displayImpl/displayWindow.
+  // Stock 7.4.4 has a dedicated grey_revert waveform, but it is not yet ported.
   void setCustomLut(EpdBus& bus, bool enabled, const unsigned char* data) override;
-  // Inverted (dark-background) content: fast refreshes write the RED "old"
-  // plane as the complement of the target so every pixel — background included —
-  // is re-driven toward its target each update. See displayImpl().
-  void setBackgroundHint(bool darkBackground) override { _darkBackground = darkBackground; }
 
  private:
+  bool _needsGrayClear = false;
+  bool _absoluteInput = false;
+  void writeGrayRam(EpdBus& bus, uint8_t command, const uint8_t* data, uint16_t len);
   void initController(EpdBus& bus);
   void setRamArea(EpdBus& bus, uint16_t x, uint16_t y, uint16_t w, uint16_t h);
   void writeRam(EpdBus& bus, uint8_t ramCmd, const uint8_t* data, uint32_t size);
-  // Streams `size` bytes of ~data[i] after `ramCmd` without a host-side copy of
-  // the inverted frame (the C3 boards have no RAM to spare for one).
-  void writeRamInverted(EpdBus& bus, uint8_t ramCmd, const uint8_t* data, uint32_t size);
   // async: fire MASTER_ACTIVATION and return without waiting on BUSY.
   void refresh(EpdBus& bus, RefreshMode mode, bool turnOff, bool async = false);
   // Blocking CLOCK_ON|ANALOG_ON activation; no-op when already powered.
@@ -132,7 +138,6 @@ class Ssd1677Driver : public PanelDriver {
   bool _isScreenOn = false;
   bool _inGrayscaleMode = false;
   bool _customLutActive = false;
-  bool _darkBackground = false;
   // Async 0xFC updates cannot issue the separate power-off activation until the
   // display waveform completes; displayFinish() consumes this flag.
   bool _pendingPowerOff = false;

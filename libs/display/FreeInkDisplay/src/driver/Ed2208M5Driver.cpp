@@ -29,7 +29,6 @@ constexpr uint16_t PANEL_HEIGHT = 600;
 constexpr uint16_t REFRESH_CUTOFF_MS = 340;
 constexpr uint16_t BUSY_SETTLE_MS = 20;
 constexpr uint8_t DARK_DISPLAY_CTRL = 0x0F;
-constexpr uint32_t PANEL_AREA = static_cast<uint32_t>(PANEL_WIDTH) * PANEL_HEIGHT;
 
 }  // namespace
 
@@ -93,17 +92,18 @@ void Ed2208M5Driver::initController(EpdBus& bus) {
       0x84, 1, 0x01,
   };
 
-  auto txn = bus.beginTxn();
   for (size_t i = 0; i < sizeof(initCommands);) {
     const uint8_t command = initCommands[i++];
     const uint8_t length = initCommands[i++];
     waitBusy(bus);
+    auto txn = bus.beginTxn();
     txn.cmd(command);
     for (uint8_t j = 0; j < length; ++j) {
       txn.data(initCommands[i++]);
     }
   }
   waitBusy(bus);
+  auto txn = bus.beginTxn();
   txn.cmd(0x61);
   txn.data(static_cast<uint8_t>((PANEL_WIDTH >> 8) & 0xFF));
   txn.data(static_cast<uint8_t>(PANEL_WIDTH & 0xFF));
@@ -212,6 +212,7 @@ void Ed2208M5Driver::powerOn(EpdBus& bus) {
   if (_panelPowerOn) return;
   auto txn = bus.beginTxn();
   txn.cmd(0x04);
+  txn.end();
   waitBusy(bus);
   _panelPowerOn = true;
 }
@@ -221,6 +222,7 @@ void Ed2208M5Driver::powerOff(EpdBus& bus) {
   auto txn = bus.beginTxn();
   txn.cmd(0x02);
   txn.data(0x00);
+  txn.end();
   waitBusy(bus);
   _panelPowerOn = false;
 }
@@ -340,6 +342,7 @@ void Ed2208M5Driver::refresh(EpdBus& bus, uint16_t dirtyX, uint16_t dirtyY, uint
     auto powerOffTxn = bus.beginTxn();
     powerOffTxn.cmd(0x02);  // POWER_OFF
     powerOffTxn.data(0x00);
+    powerOffTxn.end();
     waitBusy(bus);
     _panelPowerOn = false;
   } else {

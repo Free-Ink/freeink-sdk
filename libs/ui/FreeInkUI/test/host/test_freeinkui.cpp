@@ -8,6 +8,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <thread>
 
 namespace {
 
@@ -49,6 +50,8 @@ class FakeDrawTarget : public DrawTarget {
     uint8_t radius;
     uint8_t corners;
     Rotation rotation;
+    FontId font = 0;
+    TextAlign align = TextAlign::Left;
   };
 
   Op ops[256]{};
@@ -57,13 +60,16 @@ class FakeDrawTarget : public DrawTarget {
   bool drewForbiddenLabel = false;
   int16_t charWidth = 6;
   int16_t lineH = 12;
+  int16_t fontLineH[DisplayTarget::FONT_SLOTS]{};
 
-  Size measureText(FontId, const char* text, TextStyle) const override {
+  Size measureText(FontId font, const char* text, TextStyle) const override {
     if (text != nullptr && std::strcmp(text, "must-not-measure") == 0)
       measuredForbiddenLabel = true;
-    return Size{static_cast<int16_t>(charWidth * static_cast<int16_t>(std::strlen(text))), lineH};
+    return Size{static_cast<int16_t>(charWidth * static_cast<int16_t>(std::strlen(text))), lineHeight(font)};
   }
-  int16_t lineHeight(FontId) const override { return lineH; }
+  int16_t lineHeight(FontId font) const override {
+    return font < DisplayTarget::FONT_SLOTS && fontLineH[font] > 0 ? fontLineH[font] : lineH;
+  }
   void fill(Rect rect, Paint paint, uint8_t radius, uint8_t corners) override {
     record(Op::Fill, rect, paint, radius, corners);
   }
@@ -82,6 +88,10 @@ class FakeDrawTarget : public DrawTarget {
     if (text != nullptr && std::strcmp(text, "must-not-measure") == 0)
       drewForbiddenLabel = true;
     record(Op::Text, rect, Paint::solid(style.color), 0, CornersAll, style.rotation);
+    if (opCount) {
+      ops[opCount - 1].font = style.font;
+      ops[opCount - 1].align = style.align;
+    }
   }
   void bitmap(Rect rect, BitmapRef, BitmapMode, Paint foreground, Rotation rotation) override {
     record(Op::Bitmap, rect, foreground, 0, CornersAll, rotation);
@@ -195,6 +205,36 @@ void testDisplayTarget() {
 
 // Anti-aliased fonts (bpp == 4) store 4-bit coverage per pixel; DisplayTarget
 // reproduces partial coverage through its ordered Bayer dither.
+void testCenteredDigitInk() {
+  // Deliberately asymmetric bearings and advances must not offset the digit.
+  static constexpr uint8_t bits[] = {0xFF, 0xFE}; // filled 3x5 glyph
+  static constexpr FontGlyph glyphs[] = {{0, 3, 5, 11, 4, -7}, {0, 3, 5, 6, -2, -3}};
+  static constexpr BitmapFont font = {bits, glyphs, '0', '1', 16, 12, 3, 5, 1};
+  uint8_t fb[8 * 64];
+  DisplayTarget target(fb, 64, 64, 8, Orientation::LandscapeCounterClockwise);
+  target.setFont(font);
+  TextStyle style;
+  style.align = TextAlign::Center;
+  for (const char* digit : {"0", "1"}) {
+    std::memset(fb, 0xFF, sizeof fb);
+    target.text(Rect{10, 10, 40, 40}, digit, style);
+    int minX = 64, minY = 64, maxX = -1, maxY = -1;
+    for (int y = 0; y < 64; ++y) {
+      for (int x = 0; x < 64; ++x) {
+        if (fb[y * 8 + x / 8] & (0x80 >> (x % 8))) continue;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+    CHECK_EQ(minX, 28);
+    CHECK_EQ(maxX, 30);
+    CHECK_EQ(minY, 27);
+    CHECK_EQ(maxY, 31);
+  }
+}
+
 void testDisplayTargetAlphaFont() {
   constexpr int16_t W = 32, H = 16, WB = W / 8;
   uint8_t fb[WB * H];
@@ -354,6 +394,97 @@ void testDisabledSkipsTouch() {
   tap.touchX = 10;
   tap.touchY = 10;
   CHECK(!buffer.route(tap));
+}
+
+void testDragRouting() {
+  InteractionBuffer<8> buffer;
+  // 0: slider, 1: plain button below it.
+  buffer.addInteraction(
+      Interaction{Rect{0, 0, 201, 40}, 1, 0, static_cast<uint16_t>(InputTouch | InputDrag), StateNormal, 0});
+  buffer.addInteraction(Interaction{Rect{0, 40, 100, 40}, 2, 0, InputTouch, StateNormal, 0});
+
+  // A drag that starts moving at once never reads as a tap, so it arrives as
+  // a bare held frame with no press edge.
+  const auto contactAt = [](int16_t x, int16_t y) {
+    InputSnapshot snap;
+    snap.touchHeld = true;
+    snap.touchX = x;
+    snap.touchY = y;
+    return snap;
+  };
+  ActionEvent event = buffer.route(contactAt(100, 20));
+  CHECK_EQ(event.action, 1);
+  CHECK_EQ(event.dragPermille, 500);
+
+  // Grab semantics: later frames follow the finger, even off the rect.
+  const InputSnapshot held = contactAt(260, 300);
+  event = buffer.route(held);
+  CHECK_EQ(event.action, 1);
+  CHECK_EQ(event.dragPermille, 1000);
+
+  // The release commits the drag at the LAST HELD position, even though the
+  // release frame itself arrives off-target (-1,-1: the tap classifier gave
+  // up on the contact). Without this the drag's final value depends on the
+  // release frame's coordinates -- the touch-down point for sub-swipe-length
+  // contacts (the value snaps back to where the drag started) or nothing at
+  // all for longer ones.
+  InputSnapshot release;
+  release.touchReleased = true;
+  release.touchX = -1;
+  release.touchY = -1;
+  ActionEvent end = buffer.route(release);
+  CHECK_EQ(end.action, 1);
+  CHECK_EQ(end.dragPermille, 1000);
+
+  // Same, for a short drag whose release still classifies as a tap and so
+  // carries the touch-DOWN point: the drag's last position wins over it.
+  CHECK_EQ(buffer.route(contactAt(100, 20)).dragPermille, 500);
+  CHECK_EQ(buffer.route(contactAt(150, 20)).dragPermille, 750);
+  InputSnapshot tapRelease;
+  tapRelease.touchReleased = true;
+  tapRelease.touchX = 100;  // classifier reports where the contact began
+  tapRelease.touchY = 20;
+  CHECK_EQ(buffer.route(tapRelease).dragPermille, 750);
+
+  // The landing point decides, not the live one: a contact beginning off the
+  // slider never grabs it, however far it then travels across it. The button
+  // it landed on is not bound either — InputDrag is not part of the InputTouch
+  // fallback, so activeIndex stays clear.
+  CHECK(!buffer.route(contactAt(50, 60)));
+  CHECK_EQ(buffer.activeIndex(), -1);
+  CHECK(!buffer.route(held));
+  buffer.route(release);
+
+  // Touch-only elements are never bound, so the button keeps its press edge.
+  InputSnapshot press;
+  press.touchPressed = true;
+  press.touchX = 50;
+  press.touchY = 60;
+  CHECK(!buffer.route(press));
+  CHECK_EQ(buffer.activeIndex(), 1);
+  buffer.route(release);
+
+  // A repaint routes a default-constructed snapshot through the same buffer.
+  // It must not end the contact: the drag stays bound across it and keeps
+  // following the finger off the rect.
+  CHECK(buffer.route(contactAt(100, 20)));
+  buffer.route(InputSnapshot{});
+  ActionEvent stillHeld = buffer.route(contactAt(400, 300));
+  CHECK_EQ(stillHeld.action, 1);
+  CHECK_EQ(stillHeld.dragPermille, 1000);
+  buffer.route(release);
+
+  // The release edge is what opens the latch, so the next contact binds fresh
+  // rather than inheriting what the last one held.
+  CHECK(!buffer.route(contactAt(50, 60)));
+  CHECK_EQ(buffer.activeIndex(), -1);
+  buffer.route(release);
+
+  // A disabled slider is inert on the contact edge too.
+  buffer.clear();
+  buffer.addInteraction(
+      Interaction{Rect{0, 0, 201, 40}, 1, 0, static_cast<uint16_t>(InputTouch | InputDrag), StateDisabled, 0});
+  CHECK(!buffer.route(contactAt(100, 20)));
 }
 
 void testLongPressRouting() {
@@ -712,6 +843,591 @@ void testListItemsWindowSkipsUnavailablePartialPreview() {
   CHECK(!draw.drewForbiddenLabel);
 }
 
+// rowProvider resolves rows on demand into list()'s scratch slot: no ListItem
+// array exists at all, only the viewport's rows are ever requested, and
+// absolute indexing/interactions match the full-array form. The provider may
+// reuse one scratch buffer per call — each row is consumed before the next
+// provider call.
+void testListRowProvider() {
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice();
+  InputSnapshot input;
+  InteractionBuffer<32> interactions;
+  Frame<32> frame(draw, device, input, interactions);
+
+  struct ProviderState {
+    char scratch[16];
+    int calls = 0;
+    uint16_t minIndex = 0xFFFF;
+    uint16_t maxIndex = 0;
+  } state;
+
+  ListProps props;
+  props.rowProvider = [](void* ctx, uint16_t index, ListItem& item) {
+    auto* s = static_cast<ProviderState*>(ctx);
+    ++s->calls;
+    if (index < s->minIndex) s->minIndex = index;
+    if (index > s->maxIndex) s->maxIndex = index;
+    std::snprintf(s->scratch, sizeof(s->scratch), "row%u", index);
+    item.label = s->scratch;
+    item.actionValue = static_cast<int16_t>(index);
+  };
+  props.rowProviderCtx = &state;
+  props.count = 100;
+  props.topIndex = 12;
+  props.selectedIndex = 14;
+  props.action = 9;
+  props.rowHeight = 40;
+  list(frame, Rect{0, 0, 480, 200}, props);  // fits 5 rows: absolute 12..16
+
+  CHECK_EQ(interactions.count(), 5u);
+  CHECK_EQ(interactions.data()[0].value, 12);
+  CHECK_EQ(interactions.data()[4].value, 16);
+  // Only the viewport's rows were materialized, one provider call each.
+  CHECK_EQ(state.calls, 5);
+  CHECK_EQ(state.minIndex, 12u);
+  CHECK_EQ(state.maxIndex, 16u);
+
+  // Tapping the third visible row resolves to absolute item 14.
+  InputSnapshot tap;
+  tap.touchReleased = true;
+  tap.touchX = 100;
+  tap.touchY = 90;
+  ActionEvent event = interactions.route(tap);
+  CHECK_EQ(event.action, 9);
+  CHECK_EQ(event.value, 14);
+}
+
+void testListInlineSectionHeadingWindow() {
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice();
+  InputSnapshot input;
+  InteractionBuffer<16> interactions;
+  Frame<16> frame(draw, device, input, interactions);
+
+  ListItem window[3]{};
+  window[0].label = "Book A";
+  window[0].sectionHeading = "Author A";
+  window[0].actionValue = 10;
+  window[1].label = "Book B";
+  window[1].actionValue = 11;
+  window[2].label = "Book C";
+  window[2].sectionHeading = "Author C";
+  window[2].actionValue = 12;
+
+  ListNav nav;
+  ListProps props;
+  props.items = window;
+  props.itemsWindowFirst = 10;
+  props.itemsWindowCount = 3;
+  props.count = 100;
+  props.topIndex = 10;
+  props.action = 9;
+  props.rowHeight = 40;
+  props.headerUnderline = false;
+  props.nav = &nav;
+  list(frame, Rect{0, 0, 480, 96}, props);  // 16px heading + two 40px rows
+
+  CHECK_EQ(interactions.count(), 2u);
+  CHECK_EQ(interactions.data()[0].value, 10);
+  CHECK_EQ(interactions.data()[1].value, 11);
+  CHECK_EQ(nav.drawnRows, 2);
+  CHECK_EQ(draw.countKind(FakeDrawTarget::Op::Text), 3u);  // heading + two books
+}
+
+void testListInlineSectionHeadingDoesNotOrphan() {
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice();
+  InputSnapshot input;
+  InteractionBuffer<4> interactions;
+  Frame<4> frame(draw, device, input, interactions);
+
+  ListItem item{};
+  item.label = "Book";
+  item.sectionHeading = "Author";
+  item.actionValue = 4;
+
+  ListNav nav;
+  ListProps props;
+  props.items = &item;
+  props.count = 1;
+  props.action = 9;
+  props.rowHeight = 40;
+  props.nav = &nav;
+  list(frame, Rect{0, 0, 480, 55}, props);  // heading + row need 56px
+
+  CHECK_EQ(interactions.count(), 0u);
+  CHECK_EQ(nav.drawnRows, 0);
+  CHECK_EQ(draw.countKind(FakeDrawTarget::Op::Text), 0u);
+}
+
+// A refresh can be in flight while input advances the logical selection. The
+// old frame must report against its own selection and retain the new request.
+void testListDeferredInput() {
+  ListNav nav;
+  ListProps props;
+  const Rect body{0, 0, 160, 60};
+  nav.syncToProps(body, 20, 0, 100, props);
+  nav.onListRendered(0, 3, true);
+  CHECK_EQ(nav.inputPageRows(), 3);
+  for (int i = 0; i < 6; ++i)
+    nav.requestSelection(nav.selected.load() + 1);
+  CHECK_EQ(nav.selected.load(), 6); // Confirm sees all six presses immediately
+  CHECK_EQ(nav.top, 0);            // input never mutates the render viewport
+  nav.syncToProps(body, 20, 0, 100, props);
+  CHECK_EQ(props.selectedIndex, 6);
+  CHECK_EQ(props.topIndex, 4);
+  nav.requestSelection(8);         // arrives while the frame for 6 is drawing
+  nav.onListRendered(4, 3, true);
+  CHECK(!nav.consumeRebuildNeeded());
+  CHECK(nav.followOnBuild.load());
+  nav.syncToProps(body, 20, 0, 100, props);
+  CHECK_EQ(props.selectedIndex, 8);
+  CHECK_EQ(props.topIndex, 6);
+  nav.onListRendered(6, 3, true);
+
+  nav.requestScroll(3);
+  nav.requestScroll(3);
+  CHECK_EQ(nav.top, 6);
+  nav.syncToProps(body, 20, 0, 100, props);
+  CHECK_EQ(nav.top, 12);
+  CHECK_EQ(nav.selected.load(), 8); // scrolling does not move selection
+  CHECK(!nav.followPending);
+  nav.requestScroll(30);
+  nav.requestSelection(1);         // following supersedes queued scrolling
+  nav.syncToProps(body, 20, 0, 100, props);
+  CHECK_EQ(nav.top, 1);
+  nav.requestScroll(-1000);
+  nav.syncToProps(body, 20, 0, 100, props);
+  CHECK_EQ(nav.top, 0);
+
+  // A tab's ring index stays input-owned; layout follows its row index.
+  nav.requestSelection(7);
+  nav.syncToProps(body, 20, 0, 100, props, 1);
+  CHECK_EQ(props.selectedIndex, 6);
+  nav.onListRendered(props.topIndex, 2, false);
+  CHECK(nav.consumeRebuildNeeded());
+  CHECK_EQ(nav.top, 5);
+  nav.requestSelection(0);
+  nav.syncToProps(body, 20, 0, 100, props, 1);
+  CHECK_EQ(props.selectedIndex, -1);
+  CHECK_EQ(props.topIndex, 0);
+  nav.requestSelection(10);
+  nav.syncToProps(body, 20, 0, 2, props, 1);
+  CHECK_EQ(props.selectedIndex, 1);
+  CHECK_EQ(nav.selected.load(), 2); // stale ring selection clamps to the last row
+}
+
+void testListConcurrentScrollRequests() {
+  ListNav nav;
+  ListProps props;
+  const Rect body{0, 0, 160, 20};
+  nav.syncToProps(body, 20, 0, 30000, props);
+  nav.onListRendered(0, 1, true);
+  std::atomic<bool> done{false};
+  std::thread input([&] {
+    for (int i = 0; i < 10000; ++i) {
+      nav.requestScroll(1);
+      (void)nav.inputPageRows();
+    }
+    done.store(true);
+  });
+  do {
+    nav.syncToProps(body, 20, 0, 30000, props);
+    nav.onListRendered(props.topIndex, 1, false);
+  } while (!done.load());
+  input.join();
+  nav.syncToProps(body, 20, 0, 30000, props);
+  CHECK_EQ(nav.top, 10000);
+}
+
+void testListMeasuredHeadersAndUnsupportedPreview() {
+  FakeDrawTarget draw;
+  const DeviceContext device = makeDevice();
+  InputSnapshot input;
+  InteractionBuffer<16> hits;
+  Frame<16> frame(draw, device, input, hits);
+  ListItem items[3]{};
+  items[0].label = "Section";
+  items[0].isHeader = true;
+  items[1].label = "One";
+  items[2].label = "Two";
+  ListProps props;
+  props.items = items;
+  props.count = 3;
+  props.action = 4;
+  props.rowHeight = 20;
+  ListNav nav;
+  nav.reset(1);
+  nav.syncToProps(Rect{0, 0, 160, 56}, 20, 0, 3, props);
+  list(frame, Rect{0, 0, 160, 56}, props);
+  CHECK_EQ(nav.drawnRows, 3); // 16px header + two 20px rows exceeds the estimate
+  CHECK_EQ(hits.count(), 2u);
+  CHECK(!nav.consumeRebuildNeeded());
+
+  hits.clear();
+  draw.opCount = 0;
+  props.nav = nullptr;
+  props.items = items + 1;
+  props.count = 2;
+  props.partialTrailingRow = true;
+  list(frame, Rect{0, 0, 160, 39}, props);
+  CHECK_EQ(hits.count(), 1u);
+  CHECK_EQ(draw.countKind(FakeDrawTarget::Op::Text), 1u);
+}
+
+class ListPreviewDrawTarget : public FakeDrawTarget {
+ public:
+  Rect clip{0, 0, 32767, 32767};
+  Rect labelRect{};
+  Rect labelClip{};
+  uint8_t labelMaxLines = 0;
+  int valuesDrawn = 0;
+  Rect clipRect() const override { return clip; }
+  bool setClipRect(Rect rect) override { clip = rect; return true; }
+  void text(Rect rect, const char* value, TextStyle style) override {
+    FakeDrawTarget::text(rect, value, style);
+    if (std::strcmp(value, ".epub") == 0) {
+      ++valuesDrawn;
+    } else {
+      labelRect = rect;
+      labelClip = clip;
+      labelMaxLines = style.maxLines;
+    }
+  }
+};
+
+// A new letter group must not suppress the preview. Its heading alone can
+// signal more content; decorative padding does not count as visible content.
+void testListSectionHeadingPreview() {
+  class LibraryDrawTarget : public ListPreviewDrawTarget {
+   public:
+    Rect headingRect{};
+    Rect headingClip{};
+    int16_t lineHeight(FontId font) const override { return font == 1 ? 29 : 24; }
+    void text(Rect rect, const char* value, TextStyle style) override {
+      ListPreviewDrawTarget::text(rect, value, style);
+      if (std::strcmp(value, "M") == 0) {
+        headingRect = rect;
+        headingClip = clip;
+      }
+    }
+  };
+  for (const int height : {99, 100, 133, 134, 177, 178}) {
+    LibraryDrawTarget draw;
+    DeviceContext device = makeDevice();
+    InputSnapshot input;
+    InteractionBuffer<16> hits;
+    Frame<16> frame(draw, device, input, hits);
+    ListItem items[2]{};
+    items[0].label = "Book";
+    items[0].subtitle = "Author";
+    items[1].label = "Next book";
+    items[1].subtitle = "Next author";
+    items[1].sectionHeading = "M";
+    items[1].actionValue = 1;
+    ListProps props;
+    props.items = items;
+    props.count = 2;
+    props.action = 4;
+    props.labelText.font = 1;
+    props.rowHeight = 44;
+    props.rowPaddingY = 4;
+    props.rowGap = 6;
+    props.sectionGap = 16;
+    props.headerUnderline = false;
+    props.scrollIndicator = false;
+    props.partialTrailingRow = true;
+    props.partialTrailingMinHeight = 17;
+    ListNav nav;
+    nav.reset();
+    const Rect body{0, 155, 480, static_cast<int16_t>(height)};
+    nav.syncToProps(body, props.rowHeight, props.rowGap, props.count, props);
+    list(frame, body, props);
+    // First book = 61px, gap = 6px, section = 16 + 28 + 6px.
+    // Second book starts at 117px and is complete at 178px.
+    CHECK_EQ(nav.drawnRows, height < 178 ? 1 : 2);
+    CHECK_EQ(hits.count(), height < 178 ? 1u : 2u);
+    CHECK_EQ(draw.countKind(FakeDrawTarget::Op::Text), height < 100 ? 2u : 5u);
+    if (height >= 100 && height < 178) {
+      CHECK_EQ(draw.headingRect.y, body.y + 83);
+      CHECK_EQ(draw.headingClip.bottom(), body.bottom());
+      CHECK(draw.headingClip.bottom() - draw.headingRect.y >= 17);
+    }
+    CHECK_EQ(draw.clip.height, 32767); // preview restores the caller's clip
+  }
+}
+
+// Exercise Screen's public path: resolving navigation and rendering separately
+// must not let the generic two-line control token inflate single-line lists.
+void testScreenListContentSizing() {
+  class FontDrawTarget : public ListPreviewDrawTarget {
+   public:
+    int16_t lineHeight(FontId font) const override { return font == FONT_SLOT_BODY ? 29 : 24; }
+  };
+  for (const bool touch : {false, true}) {
+    FontDrawTarget draw;
+    DeviceContext device = makeDevice(200, 220);
+    device.hasTouch = touch;
+    InputSnapshot input;
+    InteractionBuffer<16> hits;
+    Frame<16> frame(draw, device, input, hits);
+    const ThemeTokens theme = themeTokensForLineHeight(29);
+    CHECK_EQ(theme.rowHeight, 66); // unrelated controls keep their sizing
+    Screen<16> screen(frame, theme);
+    ListItem items[10]{};
+    for (int i = 0; i < 10; ++i) {
+      items[i].label = "Font family";
+      items[i].actionValue = static_cast<int16_t>(i);
+    }
+    ListProps props;
+    props.items = items;
+    props.count = 10;
+    props.action = 4;
+    props.labelText = theme.smallText;
+    props.labelText.maxLines = 2;
+    props.scrollIndicator = false;
+    props.partialTrailingRow = true;
+    ListNav nav;
+    screen.syncListViewport(nav, props, props.count, 1);
+    CHECK_EQ(props.rowHeight, touch ? 56 : 32);
+    CHECK_EQ(props.rowPaddingY, touch ? 8 : 4);
+    CHECK_EQ(props.rowGap, touch ? 6 : 0);
+    CHECK_EQ(nav.visibleRows, touch ? 3 : 6);
+    screen.list(props);
+    CHECK_EQ(nav.drawnRows, touch ? 3 : 6);
+    CHECK_EQ(hits.count(), touch ? 3u : 6u);
+    CHECK_EQ(hits.data()[0].rect.height, props.rowHeight);
+    // A swipe starts at the first not-fully-visible item, using the same
+    // resolved policy on the next frame (including the tab selection offset).
+    const int next = nav.inputPageRows();
+    nav.requestScroll(next);
+    screen.syncListViewport(nav, props, props.count, 1);
+    // Near the tail, navigation may overlap to fill the page, but cannot
+    // advance past the previewed item.
+    CHECK(props.topIndex <= next);
+    InteractionBuffer<16> nextHits;
+    Frame<16> nextFrame(draw, device, input, nextHits);
+    Screen<16> nextScreen(nextFrame, theme);
+    nextScreen.list(props);
+    bool nextSelectable = false;
+    for (size_t i = 0; i < nextHits.count(); ++i)
+      nextSelectable |= nextHits.data()[i].value == next;
+    CHECK(nextSelectable);
+
+    ListProps books;
+    books.labelText = theme.bodyText;
+    books.labelText.maxLines = 1;
+    books = screen.resolveListProps(books);
+    ListItem book;
+    book.label = "Book";
+    book.subtitle = "Author";
+    CHECK_EQ(measureListRow(draw, nullptr, 200, books, book).height, touch ? 69 : 61);
+    books.rowHeight = 80; // explicit minimum remains supported
+    CHECK_EQ(screen.resolveListProps(books).rowHeight, 80);
+    // Wrapping grows only the row that needs it, using the smaller font.
+    ListItem wrapped;
+    wrapped.label = "A font family name that wraps onto two lines";
+    CHECK_EQ(measureListRow(draw, nullptr, 160, props, wrapped).height, touch ? 64 : 56);
+  }
+}
+
+// Crosspoint supplies its non-touch theme row height through the shared
+// minimum. Small fonts must not shrink those rows back to content-only size.
+void testScreenListThemeMinimum() {
+  class FontDrawTarget : public FakeDrawTarget {
+   public:
+    int16_t lineHeight(FontId) const override { return 24; }
+  };
+  for (const int minimum : {40, 42}) {
+    FontDrawTarget draw;
+    DeviceContext device = makeDevice(200, 210);
+    device.hasTouch = false;
+    InputSnapshot input;
+    InteractionBuffer<16> hits;
+    Frame<16> frame(draw, device, input, hits);
+    ThemeTokens theme;
+    theme.listMinRowHeight = static_cast<int16_t>(minimum);
+    Screen<16> screen(frame, theme);
+    ListItem items[8]{};
+    for (int i = 0; i < 8; ++i) {
+      items[i].label = "Font family";
+      items[i].actionValue = static_cast<int16_t>(i);
+    }
+    ListProps props;
+    props.items = items;
+    props.count = 8;
+    props.action = 4;
+    props.partialTrailingRow = true;
+    props.labelText.maxLines = 2;
+    ListNav nav;
+    screen.syncListViewport(nav, props, props.count);
+    CHECK_EQ(props.rowHeight, minimum);
+    CHECK_EQ(nav.visibleRows, 5);
+    screen.list(props);
+    CHECK_EQ(nav.drawnRows, 5);
+    CHECK_EQ(hits.count(), 5u);
+    CHECK_EQ(hits.data()[0].rect.height, minimum);
+    ListItem wrapped;
+    wrapped.label = "A font family name that wraps onto two lines";
+    CHECK_EQ(measureListRow(draw, nullptr, 160, props, wrapped).height, 56);
+  }
+}
+
+void testListMixedFontTouchDensity() {
+  class LibraryDrawTarget : public FakeDrawTarget {
+   public:
+    int16_t lineHeight(FontId font) const override { return font == 1 ? 28 : 20; }
+  } draw;
+  const ThemeTokens theme = themeTokensForLineHeight(28);
+  CHECK_EQ(theme.rowHeight, 64);
+  CHECK_EQ(theme.minTouchSize, 44);
+  const Rect body{0, 0, 480, 472};
+  ListItem items[10]{};
+  for (int i = 0; i < 10; ++i) {
+    items[i].label = "Book title";
+    items[i].subtitle = "Author";
+    items[i].actionValue = static_cast<int16_t>(i);
+  }
+  items[0].sectionHeading = "B"; // Title-tab alphabetical group heading
+  ListProps props;
+  props.items = items;
+  props.itemsWindowCount = 10;
+  props.count = 100;
+  props.action = 4;
+  props.labelText = theme.bodyText;
+  props.subtitleText = theme.smallText;
+  props.rowPaddingY = 4;
+  props.rowHeight = theme.minTouchSize;
+  props.rowGap = 0;
+  props.scrollIndicator = false;
+  ListNav nav;
+  nav.reset(7);
+  nav.syncToProps(body, props.rowHeight, 0, props.count, props);
+  CHECK_EQ(nav.visibleRows, 10); // enough data for every potentially fitting row
+  DeviceContext device = makeDevice();
+  InputSnapshot input;
+  InteractionBuffer<16> hits;
+  Frame<16> frame(draw, device, input, hits);
+  list(frame, body, props);
+  CHECK_EQ(nav.drawnRows, 8); // 24px heading + 8 * 56px; generic 64px rows fit only 7
+  CHECK_EQ(hits.count(), 8u);
+  CHECK_EQ(hits.data()[7].value, 7);
+  CHECK_EQ(hits.data()[7].rect.bottom(), body.bottom());
+  CHECK(!nav.consumeRebuildNeeded());
+}
+
+void testListExactFitAndPreviewGeometry() {
+  for (int height : {99, 100}) {
+    ListPreviewDrawTarget draw;
+    const DeviceContext device = makeDevice();
+    InputSnapshot input;
+    InteractionBuffer<16> interactions;
+    Frame<16> frame(draw, device, input, interactions);
+    ListItem items[5]{};
+    for (int i = 0; i < 5; ++i) {
+      items[i].label = "A filename that needs two lines";
+      items[i].value = ".epub";
+      items[i].actionValue = i;
+    }
+    ListNav nav;
+    ListProps props;
+    props.items = items;
+    props.count = 5;
+    props.action = 4;
+    props.rowHeight = 20;
+    props.rowPaddingY = 4;
+    props.rowGap = 2;
+    props.labelText.maxLines = 2;
+    props.balanceWrappedLabelWithValue = false;
+    props.scrollIndicator = false;
+    props.partialTrailingRow = true;
+    const Rect body{0, 0, 160, static_cast<int16_t>(height)};
+    nav.syncToProps(body, 20, 2, 5, props);
+    list(frame, body, props);
+    CHECK_EQ(nav.drawnRows, height == 100 ? 3 : 2);
+    CHECK_EQ(interactions.count(), height == 100 ? 3u : 2u);
+    CHECK_EQ(draw.valuesDrawn, 3); // extension also exists in the preview
+    CHECK_EQ(draw.labelMaxLines, 2);
+    CHECK_EQ(draw.labelRect.width, 104); // same slot after the extension
+    CHECK_EQ(draw.labelRect.y, 68);
+    CHECK_EQ(draw.labelRect.height, 32); // never recentered into leftover space
+    CHECK_EQ(draw.labelClip.height, height == 100 ? 32767 : 99);
+    CHECK_EQ(draw.clip.height, 32767); // restored for the footer
+    if (height == 99)
+      CHECK_EQ(interactions.data()[1].rect.bottom(), 66); // no hit expansion into preview
+    if (height == 99) {
+      // The same deferred swipe API used by Library must start the next page
+      // with the previously previewed item, now fully visible and selectable.
+      CHECK_EQ(nav.inputPageRows(), 2);
+      nav.requestScroll(nav.inputPageRows());
+      nav.syncToProps(body, 20, 2, 5, props);
+      CHECK_EQ(props.topIndex, 2);
+      InteractionBuffer<16> nextHits;
+      Frame<16> nextFrame(draw, device, input, nextHits);
+      list(nextFrame, body, props);
+      CHECK_EQ(nextHits.data()[0].value, 2);
+      CHECK_EQ(nextHits.data()[0].rect.y, body.y);
+      CHECK_EQ(nextHits.data()[0].rect.height, 32);
+    }
+  }
+
+  ListPreviewDrawTarget draw;
+  ListProps props;
+  props.rowHeight = 20;
+  props.rowPaddingY = 4;
+  props.labelText.maxLines = 3;
+  ListItem item;
+  item.label = "12345678901234567890123456789012345678901";
+  item.value = "x";
+  // The balanced cap is 110px; without it the 168px slot would use two lines.
+  const ListRowLayout measured = measureListRow(draw, nullptr, 200, props, item);
+  CHECK_EQ(measured.labelWidth, 110);
+  CHECK_EQ(measured.labelLines, 3);
+  CHECK_EQ(measured.height, 44);
+}
+
+// A preview must be a pixel-for-pixel crop of the full row, in either text
+// direction and every panel orientation, without touching footer pixels.
+void testListPreviewPixels() {
+  constexpr int W = 160, H = 160, WB = W / 8;
+  for (const auto orientation : {Orientation::Portrait, Orientation::PortraitInverted,
+                                 Orientation::LandscapeClockwise, Orientation::LandscapeCounterClockwise}) {
+    for (const bool rtl : {false, true}) {
+      uint8_t full[WB * H], cropped[WB * H], mask[WB * H];
+      std::memset(full, 0xff, sizeof(full));
+      std::memset(cropped, 0xff, sizeof(cropped));
+      std::memset(mask, 0xff, sizeof(mask));
+      DisplayTarget fullTarget(full, W, H, WB, orientation);
+      DisplayTarget cropTarget(cropped, W, H, WB, orientation);
+      DisplayTarget maskTarget(mask, W, H, WB, orientation);
+      const DeviceContext device = makeDevice();
+      InputSnapshot input;
+      InteractionBuffer<16> fullHits, cropHits;
+      Frame<16> fullFrame(fullTarget, device, input, fullHits);
+      Frame<16> cropFrame(cropTarget, device, input, cropHits);
+      ListItem items[3]{};
+      for (auto& item : items) { item.label = "Book"; item.value = ".epub"; }
+      ListProps props;
+      props.items = items;
+      props.count = 3;
+      props.action = 2;
+      props.rowHeight = 40;
+      props.scrollIndicator = false;
+      props.partialTrailingRow = true;
+      props.rtl = rtl;
+      list(fullFrame, Rect{0, 0, W, 120}, props);
+      list(cropFrame, Rect{0, 0, W, 103}, props);
+      maskTarget.fill(Rect{0, 0, W, 103}, Paint::solid(Color::Black));
+      CHECK_EQ(fullHits.count(), 3u);
+      CHECK_EQ(cropHits.count(), 2u);
+      for (size_t i = 0; i < sizeof(full); ++i)
+        CHECK_EQ(cropped[i], static_cast<uint8_t>(full[i] | mask[i]));
+      CHECK_EQ(cropTarget.clipRect().height, 32767);
+    }
+  }
+}
+
 void testListNavLayoutFeedback() {
   FakeDrawTarget draw;
   DeviceContext device = makeDevice();
@@ -842,6 +1558,184 @@ void testListNavConvergesThroughRealList() {
   CHECK_EQ(nav.pageRows(), 6);
 }
 
+// A list whose count fits the FIXED-HEIGHT row estimate can still be clipped
+// once wrapped rows grow: 8 items with a 10-row estimate, but only 6 fit. The
+// pre-fix list() called that "no overflow" and pinned top at 0, so the clipped
+// tail was unreachable by swipe scrolling OR selection (the on-device File
+// Transfer menu at Large UI scale). Layout feedback must let the nav scroll.
+void testListNavScrollsClippedListWithinRowEstimate() {
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice();
+  InputSnapshot input;
+
+  static const char kLongLabel[] =
+      "wrapping filename that is deliberately long enough to need a second "
+      "display line";
+  ListItem items[8]{};
+  for (int i = 0; i < 8; ++i) {
+    items[i].label = kLongLabel;
+    items[i].actionValue = static_cast<int16_t>(i);
+    items[i].enabled = true;
+  }
+
+  const Rect body{0, 0, 480, 200};
+  CHECK_EQ(listVisibleRows(body, 20, 0), 10); // estimate exceeds the 8 items
+
+  ListNav nav;
+  nav.reset(0);
+
+  // One build pass over `count` items, returning whether the given index
+  // registered a hit rect. Each pass starts with an empty op log so the
+  // scroll-indicator assertions below see only that pass.
+  const auto buildCount = [&](const uint16_t count, const int16_t wantIndex) {
+    draw.opCount = 0;
+    InteractionBuffer<32> interactions;
+    Frame<32> frame(draw, device, input, interactions);
+    ListProps props;
+    props.items = items;
+    props.count = count;
+    props.action = 7;
+    props.rowHeight = 20;
+    props.labelText.maxLines = 2;
+    nav.syncToProps(body, 20, 0, count, props);
+    list(frame, body, props);
+    for (size_t k = 0; k < interactions.count(); ++k) {
+      if (interactions.data()[k].value == wantIndex)
+        return true;
+    }
+    return false;
+  };
+  const auto build = [&](const int16_t wantIndex) {
+    return buildCount(8, wantIndex);
+  };
+  // The scroll track and its thumb are the only 3px-wide fills at the band's
+  // right edge (scrollIndicatorWidth 3, no inset).
+  const auto scrollFills = [&]() {
+    int found = 0;
+    for (size_t k = 0; k < draw.opCount; ++k) {
+      const auto& op = draw.ops[k];
+      if (op.kind == FakeDrawTarget::Op::Fill && op.rect.x == 477 &&
+          op.rect.width == 3)
+        ++found;
+    }
+    return found;
+  };
+  const auto hasFill = [&](const Rect want) {
+    for (size_t k = 0; k < draw.opCount; ++k) {
+      const auto& op = draw.ops[k];
+      if (op.kind == FakeDrawTarget::Op::Fill && op.rect.x == want.x &&
+          op.rect.y == want.y && op.rect.width == want.width &&
+          op.rect.height == want.height)
+        return true;
+    }
+    return false;
+  };
+
+  build(0);
+  CHECK_EQ(nav.drawnRows, 6); // wrapped rows fit 6 of the estimated 10
+  CHECK_EQ(nav.drawnCount, 8);
+  CHECK_EQ(scrollFills(), 2); // current geometry draws the indicator on pass 1
+  // Scroll feedback uses this layout, without a repaint just for the indicator.
+  CHECK(!nav.consumeRebuildNeeded());
+  build(0);
+  CHECK(!nav.rebuildNeeded); // and does not ask again
+  CHECK_EQ(scrollFills(), 2); // the rebuild paints the track and its thumb
+  // Thumb sized by the MEASURED page (6 of 8), not the 10-row estimate: the
+  // estimate would make drawListScrollIndicator() drop the indicator entirely.
+  CHECK(hasFill(Rect{477, 0, 3, 150})); // 200 * 6 / 8, at top 0
+
+  // Swipe scrolling reaches the clipped tail instead of snapping back to 0.
+  CHECK(nav.scrollBy(nav.pageRows(), 8));
+  CHECK_EQ(nav.top, 2); // 8 items - 6 measured rows
+  CHECK(build(7));      // the last item draws and takes touches
+  CHECK_EQ(nav.top, 2); // list() kept the scrolled viewport
+  CHECK(hasFill(Rect{477, 50, 3, 150})); // thumb tracked the viewport
+
+  // The measurement belongs to the row set it was taken on. A caller that
+  // reloads its data keeps the same nav. Seven wrapped items still overflow;
+  // the current six-row measurement shows the indicator immediately.
+  buildCount(7, 0);
+  CHECK_EQ(scrollFills(), 2);
+
+  // Every clamp has to agree about that. scrollBy() pages by the estimate for
+  // the new count too: if it kept the old measured page it would leave `top`
+  // at a viewport list() refuses to draw, and a caller that already built its
+  // virtual item window from that top renders nothing at all.
+  nav.drawnRows = 6; // as measured on the 8-item list above
+  nav.drawnCount = 8;
+  nav.visibleRows = 10;
+  nav.top = 2;
+  CHECK(nav.scrollBy(0, 7)); // clamps to the estimate: 7 - 10 -> 0
+  CHECK_EQ(nav.top, 0);
+  CHECK_EQ(nav.pageRowsFor(7), 10); // estimate, not the stale 6
+  CHECK_EQ(nav.pageRowsFor(8), 6);  // the count it was measured on
+
+  // Selecting the last item converges too, from a viewport at the top.
+  ListNav tail;
+  tail.reset(7);
+  nav = tail;
+  int passes = 0;
+  bool lastRegistered = false;
+  for (; passes < 8; ++passes) {
+    lastRegistered = build(7);
+    if (!nav.consumeRebuildNeeded())
+      break;
+  }
+  CHECK(lastRegistered);
+  CHECK(!nav.followPending);
+  CHECK(passes < 8);
+}
+
+// A nav list reserves the scroll strip even when it fits, so rows draw a few
+// pixels short of the band edge. The touch rect must still cover that strip
+// while no indicator sits in it: with a bezel inset the gap is wider than
+// ensureMinTouchRect's edge snap, so the rows would otherwise stop short of
+// the screen edge on exactly the recessed-panel devices.
+void testListNavFittingListKeepsFullWidthTouchRects() {
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice();
+  InputSnapshot input;
+  InteractionBuffer<8> interactions;
+  Frame<8> frame(draw, device, input, interactions);
+
+  ListItem items[2]{};
+  for (int i = 0; i < 2; ++i) {
+    items[i].label = "row";
+    items[i].actionValue = static_cast<int16_t>(i);
+    items[i].enabled = true;
+  }
+
+  ListNav nav;
+  nav.reset(0);
+  ListProps props;
+  props.items = items;
+  props.count = 2;
+  props.action = 7;
+  props.rowHeight = 40;
+  props.scrollIndicatorInset = 7; // recessed panel: cut is 12, past the snap
+  const Rect body{0, 0, 480, 200};
+  nav.syncToProps(body, 40, 0, 2, props);
+  list(frame, body, props);
+
+  // Both rows fit, so no indicator is drawn and the strip is empty screen.
+  CHECK_EQ(nav.drawnRows, 2);
+  CHECK_EQ(interactions.count(), 2u);
+  for (size_t k = 0; k < interactions.count(); ++k) {
+    const Rect hit = interactions.data()[k].rect;
+    CHECK_EQ(hit.x, 0);
+    CHECK_EQ(hit.right(), 480); // reaches the band edge, strip included
+  }
+  // The row itself still stops short of the strip it reserved.
+  bool drewNarrowRow = false;
+  for (size_t k = 0; k < draw.opCount; ++k) {
+    const auto& op = draw.ops[k];
+    if (op.kind == FakeDrawTarget::Op::Fill && op.rect.height == 40 &&
+        op.rect.width == 468)
+      drewNarrowRow = true;
+  }
+  CHECK(drewNarrowRow);
+}
+
 void testListCanUseFullTitleWidthWithShortValue() {
   ListItem item{};
   item.label = "This filename is deliberately long enough to require a two-line wrapped title";
@@ -873,6 +1767,109 @@ void testListCanUseFullTitleWidthWithShortValue() {
   // Only the extension and its normal gap are reserved, so the title can use
   // the remaining width before the value.
   CHECK_EQ(fullWidthDraw.ops[2].rect.width, 424);
+}
+
+// RTL mirrors list()'s row layout: icon and label move to the trailing
+// (right) edge, value/toggle move to the leading (left) edge. Verifies both
+// halves of the swap against the same single-row fixture in one pass.
+void testListRtlMirrorsIconAndValueSides() {
+  static const uint8_t iconBits[4] = {0, 0, 0, 0};
+  BitmapRef icon{iconBits, 16, 16, BitmapFormat::BW1, false};
+
+  ListItem item{};
+  item.label = "Setting";
+  item.value = "On";
+  item.icon = icon;
+
+  ListProps props;
+  props.items = &item;
+  props.count = 1;
+  props.rowHeight = 40;
+  props.valueInset = 4;
+  props.sidePadding = 0;  // zero out the default 8px inset so row math below is exact
+
+  DeviceContext device = makeDevice();
+  InputSnapshot input;
+
+  FakeDrawTarget ltrDraw;
+  InteractionBuffer<4> ltrInteractions;
+  Frame<4> ltrFrame(ltrDraw, device, input, ltrInteractions);
+  list(ltrFrame, Rect{0, 0, 480, 40}, props);
+
+  props.rtl = true;
+  FakeDrawTarget rtlDraw;
+  InteractionBuffer<4> rtlInteractions;
+  Frame<4> rtlFrame(rtlDraw, device, input, rtlInteractions);
+  list(rtlFrame, Rect{0, 0, 480, 40}, props);
+
+  // Icon: LTR hugs the row's left edge; RTL hugs the right edge.
+  size_t ltrIconIdx = 0, rtlIconIdx = 0;
+  for (size_t i = 0; i < ltrDraw.opCount; ++i)
+    if (ltrDraw.ops[i].kind == FakeDrawTarget::Op::Bitmap) ltrIconIdx = i;
+  for (size_t i = 0; i < rtlDraw.opCount; ++i)
+    if (rtlDraw.ops[i].kind == FakeDrawTarget::Op::Bitmap) rtlIconIdx = i;
+  CHECK_EQ(ltrDraw.ops[ltrIconIdx].rect.x, 0);
+  CHECK_EQ(rtlDraw.ops[rtlIconIdx].rect.x, 480 - 16);
+
+  // Value text: list() draws the value slot before the label, so the FIRST
+  // Text op is the value, not the last. LTR sits near the row's right edge;
+  // RTL sits near the left, just past the icon-free band start
+  // (band.x + valueInset).
+  size_t ltrValueIdx = 0, rtlValueIdx = 0;
+  for (size_t i = 0; i < ltrDraw.opCount; ++i) {
+    if (ltrDraw.ops[i].kind == FakeDrawTarget::Op::Text) {
+      ltrValueIdx = i;
+      break;
+    }
+  }
+  for (size_t i = 0; i < rtlDraw.opCount; ++i) {
+    if (rtlDraw.ops[i].kind == FakeDrawTarget::Op::Text) {
+      rtlValueIdx = i;
+      break;
+    }
+  }
+  CHECK(ltrDraw.ops[ltrValueIdx].rect.x > 400);  // right side in LTR
+  CHECK_EQ(rtlDraw.ops[rtlValueIdx].rect.x, 4);  // band.x(0) + valueInset(4) in RTL
+}
+
+// Same swap, but for a toggle row instead of a value row: the switch itself
+// (not just its knob) must relocate, since activateSelectedRow-style callers
+// rely on the toggle's on-screen position matching its touch hit region.
+void testListRtlMirrorsToggleSide() {
+  ListItem item{};
+  item.label = "Enabled";
+  item.toggle = true;
+  item.toggleChecked = true;
+
+  ListProps props;
+  props.items = &item;
+  props.count = 1;
+  props.rowHeight = 40;
+  props.valueInset = 4;
+  props.toggleWidth = 38;
+  props.sidePadding = 0;  // zero out the default 8px inset so row math below is exact
+
+  DeviceContext device = makeDevice();
+  InputSnapshot input;
+
+  FakeDrawTarget ltrDraw;
+  InteractionBuffer<4> ltrInteractions;
+  Frame<4> ltrFrame(ltrDraw, device, input, ltrInteractions);
+  list(ltrFrame, Rect{0, 0, 480, 40}, props);
+
+  props.rtl = true;
+  FakeDrawTarget rtlDraw;
+  InteractionBuffer<4> rtlInteractions;
+  Frame<4> rtlFrame(rtlDraw, device, input, rtlInteractions);
+  list(rtlFrame, Rect{0, 0, 480, 40}, props);
+
+  // The toggle track is the first Fill after the row background fill.
+  CHECK(ltrDraw.opCount >= 2);
+  CHECK(rtlDraw.opCount >= 2);
+  CHECK_EQ(ltrDraw.ops[1].kind, FakeDrawTarget::Op::Fill);
+  CHECK_EQ(rtlDraw.ops[1].kind, FakeDrawTarget::Op::Fill);
+  CHECK_EQ(ltrDraw.ops[1].rect.x, 480 - 38 - 4);  // right edge in LTR
+  CHECK_EQ(rtlDraw.ops[1].rect.x, 4);             // left edge (band.x + valueInset) in RTL
 }
 
 void testButtonRegistersExpandedHit() {
@@ -917,6 +1914,14 @@ void testProgressBarClamps() {
   props.value = 0;
   progressBar(frame2, Rect{0, 0, 200, 4}, props);
   CHECK_EQ(draw2.opCount, 1u);  // track only, no fill
+
+  FakeDrawTarget largeDraw;
+  Frame<4> largeFrame(largeDraw, device, input, interactions);
+  props.value = 5000000;
+  props.max = 10000000;
+  progressBar(largeFrame, Rect{0, 0, 700, 4}, props);
+  CHECK_EQ(largeDraw.opCount, 2u);
+  CHECK_EQ(largeDraw.ops[1].rect.width, 350);
 }
 
 void testBatteryIndicator() {
@@ -938,13 +1943,14 @@ void testBatteryIndicator() {
   CHECK_EQ(charge.rect.width, 9);  // cavity is 18 wide at 50%
   CHECK(charge.paint == PaintKind::Solid);
 
-  // Charging without an icon keeps the solid fill and overlays a bolt.
+  // Charging without an icon keeps the solid fill and overlays a bolt, drawn
+  // as a pixel-authored 5x8 mask bitmap (rasterized triangles blob at this size).
   FakeDrawTarget draw2;
   Frame<4> frame2(draw2, device, input, interactions);
   props.charging = true;
   batteryIndicator(frame2, Rect{400, 0, 80, 20}, props);
   CHECK(draw2.ops[2].paint == PaintKind::Solid);
-  CHECK_EQ(draw2.countKind(FakeDrawTarget::Op::Triangle), 2u);
+  CHECK_EQ(draw2.countKind(FakeDrawTarget::Op::Bitmap), 1u);
 
   // Percent above 100 clamps to a full cavity.
   FakeDrawTarget draw3;
@@ -1336,6 +2342,47 @@ void testContentWidthTabBarLayout() {
   CHECK_EQ(interactions.route(tap).value, 20);
 }
 
+
+void testTabBarTrailingIndicatorLayout() {
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice();
+  InputSnapshot input;
+  InteractionBuffer<8> interactions;
+  Frame<8> frame(draw, device, input, interactions);
+
+  TabItem tabs[2];
+  tabs[0].label = "Added";
+  tabs[0].selected = true;
+  tabs[0].indicator = TabIndicator::Down;
+  tabs[1].label = "Title";
+  TabBarProps bar;
+  bar.tabs = tabs;
+  bar.count = 2;
+  tabBar(frame, Rect{0, 0, 300, 40}, bar);
+
+  CHECK_EQ(draw.countKind(FakeDrawTarget::Op::Triangle), 1u);
+  const FakeDrawTarget::Op* label = nullptr;
+  const FakeDrawTarget::Op* indicator = nullptr;
+  for (size_t i = 0; i < draw.opCount; ++i) {
+    if (!label && draw.ops[i].kind == FakeDrawTarget::Op::Text)
+      label = &draw.ops[i];
+    if (!indicator && draw.ops[i].kind == FakeDrawTarget::Op::Triangle)
+      indicator = &draw.ops[i];
+  }
+  CHECK(label != nullptr);
+  CHECK(indicator != nullptr);
+  if (label && indicator) {
+    CHECK(indicator->rect.x > label->rect.right());
+    CHECK_EQ(indicator->color, Color::White);
+  }
+
+  FakeDrawTarget draw2;
+  Frame<8> frame2(draw2, device, input, interactions);
+  tabs[0].indicator = TabIndicator::Up;
+  tabBar(frame2, Rect{0, 0, 300, 40}, bar);
+  CHECK_EQ(draw2.countKind(FakeDrawTarget::Op::Triangle), 1u);
+}
+
 void testRoundedRaffSurfaces() {
   // Mirrors the retired RoundedRaffTheme: pill settings tabs with a bottom
   // divider, hug-content menu rows, and rounded keyboard keys — all from
@@ -1480,14 +2527,14 @@ void testThemePrimitiveParity() {
   CHECK_EQ(draw4.countKind(FakeDrawTarget::Op::Line), 1u);
   CHECK_EQ(draw4.countKind(FakeDrawTarget::Op::Bitmap), 1u);
 
-  // Charging battery draws a bolt (two triangles) instead of a dithered fill.
+  // Charging battery draws a bolt (a 5x8 mask bitmap) over the solid fill.
   FakeDrawTarget draw5;
   Frame<16> frame5(draw5, device, input, interactions);
   BatteryIndicatorProps battery;
   battery.percent = 80;
   battery.charging = true;
   batteryIndicator(frame5, Rect{400, 0, 80, 20}, battery);
-  CHECK_EQ(draw5.countKind(FakeDrawTarget::Op::Triangle), 2u);
+  CHECK_EQ(draw5.countKind(FakeDrawTarget::Op::Bitmap), 1u);
 }
 
 
@@ -2303,11 +3350,22 @@ void testQwertyKeyboardComponent() {
 
   CHECK_EQ(interactions.count(), 31u);
   CHECK_EQ(interactions.data()[0].value, static_cast<int16_t>('q'));
-  CHECK_EQ(interactions.data()[19].action, 401);
-  CHECK_EQ(interactions.data()[27].action, 403);
+  CHECK_EQ(interactions.data()[28].action, 401);
+  CHECK_EQ(interactions.data()[26].action, 403);
   CHECK_EQ(interactions.data()[29].value, QWERTY_KEY_SPACE);
   CHECK_EQ(interactions.data()[30].action, 404);
-  CHECK(draw.countKind(FakeDrawTarget::Op::Bitmap) >= 1u);
+  // Full-width rows use 51px letter keys and include the 2px edge padding
+  // in their outer touch targets.
+  CHECK_EQ(interactions.data()[10].rect.x, 0);
+  CHECK_EQ(interactions.data()[10].rect.width, 53);
+  CHECK_EQ(interactions.data()[19].rect.x, 0);
+  CHECK_EQ(interactions.data()[19].rect.width, 53);
+  CHECK_EQ(draw.countKind(FakeDrawTarget::Op::Bitmap), 1u);
+  for (size_t i = 0; i < draw.opCount; ++i) {
+    if (draw.ops[i].kind != FakeDrawTarget::Op::Bitmap) continue;
+    CHECK_EQ(draw.ops[i].rect.width, 28);
+    CHECK_EQ(draw.ops[i].rect.height, 28);
+  }
   CHECK_EQ(draw.countKind(FakeDrawTarget::Op::Stroke), 0u);
 
   InputSnapshot tap;
@@ -2335,7 +3393,7 @@ void testLocalizedKeyboardLayout() {
 
   CHECK_EQ(interactions.count(), 32u);
   CHECK_EQ(interactions.data()[19].value, 1201);  // Spanish ñ key has a stable non-ASCII key id.
-  CHECK_EQ(interactions.data()[28].action, 412);
+  CHECK_EQ(interactions.data()[27].action, 412);
   CHECK_EQ(interactions.data()[31].action, 413);
   CHECK_EQ(draw.countKind(FakeDrawTarget::Op::Stroke), 0u);
 }
@@ -2345,8 +3403,8 @@ void testSymbolKeyboardPages() {
   const KeyboardLayout& page1 = builtinKeyboardLayout(KeyboardLayoutId::QwertyEn, false, true);
   const KeyboardLayout& page2 = builtinKeyboardLayout(KeyboardLayoutId::QwertyEn, true, true);
   CHECK(&page1 != &page2);
-  CHECK(std::strcmp(page1.rows[2].keys[0].label, "#+=") == 0);   // shift slot pages forward
-  CHECK(std::strcmp(page2.rows[2].keys[0].label, "123") == 0);   // ...and back
+  CHECK(std::strcmp(page1.rows[3].keys[1].label, "#+=") == 0);   // shift slot pages forward
+  CHECK(std::strcmp(page2.rows[3].keys[1].label, "123") == 0);   // ...and back
   CHECK(std::strcmp(page1.rows[3].keys[0].label, "ABC") == 0);   // mode slot exits to letters
   CHECK(std::strcmp(page2.rows[3].keys[0].label, "ABC") == 0);
 
@@ -2368,6 +3426,91 @@ void testSymbolKeyboardPages() {
     }
   }
   for (int c = 0x20; c <= 0x7E; ++c) CHECK(covered[c]);
+}
+
+void testKeyboardLayoutVariants() {
+  for (int id = 0; id <= static_cast<int>(KeyboardLayoutId::ArabicAr); ++id) {
+    for (int flags = 0; flags < 16; ++flags) {
+      const auto layoutId = static_cast<KeyboardLayoutId>(id);
+      const bool shifted = flags & 1, symbols = flags & 2, numbers = flags & 4, lang = flags & 8;
+      const KeyboardLayout& layout = builtinKeyboardLayout(layoutId, shifted, symbols, numbers, lang);
+      const bool hasCase = id < static_cast<int>(KeyboardLayoutId::HebrewIl);
+      const bool hasLang = lang || id >= static_cast<int>(KeyboardLayoutId::CyrillicRu);
+      CHECK_EQ(layout.rowCount, numbers && !symbols ? 5 : 4);
+      CHECK_EQ(keyboardActivationFor(layout, QWERTY_KEY_BACKSPACE).kind, KeyboardActivationKind::Delete);
+      CHECK_EQ(keyboardActivationFor(layout, QWERTY_KEY_ENTER).kind, KeyboardActivationKind::Submit);
+      CHECK_EQ(keyboardActivationFor(layout, QWERTY_KEY_MODE).kind, KeyboardActivationKind::Mode);
+      CHECK_EQ(keyboardActivationFor(layout, QWERTY_KEY_LANG).kind,
+               hasLang ? KeyboardActivationKind::Language : KeyboardActivationKind::None);
+      CHECK_EQ(keyboardActivationFor(layout, QWERTY_KEY_SHIFT).kind,
+               hasCase || symbols ? KeyboardActivationKind::Shift : KeyboardActivationKind::None);
+      for (int width : {320, 480, 800}) {
+        FakeDrawTarget draw;
+        DeviceContext device = makeDevice(width, 800);
+        InputSnapshot input;
+        InteractionBuffer<64> interactions;
+        Frame<64> frame(draw, device, input, interactions);
+        QwertyKeyboardProps props;
+        props.layout = layoutId;
+        props.shifted = shifted;
+        props.symbols = symbols;
+        props.numberRow = numbers;
+        props.langKey = lang;
+        props.keyAction = 400;
+        props.shiftAction = 401;
+        props.modeAction = 402;
+        props.langAction = 403;
+        props.deleteAction = 404;
+        props.okAction = 405;
+        qwertyKeyboard(frame, Rect{0, 0, static_cast<int16_t>(width), 300}, props);
+        size_t index = 0;
+        for (uint8_t row = 0; row < layout.rowCount; ++row) {
+          CHECK_EQ(layout.rows[row].insetUnits, 0);
+          for (uint8_t col = 0; col < layout.rows[row].count; ++col, ++index) {
+            const KeyboardKey& key = layout.rows[row].keys[col];
+            CHECK(index < interactions.count());
+            if (index >= interactions.count()) continue;
+            const Interaction& hit = interactions.data()[index];
+            CHECK_EQ(hit.value, key.value);
+            CHECK(hit.rect.width >= 20);
+            CHECK(hit.rect.height >= 28);
+            InputSnapshot tap;
+            tap.touchReleased = true;
+            tap.touchX = hit.rect.x + hit.rect.width / 2;
+            tap.touchY = hit.rect.y + hit.rect.height / 2;
+            CHECK_EQ(interactions.route(tap).value, key.value);
+            KeyboardNavigator nav;
+            CHECK(nav.syncToValue(layout, key.value));
+            CHECK_EQ(nav.logicalIndex(layout), static_cast<int16_t>(index)); // also catches duplicate IDs
+            if (key.kind == KeyKind::Shift) {
+              CHECK_EQ(row, layout.rowCount - 1);
+              CHECK_EQ(hit.action, 401);
+            }
+            if (key.kind == KeyKind::Lang) CHECK_EQ(hit.action, 403);
+            if (key.kind == KeyKind::Normal || key.kind == KeyKind::Space) {
+              char buffer[32] = {};
+              KeyboardEntry entry;
+              entry.attach(buffer, sizeof buffer);
+              entry.layout = layoutId;
+              entry.shifted = shifted;
+              entry.symbols = symbols;
+              entry.numberRow = numbers;
+              CHECK(entry.key(key.value));
+              CHECK(std::strcmp(buffer, keyboardOutputFor(layout, key.value)) == 0);
+              const char* alt = keyboardAltOutputFor(layout, key.value);
+              char expected[32];
+              std::strcpy(expected, alt ? alt : keyboardOutputFor(layout, key.value));
+              entry.clear(shifted);
+              entry.symbols = symbols;
+              CHECK(entry.key(key.value, true));
+              CHECK(std::strcmp(buffer, expected) == 0);
+            }
+          }
+        }
+        CHECK_EQ(index, interactions.count());
+      }
+    }
+  }
 }
 
 void testKeyboardEntry() {
@@ -2656,7 +3799,7 @@ void testHeaderLeadingButton() {
   props.title = "Settings";
   props.centered = true;
   props.borderEdges = EdgeBottom;
-  props.leadingIcon = lucideDeleteIcon16();  // any bitmap works as the icon
+  props.leadingIcon = lucideDeleteIcon28();  // any bitmap works as the icon
   props.leadingAction = 500;
   header(frame, Rect{0, 0, 240, 44}, props);
 
@@ -2693,9 +3836,317 @@ void testScreenKeyboardUsesResponsiveHeight() {
   screen.qwertyKeyboard(keyboard, 0, LayoutAnchor::Bottom);
 
   CHECK_EQ(interactions.count(), 31u);
-  CHECK(interactions.data()[0].rect.y >= 275);
-  CHECK(interactions.data()[0].rect.y < 320);
+  CHECK(interactions.data()[0].rect.y >= 228);
+  CHECK(interactions.data()[0].rect.y < 243);
   CHECK(interactions.data()[30].rect.bottom() <= device.height);
+}
+
+void testKeyboardHighlightPadding() {
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice(480, 800);
+  InputSnapshot input;
+  InteractionBuffer<8> interactions;
+  Frame<8> frame(draw, device, input, interactions);
+  const KeyboardKey key{"1", "1", KeyKind::Normal, StateNormal, '1', 1, true, "!"};
+  const KeyboardRow row{&key, 1, 0};
+  const KeyboardLayout layout{&row, 1};
+  KeyboardProps props;
+  props.layout = &layout;
+  props.keyAction = 1;
+  props.padding = Insets{};
+  props.selectedIndex = -1;
+  const Rect keyRect{100, 100, 100, 80};
+  Rect normalHint{};
+  Rect primaryLabel{};
+  for (int phase = 0; phase < 3; ++phase) {
+    draw.opCount = 0;
+    if (phase == 1) props.selectedIndex = 0;
+    if (phase == 2) {
+      props.selectedIndex = -1;
+      InputSnapshot press;
+      press.touchPressed = true;
+      press.touchX = 150;
+      press.touchY = 175; // below the visible highlight, inside the full key
+      interactions.routePublished(press);
+      CHECK(interactions.activeIndex() >= 0);
+    }
+    interactions.beginPublishCycle();
+    keyboard(frame, keyRect, props);
+    interactions.publish();
+    CHECK_EQ(interactions.data()[0].rect.height, 80);
+    CHECK_EQ(draw.ops[0].kind, FakeDrawTarget::Op::Fill);
+    CHECK_EQ(draw.ops[0].color, phase == 0 ? Color::White : Color::Black);
+    CHECK_EQ(draw.ops[0].rect.height, phase == 0 ? 80 : 72);
+    CHECK_EQ(draw.ops[0].rect.y, keyRect.y + (phase == 0 ? 0 : 4));
+    CHECK_EQ(draw.ops[0].rect.y + draw.ops[0].rect.height / 2, keyRect.y + keyRect.height / 2);
+    CHECK_EQ(draw.ops[0].rect.width, 100);
+    int labels = 0;
+    for (size_t i = 0; i < draw.opCount; ++i) {
+      const auto& op = draw.ops[i];
+      if (op.kind != FakeDrawTarget::Op::Text) continue;
+      ++labels;
+      if (labels == 1) primaryLabel = op.rect;
+      if (labels == 2) {
+        CHECK_EQ(keyRect.right() - op.rect.right(), 10);
+        CHECK_EQ(op.rect.y, keyRect.y + 6);
+        CHECK_EQ(op.color, phase == 0 ? Color::Black : Color::White);
+        if (phase == 0) normalHint = op.rect;
+        CHECK_EQ(op.rect.x, normalHint.x);
+        CHECK_EQ(op.rect.y, normalHint.y);
+        CHECK_EQ(op.rect.width, normalHint.width);
+        CHECK_EQ(op.rect.height, normalHint.height);
+      }
+    }
+    CHECK_EQ(labels, 2);
+    CHECK_EQ(primaryLabel.y, static_cast<int16_t>(keyRect.y + (keyRect.height - draw.lineH) / 2));
+    CHECK_EQ(primaryLabel.height, draw.lineH);
+  }
+  InputSnapshot release;
+  release.touchReleased = true;
+  release.touchX = 150;
+  release.touchY = 175;
+  CHECK_EQ(interactions.routePublished(release).value, '1');
+}
+
+void testCompactKeyboardAltLabelStaysInsideKey() {
+  FakeDrawTarget draw;
+  draw.lineH = 36;
+  draw.fontLineH[FONT_SLOT_SMALL] = 11;
+  DeviceContext device = makeDevice(480, 800);
+  InputSnapshot input;
+  InteractionBuffer<8> interactions;
+  Frame<8> frame(draw, device, input, interactions);
+  const KeyboardKey key{"1", "1", KeyKind::Normal, StateNormal, '1', 1, true, "!"};
+  const KeyboardRow row{&key, 1, 0};
+  const KeyboardLayout layout{&row, 1};
+  KeyboardProps props;
+  props.layout = &layout;
+  props.keyAction = 1;
+  props.padding = Insets{};
+  props.altText.font = FONT_SLOT_SMALL;
+
+  keyboard(frame, Rect{100, 100, 100, 56}, props);
+
+  Rect primaryLabel{};
+  Rect altHint{};
+  int labels = 0;
+  for (size_t i = 0; i < draw.opCount; ++i) {
+    const auto& op = draw.ops[i];
+    if (op.kind != FakeDrawTarget::Op::Text) continue;
+    if (labels++ == 0) {
+      primaryLabel = op.rect;
+    } else {
+      altHint = op.rect;
+    }
+  }
+  CHECK_EQ(labels, 2);
+  CHECK_EQ(primaryLabel.height, draw.lineH);
+  CHECK_EQ(primaryLabel.x + primaryLabel.width / 2, 144);
+  CHECK(primaryLabel.y >= altHint.bottom() + 4);
+  CHECK(primaryLabel.y >= 100);
+  CHECK(primaryLabel.bottom() <= 156);
+
+  draw.opCount = 0;
+  const KeyboardKey letterKey{"e",  "e", KeyKind::Normal, StateNormal, 'e', 1,
+                              true, "é"};
+  const KeyboardRow letterRow{&letterKey, 1, 0};
+  const KeyboardLayout letterLayout{&letterRow, 1};
+  props.layout = &letterLayout;
+  keyboard(frame, Rect{100, 100, 100, 56}, props);
+  for (size_t i = 0; i < draw.opCount; ++i) {
+    const auto &op = draw.ops[i];
+    if (op.kind != FakeDrawTarget::Op::Text)
+      continue;
+    CHECK_EQ(op.rect.x + op.rect.width / 2, 150);
+    break;
+  }
+
+  draw.opCount = 0;
+  props.layout = &layout;
+  props.altLabelGap = -10;
+  keyboard(frame, Rect{100, 100, 100, 56}, props);
+  labels = 0;
+  for (size_t i = 0; i < draw.opCount; ++i) {
+    const auto &op = draw.ops[i];
+    if (op.kind != FakeDrawTarget::Op::Text)
+      continue;
+    if (labels++ == 0) {
+      primaryLabel = op.rect;
+    } else {
+      altHint = op.rect;
+    }
+  }
+  CHECK_EQ(labels, 2);
+  CHECK(primaryLabel.y >= altHint.bottom());
+}
+
+void testQwertyKeyboardSpacingOverrides() {
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice(480, 800);
+  InputSnapshot input;
+  InteractionBuffer<64> interactions;
+  Frame<64> frame(draw, device, input, interactions);
+  QwertyKeyboardProps props;
+  props.keyAction = 1;
+  props.numberRow = true;
+  props.padding = Insets{};
+  props.altHintRightPadding = 6;
+  props.altLabelGap = 2;
+  props.digitLabelOffsetX = 3;
+
+  qwertyKeyboard(frame, Rect{0, 0, 480, 400}, props);
+
+  Rect firstKey{};
+  Rect primaryLabel{};
+  Rect altHint{};
+  int labels = 0;
+  for (size_t i = 0; i < draw.opCount; ++i) {
+    const auto &op = draw.ops[i];
+    if (op.kind == FakeDrawTarget::Op::Fill && firstKey.empty())
+      firstKey = op.rect;
+    if (op.kind != FakeDrawTarget::Op::Text || labels >= 2)
+      continue;
+    if (labels++ == 0) {
+      primaryLabel = op.rect;
+    } else {
+      altHint = op.rect;
+    }
+  }
+  CHECK_EQ(labels, 2);
+  CHECK_EQ(primaryLabel.x + primaryLabel.width / 2,
+           firstKey.x + firstKey.width / 2 + 3);
+  CHECK_EQ(firstKey.right() - altHint.right(), 6);
+  CHECK(primaryLabel.y >= altHint.bottom() + 2);
+}
+
+void testKeyboardTypography() {
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice(480, 800);
+  InputSnapshot input;
+  InteractionBuffer<64> interactions;
+  Frame<64> frame(draw, device, input, interactions);
+  QwertyKeyboardProps props;
+  props.numberRow = true;
+  props.labelText.font = FONT_SLOT_TITLE;
+  props.controlText.font = FONT_SLOT_BODY;
+  props.keyAction = 1;
+  qwertyKeyboard(frame, Rect{0, 400, 480, 400}, props);
+  int letters = 0, controls = 0, alternates = 0;
+  for (size_t i = 0; i < draw.opCount; ++i) {
+    const auto& op = draw.ops[i];
+    if (op.kind != FakeDrawTarget::Op::Text) continue;
+    if (op.font == FONT_SLOT_TITLE) ++letters;
+    if (op.font == FONT_SLOT_BODY) ++controls;
+    if (op.font == FONT_SLOT_SMALL) ++alternates;
+  }
+  CHECK_EQ(letters, 36); // 26 letters plus 10 digits
+  CHECK_EQ(controls, 3); // mode, Shift, OK
+  CHECK_EQ(alternates, 10);
+  CHECK_EQ(draw.countKind(FakeDrawTarget::Op::Stroke), 0u);
+}
+
+void testTallKeyboardSizing() {
+  CHECK_EQ(keyboardPreferredHeight(480, 4), 348);
+  CHECK_EQ(keyboardPreferredHeight(480, 5), 434);
+  for (int id = 0; id <= static_cast<int>(KeyboardLayoutId::ArabicAr); ++id) {
+    for (int flags = 0; flags < 8; ++flags) {
+      FakeDrawTarget draw;
+      DeviceContext device = makeDevice(480, 800);
+      InputSnapshot input;
+      InteractionBuffer<64> interactions;
+      Frame<64> frame(draw, device, input, interactions);
+      ThemeTokens theme;
+      Screen<64> screen(frame, theme);
+      screen.setContentMargin(Insets{20, 30, 20, 30});
+      QwertyKeyboardProps props;
+      props.keyAction = 1;
+      props.layout = static_cast<KeyboardLayoutId>(id);
+      props.shifted = flags & 1;
+      props.symbols = flags & 2;
+      props.numberRow = flags & 4;
+      screen.qwertyKeyboard(props, 0, LayoutAnchor::Bottom);
+      const int rows = props.numberRow && !props.symbols ? 5 : 4;
+      const int height = rows == 5 ? 416 : 348;
+      const int rowHeight = rows == 5 ? 76 : 80;
+      CHECK_EQ(screen.contentRect().bottom(), 780 - height);
+      CHECK_EQ(screen.contentRect().x, 30); // other content keeps its margins
+      CHECK_EQ(screen.contentRect().width, 420);
+      CHECK_EQ(interactions.data()[0].rect.x, 0);
+      CHECK_EQ(interactions.data()[0].rect.y, 780 - height + 5);
+      CHECK_EQ(interactions.data()[0].rect.height, rowHeight);
+      const auto& layout = builtinKeyboardLayout(props.layout, props.shifted, props.symbols, props.numberRow);
+      const auto& secondRow = interactions.data()[layout.rows[0].count];
+      CHECK_EQ(secondRow.rect.y - interactions.data()[0].rect.bottom(), 6);
+      for (size_t i = 0; i < interactions.count(); ++i) {
+        const auto& hit = interactions.data()[i];
+        CHECK_EQ(hit.rect.height, rowHeight);
+        CHECK(hit.rect.width >= 36); // even twelve-column international rows
+        CHECK(hit.rect.x >= 0 && hit.rect.right() <= 480);
+        // The extra vertical space belongs to the key, including near its edges.
+        for (int y : {hit.rect.y + 2, hit.rect.bottom() - 3}) {
+          InputSnapshot tap;
+          tap.touchReleased = true;
+          tap.touchX = hit.rect.x + hit.rect.width / 2;
+          tap.touchY = static_cast<int16_t>(y);
+          CHECK_EQ(interactions.route(tap).value, hit.value);
+        }
+      }
+    }
+  }
+  // Generic layouts use their actual row count and respect hardware safe areas.
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice(500, 820);
+  device.safeArea = Insets{10, 10, 10, 10};
+  InputSnapshot input;
+  InteractionBuffer<64> interactions;
+  Frame<64> frame(draw, device, input, interactions);
+  ThemeTokens theme;
+  Screen<64> screen(frame, theme);
+  KeyboardProps props;
+  props.layout = &builtinKeyboardLayout(KeyboardLayoutId::QwertyEn, false, false, true);
+  props.keyAction = 1;
+  screen.keyboard(props, 0, LayoutAnchor::Bottom);
+  CHECK_EQ(screen.contentRect().bottom(), 810 - 416);
+  CHECK_EQ(interactions.data()[0].rect.height, 76);
+  CHECK(interactions.data()[0].rect.x >= 10);
+  CHECK(interactions.data()[9].rect.right() <= 490);
+}
+
+void testScreenContentMarginCoordinateSpaces() {
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice(100, 100);
+  device.safeArea = Insets{10, 8, 6, 4};
+  InputSnapshot input;
+  InteractionBuffer<1> interactions;
+  Frame<1> frame(draw, device, input, interactions);
+  ThemeTokens theme;
+  Screen<1> screen(frame, theme);
+
+  // Regular content margins remain relative to the safe rectangle.
+  screen.setContentMargin(Insets{20, 18, 16, 14});
+  Rect content = screen.contentRect();
+  CHECK_EQ(content.x, 18);
+  CHECK_EQ(content.y, 30);
+  CHECK_EQ(content.width, 56);
+  CHECK_EQ(content.height, 48);
+
+  // Screen-relative margins reserve the requested physical edge bands without
+  // applying the safe-area insets twice.
+  screen.setContentMarginFromScreen(Insets{20, 18, 16, 14});
+  content = screen.contentRect();
+  CHECK_EQ(content.x, 14);
+  CHECK_EQ(content.y, 20);
+  CHECK_EQ(content.width, 68);
+  CHECK_EQ(content.height, 64);
+
+  // Reservations contained entirely under the bezel leave the safe rectangle
+  // unchanged.
+  screen.setContentMarginFromScreen(Insets{5, 7, 3, 2});
+  content = screen.contentRect();
+  CHECK_EQ(content.x, 4);
+  CHECK_EQ(content.y, 10);
+  CHECK_EQ(content.width, 88);
+  CHECK_EQ(content.height, 84);
 }
 
 void testEReaderChromeMenusAndPanels() {
@@ -2808,6 +4259,164 @@ void testEReaderBookSurfaces() {
   CHECK(draw.countKind(FakeDrawTarget::Op::Fill) >= 5);
 }
 
+void testBookCardCenteredTextAndProgressLabel() {
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice(320, 240);
+  InputSnapshot input;
+  InteractionBuffer<24> interactions;
+  Frame<24> frame(draw, device, input, interactions);
+  BookCardProps card;
+  card.title = "Title";
+  card.author = "Author";
+  card.coverSize = Size{62, 140};
+  card.centerTextOnCover = true;
+  card.progress = 42;
+  card.progressLabel = "42%";
+  card.action = 502;
+  bookCard(frame, Rect{0, 0, 320, 160}, card);
+  int textCount = 0;
+  bool sawBar = false;
+  for (size_t i = 0; i < draw.opCount; ++i) {
+    const auto& op = draw.ops[i];
+    if (op.kind == FakeDrawTarget::Op::Text) {
+      CHECK_EQ(op.rect.x, 84);
+      if (textCount == 0) CHECK_EQ(op.rect.y, 66);
+      if (textCount == 1) CHECK_EQ(op.rect.y, 82);
+      if (textCount == 2) {
+        CHECK_EQ(op.rect.y, 138);
+        CHECK_EQ(op.rect.width, 18);
+        CHECK_EQ(op.rect.height, 12);
+      }
+      ++textCount;
+    }
+    if (op.kind == FakeDrawTarget::Op::Fill && op.rect.x == 110 && op.rect.y == 142 &&
+        op.rect.width == 202 && op.rect.height == 4) sawBar = true;
+  }
+  CHECK_EQ(textCount, 3);
+  CHECK(sawBar);
+  CHECK_EQ(interactions.count(), 1u);
+  CHECK_EQ(interactions.data()[0].action, 502);
+}
+
+void testSpaceBetweenLayouts() {
+  for (const int width : {300, 301}) {
+    for (const int count : {1, 4, 5}) {
+      FakeDrawTarget draw;
+      DeviceContext device = makeDevice(480, 800);
+      InputSnapshot input;
+      InteractionBuffer<8> interactions;
+      Frame<8> frame(draw, device, input, interactions);
+      TabItem items[5]{};
+      Rect icons[5]{};
+      for (int i = 0; i < count; ++i) items[i].value = 10 + i;
+      TabBarProps tabs;
+      tabs.tabs = items;
+      tabs.count = count;
+      tabs.action = 501;
+      tabs.layout = TabBarLayout::SpaceBetween;
+      tabs.distributedSlotWidth = 44;
+      tabs.iconSize = 32;
+      tabs.iconPainterUserData = icons;
+      tabs.iconPainter = [](DrawTarget&, Rect rect, const TabItem&, uint8_t index, void* user) {
+        static_cast<Rect*>(user)[index] = rect;
+        return true;
+      };
+      tabBar(frame, Rect{10, 20, static_cast<int16_t>(width), 56}, tabs);
+      CHECK_EQ(interactions.count(), static_cast<size_t>(count));
+      for (int i = 0; i < count; ++i) {
+        const int x = 10 + (count > 1 ? i * (width - 44) / (count - 1) : (width - 44) / 2);
+        CHECK_EQ(icons[i].x, x + 6);
+        CHECK_EQ(interactions.data()[i].value, 10 + i);
+        InputSnapshot tap;
+        tap.touchReleased = true;
+        tap.touchX = icons[i].x + 16;
+        tap.touchY = icons[i].y + 16;
+        CHECK_EQ(interactions.route(tap).value, 10 + i);
+      }
+    }
+    FakeDrawTarget draw;
+    DeviceContext device = makeDevice(480, 800);
+    InputSnapshot input;
+    InteractionBuffer<8> interactions;
+    Frame<8> frame(draw, device, input, interactions);
+    CoverGridItem items[6]{};
+    Rect covers[6]{};
+    for (int i = 0; i < 6; ++i) items[i] = coverGridItem(nullptr, i + 1);
+    CoverGridProps grid;
+    grid.items = items;
+    grid.count = 6;
+    grid.columns = 3;
+    grid.action = 502;
+    grid.columnLayout = CoverGridColumnLayout::SpaceBetween;
+    grid.coverSize = Size{60, 90};
+    grid.cellInset = Insets{6, 6, 6, 6};
+    grid.rowHeight = 102;
+    grid.rowGap = 8;
+    grid.labelHeight = 0;
+    grid.coverPainterUserData = covers;
+    grid.coverPainter = [](DrawTarget&, Rect rect, const CoverGridItem&, uint16_t index, void* user) {
+      static_cast<Rect*>(user)[index] = rect;
+      return true;
+    };
+    coverGrid(frame, Rect{10, 100, static_cast<int16_t>(width), 212}, grid);
+    CHECK_EQ(interactions.count(), 6u);
+    CHECK_EQ(covers[0].x, 16);
+    CHECK_EQ(covers[2].right(), 10 + width - 6);
+    CHECK_EQ(covers[3].x, covers[0].x);
+    CHECK_EQ(covers[5].right(), covers[2].right());
+    CHECK_EQ(covers[3].y - covers[0].y, 110);
+    for (int i = 0; i < 6; ++i) CHECK_EQ(interactions.data()[i].value, i + 1);
+  }
+}
+
+void testCoverGridLabelAlignment() {
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice(320, 240);
+  InputSnapshot input;
+  InteractionBuffer<24> interactions;
+  Frame<24> frame(draw, device, input, interactions);
+  const CoverGridItem items[2] = {coverGridItem("One", 1), coverGridItem("Two", 2)};
+  CoverGridProps grid;
+  grid.items = items;
+  grid.count = 2;
+  grid.action = 501;
+  grid.columns = 2;
+  grid.rowHeight = 120;
+  grid.coverSize = Size{48, 72};
+  grid.cellInset = Insets{6, 10, 0, 10};
+  grid.labelInset = Insets{0, 5, 0, 3};
+  grid.titleText.align = TextAlign::Right;
+  coverGrid(frame, Rect{10, 20, 220, 120}, grid);
+  size_t labels = 0;
+  for (size_t i = 0; i < draw.opCount; ++i) {
+    const auto& op = draw.ops[i];
+    if (op.kind != FakeDrawTarget::Op::Text) continue;
+    CHECK_EQ(op.align, TextAlign::Center);
+    CHECK_EQ(op.rect.x, 23 + static_cast<int>(labels) * 114);
+    CHECK_EQ(op.rect.width, 78);
+    ++labels;
+  }
+  CHECK_EQ(labels, 2u);
+  draw.opCount = 0;
+  grid.labelAlign = TextAlign::Left;
+  grid.labelFollowsCover = true;
+  coverGrid(frame, Rect{10, 20, 220, 120}, grid);
+  labels = 0;
+  for (size_t i = 0; i < draw.opCount; ++i) {
+    const auto& op = draw.ops[i];
+    if (op.kind != FakeDrawTarget::Op::Text) continue;
+    CHECK_EQ(op.align, TextAlign::Left);
+    CHECK_EQ(op.rect.x, 42 + static_cast<int>(labels) * 114);
+    CHECK_EQ(op.rect.y, 100);
+    CHECK_EQ(op.rect.width, 40);
+    ++labels;
+  }
+  CHECK_EQ(labels, 2u);
+  CHECK_EQ(interactions.count(), 4u);
+  CHECK_EQ(interactions.data()[2].value, 1);
+  CHECK_EQ(interactions.data()[3].value, 2);
+}
+
 static constexpr ActionId ActionOpen = 101;
 static constexpr ActionId ActionBack = 102;
 
@@ -2843,9 +4452,19 @@ void testHeaderBorderEdges() {
   Screen<8> screen(frame, theme);
 
   // The themed header supplies a 1px divider when the theme's popup style has
-  // no border of its own, so default headers match the documented divider.
+  // no border of its own. A single (bottom-only) edge draws as a fill band at
+  // the bottom of the rect, not a stroke or a centered line() (drawBorderEdges
+  // fills partial edges so a thick rule can't leak past the band).
   screen.header("Top");
-  CHECK_EQ(draw.countKind(FakeDrawTarget::Op::Line), 1u);
+  bool sawDivider = false;
+  for (size_t i = 0; i < draw.opCount; ++i) {
+    const auto& op = draw.ops[i];
+    if (op.kind == FakeDrawTarget::Op::Fill && op.rect.height == 1 &&
+        op.rect.width == 200 && op.rect.y == 19)
+      sawDivider = true;
+  }
+  CHECK(sawDivider);
+  CHECK_EQ(draw.countKind(FakeDrawTarget::Op::Line), 0u);
   CHECK_EQ(draw.countKind(FakeDrawTarget::Op::Stroke), 0u);
 
   FakeDrawTarget boxedDraw;
@@ -3087,12 +4706,562 @@ void testTextArea() {
   CHECK(sawCaret);       // caret on the now-visible line 1
 }
 
+// Filled-capsule slider: one track fill, a value-proportional stadium fill,
+// an outline, and a round handle riding the fill boundary — and a drag-routed
+// hit over the whole pill.
+void testCapsuleSlider() {
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice();
+  InputSnapshot input;
+  InteractionBuffer<4> interactions;
+  Frame<4> frame(draw, device, input, interactions);
+
+  CapsuleSliderProps props;
+  props.value = 50;
+  props.max = 100;
+  props.action = 7;
+  capsuleSlider(frame, Rect{0, 0, 200, 56}, props);
+  CHECK_EQ(interactions.count(), 1u);
+  CHECK_EQ(interactions.data()[0].action, 7);
+  CHECK_EQ(interactions.data()[0].inputMask, static_cast<uint16_t>(InputTouch | InputDrag));
+  // track + value fill + handle fill; capsule outline + handle outline
+  CHECK_EQ(draw.countKind(FakeDrawTarget::Op::Fill), 3u);
+  CHECK_EQ(draw.countKind(FakeDrawTarget::Op::Stroke), 2u);
+  // stroke 2 -> inner {2,2,196,52}, cap 26, travel 144: at 50% the handle
+  // center lands at x=100 and the fill runs to its far edge (x=126).
+  CHECK_EQ(draw.ops[1].rect.width, 124);
+  CHECK_EQ(draw.ops[1].color, Color::Black);
+
+  // Narrower than the handle: nothing drawn, nothing registered — the step
+  // buttons beside it (sliderRow) still drive the value.
+  const size_t opsBefore = draw.opCount;
+  capsuleSlider(frame, Rect{0, 0, 50, 56}, props);
+  CHECK_EQ(interactions.count(), 1u);
+  CHECK_EQ(draw.opCount, opsBefore);
+}
+
+// Caption + [-][capsule][+][toggle]: caption texts drawn, all four hits
+// registered, and the capsule spanning the gap between the step buttons.
+void testSliderRow() {
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice();
+  InputSnapshot input;
+  InteractionBuffer<8> interactions;
+  Frame<8> frame(draw, device, input, interactions);
+
+  SliderRowProps props;
+  props.label = "Brightness";
+  props.value = "62%";
+  props.sliderValue = 62;
+  props.sliderAction = 1;
+  props.decrement = 2;
+  props.increment = 2;
+  props.decrementValue = -1;
+  props.incrementValue = 1;
+  props.toggleAction = 3;
+  sliderRow(frame, Rect{0, 0, 300, 76}, props);
+
+  // label + value readout (step glyphs are also text ops)
+  CHECK_EQ(draw.countKind(FakeDrawTarget::Op::Text), 4u);
+  CHECK_EQ(interactions.count(), 4u);
+  int sawMinus = 0, sawPlus = 0, sawToggle = 0, sawDrag = 0;
+  for (size_t i = 0; i < interactions.count(); ++i) {
+    const Interaction &it = interactions.data()[i];
+    if (it.action == 2 && it.value == -1) ++sawMinus;
+    if (it.action == 2 && it.value == 1) ++sawPlus;
+    if (it.action == 3) ++sawToggle;
+    if (it.action == 1 && (it.inputMask & InputDrag)) {
+      ++sawDrag;
+      // caption is 12px + 8 gap: band y=20, height 56. Track spans the gap
+      // between the 56px step buttons: x 64..172 (plus at 180, toggle 244).
+      CHECK_EQ(it.rect.x, 64);
+      CHECK_EQ(it.rect.width, 108);
+    }
+  }
+  CHECK_EQ(sawMinus, 1);
+  CHECK_EQ(sawPlus, 1);
+  CHECK_EQ(sawToggle, 1);
+  CHECK_EQ(sawDrag, 1);
+}
+
+// Tile grid: one hit per tile carrying the item's id and state, checked tiles
+// filled solid, and the height helper matching the laid-out rows.
+void testTileGrid() {
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice();
+  InputSnapshot input;
+  InteractionBuffer<8> interactions;
+  Frame<8> frame(draw, device, input, interactions);
+
+  TileGridItem items[3];
+  items[0].label = "Night mode";
+  items[0].value = 10;
+  items[1].label = "Refresh";
+  items[1].value = 11;
+  items[1].state = StateChecked;
+  items[2].label = "Sleep";
+  items[2].value = 12;
+
+  TileGridProps props;
+  props.items = items;
+  props.count = 3;
+  props.action = 5;
+  props.tileHeight = 84;
+  CHECK_EQ(tileGridHeight(props.count, props.columns, props.tileHeight, props.gap), 180);
+  CHECK_EQ(tileGridHeight(0, props.columns, props.tileHeight, props.gap), 0);
+
+  tileGrid(frame, Rect{0, 0, 212, 180}, props);
+  CHECK_EQ(interactions.count(), 3u);
+  CHECK_EQ(interactions.data()[1].value, 11);
+  CHECK(hasState(interactions.data()[1].state, StateChecked));
+  CHECK_EQ(draw.countKind(FakeDrawTarget::Op::Text), 3u);
+  // Checked tile (row 0, col 1: x=112, w=100) draws filled black; its
+  // neighbors stay white cards.
+  bool checkedFilled = false, normalWhite = false;
+  for (size_t i = 0; i < draw.opCount; ++i) {
+    const FakeDrawTarget::Op &op = draw.ops[i];
+    if (op.kind != FakeDrawTarget::Op::Fill) continue;
+    if (op.rect.x == 112 && op.rect.y == 0) checkedFilled = op.color == Color::Black;
+    if (op.rect.x == 0 && op.rect.y == 0) normalWhite = op.color == Color::White;
+  }
+  CHECK(checkedFilled);
+  CHECK(normalWhite);
+  // Second row starts below the first plus the gap.
+  CHECK_EQ(interactions.data()[2].rect.y, 96);
+}
+
+// Sheet chrome: body fill with corners rounded on the free edge, a rule and a
+// centered grabber along that edge, a dismiss hit over the rest of the
+// screen, and a content rect that excludes the grabber band.
+void testSheet() {
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice();
+  InputSnapshot input;
+  InteractionBuffer<4> interactions;
+  Frame<4> frame(draw, device, input, interactions);
+
+  SheetProps props;
+  props.dismissAction = 9;
+  const Rect rect{0, 0, 480, 300};
+  sheet(frame, rect, props);
+  CHECK_EQ(draw.countKind(FakeDrawTarget::Op::Fill), 3u);  // body + rule + grabber
+  CHECK_EQ(draw.ops[0].corners, static_cast<uint8_t>(CornersBottom));
+  CHECK_EQ(draw.ops[1].rect.y, 298);  // 2px rule hugging the free edge
+  CHECK_EQ(draw.ops[1].rect.height, 2);
+  CHECK_EQ(draw.ops[2].rect.x, 204);  // 72px grabber, centered
+  CHECK_EQ(draw.ops[2].rect.y, 279);  // inset 16 above the free edge
+  CHECK_EQ(interactions.count(), 1u);
+  CHECK_EQ(interactions.data()[0].action, 9);
+  CHECK_EQ(interactions.data()[0].rect.y, 300);
+  CHECK_EQ(interactions.data()[0].rect.height, 500);
+
+  const Rect content = sheetContentRect(rect, props);
+  CHECK_EQ(content.height, 271);  // minus margin 8 + grabber 5 + inset 16
+
+  // Bottom-anchored: rule and grabber flip to the sheet's top edge, dismiss
+  // covers the screen above it.
+  FakeDrawTarget draw2;
+  InteractionBuffer<4> interactions2;
+  Frame<4> frame2(draw2, device, input, interactions2);
+  SheetProps bottom = props;
+  bottom.anchor = SheetEdge::Bottom;
+  sheet(frame2, Rect{0, 500, 480, 300}, bottom);
+  CHECK_EQ(draw2.ops[0].corners, static_cast<uint8_t>(CornersTop));
+  CHECK_EQ(draw2.ops[1].rect.y, 500);
+  CHECK_EQ(draw2.ops[2].rect.y, 516);
+  CHECK_EQ(interactions2.data()[0].rect.y, 0);
+  CHECK_EQ(interactions2.data()[0].rect.height, 500);
+}
+
+// The themed Screen wrappers for the control-center pieces: sheet() clamps
+// the content area to the sheet's usable part, and sliderRow()/tileGrid()
+// reserve exactly the bands their content needs.
+void testScreenControlCenterWrappers() {
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice();
+  InputSnapshot input;
+  InteractionBuffer<16> interactions;
+  Frame<16> frame(draw, device, input, interactions);
+  ThemeTokens theme;
+  Screen<16> screen(frame, theme);
+
+  SheetProps panel;
+  const Rect content = screen.sheet(panel, 400);
+  // Free-edge band: margin 8 + grabber 5 + inset 16.
+  CHECK_EQ(content.height, 371);
+  CHECK_EQ(screen.body().y, 0);
+  CHECK_EQ(screen.body().height, 371);
+
+  SliderRowProps row;
+  row.label = "Brightness";
+  row.value = "62%";
+  row.sliderValue = 62;
+  row.sliderAction = 1;
+  row.decrement = 2;
+  row.increment = 2;
+  screen.sliderRow(row);
+  // capsule (drag) + two step buttons
+  CHECK_EQ(interactions.count(), 3u);
+  // caption line (12) + spaceMd + control band (minTouchSize 44 + 12) + gap
+  CHECK_EQ(screen.body().y, 12 + 8 + 56 + 8);
+
+  TileGridItem items[2];
+  items[0].label = "Night mode";
+  items[0].value = 0;
+  items[1].label = "Refresh";
+  items[1].value = 1;
+  TileGridProps grid;
+  grid.items = items;
+  grid.count = 2;
+  grid.action = 3;
+  const int16_t before = screen.body().y;
+  screen.tileGrid(grid);
+  CHECK_EQ(interactions.count(), 5u);
+  // one 84px row (2*minTouchSize-4) + spaceSm gap
+  CHECK_EQ(screen.body().y, static_cast<int16_t>(before + 84 + 4));
+
+  CapsuleSliderProps capsule;
+  capsule.value = 30;
+  capsule.action = 4;
+  screen.capsuleSlider(capsule, 56);
+  CHECK_EQ(interactions.count(), 6u);
+}
+
 }  // namespace
+
+void testPublicationStylingAndButtons() {
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice();
+  device.width = 480;
+  device.height = 800;
+  device.hasTouch = false;
+  device.hasButtons = true;
+  InputSnapshot input;
+  InteractionBuffer<16> hits;
+  Frame<16> frame(draw, device, input, hits);
+  PublicationPageProps props;
+  props.book.title = "Title";
+  props.book.action = 94;
+  props.availability.status = "Available";
+  props.availability.action = 95;
+  props.primary.label = "Borrow";
+  props.primary.action = 91;
+  props.primary.value = 7;
+  props.primary.radius = 9;
+  props.primary.padding = Insets{10, 20, 10, 20};
+  props.primary.minTouchSize = 64;
+  props.secondary.label = "Sample";
+  props.secondary.action = 92;
+  props.more.label = "Full description";
+  props.more.action = 93;
+  props.radius = 12;
+  props.styles = outlinedButtonStyles();
+  props.padding = Insets{24, 26, 28, 30};
+  publicationPage(frame, device.screen(), props);
+  CHECK_EQ(hits.count(), 5u);
+  CHECK_EQ(draw.ops[0].radius, 12);
+  CHECK_EQ(hits.data()[0].rect.x, 30);
+  CHECK_EQ(hits.data()[0].rect.height, 64);
+  CHECK_EQ(hits.data()[0].rect.bottom(), 772);
+  bool paddedLabel = false;
+  bool roundedAction = false;
+  for (size_t i = 0; i < draw.opCount; ++i) {
+    const auto& op = draw.ops[i];
+    if (op.kind == FakeDrawTarget::Op::Text && op.rect.y == 718) {
+      paddedLabel = op.rect.x == 50 && op.rect.height == 44;
+    }
+    if (op.kind == FakeDrawTarget::Op::Fill && op.rect.y == 708 && op.radius == 9)
+      roundedAction = true;
+  }
+  CHECK(paddedLabel);
+  CHECK(roundedAction);
+
+  // Every actionable section is reachable without touch, with wraparound.
+  InputSnapshot next, previous, confirm;
+  next.focusNext = true;
+  previous.focusPrev = true;
+  confirm.confirm = true;
+  const ActionId expected[] = {91, 92, 93, 94, 95, 91};
+  for (ActionId action : expected) {
+    hits.route(next);
+    CHECK_EQ(hits.route(confirm).action, action);
+  }
+  CHECK_EQ(hits.route(confirm).value, 7);
+  hits.route(previous);
+  CHECK_EQ(hits.route(confirm).action, 95);
+
+  // Focus survives a redraw and uses the caller's focused style.
+  props.availability.styles = defaultListRowStyles();
+  props.availability.styles.focused.background = Paint::solid(Color::Black);
+  props.availability.styles.focused.foreground = Paint::solid(Color::White);
+  props.availability.radius = 7;
+  hits.clear();
+  draw.opCount = 0;
+  publicationPage(frame, device.screen(), props);
+  CHECK_EQ(hits.route(confirm).action, 95);
+  bool focusPainted = false;
+  for (size_t i = 0; i < draw.opCount; ++i)
+    if (draw.ops[i].kind == FakeDrawTarget::Op::Fill && draw.ops[i].radius == 7 &&
+        draw.ops[i].color == Color::Black) focusPainted = true;
+  CHECK(focusPainted);
+
+  // Disabled controls and touch-only controls cannot be focused/confirmed.
+  hits.clear();
+  props.primary.enabled = false;
+  props.secondary.state = StateDisabled;
+  props.book.inputMask = InputTouch;
+  publicationPage(frame, device.screen(), props);
+  hits.setFocusedIndex(-1);
+  hits.route(next);
+  CHECK_EQ(hits.route(confirm).action, 93);
+  hits.route(next);
+  CHECK_EQ(hits.route(confirm).action, 95);
+  hits.route(next);
+  CHECK_EQ(hits.route(confirm).action, 93);
+  hits.route(previous);
+  CHECK_EQ(hits.route(confirm).action, 95);
+  hits.clear();
+  props.enabled = false;
+  publicationPage(frame, device.screen(), props);
+  CHECK_EQ(hits.count(), 0u);
+  CHECK_EQ(hits.route(confirm).action, NO_ACTION);
+
+  // Standalone sections honor padding, border, radius and foreground.
+  hits.clear();
+  draw.opCount = 0;
+  PublicationAvailabilityProps av;
+  av.status = "Ready";
+  av.padding = Insets{17, 19, 13, 23};
+  av.divider = Paint::none();
+  av.radius = 8;
+  av.styles = outlinedButtonStyles();
+  av.styles.normal.foreground = Paint::solid(Color::White);
+  av.styles.normal.background = Paint::solid(Color::Black);
+  publicationAvailability(frame, Rect{10, 20, 300, 100}, av);
+  CHECK_EQ(draw.ops[0].radius, 8);
+  CHECK_EQ(draw.ops[1].kind, FakeDrawTarget::Op::Stroke);
+  CHECK_EQ(draw.ops[2].kind, FakeDrawTarget::Op::Text);
+  CHECK_EQ(draw.ops[2].rect.x, 33);
+  CHECK_EQ(draw.ops[2].rect.y, 37);
+  CHECK_EQ(draw.ops[2].color, Color::White);
+  draw.opCount = 0;
+  PublicationHeaderProps book;
+  book.title = "Title";
+  book.coverSize = Size{0, 0};
+  book.padding = Insets{11, 12, 13, 14};
+  book.radius = 6;
+  book.styles = outlinedButtonStyles();
+  publicationHeader(frame, Rect{10, 20, 300, 100}, book);
+  CHECK_EQ(draw.ops[0].radius, 6);
+  CHECK_EQ(draw.ops[2].kind, FakeDrawTarget::Op::Text);
+  CHECK_EQ(draw.ops[2].rect.x, 24);
+  CHECK_EQ(draw.ops[2].rect.y, 31);
+}
+
+struct CatalogTestSource {
+  uint16_t calls = 0;
+  uint16_t first = 0;
+  uint16_t last = 0;
+};
+CatalogItem catalogTestItem(uint16_t index, void* user) {
+  auto& source = *static_cast<CatalogTestSource*>(user);
+  if (source.calls == 0) source.first = index;
+  ++source.calls;
+  source.last = index;
+  CatalogItem item;
+  item.title = "Book title";
+  item.author = "Author";
+  item.value = static_cast<int16_t>(1000 + index);
+  return item;
+}
+
+void testCatalogShelves() {
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice();
+  device.width = 480;
+  device.height = 800;
+  device.hasTouch = false;
+  InputSnapshot input;
+  InteractionBuffer<32> hits;
+  Frame<32> frame(draw, device, input, hits);
+  CatalogTestSource source;
+  CatalogWindow horizontal[3];
+  CoverShelfProps shelves[3];
+  for (int i = 0; i < 3; ++i) {
+    shelves[i].title = "Popular books";
+    shelves[i].count = 100;
+    shelves[i].itemProvider = catalogTestItem;
+    shelves[i].itemProviderUserData = &source;
+    shelves[i].window = &horizontal[i];
+    shelves[i].card.action = 101;
+    shelves[i].next.label = ">";
+    shelves[i].next.action = 102;
+    shelves[i].next.value = i;
+    shelves[i].previous.label = "<";
+    shelves[i].previous.action = 103;
+    shelves[i].previous.value = i;
+    shelves[i].seeAll.label = "See all";
+    shelves[i].seeAll.action = 104;
+    shelves[i].seeAll.value = i;
+  }
+  CatalogWindow vertical;
+  CatalogPageProps page;
+  page.shelves = shelves;
+  page.count = 3;
+  page.window = &vertical;
+  page.next.label = "More groups";
+  page.next.action = 105;
+  page.previous.label = "Previous groups";
+  page.previous.action = 106;
+  page.activeShelf = 1;
+  catalogPage(frame, device.screen(), page);
+  CHECK_EQ(vertical.visibleCount, 2);
+  CHECK_EQ(horizontal[0].visibleCount, 3);
+  CHECK_EQ(horizontal[1].visibleCount, 3);
+  CHECK_EQ(source.calls, 6);  // only visible cards, no expanded group list
+  CHECK(!hits.overflowed());
+  InputSnapshot swipe;
+  swipe.swipeLeft = true;
+  CHECK_EQ(hits.route(swipe).action, 102);
+  CHECK_EQ(hits.route(swipe).value, 1); // only the active group claims the gesture
+
+  // Next/Previous/Confirm alone reaches paging, see-all, and every visible book.
+  InputSnapshot next, previous, confirm;
+  next.focusNext = true;
+  previous.focusPrev = true;
+  confirm.confirm = true;
+  hits.setFocusedIndex(-1);
+  hits.route(next);
+  CHECK_EQ(hits.route(confirm).action, 102);
+  CHECK_EQ(hits.route(confirm).value, 0);
+  horizontal[0].next();
+  CHECK_EQ(horizontal[0].firstIndex, 3);
+  CHECK_EQ(horizontal[1].firstIndex, 0);
+  hits.clear();
+  draw.opCount = 0;
+  source = {};
+  catalogPage(frame, device.screen(), page);
+  CHECK_EQ(source.first, 3);
+  CHECK_EQ(source.calls, 6);
+  bool sawBook = false, sawAll = false, sawMoreGroups = false;
+  for (size_t i = 0; i < hits.count() + 1; ++i) {
+    hits.route(next);
+    const ActionEvent event = hits.route(confirm);
+    sawBook |= event.action == 101 && event.value == 1003;
+    sawAll |= event.action == 104;
+    sawMoreGroups |= event.action == 105;
+  }
+  CHECK(sawBook && sawAll && sawMoreGroups);
+  hits.route(previous);
+  CHECK(hits.route(confirm).action != NO_ACTION);
+  horizontal[0].previous();
+  CHECK_EQ(horizontal[0].firstIndex, 0);
+  vertical.next();
+  CHECK_EQ(vertical.firstIndex, 1);
+  hits.clear();
+  catalogPage(frame, device.screen(), page);
+  CHECK_EQ(vertical.firstIndex, 1);
+  CHECK(!vertical.canNext());
+  CHECK(vertical.canPrevious());
+
+  // Stable item IDs also route from taps after horizontal paging.
+  hits.clear();
+  horizontal[0].firstIndex = 97;
+  coverShelf(frame, Rect{0, 0, 480, 252}, shelves[0]);
+  CHECK(!horizontal[0].canNext());
+  bool tapped = false;
+  for (size_t i = 0; i < hits.count(); ++i) {
+    const auto& hit = hits.data()[i];
+    if (hit.action != 101) continue;
+    InputSnapshot tap;
+    tap.touchReleased = true;
+    tap.touchX = hit.rect.x + hit.rect.width / 2;
+    tap.touchY = hit.rect.y + hit.rect.height / 2;
+    CHECK_EQ(hits.route(tap).value, hit.value);
+    tapped = true;
+  }
+  CHECK(tapped);
+  shelves[0].count = 1;
+  hits.clear();
+  source = {};
+  coverShelf(frame, Rect{0, 0, 480, 252}, shelves[0]);
+  CHECK_EQ(horizontal[0].firstIndex, 0);
+  CHECK_EQ(source.calls, 1);
+  shelves[0].enabled = false;
+  hits.clear();
+  coverShelf(frame, Rect{0, 0, 480, 252}, shelves[0]);
+  CHECK_EQ(hits.count(), 0u);
+  shelves[0].count = 0;
+  source = {};
+  coverShelf(frame, Rect{0, 0, 480, 252}, shelves[0]);
+  CHECK_EQ(source.calls, 0);
+  CHECK(!horizontal[0].canNext() && !horizontal[0].canPrevious());
+
+  // Narrow surfaces still render bounded geometry and skip hidden providers.
+  for (Size size : {Size{240, 480}, Size{120, 160}, Size{0, 0}}) {
+    hits.clear();
+    draw.opCount = 0;
+    source = {};
+    catalogPage(frame, Rect{0, 0, size.width, size.height}, page);
+    for (size_t i = 0; i < draw.opCount; ++i) {
+      const Rect r = draw.ops[i].rect;
+      CHECK(r.width > 0 && r.height > 0);
+      CHECK(r.x >= 0 && r.y >= 0 && r.right() <= size.width && r.bottom() <= size.height);
+    }
+  }
+}
+
+void testPublicationPage() {
+  for (const Size size : {Size{480, 800}, Size{240, 480}, Size{800, 480}, Size{120, 160}}) {
+    FakeDrawTarget draw;
+    DeviceContext device;
+    device.width = size.width;
+    device.height = size.height;
+    InputSnapshot input;
+    InteractionBuffer<16> hits;
+    Frame<16> frame(draw, device, input, hits);
+    PublicationPageProps props;
+    props.book.title = "A very long publication title that wraps across multiple lines";
+    props.book.author = "Author name";
+    props.availability.status = "Unavailable";
+    props.availability.holds = "You are #3 in line";
+    props.description = "A long description should never cover an acquisition control.";
+    props.primary.label = "Place hold";
+    props.primary.action = 91;
+    props.secondary.label = "Read sample";
+    props.secondary.action = 92;
+    publicationPage(frame, device.screen(), props);
+    CHECK(hits.count() >= 1);
+    CHECK_EQ(hits.data()[0].action, 91);
+    InputSnapshot tap;
+    tap.touchReleased = true;
+    tap.touchX = hits.data()[0].rect.x + 4;
+    tap.touchY = hits.data()[0].rect.y + 4;
+    CHECK_EQ(hits.route(tap).action, 91);
+    for (size_t i = 0; i < draw.opCount; ++i) {
+      const Rect r = draw.ops[i].rect;
+      CHECK(r.width > 0 && r.height > 0);
+      CHECK(r.x >= 0 && r.y >= 0 && r.right() <= size.width && r.bottom() <= size.height);
+    }
+    for (size_t i = 1; i < hits.count(); ++i) {
+      CHECK(hits.data()[i].rect.bottom() <= hits.data()[i - 1].rect.y);
+    }
+    hits.clear();
+    props.primary.enabled = false;
+    props.secondary.label = nullptr;
+    publicationPage(frame, device.screen(), props);
+    CHECK_EQ(hits.count(), 0u);
+    hits.clear();
+    publicationPage(frame, Rect{0, 0, 0, 0}, props);
+    CHECK_EQ(hits.count(), 0u);
+  }
+}
 
 int main() {
   testRect();
   testDisplayTarget();
   testDisplayTargetAlphaFont();
+  testCenteredDigitInk();
   testStackFillsExactly();
   testStackFlexRemainderWithTrailingFixed();
   testStackGaps();
@@ -3100,6 +5269,7 @@ int main() {
   testTouchRouting();
   testDisabledSkipsTouch();
   testLongPressRouting();
+  testDragRouting();
   testFocusNavigationWrapsAndSkips();
   testConfirmIgnoresStaleFocus();
   testConfirmRespectsInputMask();
@@ -3109,11 +5279,27 @@ int main() {
   testListVirtualization();
   testListClampsBadTopIndex();
   testListItemsWindow();
+  testListRowProvider();
   testListItemsWindowStopsBeforePastEndMeasurement();
   testListItemsWindowSkipsUnavailablePartialPreview();
+  testListInlineSectionHeadingWindow();
+  testListInlineSectionHeadingDoesNotOrphan();
+  testListMeasuredHeadersAndUnsupportedPreview();
+  testListDeferredInput();
+  testListConcurrentScrollRequests();
+  testListSectionHeadingPreview();
+  testScreenListContentSizing();
+  testScreenListThemeMinimum();
+  testListMixedFontTouchDensity();
+  testListExactFitAndPreviewGeometry();
+  testListPreviewPixels();
   testListNavLayoutFeedback();
   testListNavConvergesThroughRealList();
+  testListNavScrollsClippedListWithinRowEstimate();
+  testListNavFittingListKeepsFullWidthTouchRects();
   testListCanUseFullTitleWidthWithShortValue();
+  testListRtlMirrorsIconAndValueSides();
+  testListRtlMirrorsToggleSide();
   testButtonRegistersExpandedHit();
   testProgressBarClamps();
   testBatteryIndicator();
@@ -3125,6 +5311,7 @@ int main() {
   testCrossInkReadingStatsSurfaces();
   testInteractionOverflowFlag();
   testContentWidthTabBarLayout();
+  testTabBarTrailingIndicatorLayout();
   testRoundedRaffSurfaces();
   testThemePrimitiveParity();
   testRotationAndBitmapSampling();
@@ -3144,6 +5331,7 @@ int main() {
   testQwertyKeyboardComponent();
   testLocalizedKeyboardLayout();
   testSymbolKeyboardPages();
+  testKeyboardLayoutVariants();
   testKeyboardEntry();
   testNumberRowLayouts();
   testKeyboardEntryLongPressAlt();
@@ -3154,8 +5342,17 @@ int main() {
   testKeyboardBottomHitOverflow();
   testHeaderLeadingButton();
   testScreenKeyboardUsesResponsiveHeight();
+  testTallKeyboardSizing();
+  testKeyboardTypography();
+  testKeyboardHighlightPadding();
+  testCompactKeyboardAltLabelStaysInsideKey();
+  testQwertyKeyboardSpacingOverrides();
+  testScreenContentMarginCoordinateSpaces();
   testEReaderChromeMenusAndPanels();
   testEReaderBookSurfaces();
+  testSpaceBetweenLayouts();
+  testCoverGridLabelAlignment();
+  testBookCardCenteredTextAndProgressLabel();
   testHeaderBorderEdges();
   testPopupAutoSizeAndAlignment();
   testScreenAnchoredLayout();
@@ -3163,6 +5360,14 @@ int main() {
   testFreeInkAppHandlerOverflowFlag();
   testFreeInkAppSharedThemeRefFollowsAtomicSwap();
   testTextArea();
+  testCapsuleSlider();
+  testSliderRow();
+  testPublicationPage();
+  testCatalogShelves();
+  testPublicationStylingAndButtons();
+  testTileGrid();
+  testSheet();
+  testScreenControlCenterWrappers();
 
   std::printf("%d checks, %d failed\n", checksRun, checksFailed);
   return checksFailed == 0 ? 0 : 1;

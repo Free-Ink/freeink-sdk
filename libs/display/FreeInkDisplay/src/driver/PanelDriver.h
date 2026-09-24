@@ -14,6 +14,7 @@
 
 #include <Arduino.h>
 
+#include "../../include/GrayscaleCapabilities.h"
 #include "../bus/EpdBus.h"
 
 namespace freeink {
@@ -37,7 +38,7 @@ class PanelDriver {
   virtual BusyPolarity busyPolarity() const = 0;
   virtual PanelGeometry geometry() const = 0;
   virtual int8_t spiMiso() const { return -1; }  // SSD1677 uses none; M5 shares MISO
-  virtual int8_t coCs() const { return -1; }      // co-resident SPI CS to hold high (M5 SD)
+  virtual int8_t coCs() const { return -1; }     // co-resident SPI CS to hold high (M5 SD)
 
   // True for drivers backed by an external library that manages its own SPI /
   // display hardware (e.g. M5GFX, EPD_Painter). When true the facade does NOT
@@ -86,7 +87,10 @@ class PanelDriver {
   // `fb` is the just-displayed frame, re-supplied fresh by the facade at finish
   // time (not stashed at start): callers may release/realloc the buffer holding
   // it between the two calls, so the driver must not cache the pointer.
-  virtual void displayFinish(EpdBus& bus, const uint8_t* fb) { (void)bus; (void)fb; }
+  virtual void displayFinish(EpdBus& bus, const uint8_t* fb) {
+    (void)bus;
+    (void)fb;
+  }
 
   // Re-seed the controller's host-managed previous-frame plane (SSD1677 RED RAM)
   // with `buf`, WITHOUT triggering a refresh. A dual-buffer fast refresh only
@@ -97,16 +101,28 @@ class PanelDriver {
   // RED holds. Callers seed the on-screen frame here just before releasing so that
   // first differential diff has a correct baseline. Default no-op: controllers with
   // no host-managed previous-frame plane (X3 DTM1, M5) keep their own baseline.
-  virtual void seedPreviousFrame(EpdBus& bus, const uint8_t* buf) { (void)bus; (void)buf; }
+  virtual void seedPreviousFrame(EpdBus& bus, const uint8_t* buf) {
+    (void)bus;
+    (void)buf;
+  }
 
   // --- grayscale (dual-plane LSB/MSB) ---
-  virtual bool supportsStripGrayscale() const { return false; }
+  virtual GrayscaleCapabilities grayscaleCapabilities(GrayscaleMode mode = GrayscaleMode::Overlay) const {
+    (void)mode;
+    return {};
+  }
+  // Compatibility queries describe Overlay mode. New callers use the descriptor.
+  virtual bool supportsStripGrayscale() const { return grayscaleCapabilities().stripUploads; }
+  // True when an ordinary deferred B/W refresh is a valid base for a
+  // grayscale pass. Set asyncBase in the descriptor only when an ordinary
+  // B/W base is sufficient; a dedicated grayscale-base waveform cannot overlap.
+  virtual bool supportsAsyncGrayscaleBase() const { return grayscaleCapabilities().asyncBase; }
   // True when displayGrayscaleBase() DEFERS the base activation so the gray
   // planes join it in a single waveform (Paper Mono). Hosts should then route the
   // grayscale base through displayGrayscaleBase() instead of display(): a
   // separate B/W refresh first makes the gray pass re-drive the whole text
   // body through the custom LUT's kick phases (a visible flash).
-  virtual bool combinesGrayscaleBase() const { return false; }
+  virtual bool combinesGrayscaleBase() const { return grayscaleCapabilities().base == GrayscaleBase::Combined; }
   // Display `fb` as the base frame for a grayscale overlay that follows.
   // X3 runs the OEM pipeline (the "AA-pre-BW(mid)" bank as a differential
   // base update with calibrated drives); panels without a dedicated base
@@ -116,22 +132,42 @@ class PanelDriver {
     display(bus, fb, nullptr, fallback, turnOff);
   }
 
+  // Mode is fixed before uploads; drivers may adapt the common host encoding.
+  virtual void beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode mode, RefreshMode fallback, bool turnOff) {
+    (void)mode;
+    displayGrayscaleBase(bus, fb, fallback, turnOff);
+  }
+
   // Grayscale preconditioning settle pass (OEM X3 "AA-pre-BW(mid)"), windowed
   // to the panel rect [x, x+w) x [y, y+h) like the OEM's PTL usage; fire after
   // the BW base frame is displayed, before grayscale planes are written.
   // Default no-op for panels whose grayscale needs no conditioning.
   virtual void preconditionGrayscale(EpdBus& bus, uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
-    (void)bus; (void)x; (void)y; (void)w; (void)h;
+    (void)bus;
+    (void)x;
+    (void)y;
+    (void)w;
+    (void)h;
   }
-  virtual void copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) { (void)bus; (void)lsb; }
-  virtual void copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) { (void)bus; (void)msb; }
+  virtual void copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
+    (void)bus;
+    (void)lsb;
+  }
+  virtual void copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
+    (void)bus;
+    (void)msb;
+  }
   // Host-retained selector planes can be copied and encoded while the previous
   // B/W waveform is BUSY. Drivers returning true must not touch SPI in either
   // writeGrayscalePlaneStrip() or prepareGrayscaleTarget().
-  virtual bool supportsBusyGrayscaleStaging() const { return false; }
+  virtual bool supportsBusyGrayscaleStaging() const { return grayscaleCapabilities().stagingWhileBusy; }
   virtual void writeGrayscalePlaneStrip(EpdBus& bus, GrayPlane plane, const uint8_t* rows, uint16_t yStart,
                                         uint16_t numRows) {
-    (void)bus; (void)plane; (void)rows; (void)yStart; (void)numRows;
+    (void)bus;
+    (void)plane;
+    (void)rows;
+    (void)yStart;
+    (void)numRows;
   }
   virtual void prepareGrayscaleTarget(const uint8_t* bw) { (void)bw; }
   virtual void displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut, bool factoryMode) {
@@ -150,7 +186,10 @@ class PanelDriver {
     (void)customH;
     displayGray(bus, fb, false, nullptr, true);
   }
-  virtual void cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) { (void)bus; (void)bw; }
+  virtual void cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) {
+    (void)bus;
+    (void)bw;
+  }
 
   // --- optional, controller-specific hooks (no-op by default) ---
   virtual void requestResync(uint8_t settlePasses) { (void)settlePasses; }
@@ -215,8 +254,20 @@ class PanelDriver {
   // Interrupted-refresh cutoff tuning (ED2208: where the gate scan freezes).
   virtual void setFastRefreshCutoffMs(uint16_t ms) { (void)ms; }
   virtual uint16_t fastRefreshCutoffMs() const { return 0; }
-  virtual void grayscaleRevert(EpdBus& bus, const uint8_t* fb) { (void)bus; (void)fb; }
-  virtual void setCustomLut(EpdBus& bus, bool enabled, const unsigned char* data) { (void)bus; (void)enabled; (void)data; }
+  // Hold the periodic anti-ghost full refresh through a continuous interaction
+  // (e.g. a live slider drag): while set, fast refreshes are never promoted to a
+  // full, so the drag stays flash-free. Clear it and force one full afterward to
+  // scrub any accumulated ghost. No-op on drivers without a periodic-full cadence.
+  virtual void setHoldPeriodicFull(bool hold) { (void)hold; }
+  virtual void grayscaleRevert(EpdBus& bus, const uint8_t* fb) {
+    (void)bus;
+    (void)fb;
+  }
+  virtual void setCustomLut(EpdBus& bus, bool enabled, const unsigned char* data) {
+    (void)bus;
+    (void)enabled;
+    (void)data;
+  }
 };
 
 }  // namespace freeink

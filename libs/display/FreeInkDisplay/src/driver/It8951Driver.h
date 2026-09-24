@@ -63,7 +63,10 @@ class It8951Driver : public PanelDriver {
   // Strip support is advertised so the consumer keeps the B/W frame intact and
   // hands displayGray() the true base buffer (the no-strip fallback overwrites the
   // framebuffer with the MSB plane, which would paint a near-black, inverted page).
-  bool supportsStripGrayscale() const override { return true; }
+  GrayscaleCapabilities grayscaleCapabilities(GrayscaleMode mode = GrayscaleMode::Overlay) const override {
+    if (mode != GrayscaleMode::Overlay) return {};
+    return {GrayscaleEncoding::OverlayMasks, GrayscaleBase::Separate, true, false, false};
+  }
   void copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) override;
   void copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) override;
   void writeGrayscalePlaneStrip(EpdBus& bus, GrayPlane plane, const uint8_t* rows, uint16_t yStart,
@@ -116,6 +119,10 @@ class It8951Driver : public PanelDriver {
   // B/W pass on a clearing page.
   uint16_t _partialsSinceClear = 0;
   bool _lastClear = true;
+  // begin() power-cycles the rail and INIT-wipes the glass, so there is no
+  // retained frame for a differential first paint (the consumer's seamless
+  // fast-wake assumes one). Promote the first content refresh to GC16.
+  bool _firstPaintPending = true;
 
   // Buffered grayscale planes (PSRAM, _fbWb*_fbH each), combined with the B/W base
   // in displayGray(). Allocated in begin().

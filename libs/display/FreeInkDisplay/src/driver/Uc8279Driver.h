@@ -19,10 +19,11 @@
 //   - kUc8279X3_BwGc  : B/W full (GC) waveform  (5 x 43, command-prefixed)
 //   - kUc8279X3_BwDu  : B/W fast (DU) waveform  (5 x 43, command-prefixed)
 //   - CDI 0x97 first refresh / 0xD7 later; DU adds E0=02, E5=5A.
-// (XTF_AA / XTH4 grayscale banks are also captured there for a later AA path.)
+// XTF_AA / XTH4 banks supply overlay and absolute grayscale respectively.
 //
 // BUSY_N: low while busy (PON/DRF/POF all flag), same two-phase shape as the
 // UC8253 X3 — reuses BusyPolarity::X3TwoPhase and the async start/finish split.
+
 
 #include "PanelDriver.h"
 
@@ -46,18 +47,28 @@ class Uc8279Driver : public PanelDriver {
 
   void requestResync(uint8_t settlePasses) override;
   void skipInitialResync() override;
-  // Inverted (dark-background) content: fast refreshes rewrite the OLD plane
-  // as the complement of the target so every pixel is re-driven toward its
-  // target each update. See displayStart().
-  void setBackgroundHint(bool darkBackground) override { _darkBackground = darkBackground; }
 
   // --- 4-level grayscale / anti-aliasing (mirrors the UC8253 X3 sibling) ---
   // Two 1bpp planes (LSB -> DTM1/old, MSB -> DTM2/new) encode 4 levels; the
   // external XTF_AA LUT bank resolves them. displayGrayscaleBase / precondition
   // run the OEM XTF_PRE_BW_MID "AA-pre-BW(mid)" settle before the gray planes.
-  bool supportsStripGrayscale() const override { return true; }
-  void displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, RefreshMode fallback, bool turnOff) override;
-  void preconditionGrayscale(EpdBus& bus, uint16_t x, uint16_t y, uint16_t w, uint16_t h) override;
+  void displayGrayscaleBase(EpdBus &bus, const uint8_t *fb,
+                                  RefreshMode fallback, bool turnOff) override;
+  void beginGrayscale(EpdBus &bus, const uint8_t *fb, GrayscaleMode mode,
+                            RefreshMode fallback, bool turnOff) override;
+  void preconditionGrayscale(EpdBus &bus, uint16_t x, uint16_t y, uint16_t w,
+                             uint16_t h) override;
+  GrayscaleCapabilities grayscaleCapabilities(
+      GrayscaleMode mode = GrayscaleMode::Overlay) const override {
+    if (mode == GrayscaleMode::Absolute || mode == GrayscaleMode::Direct)
+      return {GrayscaleEncoding::AbsolutePlanes,
+              mode == GrayscaleMode::Direct ? GrayscaleBase::Combined : GrayscaleBase::Separate,
+              true, false, false};
+    if (mode != GrayscaleMode::Overlay)
+      return {};
+    return {GrayscaleEncoding::OverlayMasks, GrayscaleBase::Separate, true,
+            false, false};
+  }
   void copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) override;
   void copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) override;
   void writeGrayscalePlaneStrip(EpdBus& bus, GrayPlane plane, const uint8_t* rows, uint16_t yStart,
@@ -73,8 +84,9 @@ class Uc8279Driver : public PanelDriver {
   // Load a 5-table command-prefixed waveform bank (BW_GC/BW_DU/XTF_PRE_BW_MID)
   // into LUT registers 0x20-0x24: byte 0 of each table is the register id.
   void loadBank(EpdBus& bus, const uint8_t (*bank)[43]);
-  // Load the raw (non-prefixed) 49-byte XTF_AA grayscale bank: 0x20+i then table.
-  void loadXtfAa(EpdBus& bus);
+  // Load a raw (non-prefixed) 5x49-byte grayscale bank (XTF_AA or XTH4):
+  // register destinations follow the bank's plane encoding, then the table.
+  void loadRawBank(EpdBus& bus, const uint8_t (*bank)[49]);
   // Blocking PON -> DRF -> wait (-> POF) used by the grayscale paths.
   void triggerGrayRefresh(EpdBus& bus, bool turnOff);
   // Enter the full 792x528 PTL partial window (PTIN + PTL). ALL RAM plane writes
@@ -90,9 +102,8 @@ class Uc8279Driver : public PanelDriver {
   uint32_t _bufferSize;
 
   bool _isScreenOn = false;
-  bool _darkBackground = false;
-  bool _firstRefresh = true;   // CDI 0x97 on the first refresh after init, 0xD7 after
-  bool _oldPlaneValid = false; // DTM1 holds a real previous frame (differential baseline)
+  bool _firstRefresh = true;    // CDI 0x97 on the first refresh after init, 0xD7 after
+  bool _oldPlaneValid = false;  // DTM1 holds a real previous frame (differential baseline)
   bool _forceFullSyncNext = false;
   // Boot initial-full budget: force GC (strong clear) for this many content
   // paints after begin(), so the first screen after the splash is a real clear
@@ -104,6 +115,8 @@ class Uc8279Driver : public PanelDriver {
   // means gray planes were written over DTM1/DTM2 (no valid B/W baseline).
   bool _inGrayscaleMode = false;
   bool _lsbValid = false;
+  bool _directGrayPass = false;
+  bool _directGrayOnPanel = false;
 
   // Async split state (see Uc8253X3Driver for the contract).
   bool _pendingRefresh = false;

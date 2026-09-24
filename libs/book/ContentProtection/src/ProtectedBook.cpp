@@ -66,6 +66,9 @@ bool ProtectedBook::open(ByteSource& source, Crypto& crypto, const Credential& i
 bool ProtectedBook::openFromScan(ByteSource& source, Crypto& crypto,
                                  const Credential& identity, ZipScan&& scan,
                                  const std::string& rightsXmlOverride) {
+  // Error strings below assign literals longer than the SSO buffer; one
+  // probed reserve makes every later lastError_ assignment allocation-free.
+  if (heapProbe(96)) lastError_.reserve(64);
   lastError_.clear();
   protected_ = false;
   zip_ = std::move(scan);
@@ -158,6 +161,8 @@ bool ProtectedBook::unwrapBookKey(Crypto& crypto, const Credential& identity, ui
     }
     for (int i = 0; i < 16; i++) iv[i] = deviceId[i] ^ fulfillmentId[i] ^ voucherId[i];
 
+    // Probed: vector construction throws on OOM (-fno-exceptions => abort).
+    if (!heapProbe(encryptedKey.size() + 64)) return false;
     std::vector<uint8_t> firstPass(encryptedKey.size());
     if (!crypto.aes128CbcDecrypt(key, iv, reinterpret_cast<const uint8_t*>(encryptedKey.data()),
                                  encryptedKey.size(), firstPass.data())) {
@@ -194,7 +199,13 @@ bool ProtectedBook::decryptEntryToSink(ByteSource& source, Crypto& crypto,
                                        void* context) {
   const ZipEntryInfo* entry = zip_.find(name);
   if (!entry) {
-    lastError_ = "entry not found: " + name;
+    // The concat allocates a temporary; fall back to the SSO-sized literal
+    // (never allocates) when the heap cannot take it.
+    if (heapProbe(name.size() + 48)) {
+      lastError_ = "entry not found: " + name;
+    } else {
+      lastError_ = "entry not found";
+    }
     return false;
   }
   if (entry->compressedSize < 32 || (entry->compressedSize - 16) % 16 != 0) {
@@ -216,22 +227,29 @@ bool ProtectedBook::decryptEntryToSink(ByteSource& source, Crypto& crypto,
 
   constexpr size_t kCipherChunk = 2048;
   constexpr size_t kOutputChunk = 4096;
+
+  // Biggest allocation first. mz_inflateInit2 needs ~40KB in ONE block (an
+  // inflate_state: the tinfl decompressor plus a 32KB dictionary), while the
+  // scratch below is 8KB. Taking the 8KB first can carve it out of the very
+  // block the 40KB needs, so a heap whose largest free region is ~47KB -- ample
+  // for the window on its own -- fails on the pair. Measured on device: image
+  // extraction refused at maxAlloc=47092 with 41168 required.
+  mz_stream stream;
+  memset(&stream, 0, sizeof(stream));
+  if (mz_inflateInit2(&stream, -15) != MZ_OK) {
+    lastError_ = "inflate setup failed";
+    return false;
+  }
+
   auto* buffers = static_cast<uint8_t*>(malloc(kCipherChunk * 2 + kOutputChunk));
   if (!buffers) {
+    mz_inflateEnd(&stream);
     lastError_ = "insufficient memory for content stream";
     return false;
   }
   uint8_t* cipher = buffers;
   uint8_t* plain = cipher + kCipherChunk;
   uint8_t* output = plain + kCipherChunk;
-
-  mz_stream stream;
-  memset(&stream, 0, sizeof(stream));
-  if (mz_inflateInit2(&stream, -15) != MZ_OK) {
-    free(buffers);
-    lastError_ = "inflate setup failed";
-    return false;
-  }
 
   bool ended = false;
   auto inflateChunk = [&](const uint8_t* data, size_t size) {
@@ -332,6 +350,27 @@ bool ProtectedBook::scanEncryptionXml(ByteSource& source, const ZipEntryInfo& en
   bool aes128 = false;
   bool malformed = false;
   std::string value;
+  // Pre-reserve the bounded worst case behind a nothrow probe: string/vector
+  // growth is a throwing allocation, and with -fno-exceptions a failed grow
+  // abort()s the firmware mid-open (field crash: bad_alloc in feed()'s append
+  // when a book is opened on a fragmented post-session heap). carry peaks at
+  // the 4KB unterminated-tag cap plus one chunk; with capacity reserved, the
+  // appends below never allocate.
+  {
+    constexpr size_t kCarryReserve = 4096 + kChunk;
+    constexpr size_t kValueReserve = 1024;  // attribute scratch (URIs)
+    constexpr size_t kUriReserve = 256;     // encrypted-entry hashes (8B each)
+    void* probe = malloc(kCarryReserve + kValueReserve + kUriReserve * sizeof(uint64_t) + 512);
+    if (!probe) {
+      free(bufs);
+      lastError_ = "out of memory";
+      return false;
+    }
+    free(probe);
+    carry.reserve(kCarryReserve);
+    value.reserve(kValueReserve);
+    encryptedUriHashes_.reserve(kUriReserve);
+  }
   auto handleTag = [&](const char* tag, size_t len) {
     if (len < 3 || tag[1] == '/' || tag[1] == '?' || tag[1] == '!') return;
     if (tagHas(tag, len, "EncryptionMethod")) {

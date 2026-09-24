@@ -15,6 +15,7 @@ struct BookCardProps {
   const char* title = nullptr;
   const char* author = nullptr;
   const char* meta = nullptr;
+  const char* progressLabel = nullptr;
   BitmapRef cover{};
   AssetRef coverAsset{};
   int32_t progress = 0;
@@ -24,6 +25,7 @@ struct BookCardProps {
   TextStyle titleText{};
   TextStyle authorText{};
   TextStyle metaText{};
+  TextStyle progressText{};
   StyleSet styles{};
   State state = StateNormal;
   bool enabled = true;
@@ -33,7 +35,10 @@ struct BookCardProps {
   int16_t textGap = 4;
   int16_t textProgressGap = 8;
   int16_t progressHeight = 4;
+  int16_t progressLabelGap = 8;
   bool centerTextVertically = false;
+  // Center against the cover, constrained above the progress row.
+  bool centerTextOnCover = false;
   BookCardSelectionIndicator selectionIndicator = BookCardSelectionIndicator::Card;
   int16_t selectedCoverFrameGap = 3;
   int16_t selectedCoverFrameWidth = 2;
@@ -89,8 +94,12 @@ void bookCard(Frame<MaxInteractions>& frame, Rect rect, const BookCardProps& pro
   content.x = static_cast<int16_t>(coverRect.right() + props.gap);
   content.width = static_cast<int16_t>(rect.right() - props.padding.right - content.x);
   const int16_t progressH = props.progressHeight < 1 ? 1 : props.progressHeight;
-  const int16_t progressY = static_cast<int16_t>(coverRect.bottom() - progressH);
-  const int16_t textBottom = static_cast<int16_t>(progressY - props.textProgressGap);
+  const bool hasProgressLabel = props.progressMax > 0 && props.progressLabel && props.progressLabel[0] != '\0';
+  const int16_t labelH = hasProgressLabel ? frame.target().lineHeight(props.progressText.font) : 0;
+  const int16_t progressRowH = labelH > progressH ? labelH : progressH;
+  const int16_t progressRowY = static_cast<int16_t>(coverRect.bottom() - progressRowH);
+  const int16_t progressY = static_cast<int16_t>(progressRowY + (progressRowH - progressH) / 2);
+  const int16_t textBottom = static_cast<int16_t>(progressRowY - props.textProgressGap);
 
   int16_t textBlockH = 0;
   if (props.title) {
@@ -108,7 +117,11 @@ void bookCard(Frame<MaxInteractions>& frame, Rect rect, const BookCardProps& pro
   }
 
   int16_t y = content.y;
-  if (props.centerTextVertically && textBlockH > 0) {
+  if (props.centerTextOnCover && textBlockH > 0) {
+    y = static_cast<int16_t>(coverRect.y + (coverRect.height - textBlockH) / 2);
+    if (y + textBlockH > textBottom) y = static_cast<int16_t>(textBottom - textBlockH);
+    if (y < content.y) y = content.y;
+  } else if (props.centerTextVertically && textBlockH > 0) {
     const int16_t textAreaH = static_cast<int16_t>(textBottom - content.y);
     if (textAreaH > textBlockH) y = static_cast<int16_t>(content.y + (textAreaH - textBlockH) / 2);
   }
@@ -136,7 +149,21 @@ void bookCard(Frame<MaxInteractions>& frame, Rect rect, const BookCardProps& pro
     progress.max = props.progressMax;
     progress.track = Paint::dither(Color::LightGray);
     progress.fill = Paint::solid(Color::Black);
-    progressBar(frame, Rect{content.x, progressY, content.width, progressH}, progress);
+    int16_t barX = content.x;
+    int16_t barWidth = content.width;
+    if (hasProgressLabel && content.width > 0) {
+      TextStyle labelStyle = textStyleWithForeground(props.progressText, style.foreground);
+      labelStyle.maxLines = 1;
+      labelStyle.align = TextAlign::Left;
+      int16_t labelWidth = frame.target().measureText(labelStyle.font, props.progressLabel, labelStyle).width;
+      if (labelWidth > content.width / 2) labelWidth = static_cast<int16_t>(content.width / 2);
+      frame.target().text(Rect{content.x, static_cast<int16_t>(progressRowY + (progressRowH - labelH) / 2),
+                               labelWidth, labelH}, props.progressLabel, labelStyle);
+      const int16_t gap = props.progressLabelGap > 0 ? props.progressLabelGap : 0;
+      barX = static_cast<int16_t>(content.x + labelWidth + gap);
+      barWidth = static_cast<int16_t>(content.width - labelWidth - gap);
+    }
+    if (barWidth > 0) progressBar(frame, Rect{barX, progressY, barWidth, progressH}, progress);
   }
 }
 

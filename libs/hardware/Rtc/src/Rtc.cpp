@@ -19,6 +19,13 @@ constexpr uint8_t PCF8563_REG_CLKOUT = 0x0D;
 constexpr uint8_t PCF8563_CLKOUT_DISABLED = 0x00;
 constexpr uint8_t PCF8563_VL_FLAG = 0x80;  // seconds reg bit7: oscillator stopped / voltage-low
 
+// PCF85063A register map. Same BCD time layout as the PCF8563 but shifted:
+// Control_1/2 at 0x00/0x01, time from 0x04, seconds bit7 is the OS (oscillator
+// stopped) flag, and Months carries no century bit.
+constexpr uint8_t PCF85063_REG_CONTROL1 = 0x00;
+constexpr uint8_t PCF85063_REG_TIME = 0x04;
+constexpr uint8_t PCF85063_OS_FLAG = 0x80;
+
 // DS3231 register map.
 constexpr uint8_t DS3231_REG_TIME = 0x00;  // seconds, minutes, hours, day, date, month, year
 constexpr uint8_t DS3231_REG_CONTROL = 0x0E;
@@ -93,6 +100,11 @@ bool Rtc::begin() {
       if (!readRegs(addr, PCF8563_REG_CONTROL_STATUS1, &status, 1)) return false;
       writeReg(addr, PCF8563_REG_CLKOUT, PCF8563_CLKOUT_DISABLED);  // we don't use the 32 kHz CLKOUT
       break;
+    case BoardConfig::RtcType::Pcf85063:
+      // No CLKOUT write: the PCF85063's CLKOUT lives in Control_2 alongside bits
+      // this driver has no business touching, and it boots disabled.
+      if (!readRegs(addr, PCF85063_REG_CONTROL1, &status, 1)) return false;
+      break;
     case BoardConfig::RtcType::Ds3231:
       if (!readRegs(addr, DS3231_REG_STATUS, &status, 1)) return false;
       writeReg(addr, DS3231_REG_CONTROL, DS3231_CONTROL_INTCN);  // disable square-wave output
@@ -124,6 +136,18 @@ bool Rtc::now(DateTime& out) {
       out.month = bcdToDec(raw[5] & 0x1FU);
       const uint8_t yy = bcdToDec(raw[6]);
       out.year = (raw[5] & 0x80U) ? static_cast<uint16_t>(1900 + yy) : static_cast<uint16_t>(2000 + yy);
+      return true;
+    }
+    case BoardConfig::RtcType::Pcf85063: {
+      if (!readRegs(addr, PCF85063_REG_TIME, raw, sizeof(raw))) return false;
+      if (raw[0] & PCF85063_OS_FLAG) return false;  // oscillator stopped -> time not trustworthy
+      out.second = bcdToDec(raw[0] & 0x7FU);
+      out.minute = bcdToDec(raw[1] & 0x7FU);
+      out.hour = bcdToDec(raw[2] & 0x3FU);
+      out.day = bcdToDec(raw[3] & 0x3FU);
+      out.weekday = bcdToDec(raw[4] & 0x07U);
+      out.month = bcdToDec(raw[5] & 0x1FU);
+      out.year = static_cast<uint16_t>(2000 + bcdToDec(raw[6]));
       return true;
     }
     case BoardConfig::RtcType::Ds3231: {
@@ -195,6 +219,18 @@ bool Rtc::set(const DateTime& dt) {
     const bool written = wire.endTransmission() == 0;
     const bool restarted = writeReg(addr, RX8130_REG_CONTROL0, static_cast<uint8_t>(control & ~RX8130_STOP));
     return written && restarted;
+  }
+  if (s.rtcType == BoardConfig::RtcType::Pcf85063) {
+    wire.beginTransmission(addr);
+    wire.write(PCF85063_REG_TIME);
+    wire.write(decToBcd(dt.second));  // also clears OS once a valid time is written
+    wire.write(decToBcd(dt.minute));
+    wire.write(decToBcd(dt.hour));
+    wire.write(decToBcd(dt.day));
+    wire.write(decToBcd(dt.weekday));
+    wire.write(decToBcd(dt.month));
+    wire.write(decToBcd(static_cast<uint8_t>(dt.year % 100)));
+    return wire.endTransmission() == 0;
   }
   wire.beginTransmission(addr);
   wire.write(s.rtcType == BoardConfig::RtcType::Pcf8563 ? PCF8563_REG_TIME : DS3231_REG_TIME);

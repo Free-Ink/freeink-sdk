@@ -11,6 +11,9 @@
 #include <cstring>
 
 extern "C" bool tud_mounted(void);
+extern "C" bool tud_suspended(void);
+extern "C" bool tud_disconnect(void);
+extern "C" bool tud_suspended(void);
 
 namespace freeink {
 namespace {
@@ -155,10 +158,24 @@ bool UsbMassStorage::begin(FsBlockDeviceInterface* dev) {
 
 void UsbMassStorage::end() {
   if (!_active) return;
-  gMsc.end();
+  // Signal the host to release the device BEFORE tearing down callback state.
+  // tud_disconnect() disables the D+/D- pull-up so the host ejects the media;
+  // we then wait for tud_mounted() to go false so no in-flight MSC callback
+  // can fire after gMsc.end() zeroes the callback pointers or gDev/gOwner clear.
+  // On the dual-core S3 the TinyUSB task runs on the other core — without this
+  // drain, a callback can dereference null gDev/gOwner (or the zeroed msc_luns
+  // function pointers) and hard-fault during the subsequent ESP.restart().
+  tud_disconnect();
+  for (uint32_t i = 0; i < 50; i++) {  // ~500ms timeout at 10ms ticks
+    if (!tud_mounted()) break;
+    delay(10);
+  }
+  // Mark inactive first so any callback already dispatched bails out instead
+  // of dereferencing the globals that we clear below.
+  _active = false;
   gOwner.store(nullptr);
   gDev.store(nullptr);
-  _active = false;
+  gMsc.end();
   _state.store(UsbMassStorageState::Idle);
   _hostSeen.store(false);
 }
@@ -166,11 +183,15 @@ void UsbMassStorage::end() {
 UsbMassStorageState UsbMassStorage::state() const {
   if (!_active) return UsbMassStorageState::Idle;
   const auto current = _state.load();
-  if (current == UsbMassStorageState::Ejected || current == UsbMassStorageState::IoError) return current;
+  if (current == UsbMassStorageState::Ejected) return current;
 
   if (!tud_mounted()) {
     return _hostSeen.load() ? UsbMassStorageState::Disconnected : UsbMassStorageState::WaitingForHost;
   }
+
+  // Keep the error visible while the host is mounted, but report a later cable
+  // removal so the application can safely reclaim its raw storage session.
+  if (current == UsbMassStorageState::IoError) return current;
 
   _hostSeen.store(true);
   auto expected = UsbMassStorageState::WaitingForHost;
@@ -183,6 +204,10 @@ bool UsbMassStorage::hostConnected() const {
   return current == UsbMassStorageState::Connected || current == UsbMassStorageState::Accessed;
 }
 
+bool UsbMassStorage::disconnectHost() const { return _active && tud_disconnect(); }
+
+bool UsbMassStorage::hostSuspended() const { return _active && tud_mounted() && tud_suspended(); }
+
 void UsbMassStorage::markAccessed() const {
   auto current = _state.load();
   while (current != UsbMassStorageState::Ejected && current != UsbMassStorageState::IoError) {
@@ -192,7 +217,10 @@ void UsbMassStorage::markAccessed() const {
 
 void UsbMassStorage::markEjected() const { _state.store(UsbMassStorageState::Ejected); }
 
-void UsbMassStorage::markIoError() const { _state.store(UsbMassStorageState::IoError); }
+void UsbMassStorage::markIoError() const {
+  _hostSeen.store(true);
+  _state.store(UsbMassStorageState::IoError);
+}
 
 }  // namespace freeink
 

@@ -42,11 +42,11 @@ constexpr uint8_t QMI8658_ADDR_6B = 0x6B;
 constexpr uint8_t QMI8658_CTRL1_BIG_ENDIAN = 1U << 5;
 constexpr uint8_t QMI8658_CTRL1_AUTO_INC = 1U << 6;
 constexpr uint8_t QMI8658_CTRL1_SENSOR_DISABLE = 1U << 0;
-constexpr uint8_t QMI8658_CTRL1_BASE = QMI8658_CTRL1_AUTO_INC | QMI8658_CTRL1_BIG_ENDIAN;
+constexpr uint8_t QMI8658_CTRL1_BASE = QMI8658_CTRL1_AUTO_INC;
 constexpr uint8_t QMI8658_CTRL2_FS_2G = 0U << 4;
-constexpr uint8_t QMI8658_CTRL2_ODR_28HZ = 0x08;
+constexpr uint8_t QMI8658_CTRL2_ODR_117HZ = 0x06;
 constexpr uint8_t QMI8658_CTRL3_FS_512DPS = 0b101U << 4;
-constexpr uint8_t QMI8658_CTRL3_ODR_28HZ = 0x08;
+constexpr uint8_t QMI8658_CTRL3_ODR_117HZ = 0x06;
 constexpr uint8_t QMI8658_CTRL7_ACC_GYRO_ENABLE = 0x03;
 constexpr uint8_t QMI8658_CTRL7_DISABLE_ALL = 0x00;
 // LSM6DS3: ODR bits [7:4] = 0000b powers the sensor down; full-scale bits are
@@ -149,8 +149,8 @@ bool Imu::begin() {
 
       const bool configured = writeReg(addr_, QMI8658_REG_CTRL7, QMI8658_CTRL7_DISABLE_ALL) &&
                               writeReg(addr_, QMI8658_REG_CTRL1, QMI8658_CTRL1_BASE) &&
-                              writeReg(addr_, QMI8658_REG_CTRL2, QMI8658_CTRL2_FS_2G | QMI8658_CTRL2_ODR_28HZ) &&
-                              writeReg(addr_, QMI8658_REG_CTRL3, QMI8658_CTRL3_FS_512DPS | QMI8658_CTRL3_ODR_28HZ) &&
+                              writeReg(addr_, QMI8658_REG_CTRL2, QMI8658_CTRL2_FS_2G | QMI8658_CTRL2_ODR_117HZ) &&
+                              writeReg(addr_, QMI8658_REG_CTRL3, QMI8658_CTRL3_FS_512DPS | QMI8658_CTRL3_ODR_117HZ) &&
                               writeReg(addr_, QMI8658_REG_CTRL7, QMI8658_CTRL7_ACC_GYRO_ENABLE);
       if (!configured) {
         // A failed setup must not strand a previously running sensor in its
@@ -199,6 +199,25 @@ bool Imu::read(Sample& out) {
   out.gx = gx * gyroScale;
   out.gy = gy * gyroScale;
   out.gz = gz * gyroScale;
+
+  // Mount correction (see SensorsConfig): swap first, then flip, applied to
+  // accel and gyro together so both report the same board frame.
+  if (s.imuSwapXY) {
+    float t = out.ax;
+    out.ax = out.ay;
+    out.ay = t;
+    t = out.gx;
+    out.gx = out.gy;
+    out.gy = t;
+  }
+  if (s.imuFlipX) {
+    out.ax = -out.ax;
+    out.gx = -out.gx;
+  }
+  if (s.imuFlipY) {
+    out.ay = -out.ay;
+    out.gy = -out.gy;
+  }
   return true;
 }
 

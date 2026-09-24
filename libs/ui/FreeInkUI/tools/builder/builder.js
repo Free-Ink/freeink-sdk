@@ -9,6 +9,7 @@ const devices = [
   { id: "sticky", label: "Sticky 800x480", width: 800, height: 480 },
   { id: "m5paper", label: "M5Paper 540x960", width: 540, height: 960 },
   { id: "lilygo", label: "LilyGo 960x540", width: 960, height: 540 },
+  { id: "papermono", label: "PaperMono 480x800", width: 480, height: 800 },
 ];
 
 const supported = new Set([
@@ -150,16 +151,22 @@ function previewDimensions() {
     : { width: longSide, height: shortSide };
 }
 
-function defaultKeyboardHeight() {
+function defaultKeyboardHeight(child) {
   const dims = previewDimensions();
-  const widthBased = Math.round(dims.width / 4);
-  const height = Math.max(144, widthBased);
-  return Math.max(1, Math.min(height, Math.round(dims.height * 0.45)));
+  const safe = normalizeInsets(state.schema.safeArea);
+  const width = dims.width - safe.left - safe.right;
+  const safeHeight = dims.height - safe.top - safe.bottom;
+  const padding = child.padding ? normalizeInsets(child.padding) : { top: 5, bottom: 5 };
+  const gap = Math.max(0, child.rowGap ?? 6);
+  const rows = child.numberRow && !child.symbols ? 5 : 4;
+  const height = Math.max(64, Math.floor(width / 6)) * rows + gap * (rows - 1)
+    + padding.top + padding.bottom;
+  return Math.max(0, Math.min(height, Math.floor(safeHeight * 0.5) + Math.max(0, gap - 2) * (rows - 1)));
 }
 
 function rowHeight(child) {
   if (child.height) return Number(child.height);
-  if (child.type === "qwertyKeyboard") return defaultKeyboardHeight();
+  if (child.type === "qwertyKeyboard") return defaultKeyboardHeight(child);
   if (child.type === "table") return 96;
   if (child.type === "list") return 132;
   if (child.type === "footer") return 44;
@@ -505,7 +512,7 @@ function fieldSpec(child) {
     popup: [["type", "text", true], ["message", "text"], ["align", "textAlign"], ["maxWidth", "number"], ["showProgress", "checkbox"], ["progress", "number"], ["progressMax", "number"], ["progressHeight", "number"], ["padding", "insets"]],
     optionDialog: [["type", "text", true], ["title", "text"], ["headline", "text"], ["message", "text"], ["width", "number"], ["buttonHeight", "number"], ["gap", "number"], ["verticalOptions", "checkbox"], ["dimBackground", "checkbox"], ["padding", "insets"], ["options", "json"]],
     spacer: [["type", "text", true], ["anchor", "select"], ["height", "number"]],
-    qwertyKeyboard: [["type", "text", true], ["anchor", "select"], ["layout", "keyboardLayout"], ["action", "text"], ["shiftAction", "text"], ["modeAction", "text"], ["deleteAction", "text"], ["okAction", "text"], ["selectedIndex", "number"], ["shifted", "checkbox"], ["symbols", "checkbox"], ["keyRadius", "number"], ["gap", "number"], ["padding", "insets"], ["height", "number"]],
+    qwertyKeyboard: [["type", "text", true], ["anchor", "select"], ["layout", "keyboardLayout"], ["action", "text"], ["shiftAction", "text"], ["modeAction", "text"], ["deleteAction", "text"], ["okAction", "text"], ["selectedIndex", "number"], ["shifted", "checkbox"], ["symbols", "checkbox"], ["keyRadius", "number"], ["gap", "number"], ["rowGap", "number"], ["padding", "insets"], ["height", "number"]],
     statusBar: [["type", "text", true], ["anchor", "select"], ["title", "text"], ["leading", "text"], ["leadingSecondary", "text"], ["trailing", "text"], ["trailingSecondary", "text"], ["horizontalPadding", "number"], ["gap", "number"], ["showProgress", "checkbox"], ["progress", "number"], ["progressMax", "number"], ["progressHeight", "number"]],
     bookCard: [["type", "text", true], ["anchor", "select"], ["title", "text"], ["author", "text"], ["meta", "text"], ["progress", "number"], ["progressMax", "number"], ["action", "text"], ["value", "number"], ["gap", "number"], ["textGap", "number"], ["padding", "insets"], ["height", "number"]],
     textArea: [["type", "text", true], ["anchor", "select"], ["text", "text"], ["cursor", "number"], ["topLine", "number"], ["showCaret", "checkbox"], ["selStart", "number"], ["selEnd", "number"], ["height", "number"]],

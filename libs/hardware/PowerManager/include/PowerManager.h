@@ -55,6 +55,18 @@ class PowerManager {
 
   // Convenience: wait for release, arm the power-button wakeup, then deep sleep.
   [[noreturn]] static void deepSleepUntilPowerButton();
+
+  // esp_deep_sleep_start() is documented as not returning, but deepSleep()
+  // calls esp_restart() if it ever does (instead of a busy-loop -- see that
+  // function). This reports whether the *previous* boot took that abort
+  // path, and clears the record so it only surfaces once. wakeupCause/
+  // wakePinLevel are the values captured at the moment of the abort.
+  struct AbortedSleepInfo {
+    bool aborted = false;
+    int wakeupCause = 0;
+    int wakePinLevel = 0;
+  };
+  static AbortedSleepInfo takeAbortedSleepInfo();
 };
 
 }  // namespace freeink

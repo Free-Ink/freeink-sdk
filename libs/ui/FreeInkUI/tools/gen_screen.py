@@ -570,6 +570,8 @@ def emit_qwerty_keyboard(child, lines, actions, index):
     if child.get("gap") is not None:
         lines.append(f"  {name}.gap = {int(child.get('gap'))};")
     emit_insets_assignment(lines, name, "padding", child.get("padding"))
+    if child.get("rowGap") is not None:
+        lines.append(f"  {name}.rowGap = {int(child.get('rowGap'))};")
     height = child.get("height")
     if height is not None:
         lines.append(f"  screen.qwertyKeyboard({name}, {int(height)}{anchor_arg(child)});")

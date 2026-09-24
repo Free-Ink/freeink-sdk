@@ -67,8 +67,7 @@ void dropdown(Frame<MaxInteractions>& frame, Rect rect, const DropdownProps& pro
     const int16_t iconSize = props.iconSize > 0 ? props.iconSize : static_cast<int16_t>(icon.width);
     Rect iconRect{content.x, static_cast<int16_t>(band.y + (band.height - iconSize) / 2),
                   iconSize, iconSize};
-    const BoxStyle& iconStyle = (props.styles.unset() ? defaultButtonStyles() : props.styles).resolve(state);
-    frame.target().bitmap(iconRect, icon, BitmapMode::Contain, iconStyle.foreground);
+    frame.target().bitmap(iconRect, icon, BitmapMode::Contain, style.foreground);
     const int16_t shift = static_cast<int16_t>(iconSize + props.gap);
     content.x = static_cast<int16_t>(content.x + shift);
     content.width = static_cast<int16_t>(content.width - shift);

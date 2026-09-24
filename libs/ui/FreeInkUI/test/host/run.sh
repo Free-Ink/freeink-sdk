@@ -5,5 +5,5 @@ set -e
 cd "$(dirname "$0")"
 BUILD_DIR="${TMPDIR:-/tmp}/freeinkui-tests"
 mkdir -p "$BUILD_DIR"
-c++ -std=c++17 -Wall -Wextra -Werror -I../../include ../../src/FreeInkUI.cpp test_freeinkui.cpp -o "$BUILD_DIR/test_freeinkui"
+c++ -std=c++17 -pthread -Wall -Wextra -Werror -I../../include ../../src/FreeInkUI.cpp test_freeinkui.cpp -o "$BUILD_DIR/test_freeinkui"
 "$BUILD_DIR/test_freeinkui"

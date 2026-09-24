@@ -68,9 +68,14 @@ int SecureClient::connectWithMethod(const char* host, uint16_t port, void* metho
   const uint32_t started = millis();
   stop();
   const uint32_t timeoutMs = getTimeout();
+  if (abortRequested()) return 0;
   _transport.setConnectionTimeout(timeoutMs);
   if (!_transport.connect(host, port)) {
     if (Serial) Serial.printf("[SecureClient] TCP connect failed (%s): %s:%u\n", label, host, port);
+    return 0;
+  }
+  if (abortRequested()) {
+    _transport.stop();
     return 0;
   }
 
@@ -133,6 +138,11 @@ int SecureClient::connectWithMethod(const char* host, uint16_t port, void* metho
       stop();
       return 0;
     }
+    if (abortRequested()) {
+      if (Serial) Serial.printf("[SecureClient] handshake aborted by caller (%s)\n", label);
+      stop();
+      return 0;
+    }
     if (static_cast<int32_t>(millis() - deadline) >= 0) {
       if (Serial) {
         Serial.printf("[SecureClient] handshake timeout (%s): last err %d, transport %s, free heap %u\n", label, err,
@@ -151,12 +161,20 @@ int SecureClient::connectWithMethod(const char* host, uint16_t port, void* metho
   return 1;
 }
 
+bool SecureClient::abortRequested() {
+  if (!_shouldAbort || !_shouldAbort()) return false;
+  _aborted = true;
+  return true;
+}
+
 int SecureClient::connect(const char* host, uint16_t port) {
+  _aborted = false;
   // Negotiate the highest mutually supported version rather than pinning TLS 1.3:
   // self-hosted / Let's Encrypt nginx often tops out at TLS 1.2, and a 1.3-only
   // client fails those handshakes outright. v23 still selects 1.3 when the peer
   // offers it (WOLFSSL_TLS13 is enabled) and falls back to 1.2 otherwise.
   if (connectWithMethod(host, port, wolfSSLv23_client_method(), "auto")) return 1;
+  if (_aborted) return 0;
 
   // Some TLS 1.2-only servers are intolerant of a TLS 1.3-capable ClientHello
   // and abort with a fatal handshake_failure alert. Retry with an explicit
@@ -192,7 +210,10 @@ int SecureClient::read(uint8_t* buf, size_t size) {
   // A mid-stream failure is invisible to callers (they just see the connection
   // die); the error code distinguishes an OOM (MEMORY_E -125) from a peer
   // drop or MAC failure.
-  if (Serial) Serial.printf("[SecureClient] read failed: %d, free heap %u\n", err, (unsigned)ESP.getFreeHeap());
+  if (Serial) {
+    Serial.printf("[SecureClient] read failed: %d, free heap %u, max block %u\n", err, (unsigned)ESP.getFreeHeap(),
+                  (unsigned)ESP.getMaxAllocHeap());
+  }
   _connected = false;
   return -1;
 }

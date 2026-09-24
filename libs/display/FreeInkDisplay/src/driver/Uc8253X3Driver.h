@@ -9,10 +9,9 @@
 //   FAST -> `_fast` turbo LUTs (DTM1 holds prev frame, diffs against it)
 //   HALF -> `_half` scrub LUTs (WW==BW, WB==BB: drive to target ignoring DTM1)
 //   FULL -> `_full` OEM bank from a white DTM1 baseline + post-full settle pass
-// Grayscale: `_gc` 4-level nudge (reader AA/cover) or `_full` (factory
-// absolute), reverted via the `_half` scrub bank. DTM1/DTM2 are the
-// controller's old/new RAM planes; CDI (cmd 0x50) selects differential (0x29)
-// vs absolute (0xA9).
+// Grayscale uses the base-dependent `_gc` nudge by default. Direct absolute
+// passes select the full four-gray bank and activate only after both planes
+// are uploaded. Returning to B/W requires a full rebase of controller RAM.
 //
 // X3TwoPhase BUSY; SPI clock board-overridable (default 16 MHz).
 
@@ -30,13 +29,15 @@ struct Uc8253LutBank {
 };
 
 struct Uc8253X3Config {
-  Uc8253LutBank normal;  // condition-pass / settle (CDI 0xA9)
-  Uc8253LutBank half;    // scrub (CDI 0xA9)
-  Uc8253LutBank fast;    // turbo differential (CDI 0x29)
-  Uc8253LutBank full;    // OEM full / factory (CDI 0x29)
+  Uc8253LutBank normal;    // condition-pass / settle (CDI 0xA9)
+  Uc8253LutBank half;      // scrub (CDI 0xA9)
+  Uc8253LutBank fast;      // turbo differential (CDI 0x29)
+  Uc8253LutBank full;      // OEM full / factory (CDI 0x29)
   Uc8253LutBank gc;        // OEM 4-level grayscale nudge (CDI 0x29)
   Uc8253LutBank preBwMid;  // OEM grayscale preconditioning settle (CDI 0xA9)
   uint8_t lutLen;          // bytes per LUT sent to the controller (42)
+  const Uc8253LutBank *directGray =
+      nullptr; // optional direct grayscale waveform
 };
 
 const Uc8253X3Config& uc8253X3DefaultConfig();
@@ -61,9 +62,23 @@ class Uc8253X3Driver : public PanelDriver {
   void displayFinish(EpdBus& bus, const uint8_t* fb) override;
   bool supportsAsyncDisplay() const override { return true; }
 
-  bool supportsStripGrayscale() const override { return true; }
-  void displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, RefreshMode fallback, bool turnOff) override;
-  void preconditionGrayscale(EpdBus& bus, uint16_t x, uint16_t y, uint16_t w, uint16_t h) override;
+  void beginGrayscale(EpdBus &bus, const uint8_t *fb, GrayscaleMode mode,
+                            RefreshMode fallback, bool turnOff) override;
+  void displayGrayscaleBase(EpdBus &bus, const uint8_t *fb,
+                                  RefreshMode fallback, bool turnOff) override;
+  void preconditionGrayscale(EpdBus &bus, uint16_t x, uint16_t y, uint16_t w,
+                             uint16_t h) override;
+  GrayscaleCapabilities grayscaleCapabilities(
+      GrayscaleMode mode = GrayscaleMode::Overlay) const override {
+    if (mode == GrayscaleMode::Direct && !_cfg.directGray) return {};
+    if (mode == GrayscaleMode::Absolute || mode == GrayscaleMode::Direct)
+      return {GrayscaleEncoding::AbsolutePlanes,
+              mode == GrayscaleMode::Direct ? GrayscaleBase::Combined : GrayscaleBase::Separate,
+              true, false, false};
+    if (mode != GrayscaleMode::Overlay) return {};
+    return {GrayscaleEncoding::OverlayMasks, GrayscaleBase::Separate, true,
+            false, false};
+  }
   void copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) override;
   void copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) override;
   void writeGrayscalePlaneStrip(EpdBus& bus, GrayPlane plane, const uint8_t* rows, uint16_t yStart,
@@ -74,16 +89,14 @@ class Uc8253X3Driver : public PanelDriver {
 
   void requestResync(uint8_t settlePasses) override;
   void skipInitialResync() override;
-  // Inverted (dark-background) content: fast refreshes rewrite DTM1 ("old")
-  // as the complement of the target so every pixel is re-driven toward its
-  // target each update. See displayStart().
-  void setBackgroundHint(bool darkBackground) override { _darkBackground = darkBackground; }
 
- private:
-  void initController(EpdBus& bus);
-  void loadBank(EpdBus& bus, const Uc8253LutBank& bank);
-  void loadBankCdi(EpdBus& bus, uint8_t cdi0, uint8_t cdi1, const Uc8253LutBank& bank);
-  void triggerRefresh(EpdBus& bus, bool turnOff);
+private:
+  void initController(EpdBus &bus);
+  void loadBank(EpdBus &bus, const Uc8253LutBank &bank);
+  void loadBankCdi(EpdBus &bus, uint8_t cdi0, uint8_t cdi1,
+                   const Uc8253LutBank &bank);
+  void triggerRefresh(EpdBus &bus, bool turnOff, const char *label = " X3_DRF");
+  void grayWindowIn(EpdBus &bus);
 
   const Uc8253X3Config& _cfg;
 
@@ -95,7 +108,9 @@ class Uc8253X3Driver : public PanelDriver {
   bool _isScreenOn = false;
   bool _redRamSynced = false;
   bool _inGrayscaleMode = false;
-  bool _darkBackground = false;
+  bool _absoluteInput = false;
+  bool _directGrayPass = false;
+  bool _directGrayOnPanel = false;
   uint8_t _initialFullSyncsRemaining = 0;
   bool _forceFullSyncNext = false;
   uint8_t _forcedConditionPassesNext = 0;

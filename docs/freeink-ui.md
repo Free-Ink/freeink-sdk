@@ -208,6 +208,9 @@ It manages a remaining content rectangle from `safeRect()`:
 - `status(props)` consumes the top status band
 - `footer(actions, count)` consumes the bottom footer band
 - `footer(props)` accepts `FooterProps` for nav spacing and button border edges
+- `setContentMargin(insets)` reserves space relative to the device safe area;
+  `setContentMarginFromScreen(insets)` reserves physical screen-edge chrome
+  without applying the safe-area insets twice
 - `button(label, action, value, state)` adds one full-width row button
 - `list(items, count, selected, action, topIndex)` fills the remaining body
 - `list(props)` uses a full `ListProps` when you need detailed styling
@@ -232,7 +235,7 @@ screen.header("Search");
 
 freeink::ui::QwertyKeyboardProps keys;
 keys.keyAction = ActionKeyboardKey;
-screen.qwertyKeyboard(keys, 144, freeink::ui::LayoutAnchor::Bottom);
+screen.qwertyKeyboard(keys, 0, freeink::ui::LayoutAnchor::Bottom);
 
 screen.list(results, resultCount, selected, ActionOpen);
 ```
@@ -325,8 +328,7 @@ The `Screen` API is also the target for design-time tooling. The bundled
       "action": "keyboardKey",
       "shiftAction": "keyboardShift",
       "deleteAction": "keyboardDelete",
-      "okAction": "keyboardOk",
-      "height": 144
+      "okAction": "keyboardOk"
     },
     {
       "type": "list",
@@ -585,6 +587,14 @@ tied to any application's screen structure:
 - `button`
 - `checkbox`
 - `slider`
+- `capsuleSlider` (finger-height filled-capsule slider with an edge-riding
+  handle; touch-drag routed)
+- `sliderRow` (caption + value readout over `[-]` capsule `[+]`, with an
+  optional trailing icon toggle)
+- `tileGrid` (quick-setting tile cards in fixed columns; checked tiles fill
+  solid)
+- `sheet` (partial-height sheet chrome: card body, edge rule, grabber, and an
+  optional tap-outside dismiss action)
 - `gestureBar`
 - `header`
 - `list` (virtualized; see below — supports hug-content pill rows and
@@ -630,7 +640,10 @@ props (`ButtonProps::radius`, `SettingRowProps::radius`,
 `ToggleRowProps::radius`/`knobRadius`, `StepperRowProps::buttonRadius`,
 `CheckboxProps::radius`, `SliderProps::radius`, `DropdownProps::radius`,
 `RadioGroupProps::radius`, `TableProps::cellRadius`, or
-`QwertyKeyboardProps::keyRadius`) when a product theme wants rounded controls.
+`QwertyKeyboardProps::keyRadius`) when a product theme wants rounded
+controls. The control-center pieces are card language and default rounded
+instead (`SliderRowProps::buttonRadius`, `TileGridProps::radius`; 0 gives
+square cards), and `SheetProps::radius` rounds the sheet's free-edge corners.
 The builder exposes the same fields in the inspector and JSON schema.
 Dropdowns use a stroked chevron indicator by default; tune
 `DropdownProps::indicatorWidth`, `indicatorSize`, and `indicatorStroke` for a
@@ -657,6 +670,47 @@ font.controlSize = 14; // explicit plus/minus strokes, independent of font glyph
 stepperRow(ui, rowRect, font);
 ```
 
+Control-panel surfaces (a pull-down control center, a bottom sheet of quick
+settings) compose from `sheet`, `sliderRow`/`capsuleSlider`, and `tileGrid`:
+
+```cpp
+freeink::ui::SheetProps panel;             // top-anchored card with a grabber
+panel.dismissAction = ActionClosePanel;    // tap outside the sheet closes it
+sheet(ui, panelRect, panel);
+
+freeink::ui::SliderRowProps brightness;    // caption + [-] [capsule] [+] [lamp]
+brightness.label = "Brightness";
+brightness.value = "62%";                  // caller-formatted readout
+brightness.sliderValue = 62;
+brightness.sliderAction = ActionBrightness;   // drag/tap; dragPermille carries the position
+brightness.decrement = ActionBrightnessStep;  // value -1 / +1 per press
+brightness.increment = ActionBrightnessStep;
+brightness.toggleAction = ActionLightToggle;  // trailing icon button
+brightness.toggleIcon = lampIcon;
+sliderRow(ui, rowRect, brightness);
+
+freeink::ui::TileGridItem tiles[2];
+tiles[0].label = "Night mode";
+tiles[0].value = TileNightMode;            // stable id, not grid position
+tiles[0].state = nightMode ? freeink::ui::StateChecked : freeink::ui::StateNormal;
+tiles[1].label = "Refresh";
+tiles[1].value = TileRefresh;
+freeink::ui::TileGridProps grid;
+grid.items = tiles;
+grid.count = 2;
+grid.action = ActionTile;                  // event value = the tile's id
+tileGrid(ui, gridRect, grid);
+```
+
+`sheetContentRect()` returns the part of the sheet its content may use (the
+rect minus the grabber band), `sliderRowHeight()` and `tileGridHeight()` size
+the bands, and the `Screen` wrappers (`screen.sheet(...)`, `screen.sliderRow(...)`,
+`screen.tileGrid(...)`) apply theme fonts and spacing and reserve the bands
+automatically. The capsule slider is the drag surface; the step buttons exist
+because a drag on matte glass is unreliable and single steps land exact
+values. On a rect too narrow for the capsule's handle the track is skipped
+entirely and the step buttons alone drive the value.
+
 Text-entry screens can use the generic `keyGrid` for compact custom pads,
 `keyboard` for data-driven rows, or `qwertyKeyboard` for a ready-made four-row
 keyboard with Shift, mode, space, delete, and OK keys:
@@ -674,6 +728,32 @@ keyboard.shifted = state.shifted;
 keyboard.symbols = state.symbols;
 qwertyKeyboard(ui, keyboardRect, keyboard);
 ```
+
+`Screen::keyboard` and `Screen::qwertyKeyboard` use the full safe-area width,
+including the space outside text-content side margins. Their automatic height
+allocates at least 64px per row, scaling to 80px on a 480px-wide screen: 348px
+for four rows, or 434px with a dedicated number row. On short screens the total
+is capped at 50% of the safe height plus the extra row spacing, and the remaining
+content space. An explicit
+height still overrides automatic sizing. Low-level calls with a `Rect` use that
+rectangle exactly; reserve `keyboardPreferredHeight(width, layout.rowCount)`
+pixels to get the same taller rows there.
+
+Keys are borderless by default, with a filled highlight when selected or pressed. Primary labels
+use the body font slot, with smaller alternate hints. Set `labelText.font` to a
+larger registered font and `controlText.font` to a smaller font for word labels
+such as Shift or localized OK text. The gallery uses 36px letters, 24px control
+labels, and 13px alternate hints on a 480×800 display, with the five-row keyboard
+occupying the lower 416px. Rows are separated by 6px (`rowGap`), while the
+horizontal key spacing remains 2px (`gap`). Selected and pressed highlights are
+about 20% shorter and centered on the labels, without reducing hit targets; alternate
+hints keep the same position and 10px right padding in every state, inside the
+highlight area. Selecting or pressing a key changes only the hint color. Keys with alternate
+hints reserve 4px of extra headroom above the primary glyph, with matching
+clearance below so the highlight stays centered. Firmware can tune this geometry with
+`altHintRightPadding`, `altLabelGap`, and the signed `digitLabelOffsetX` on
+`KeyboardProps` or `QwertyKeyboardProps`; their defaults are 10px, 4px, and -4px.
+Negative padding or gap values are treated as zero.
 
 The keyboard is stateless like every component: Shift and mode ("?123"/"ABC")
 keys only report their actions. With `symbols` set, `shifted` selects the
@@ -748,13 +828,22 @@ keyboard.okAction = ActionKeyboardOk;
 freeink::ui::keyboard(ui, keyboardRect, keyboard);
 ```
 
-Built-in layout IDs are `QwertyEn`, `AzertyFr`, `QwertzDe`, and `SpanishEs`.
+Built-in layout IDs are `QwertyEn`, `AzertyFr`, `QwertzDe`, `SpanishEs`,
+`CyrillicRu`, `CyrillicUk`, `CyrillicBe`, `CyrillicKk`, and `HebrewIl`.
 Normal ASCII keys report their code point in `ActionEvent::value`; localized
 keys use stable non-ASCII values so firmware can map the selected key back to
 the active layout's UTF-8 output string. Visible glyph coverage depends on the
 active `DrawTarget` font asset, so devices shipping wider language support
 should include matching Noto Sans glyph ranges in their generated bitmap font or
 use a renderer with native text shaping.
+
+An app that reaches more than one script sets `builtinKeyboardLayout`'s
+`langKey` flag and a `KeyboardProps::langAction`, which puts a script-switch key
+in the bottom row. It draws a globe and takes no label of its own: which layout
+is active is already visible in the letter keys. The flag is off by default and
+the Latin layouts respect it, so a single-script keyboard renders without the
+key; the non-Latin layouts carry it either way, since a keyboard with no Latin
+letters cannot type a Wi-Fi password or a URL.
 
 Reader screens can register invisible tap zones over the page while drawing
 chrome separately:
@@ -798,6 +887,11 @@ card.value = bookIndex;
 bookCard(ui, rowRect, card);
 ```
 
+`bookCard` accepts `progressLabel` and `progressText` to place a percentage or
+other short label before the bar, separated by `progressLabelGap`. Set
+`centerTextOnCover = true` to center the title/author block against the cover;
+the block shifts upward if needed to leave room for the progress row.
+
 Both `bookCard` and `coverGrid` default to highlighting the whole
 card/cell when selected. Set `selectionIndicator` to the `CoverFrame` mode
 (`BookCardSelectionIndicator::CoverFrame` / `CoverGridSelectionIndicator::CoverFrame`)
@@ -805,6 +899,9 @@ to draw a frame around the cover art instead, tuned with
 `selectedCoverFrameGap`/`Width`/`Radius`. Both also accept a `coverPainter`
 callback, so the app can render decoded cover art into the slot rect while the
 component still owns layout, the dithered placeholder, and selection chrome.
+Grid titles default to centered across the cell. Set `labelAlign = TextAlign::Left`
+and `labelFollowsCover = true` to left-align titles within the cover slot's width;
+`labelInset` is applied inside those bounds.
 `coverGrid` draws a scroll indicator when its contents overflow the visible
 rows (`scrollIndicator`, `scrollIndicatorWidth`/`Gap`); pair it with the
 `coverGridVisibleCells()` and `coverGridTopIndexFor()` helpers to keep the
@@ -912,6 +1009,91 @@ freeink::ui::list(ui, rect, props);
 `listTopIndexFor` scrolls the window the minimal amount to keep the selection
 visible and clamps to the valid range, so GPIO up/down navigation gets correct
 scrolling for free.
+
+Rows are not all the same height: a wrapped label or subtitle grows one, so a
+layout routinely fits fewer indexes than `listVisibleRows()` estimates. Screens
+that scroll (swipe or button navigation) should therefore own a `ListNav` and
+call `screen.syncListViewport(nav, props, count)` right before
+`list()`. `list()` reports the viewport it actually laid out back through
+`props.nav`. Rendering, hit targets, preview rows, and the scroll indicator
+share that measurement. The indicator uses the current layout immediately.
+A selection that falls below variable-height rows may require another layout;
+clear and rebuild before displaying:
+
+```cpp
+for (int pass = 0; pass < 8; ++pass) {
+  // Clear the framebuffer and redraw chrome here.
+  app.render();
+  if (!nav.consumeRebuildNeeded()) break;
+}
+```
+
+For input and rendering on separate tasks, submit navigation without acquiring
+an e-ink refresh lock:
+
+```cpp
+// Input task: logical selection changes immediately, including for Confirm.
+nav.requestSelection(nextIndex);
+// Or scroll without changing selection; multiple pending deltas accumulate.
+nav.requestScroll(nav.inputPageRows());
+// Notify/schedule a render after either request.
+```
+
+`requestSelection()` supersedes pending scroll deltas. A subsequent
+`requestScroll()` applies after following that selection. `syncToProps()`
+consumes requests on the render task and captures the selection used by that
+frame, so input arriving during drawing cannot change its layout feedback.
+When data shrinks, an atomic compare-and-exchange clamps a stale selection
+without overwriting a newer input request.
+`inputPageRows()` is an atomic snapshot of the most recently measured page
+(initially 1). Pending scroll deltas saturate at ±65,535 rows.
+
+Use one input producer and one render consumer. `selected` and `followOnBuild`
+are atomic; use `nav.selected.load()` when passing the value to a template such
+as `std::min`, or when capturing it with `auto`. Other fields, `follow()`,
+`scrollBy()`, and `pageRows()`/`pageRowsFor()` remain render-owned. Resetting or
+copying a nav requires quiescent access. List items and their strings must
+remain valid and stable during the build; atomics do not synchronize app data.
+For a tab ring with index 0 reserved for the tab bar, pass `selectionOffset = 1`
+to `syncToProps()`; layout and follow feedback then use row indexes consistently.
+
+`Screen::list()` sizes default rows from their actual label, subtitle, value,
+icon and wrapping. Button devices use `theme.listRowPaddingY` (4 pixels per
+side). Touch devices use `listTouchRowPaddingY` (8 pixels per side), a
+`listTouchMinRowHeight` of 56 pixels, and at least `listTouchRowGap` (6 pixels)
+between rows unless the caller explicitly sets the gap. Device and theme hit
+target minimums are still enforced. These touch defaults provide comfortable
+spacing rather than using the smallest valid hit target as the row design.
+`theme.rowHeight` sizes generic controls; it no longer reserves two text lines
+for every list item. Use `theme.listMinRowHeight` for a deliberate list minimum,
+or a positive `props.rowHeight` for a particular list.
+
+Use `screen.syncListViewport(nav, props, count, selectionOffset)` before loading
+a virtualized window or calling `screen.list(props)`. It resolves the same fonts,
+padding and minimum as drawing, then computes the allocation bound and applies
+navigation. `nav.visibleRows` is an upper bound; load one extra item for a
+trailing preview. The rendered full-row count remains the swipe page size.
+
+For raw `list(frame, rect, props)`, an unset height still falls back to 36 pixels.
+An explicit height with `rowPaddingY = -1` retains legacy padding. Set a
+nonnegative `rowPaddingY` to request content plus padding with that minimum.
+
+With `partialTrailingRow = true`, the next row uses exactly the same text,
+value, icon, and toggle layout as a full row. It is clipped at the viewport
+edge and contributes neither an interaction nor a navigation row. A row whose
+bottom exactly meets the viewport edge is a full, selectable row; no trailing
+gap is required. A preview clips the entire next section block, including its
+inline heading. The heading itself can signal that more content follows even
+when the book beneath it is still outside the viewport. Decorative section
+padding does not count toward `partialTrailingMinHeight`. Section and row
+spacing remain unchanged, and previews remain non-interactive.
+
+Pixel clipping is optional for custom `DrawTarget` implementations: implement
+`clipRect()` and `setClipRect()` to enable previews. `DisplayTarget` supports
+it, `InvertedDrawTarget` forwards it, and `GfxRendererTarget` supports it when
+the application's renderer provides `setClipRect(x, y, width, height)`.
+Targets without clipping omit partial rows. A preview restores the previous
+clip after drawing, so it cannot spill into a footer or alter later painting.
 
 ### Dialogs
 
@@ -1244,3 +1426,203 @@ component set:
   - `FreeInkUIIcon.h` — `bitmapFromIcon()` adapts `freeink::Icon` assets
     (generated at any size by `libs/assets/Icons/tools/gen_icons.py`) to
     the `BitmapRef` every component takes.
+
+## Publication detail page
+
+`publicationPage` composes a store/library-style book detail screen for OPDS
+browsers. It provides a portrait cover (or a typeset fallback), title, author,
+series and format, followed by availability, copies, holds, loan terms, metadata,
+and a plain-text description. The primary action stays at the bottom; optional
+sample and full-description actions sit above it. All actions use the existing
+touch and button/focus routing.
+
+![Publication available to borrow](images/freeinkui-publication.svg)
+![Publication on hold](images/freeinkui-publication-hold.svg)
+
+```cpp
+PublicationPageProps page;
+page.book.title = publication.title.c_str();
+page.book.author = publication.author.c_str();
+page.book.format = "EPUB";
+page.book.cover = loadedCover; // app-owned BitmapRef; an empty ref is supported
+page.book.titleText.font = FONT_SLOT_TITLE; // configure this slot in your renderer
+page.description = plainDescription.c_str();
+page.metadata = localizedPublicationDetails.c_str();
+page.availability.status = localizedAvailability.c_str();
+page.availability.copies = localizedCopies.c_str();
+page.availability.holds = localizedHolds.c_str();
+page.primary.label = publication.purchase ? localizedBuyLabel.c_str() : "Borrow book";
+page.primary.action = ActionAcquire;
+page.primary.enabled = canAcquire && !requestPending;
+page.more.label = "Full description";
+page.more.action = ActionDescription;
+// After screen.header(...) and any footer:
+screen.publicationPage(page);
+```
+
+The SDK supplies presentation and action IDs, not acquisition policy. The app
+must derive labels and enabled states from the actual link relations, account
+state, and server capabilities. Use "Download" for an open-access acquisition,
+"Place hold" only if the service supports placing a hold, and "Manage hold"
+only when there is a corresponding action. A purchase label can include the
+formatted price. Supply a sample button only when a sample link exists. While a
+request runs, disable its button and supply a localized pending label; render
+errors using the app's existing message/toast components.
+
+Do not infer availability from missing fields: OPDS counts of `-1` are unknown,
+while `0` is a valid count. Omit unknown counts with null/empty strings and use
+an explicit "Availability unknown" label if needed. Convert HTML descriptions
+to plain text before rendering. All strings and cover assets remain app-owned
+and must live through the render call; no network/parser dependency is added to
+FreeInkUI.
+
+`publicationHeader` and `publicationAvailability` can also be used independently
+with explicit rectangles. `PublicationPageProps` exposes padding, hero height,
+action height, text styles, and full `ButtonProps` for each action. The page uses
+the body rectangle remaining after app chrome; text is limited to complete lines
+and lower-priority content is omitted on short displays. It does not scroll:
+wire `more` to a full-description screen when needed. Prefer at least a 240×480
+body and fonts sized for the device; firmware remains responsible for choosing
+fonts and localizing every label (including `descriptionHeading`).
+
+### Publication styling and physical buttons
+
+Publication sections expose the same `StyleSet`/`State` conventions as other
+FreeInkUI surfaces: normal, selected, focused, active, disabled, background,
+foreground, borders, corner masks, and per-state radii. A positive `radius`
+overrides all state radii; zero leaves the style values intact. `borderEdges`
+controls which border edges paint. `padding` belongs to each surface separately.
+The page's `enabled = false` (or `StateDisabled`) disables all child actions.
+
+```cpp
+page.radius = 12;
+page.styles = outlinedButtonStyles();
+page.padding = {20, 24, 20, 24};
+page.sectionGap = 16;
+page.actionGap = 10;
+page.book.padding = {8, 8, 8, 8};
+page.book.coverSize = {112, 168};
+page.book.gap = 20;
+page.book.titleGap = 12;
+page.availability.styles = outlinedButtonStyles();
+page.availability.radius = 8;
+page.availability.padding = {12, 16, 12, 16};
+page.availability.divider = Paint::none();
+page.primary.radius = 8;
+page.primary.padding = {12, 20, 12, 20};
+page.primary.styles = outlinedButtonStyles();
+```
+
+Additional controls include header text gaps/line limits, cover mode, placeholder
+`coverStyle` and `coverPadding`, a `coverPainter` hook, availability divider and
+gap, metadata/description line limits, and heading weight flags. Real bitmap
+corner masking is app-owned through the cover painter. Button padding is now
+part of `ButtonProps` for all buttons, with the existing `{2,4,2,4}` default.
+Publication actions preserve their `inputMask`, `value`, `styles`, `radius`,
+`hitPadding`, and minimum touch size. Their rows grow to fit the requested
+minimum size and padded text height.
+
+For hardware buttons, map Next/Previous to `InputSnapshot.focusNext` /
+`focusPrev` and Select to `confirm`. The default `InputDefault` mask includes
+focus and confirm. Focus order starts with the primary action, then secondary,
+full description, and any optional header/availability actions. Disabled actions
+are skipped; focus wraps and survives redraws using the shared interaction
+buffer. Section `action`, `value`, and `inputMask` can make the cover/title or
+availability panel focusable too. Keep the app's Back action in its header or
+footer. The full-description action is equally reachable by physical buttons;
+the app owns that destination screen.
+
+## Catalog shelves
+
+`catalogCover`, `coverShelf`, and `catalogPage` present OPDS groups as horizontal
+cover shelves, following the group-heading and fixed-width-card structure in
+Common Stacks. The catalog does not expand a group into a vertical book list.
+Each shelf has its own horizontal window, Previous/Next buttons, optional
+"See all", and titles on the covers. Set `card.titleOnCover = false` for the
+Common Stacks variant with titles below the art. Authors appear underneath.
+
+![Catalog with horizontal shelves](images/freeinkui-catalog.svg)
+
+```cpp
+// Persistent app state, not render-local:
+CatalogWindow shelfWindows[3];
+CatalogWindow catalogWindow;
+CoverShelfProps shelves[3];
+
+// Configure each shelf using data owned by your app:
+for (int i = 0; i < 3; ++i) {
+  shelves[i].title = groupNames[i];
+  shelves[i].items = groupItems[i]; // arrays of CatalogItem
+  shelves[i].count = groupCounts[i];
+  shelves[i].window = &shelfWindows[i];
+  shelves[i].card.action = ActionOpenPublication;
+  shelves[i].card.radius = 6;
+  shelves[i].card.padding = {4, 4, 4, 4};
+  shelves[i].next.label = ">";
+  shelves[i].next.action = ActionShelfNext;
+  shelves[i].next.value = i;
+  shelves[i].previous.label = "<";
+  shelves[i].previous.action = ActionShelfPrevious;
+  shelves[i].previous.value = i;
+  shelves[i].seeAll.label = "See all";
+  shelves[i].seeAll.action = ActionOpenGroup;
+  shelves[i].seeAll.value = i;
+}
+
+CatalogPageProps catalog;
+catalog.shelves = shelves;
+catalog.count = 3;
+catalog.window = &catalogWindow;
+catalog.next.label = "More groups";
+catalog.next.action = ActionCatalogNext;
+catalog.previous.label = "Previous groups";
+catalog.previous.action = ActionCatalogPrevious;
+screen.catalogPage(catalog);
+```
+
+In action handlers, call `shelfWindows[event.value].next()` or `.previous()` for
+horizontal navigation, and `catalogWindow.next()` / `.previous()` for vertical
+group navigation, then redraw. Validate group IDs as you do for other app
+callbacks. `CatalogItem.value` is a stable app identifier sent with the open
+publication action; assign unique values across groups or use distinct group
+open actions. Opening a book is separate from moving the shelf.
+
+Next/Previous/Confirm focus navigation reaches all visible covers, shelf paging,
+See all, and catalog paging. No touchscreen is required. Navigation buttons
+disable at boundaries. Horizontal movement is discrete paging for e-paper;
+only visible covers are rendered. `CatalogWindow` preserves independent group
+positions and clamps them when counts or viewport sizes change. Supply persistent
+windows and navigation action handlers to browse beyond the initial window.
+For swipes, set `CatalogPageProps.activeShelf` to the intended group index (default
+`-1` disables swipes); only that visible shelf claims global swipe events.
+Standalone shelves can opt in with `swipeNavigation`. The shared router's swipe
+events do not carry a shelf target, so the app chooses the active group.
+
+For large feeds, use `itemProvider(index, userData)` instead of `items`. It is
+called only for visible cards. Providers, cover assets, decoding, feed loading,
+and string lifetime remain app-owned. `coverPainter` supports custom covers;
+missing images use a neutral placeholder with the title retained. Shelf and
+catalog surfaces expose styles, radius, borders, padding, gaps, enabled state,
+and size controls; each card also has title-band colors/padding, text styles,
+author height, cover mode, and interaction masks. The `Screen::coverShelf`
+wrapper applies theme typography; `catalogPage` accepts independently styled
+shelf props, so assign each shelf's fonts explicitly when using multiple styles.
+
+Use app-level loading/error/empty-catalog screens as appropriate. A shelf's
+`emptyLabel` is customizable. No OPDS requests or CrossPoint firmware screen
+changes are performed by these SDK components.
+
+### Evenly distributed cover columns and tabs
+
+Set `CoverGridProps::columnLayout` to `CoverGridColumnLayout::SpaceBetween` to
+keep cover cells at their natural width (cover width plus cell insets) and
+spread the remaining width between columns. Both outside cell edges stay fixed;
+rounding is absorbed between columns. A single column is centered. `gap` is the
+minimum spacing; layouts that do not fit fall back to equal-width cells.
+
+Set `TabBarProps::layout` to `TabBarLayout::SpaceBetween` for the same distribution
+of tab slots. `distributedSlotWidth` specifies the slot width; zero uses the
+widest natural tab. Slot bounds include the tab insets, and touch targets and
+selection indicators follow the slots. A single tab is centered. If the slots
+and minimum `gap` do not fit, the bar falls back to equal-width slots.
+Existing default layouts are unchanged. Neither option allocates memory.

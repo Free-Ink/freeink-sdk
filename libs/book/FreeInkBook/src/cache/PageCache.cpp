@@ -34,8 +34,8 @@ void putU32(uint8_t* p, uint32_t v) {
 uint16_t getU16(const uint8_t* p) { return static_cast<uint16_t>(p[0] | (p[1] << 8)); }
 
 uint32_t getU32(const uint8_t* p) {
-  return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
-         (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
+  return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) | (static_cast<uint32_t>(p[2]) << 16) |
+         (static_cast<uint32_t>(p[3]) << 24);
 }
 
 // CacheStorage::readAt may return short (SD adapters often pass one
@@ -59,17 +59,18 @@ uint32_t hashMix(uint32_t hash, uint32_t value) {
 
 }  // namespace
 
-static BookStatus decodePageBlob(const uint8_t* blob, uint32_t blobLen, uint32_t pageIndex,
-                                 Arena& scratch, Page* out);
+static BookStatus decodePageBlob(const uint8_t* blob, uint32_t blobLen, uint32_t pageIndex, Arena& scratch, Page* out);
 
 // Bump when layout BEHAVIOR changes without a format change (ligatures,
 // breaking rules, spacing math) — stale caches would otherwise render with
 // mismatched widths after a firmware update.
-constexpr uint32_t kLayoutRevision = 9;  // 9: uniform per-paragraph line grid (CrossPoint parity)
-                                         // (8: inline CSS sizes/margins + line box sizing,
-                                         //  7: image dimension pre-scan,
-                                         //  6: focus reading + non-ASCII hyphenation,
-                                         //  5: Korean/CJ punct, 4: Arabic, 3: bidi, 2: ligatures)
+constexpr uint32_t kLayoutRevision = 10;  // 10: FtFont::ligature() now folds ff/fi/fl/ffi/ffl via GSUB
+                                          // (previously always 0, unlike TtfFont's own check)
+                                          // (9: uniform per-paragraph line grid (CrossPoint parity),
+                                          //  8: inline CSS sizes/margins + line box sizing,
+                                          //  7: image dimension pre-scan,
+                                          //  6: focus reading + non-ASCII hyphenation,
+                                          //  5: Korean/CJ punct, 4: Arabic, 3: bidi, 2: ligatures)
 
 uint32_t layoutGenerationHash(const LayoutParams& params, uint32_t fontFingerprint) {
   uint32_t hash = 2166136261u;
@@ -103,8 +104,7 @@ bool pageCacheName(uint16_t spineIndex, uint32_t generationHash, char* out, uint
 
 // --- writer ------------------------------------------------------------------
 
-bool PageCacheWriter::begin(CacheStorage& storage, const char* name, uint32_t generationHash,
-                            Arena& arena) {
+bool PageCacheWriter::begin(CacheStorage& storage, const char* name, uint32_t generationHash, Arena& arena) {
   storage_ = &storage;
   name_ = name;
   pageCount_ = 0;
@@ -368,8 +368,7 @@ BookStatus PageCacheWriter::readPage(uint32_t pageIndex, Arena& scratch, Page* o
   const uint32_t blobOffset = chunk->offsets[pageIndex % IndexChunk::kEntries];
   uint32_t blobEnd = writeOffset_;
   if (pageIndex + 1 < pageCount_) {
-    const IndexChunk* nextChunk =
-        (pageIndex + 1) % IndexChunk::kEntries == 0 ? chunk->next : chunk;
+    const IndexChunk* nextChunk = (pageIndex + 1) % IndexChunk::kEntries == 0 ? chunk->next : chunk;
     if (nextChunk == nullptr) return BookStatus::NotFound;
     blobEnd = nextChunk->offsets[(pageIndex + 1) % IndexChunk::kEntries];
   }
@@ -389,8 +388,7 @@ BookStatus PageCacheWriter::readPage(uint32_t pageIndex, Arena& scratch, Page* o
 
 // --- reader ------------------------------------------------------------------
 
-BookStatus PageCacheReader::open(CacheStorage& storage, const char* name, uint32_t expectedHash,
-                                 Arena& arena) {
+BookStatus PageCacheReader::open(CacheStorage& storage, const char* name, uint32_t expectedHash, Arena& arena) {
   storage_ = &storage;
   // Own a copy: readPage() runs long after open(), and a borrowed stack
   // buffer dangling here reads the wrong file (structurally-valid index,
@@ -438,10 +436,8 @@ BookStatus PageCacheReader::open(CacheStorage& storage, const char* name, uint32
     buildBytesTotal_ = getU32(footer + 24);
   }
   if (indexOffset_ < kHeaderSize ||
-      static_cast<int64_t>(anchorOffset) + static_cast<int64_t>(anchorCount) * 8 + footerSize !=
-          size ||
-      static_cast<int64_t>(indexOffset_) + static_cast<int64_t>(pageCount) * 8 !=
-          static_cast<int64_t>(anchorOffset)) {
+      static_cast<int64_t>(anchorOffset) + static_cast<int64_t>(anchorCount) * 8 + footerSize != size ||
+      static_cast<int64_t>(indexOffset_) + static_cast<int64_t>(pageCount) * 8 != static_cast<int64_t>(anchorOffset)) {
     return BookStatus::Stale;
   }
 
@@ -520,8 +516,7 @@ BookStatus PageCacheReader::readPage(uint32_t pageIndex, Arena& scratch, Page* o
 // Decodes one serialized page blob into a Page whose records/strings live in
 // `scratch`. Shared by PageCacheReader::readPage (final files) and
 // PageCacheWriter::readPage (mid-build read-back of the open write stream).
-static BookStatus decodePageBlob(const uint8_t* blob, uint32_t blobLen, uint32_t pageIndex,
-                                 Arena& scratch, Page* out) {
+static BookStatus decodePageBlob(const uint8_t* blob, uint32_t blobLen, uint32_t pageIndex, Arena& scratch, Page* out) {
   if (blobLen < 10) return BookStatus::Stale;
   const uint32_t charStart = getU32(blob);
   const uint16_t runCount = getU16(blob + 4);

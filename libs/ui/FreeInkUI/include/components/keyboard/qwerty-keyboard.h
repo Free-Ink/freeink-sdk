@@ -18,19 +18,27 @@ struct QwertyKeyboardProps {
   const char* modeLabel = nullptr;
   uint16_t inputMask = InputDefault;
   int16_t selectedIndex = -1;
-  TextStyle labelText{};
+  // Use the body font for primary labels; alternates retain the small font.
+  TextStyle labelText{FONT_SLOT_BODY};
   TextStyle altText{};
   StyleSet keyStyles{};
-  Insets padding{5, 5, 5, 5};
-  int16_t gap = 3;
+  Insets padding{5, 2, 5, 2};
+  int16_t gap = 2;
   int16_t minTouchSize = 28;
-  uint8_t keyRadius = 0;
+  uint8_t keyRadius = 3;
   int16_t bottomHitOverflow = 0;
   KeyboardLayoutId layout = KeyboardLayoutId::QwertyEn;
   bool shifted = false;
   bool symbols = false;
   bool numberRow = false;
   bool inactiveSelection = false;
+  bool langKey = false;
+  ActionId langAction = NO_ACTION;
+  TextStyle controlText{};
+  int16_t rowGap = 6;
+  int16_t altHintRightPadding = 10;
+  int16_t altLabelGap = 4;
+  int16_t digitLabelOffsetX = -4;
 };
 
 // Mirror a KeyboardEntry's layer state into the props for this frame.
@@ -44,10 +52,11 @@ inline void applyEntry(QwertyKeyboardProps& props, const KeyboardEntry& entry) {
 template <size_t MaxInteractions>
 void qwertyKeyboard(Frame<MaxInteractions>& frame, Rect rect, const QwertyKeyboardProps& props) {
   KeyboardProps keyboardProps;
-  keyboardProps.layout = &builtinKeyboardLayout(props.layout, props.shifted, props.symbols, props.numberRow);
+  keyboardProps.layout = &builtinKeyboardLayout(props.layout, props.shifted, props.symbols, props.numberRow, props.langKey);
   keyboardProps.keyAction = props.keyAction;
   keyboardProps.shiftAction = props.shiftAction;
   keyboardProps.modeAction = props.modeAction;
+  keyboardProps.langAction = props.langAction;
   keyboardProps.deleteAction = props.deleteAction;
   keyboardProps.okAction = props.okAction;
   keyboardProps.okLabel = props.okLabel;
@@ -56,10 +65,15 @@ void qwertyKeyboard(Frame<MaxInteractions>& frame, Rect rect, const QwertyKeyboa
   keyboardProps.inputMask = props.inputMask;
   keyboardProps.selectedIndex = props.selectedIndex;
   keyboardProps.labelText = props.labelText;
+  keyboardProps.controlText = props.controlText;
   keyboardProps.altText = props.altText;
+  keyboardProps.altHintRightPadding = props.altHintRightPadding;
+  keyboardProps.altLabelGap = props.altLabelGap;
+  keyboardProps.digitLabelOffsetX = props.digitLabelOffsetX;
   keyboardProps.keyStyles = props.keyStyles;
   keyboardProps.padding = props.padding;
   keyboardProps.gap = props.gap;
+  keyboardProps.rowGap = props.rowGap;
   keyboardProps.minTouchSize = props.minTouchSize;
   keyboardProps.keyRadius = props.keyRadius;
   keyboardProps.bottomHitOverflow = props.bottomHitOverflow;

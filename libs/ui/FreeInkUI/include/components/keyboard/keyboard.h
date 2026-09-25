@@ -60,6 +60,9 @@ struct KeyboardRow {
   const KeyboardKey* keys = nullptr;
   uint8_t count = 0;
   uint8_t insetUnits = 0;
+  // Keep this row's character keys uniform, but size them independently of
+  // wider rows in the same layout (for example, ten digits above twelve letters).
+  bool independentKeyWidth = false;
 };
 
 struct KeyboardLayout {
@@ -111,6 +114,16 @@ struct KeyboardProps {
   int16_t altHintRightPadding = 10;
   int16_t altLabelGap = 4;
   int16_t digitLabelOffsetX = -6;
+  // Appended fields preserve positional aggregate initialization.
+  // Optional panel fill drawn behind the keys. The gaps and padding expose
+  // this paint, allowing keys to stand apart from the surrounding screen.
+  Paint background = Paint::none();
+  // Optional localized text for the space key. Null keeps the compact glyph.
+  const char* spaceLabel = nullptr;
+  // Give every character key the same width across rows. Rows containing
+  // letters, numbers, or symbols use the narrowest unit that fits any such
+  // row, while control-only rows continue to fill their available width.
+  bool uniformKeyWidth = false;
 };
 
 // Preferred total height for touch entry. Size each row independently so a
@@ -534,13 +547,33 @@ void keyboard(Frame<MaxInteractions>& frame, Rect rect, const KeyboardProps& pro
   TextStyle keyText = props.labelText;
   keyText.align = TextAlign::Center;
   keyText.maxLines = 1;
+  const Rect panelRect = rect;
   rect = rect.inset(props.padding);
   if (rect.empty() || rect.width < 10 || rect.height < 10) return;
+  if (props.background.kind != PaintKind::None) frame.target().fill(panelRect, props.background);
   const int16_t gap = props.gap < 0 ? 0 : props.gap;
   const int16_t rowGap = props.rowGap < 0 ? 0 : props.rowGap;
   const int16_t rowH =
       static_cast<int16_t>((rect.height - rowGap * (props.layout->rowCount - 1)) / props.layout->rowCount);
   int16_t logicalIndex = 0;
+
+  int16_t uniformUnitW = 0;
+  if (props.uniformKeyWidth) {
+    for (uint8_t row = 0; row < props.layout->rowCount; ++row) {
+      const KeyboardRow& layoutRow = props.layout->rows[row];
+      if (!layoutRow.keys || layoutRow.count == 0) continue;
+      bool hasCharacterKey = false;
+      uint16_t units = static_cast<uint16_t>(layoutRow.insetUnits * 2);
+      for (uint8_t col = 0; col < layoutRow.count; ++col) {
+        const KeyboardKey& key = layoutRow.keys[col];
+        hasCharacterKey |= key.kind == KeyKind::Normal;
+        units = static_cast<uint16_t>(units + (key.widthUnits ? key.widthUnits : 1));
+      }
+      if (!hasCharacterKey || units == 0 || layoutRow.independentKeyWidth) continue;
+      const int16_t candidate = static_cast<int16_t>((rect.width - gap * (layoutRow.count - 1)) / units);
+      if (uniformUnitW == 0 || candidate < uniformUnitW) uniformUnitW = candidate;
+    }
+  }
 
   auto actionFor = [&](KeyKind kind) {
     if (kind == KeyKind::Shift && props.shiftAction != NO_ACTION) return props.shiftAction;
@@ -564,6 +597,7 @@ void keyboard(Frame<MaxInteractions>& frame, Rect rect, const KeyboardProps& pro
     // A button centers its label, which makes a digit collide visually with
     // its upper-corner alternate. Draw this label below the hint instead.
     bp.label = hasAltHint ? nullptr : label;
+    if (key.kind == KeyKind::Space) bp.label = props.spaceLabel;
     if (key.kind == KeyKind::Ok && props.okLabel) bp.label = props.okLabel;
     if (key.kind == KeyKind::Shift && props.shiftLabel) bp.label = props.shiftLabel;
     if (key.kind == KeyKind::Mode && props.modeLabel) bp.label = props.modeLabel;
@@ -572,7 +606,8 @@ void keyboard(Frame<MaxInteractions>& frame, Rect rect, const KeyboardProps& pro
     bp.inputMask = props.inputMask;
     bp.state = state;
     bp.text = keyText;
-    if ((key.kind == KeyKind::Shift || key.kind == KeyKind::Mode || key.kind == KeyKind::Ok) &&
+    if ((key.kind == KeyKind::Shift || key.kind == KeyKind::Mode || key.kind == KeyKind::Ok ||
+         key.kind == KeyKind::Space) &&
         !textStyleUnset(props.controlText)) {
       bp.text = props.controlText;
       bp.text.align = TextAlign::Center;
@@ -583,31 +618,28 @@ void keyboard(Frame<MaxInteractions>& frame, Rect rect, const KeyboardProps& pro
     bp.hitPadding.bottom = rowHitOverflow;
     bp.radius = props.keyRadius;
     bp.enabled = key.enabled && key.kind != KeyKind::Disabled;
-    {
-      // Center the shorter highlight on the unchanged label and touch target.
+    int16_t altHintTopInset = 0;
+    if (hasAltHint) {
+      // Preserve the alternate hint's vertical position independently of the
+      // full-size selected background.
       const int16_t labelHeight = frame.target().lineHeight(bp.text.font);
       const int16_t spareHeight = static_cast<int16_t>(keyRect.height - labelHeight - 8);
       const int16_t desiredTrim = static_cast<int16_t>(keyRect.height / 5);
       int16_t trim = spareHeight > 0 ? (desiredTrim < spareHeight ? desiredTrim : spareHeight) : 0;
-      // Alternate hints need headroom above the centered primary glyph. Expand
-      // both sides equally so the highlight remains centered, and use this
-      // same geometry for hint placement in every interaction state.
-      if (key.kind == KeyKind::Normal && key.alt) {
-        trim = static_cast<int16_t>(trim > 8 ? trim - 8 : 0);
-      }
-      bp.highlightInsets.top = static_cast<int16_t>(trim / 2);
-      bp.highlightInsets.bottom = static_cast<int16_t>(trim - bp.highlightInsets.top);
+      trim = static_cast<int16_t>(trim > 8 ? trim - 8 : 0);
+      altHintTopInset = static_cast<int16_t>(trim / 2);
     }
     button(frame, keyRect, bp);
 
-    // Delete and the script switch carry a glyph instead of a word: both mean
-    // the same thing in every language, and the switch key in particular has
-    // no label the table could hold — which layout comes next is the app's
-    // state, not the table's.
-    if (key.kind == KeyKind::Delete || key.kind == KeyKind::Lang) {
+    // Delete, Shift, and the script switch use universal glyphs. Symbol-page
+    // Shift keys keep their explicit "#+=" / "123" labels.
+    const bool iconShift = key.kind == KeyKind::Shift && !key.label && !props.shiftLabel;
+    if (key.kind == KeyKind::Delete || key.kind == KeyKind::Lang || iconShift) {
       const Paint ink = styles.resolve(frame.stateFor(action, key.value, state)).foreground;
       const int16_t maxSize = keyRect.height < keyRect.width ? keyRect.height : keyRect.width;
-      const BitmapRef icon = key.kind == KeyKind::Delete ? lucideDeleteIcon28() : lucideGlobeIcon32();
+      const BitmapRef icon = key.kind == KeyKind::Delete
+                                 ? lucideDeleteIcon28()
+                                 : (key.kind == KeyKind::Lang ? lucideGlobeIcon24() : lucideArrowBigUpIcon24());
       const int16_t nativeSize = static_cast<int16_t>(icon.width < icon.height ? icon.width : icon.height);
       const int16_t iconSize = nativeSize < maxSize ? nativeSize : maxSize;
       frame.target().bitmap(centeredRect(keyRect, Size{iconSize, iconSize}), icon, BitmapMode::Contain, ink);
@@ -626,7 +658,7 @@ void keyboard(Frame<MaxInteractions>& frame, Rect rect, const KeyboardProps& pro
       const int32_t availableHintWidth = static_cast<int32_t>(keyRect.width) - 2 - rightPadding;
       const int16_t hintWidth = static_cast<int16_t>(availableHintWidth > 0 ? availableHintWidth : 1);
       const int16_t altLh = frame.target().lineHeight(altStyle.font);
-      const int16_t hintTop = static_cast<int16_t>(keyRect.y + 2 + bp.highlightInsets.top);
+      const int16_t hintTop = static_cast<int16_t>(keyRect.y + 2 + altHintTopInset);
 
       // Keep a fixed gap below the hint before the primary label. This is
       // especially important for the number row, where `$`, `%`, and similar
@@ -660,10 +692,9 @@ void keyboard(Frame<MaxInteractions>& frame, Rect rect, const KeyboardProps& pro
       return;
     }
 
-    if (key.kind != KeyKind::Space) return;
-    // Keys draw no background here, so the eye measures the gap between
-    // glyphs, not between key rects — a rule much shorter than its key reads
-    // as a hole beside its neighbours.
+    if (key.kind != KeyKind::Space || props.spaceLabel) return;
+    // The default glyph is a rule sized to the key. Apps can replace it with
+    // localized text through spaceLabel.
     const Paint ink = styles.resolve(frame.stateFor(action, key.value, state)).foreground;
     const int16_t cx = static_cast<int16_t>(keyRect.x + keyRect.width / 2);
     const int16_t cy = static_cast<int16_t>(keyRect.y + keyRect.height / 2);
@@ -676,19 +707,27 @@ void keyboard(Frame<MaxInteractions>& frame, Rect rect, const KeyboardProps& pro
     const KeyboardRow& layoutRow = props.layout->rows[row];
     if (!layoutRow.keys || layoutRow.count == 0) continue;
     rowHitOverflow = row == props.layout->rowCount - 1 ? props.bottomHitOverflow : 0;
+    bool hasCharacterKey = false;
     uint16_t units = static_cast<uint16_t>(layoutRow.insetUnits * 2);
     for (uint8_t col = 0; col < layoutRow.count; ++col) {
+      hasCharacterKey |= layoutRow.keys[col].kind == KeyKind::Normal;
       units = static_cast<uint16_t>(units + (layoutRow.keys[col].widthUnits ? layoutRow.keys[col].widthUnits : 1));
     }
-    const int16_t unitW = static_cast<int16_t>((rect.width - gap * (layoutRow.count - 1)) / units);
+    const int16_t gapWidth = static_cast<int16_t>(gap * (layoutRow.count - 1));
+    const int16_t ownUnitW = static_cast<int16_t>((rect.width - gapWidth) / units);
+    const bool useUniformWidth =
+        props.uniformKeyWidth && hasCharacterKey && (layoutRow.independentKeyWidth ? ownUnitW > 0 : uniformUnitW > 0);
+    const int16_t unitW = useUniformWidth && !layoutRow.independentKeyWidth ? uniformUnitW : ownUnitW;
+    const int16_t usedWidth = static_cast<int16_t>(unitW * units + gapWidth);
     const int16_t y = static_cast<int16_t>(rect.y + row * (rowH + rowGap));
     int16_t x = static_cast<int16_t>(rect.x + layoutRow.insetUnits * unitW);
     const int16_t rowRight = static_cast<int16_t>(rect.right() - layoutRow.insetUnits * unitW);
+    if (useUniformWidth) x = static_cast<int16_t>(x + (rect.width - usedWidth) / 2);
     for (uint8_t col = 0; col < layoutRow.count; ++col) {
       const KeyboardKey& key = layoutRow.keys[col];
       const uint8_t keyUnits = key.widthUnits ? key.widthUnits : 1;
-      const int16_t w =
-          col == layoutRow.count - 1 ? static_cast<int16_t>(rowRight - x) : static_cast<int16_t>(unitW * keyUnits);
+      const int16_t w = !useUniformWidth && col + 1 == layoutRow.count ? static_cast<int16_t>(rowRight - x)
+                                                                       : static_cast<int16_t>(unitW * keyUnits);
       drawKey(Rect{x, y, w, rowH}, key, logicalIndex++);
       x = static_cast<int16_t>(x + w + gap);
     }

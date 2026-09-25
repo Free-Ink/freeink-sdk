@@ -162,6 +162,59 @@ static void testAsyncFrame() {
   free(driver._grayBase);
 }
 
+#ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
+// cleanupGrayscaleWithPreviousBuffer() only ever runs at the tail (or abort point) of a
+// grayscale plane pass, and those passes use the write framebuffer as plane scratch. So
+// frameBufferActive is the only thing that can be the displayed B/W frame: with the secondary
+// away the driver must be told there is no baseline, never handed the plane. Handing it over
+// rebases the controller's previous-frame RAM from the page's own glyph plane.
+static void testGrayCleanupBaseline() {
+  const auto page = frame(51), planeScratch = frame(77);
+
+  // Secondary resident: the displayed frame is the baseline, and the write buffer is restored
+  // from it so the next B/W draw starts from a real frame rather than plane bytes.
+  {
+    Uc8279X4Driver driver;
+    FreeInkDisplay display(12, 11, 13, 18, 14, 6);
+    display._driver = &driver;
+    display.begin();
+    std::memcpy(display.getFrameBuffer(), page.data(), page.size());
+    display.displayBuffer(FreeInkDisplay::FAST_REFRESH);  // swaps: frameBufferActive == page
+    std::memcpy(display.getFrameBuffer(), planeScratch.data(), planeScratch.size());
+    display._bus.clear();
+    display.cleanupGrayscaleWithPreviousBuffer();
+    assert(std::count_if(display._bus.writes.begin(), display._bus.writes.end(),
+                         [](const auto& w) { return w.command == 0x10; }) == 1);
+    assert(driver._oldPlaneValid);
+    assert(std::equal(page.begin(), page.end(), display.getFrameBuffer()));
+    display.releaseBuffers();
+    free(driver._grayBase);
+  }
+
+  // Secondary released, then lent: in both cases no copy of the displayed frame exists, so
+  // nothing may be streamed into controller RAM and the driver must fall back to a clean sync.
+  for (bool lend : {false, true}) {
+    Uc8279X4Driver driver;
+    FreeInkDisplay display(12, 11, 13, 18, 14, 6);
+    display._driver = &driver;
+    display.begin();
+    std::memcpy(display.getFrameBuffer(), page.data(), page.size());
+    display.displayBuffer(FreeInkDisplay::FAST_REFRESH);
+    assert(driver._oldPlaneValid);
+    if (lend) assert(display.borrowSecondaryBuffer(nullptr) != nullptr);
+    else assert(display.releaseSecondaryBuffer());
+    std::memcpy(display.getFrameBuffer(), planeScratch.data(), planeScratch.size());
+    display._bus.clear();
+    display.cleanupGrayscaleWithPreviousBuffer();
+    for (const auto& w : display._bus.writes) assert(w.command != 0x10 && w.command != 0x13);
+    assert(driver._needFullClear && !driver._oldPlaneValid);
+    if (lend) assert(display.returnSecondaryBuffer());
+    display.releaseBuffers();
+    free(driver._grayBase);
+  }
+}
+#endif
+
 // A driver with no grayscale implementation must never advertise support.
 class BwOnlyDriver : public PanelDriver {
  public:
@@ -555,5 +608,8 @@ int main(int argc, char**) {
   testSsd();
   testAsyncFrame<Uc8179Driver>();
   testAsyncFrame<Uc8279X4Driver>();
+#ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
+  testGrayCleanupBaseline();
+#endif
   std::puts("Pro plane bytes, transaction counts, clean refreshes, power state and async frame ownership passed");
 }

@@ -8,6 +8,7 @@
 #ifdef FREEINK_FRONTLIGHT_LS
 #include <driver/gpio.h>
 #include <driver/ledc.h>
+#include <algorithm>
 // esp_sleep_sub_mode_config lives in a private IDF header (no public API exists
 // for balancing the refcounted RC_FAST keep-on the LEDC driver takes for
 // KEEP_ALIVE channels — the driver manages it through this same header). Pinned
@@ -91,12 +92,16 @@ uint32_t physicalDuty(uint32_t logicalDuty, uint32_t full, bool activeHigh) {
 // expressible. Uses the IDF driver directly (fixed LEDC_TIMER_0 + the channel
 // ids below) because the Arduino helpers don't expose sleep_mode; safe here
 // because frontlight boards using this flag have no other LEDC consumer.
+constexpr uint32_t LIGHT_SLEEP_PWM_FREQ_HZ = 10000;
 bool attachChannel(int8_t gpio, uint8_t ch, uint32_t freq, uint8_t bits) {
   ledc_timer_config_t timer = {};
   timer.speed_mode = LEDC_LOW_SPEED_MODE;
   timer.duty_resolution = static_cast<ledc_timer_bit_t>(bits);
   timer.timer_num = LEDC_TIMER_0;
-  timer.freq_hz = freq;
+  // RC_FAST cannot clock every board's normal PWM rate at full resolution
+  // (X4 Pro: 25 kHz x 10-bit needs 25.6 MHz), and a failed timer config leaves
+  // the light dark. Cap at the light-sleep-safe rate from the comment above.
+  timer.freq_hz = std::min<uint32_t>(freq, LIGHT_SLEEP_PWM_FREQ_HZ);
   timer.clk_cfg = LEDC_USE_RC_FAST_CLK;
   if (ledc_timer_config(&timer) != ESP_OK) {
     // freq/bits exceed RC_FAST — leave the light unconfigured rather than

@@ -214,6 +214,40 @@ class InputManager {
   // (GPIO10) still wakes the chip; this only slows the host-side poll cadence.
   static void setLowPowerPolling(bool enabled) { s_lowPowerPolling = enabled; }
 
+  // GT911 Sleep mode (datasheet Rev.09 §8.1.d): commands the touch controller
+  // to stop scanning (~70–120 µA vs 8 mA normal). While asleep the controller
+  // does not ACK I2C, so pollGt911() no-ops and the capacitive home key is
+  // unreachable; physical buttons are unaffected. Only boards with a GT911
+  // resolved (gt911Addr != 0) are affected — other configurations are no-ops
+  // (return false, state untouched).
+  //
+  // setTouchSleep(true): drives INT low, writes the sleep command (0x05 to
+  // 0x8040), then does a single status read. The datasheet no longer publishes
+  // the register map, so the opcode follows the Goodix reference-driver
+  // convention and MUST be verified on hardware before merging (see
+  // docs/design/2026-09-24-gt911-idle-sleep.md §4). A controller that ACKs the
+  // post-command read did not enter sleep; state stays awake and the low-power
+  // poll throttle keeps applying.
+  //
+  // wakeTouch(): the wake side. Drives INT high for ~3 ms, returns the pin to
+  // input, then waits up to 200 ms (datasheet response deadline) for the status
+  // register to respond before returning, so the caller never races an
+  // unresponive controller on its first poll.
+  //
+  // Threading: the sequences execute on the task that owns touch polling
+  // (async poll task when armed via beginAsync(), otherwise the app task
+  // through update()). setTouchSleep/wakeTouch only post a command and block
+  // until the polling task executes it, so Wire and the INT pin always have a
+  // single owner. The touchPressed guard is likewise evaluated on that task.
+  // Calls must come from a task context that can block (not an ISR).
+  bool setTouchSleep(bool asleep);
+  bool wakeTouch();
+  // True while the GT911 is in Sleep mode (no scanning, no I2C ACK, home key
+  // dead). Wakes happen only through wakeTouch().
+  bool isTouchAsleep() const {
+    return gt911Asleep.load(std::memory_order_acquire);
+  }
+
   // --- Optional background polling -------------------------------------------
   // Spawns a FreeRTOS task that samples the buttons every pollMs and latches
   // each edge into an internal queue. This decouples input from rendering: on
@@ -522,11 +556,24 @@ class InputManager {
   bool ft5x06WriteReg(uint8_t reg, uint8_t value);
   bool ft5x06ReadReg(uint8_t reg, uint8_t* buf, uint8_t len);
   bool readChsc6xPoint(TouchPoint& point);
-  bool decodeChsc6xFrame(const uint8_t* data, size_t len, TouchPoint& point) const;
-  uint16_t mapTouchAxis(uint16_t raw, uint16_t rawMin, uint16_t rawMax, uint16_t outMax) const;
+  bool decodeChsc6xFrame(const uint8_t *data, size_t len,
+                         TouchPoint &point) const;
+  uint16_t mapTouchAxis(uint16_t raw, uint16_t rawMin, uint16_t rawMax,
+                        uint16_t outMax) const;
   void beginGt911();
-  bool gt911ReadReg(uint16_t reg, uint8_t* buf, uint8_t len);
+  bool gt911ReadReg(uint16_t reg, uint8_t *buf, uint8_t len);
   void gt911ClearStatus();
+  // Sleep/wake command channel. Sleep/wake sequences drive Wire and the INT
+  // pin, which only the polling task may touch (async poll task when armed,
+  // otherwise the app task through update()). Public setters post a request
+  // here and wait for the outcome; pollGt911() services the posted command at
+  // its top, before any poll-path state.
+  static constexpr uint8_t GT911_TOUCH_CMD_SLEEP = 1;
+  static constexpr uint8_t GT911_TOUCH_CMD_WAKE = 2;
+  static constexpr unsigned long GT911_TOUCH_CMD_TIMEOUT_MS = 1000;
+  void serviceGt911TouchCmd();
+  void enterGt911Sleep();
+  bool exitGt911Sleep();
   void beginFt6336u();
   void pollFt6336u(unsigned long now);
   void beginGslx680();
@@ -578,11 +625,17 @@ class InputManager {
   unsigned long twoButtonPressStart;
   bool twoButtonLongPressActive;
 
-  bool touchDataEnabled = false;         // I2C up, controller present
-  uint8_t gt911Addr = 0;                 // resolved GT911 address (0 until probed)
-  unsigned long touchIrqPulseUntil = 0;  // synthesized-confirm window after a press
-  unsigned long touchReadAt = 0;         // next scheduled I2C poll
-  unsigned long lastGt911Poll = 0;       // last GT911 I2C poll timestamp (low-power throttle)
+  bool touchDataEnabled = false; // I2C up, controller present
+  uint8_t gt911Addr = 0;         // resolved GT911 address (0 until probed)
+  unsigned long touchIrqPulseUntil =
+      0;                         // synthesized-confirm window after a press
+  unsigned long touchReadAt = 0; // next scheduled I2C poll
+  unsigned long lastGt911Poll =
+      0; // last GT911 I2C poll timestamp (low-power throttle)
+  std::atomic<bool> gt911Asleep{
+      false}; // GT911 in Sleep mode: no polling, no home key
+  unsigned long gt911SleepEnteredAt =
+      0; // sleep command sent; gate wake ≥ 58 ms after (§8.1.d)
   unsigned long touchReleaseAt = 0;
   bool touchPressed = false;
   bool touchPressedEvent = false;
@@ -663,7 +716,10 @@ class InputManager {
   // we aren't hammering the bus ~20x/s when nothing is happening.
   static constexpr unsigned long GT911_LOW_POWER_POLL_MS = 100;
 
-  static const char* BUTTON_NAMES[];
+  static const char *BUTTON_NAMES[];
   static bool s_sharedConfirmPowerShortPressEmitsPower;
   static bool s_lowPowerPolling;
+  // GT911 sleep/wake request channel (see serviceGt911TouchCmd); in-flight
+  // command stays visible to the caller until the polling task clears it.
+  static std::atomic<uint8_t> s_gt911TouchCmd;
 };

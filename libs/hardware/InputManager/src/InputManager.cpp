@@ -7,6 +7,12 @@
 
 #include "MultiTouchGestureMath.h"
 
+// Logging: the firmware's Logging.h LOG_INF facility (same convention as
+// FrontlightManager). Consumer projects without lib/Logging keep the existing
+// touchDebugPrintf path; nothing here depends on Logging.h being present in the
+// SDK's own include tree.
+#include <Logging.h>
+
 #if FREEINK_CAP_TOUCH
 #include <Wire.h>
 #include <driver/gpio.h>
@@ -780,6 +786,7 @@ const char* InputManager::getButtonName(const uint8_t buttonIndex) {
 
 bool InputManager::s_sharedConfirmPowerShortPressEmitsPower = false;
 bool InputManager::s_lowPowerPolling = false;
+std::atomic<uint8_t> InputManager::s_gt911TouchCmd{0};
 
 bool InputManager::isPowerButtonPressed() const { return isPressed(BTN_POWER); }
 
@@ -2101,11 +2108,13 @@ void InputManager::beginGt911() {
   }
 
   touchDataEnabled = (gt911Addr != 0);
+  gt911Asleep.store(false, std::memory_order_release); // re-probe starts awake
+  gt911SleepEnteredAt = 0;
 #ifdef TOUCH_PROBE_DEBUG
-  touchDebugPrintf(
-      "[touch] GT911 probe: addr=0x%02X enabled=%d (sda=%d scl=%d "
-      "cand=0x%02X/0x%02X)\n",
-      gt911Addr, touchDataEnabled, t.sda, t.scl, t.i2cAddress, t.i2cAddressAlt);
+  touchDebugPrintf("[touch] GT911 probe: addr=0x%02X enabled=%d (sda=%d scl=%d "
+                   "cand=0x%02X/0x%02X)\n",
+                   gt911Addr, touchDataEnabled, t.sda, t.scl, t.i2cAddress,
+                   t.i2cAddressAlt);
 #endif
 }
 
@@ -2381,12 +2390,21 @@ void InputManager::pollFt6336u(const unsigned long now) {
 }
 
 void InputManager::pollGt911(const unsigned long now) {
-  // Low-power throttle: while the SoC is in its 80 MHz power-saving reading mode,
-  // don't hammer the touch I2C bus every main-loop iteration (~20 txn/s). The
-  // GT911 INT (GPIO10) still wakes the SoC on a real touch, so a slower host-side
-  // poll is safe. Skipped entirely when a finger is already down (touchPressed) so
-  // an in-progress gesture is never starved.
-  if (s_lowPowerPolling && !touchPressed && now - lastGt911Poll < GT911_LOW_POWER_POLL_MS) {
+  // Posted sleep/wake commands run on the polling task (single owner of Wire
+  // and the INT pin), before anything else here.
+  serviceGt911TouchCmd();
+  // Sleep mode: the controller does not ACK I2C, so any traffic here would be
+  // a pointless bus wait. Wake happens exclusively through wakeTouch().
+  if (gt911Asleep.load(std::memory_order_acquire)) {
+    return;
+  }
+  // Low-power throttle: while the SoC is in its 80 MHz power-saving reading
+  // mode, don't hammer the touch I2C bus every main-loop iteration (~20 txn/s).
+  // The GT911 INT (GPIO10) still wakes the SoC on a real touch, so a slower
+  // host-side poll is safe. Skipped entirely when a finger is already down
+  // (touchPressed) so an in-progress gesture is never starved.
+  if (s_lowPowerPolling && !touchPressed &&
+      now - lastGt911Poll < GT911_LOW_POWER_POLL_MS) {
     return;
   }
   lastGt911Poll = now;
@@ -2524,7 +2542,175 @@ void InputManager::pollGt911(const unsigned long now) {
     touchPoint.valid = false;
   }
 
-  gt911ClearStatus();  // GT911 requires clearing 0x814E after each read
+  gt911ClearStatus(); // GT911 requires clearing 0x814E after each read
 }
 
-#endif  // FREEINK_CAP_TOUCH
+bool InputManager::setTouchSleep(const bool asleep) {
+  if (gt911Addr == 0) {
+    return false; // no GT911 on this board: nothing to park
+  }
+  if (!asleep) {
+    return wakeTouch();
+  }
+  if (gt911Asleep.load(std::memory_order_acquire)) {
+    return true;
+  }
+  // Post the command; the polling task (async poll task, or the app task
+  // through update() in sync builds) executes the ENTRY sequence and stamps
+  // the outcome into gt911Asleep. Blocking here is safe: callers run from a
+  // task context. Bound the wait well beyond server latency + sequence cost.
+  s_gt911TouchCmd.store(GT911_TOUCH_CMD_SLEEP, std::memory_order_release);
+  const unsigned long deadline = millis() + GT911_TOUCH_CMD_TIMEOUT_MS;
+  while (millis() < deadline) {
+    if (s_gt911TouchCmd.load(std::memory_order_acquire) == 0) {
+      return isTouchAsleep(); // outcome recorded by the servicing task
+    }
+    delay(5);
+  }
+  // Poll owner starved the request the whole window (extremely unexpected:
+  // pollGt911 runs every touch tick). Drop the request and report failure —
+  // the uncertainty outcome keeps the throttle path polling as before.
+  s_gt911TouchCmd.store(0, std::memory_order_release);
+  LOG_INF("TOUCH", "GT911 sleep request unserviced (no poll owner)");
+  return false;
+}
+
+bool InputManager::wakeTouch() {
+  if (gt911Addr == 0) {
+    return false;
+  }
+  if (!gt911Asleep.load(std::memory_order_acquire)) {
+    return true; // already awake
+  }
+  // Same command-channel contract as setTouchSleep: the polling task runs the
+  // wake sequence, which includes its own ≤200 ms responsiveness wait.
+  s_gt911TouchCmd.store(GT911_TOUCH_CMD_WAKE, std::memory_order_release);
+  const unsigned long deadline = millis() + GT911_TOUCH_CMD_TIMEOUT_MS;
+  while (millis() < deadline) {
+    if (s_gt911TouchCmd.load(std::memory_order_acquire) == 0) {
+      return !isTouchAsleep();
+    }
+    delay(5);
+  }
+  s_gt911TouchCmd.store(0, std::memory_order_release);
+  LOG_INF("TOUCH", "GT911 wake request unserviced (no poll owner)");
+  return !isTouchAsleep(); // report whatever the recorded state says
+}
+
+void InputManager::serviceGt911TouchCmd() {
+  const uint8_t cmd = s_gt911TouchCmd.load(std::memory_order_acquire);
+  if (cmd == 0 || (gt911Addr == 0)) {
+    return;
+  }
+  if (cmd == GT911_TOUCH_CMD_SLEEP) {
+    enterGt911Sleep();
+  } else if (cmd == GT911_TOUCH_CMD_WAKE) {
+    exitGt911Sleep();
+  }
+  s_gt911TouchCmd.store(0, std::memory_order_release); // outcome in gt911Asleep
+}
+
+void InputManager::enterGt911Sleep() {
+  if (gt911Asleep.load(std::memory_order_acquire)) {
+    return;
+  }
+  // Order-of-operations guard: never park the controller under an active
+  // gesture — the finger would be invisible and its release would never
+  // produce a touchReleasedEvent. This runs on the polling task, so the
+  // touchPressed read is authoritative.
+  if (touchPressed) {
+    LOG_INF("TOUCH", "GT911 sleep skipped: finger down");
+    gt911Asleep.store(false, std::memory_order_release);
+    return;
+  }
+  const auto &t = BoardConfig::ACTIVE.touch;
+
+  gt911SleepEnteredAt = millis();
+  // Datasheet §8.1.d: the INT pin must be driven LOW before the sleep command.
+  // Held LOW while asleep so a floating pin cannot glitch HIGH and wake the
+  // controller piecemeal; exitGt911Sleep() drives it HIGH from here.
+  if (t.irq >= 0) {
+    pinMode(t.irq, OUTPUT);
+    digitalWrite(t.irq, LOW);
+    delay(5);
+  }
+
+  // Sleep command: 0x05 -> 0x8040 (Goodix reference-driver convention; the
+  // register map was removed from the GT911 datasheet, so this opcode is
+  // best-effort and MUST be verified on hardware — see
+  // docs/design/2026-09-24-gt911-idle-sleep.md §4).
+  Wire.beginTransmission(gt911Addr);
+  Wire.write(0x80);
+  Wire.write(0x40);
+  Wire.write(0x05);
+  const bool sent = Wire.endTransmission() == 0;
+
+  // One status read decides the outcome: a NACK means the controller dropped
+  // off the bus (== asleep); a still-ACKing controller did not enter sleep.
+  // Only track a state we can verify: on the uncertainty path gt911Asleep
+  // stays false and the low-power poll throttle keeps applying.
+  uint8_t status = 0;
+  if (sent && !gt911ReadReg(0x814E, &status, 1)) {
+    gt911Asleep.store(true, std::memory_order_release);
+    LOG_INF("TOUCH", "GT911 sleep entered (bus silent until wake)");
+    return;
+  }
+  LOG_INF("TOUCH", "GT911 sleep command may not have taken (read OK)");
+  if (t.irq >= 0) {
+    pinMode(t.irq, INPUT); // controller is awake: stop contending on INT
+  }
+}
+
+bool InputManager::exitGt911Sleep() {
+  if (!gt911Asleep.load(std::memory_order_acquire)) {
+    return true; // already awake
+  }
+  const auto &t = BoardConfig::ACTIVE.touch;
+  // Datasheet §8.1.d: attempts to leave sleep within 58 ms of the sleep
+  // command are unreliable — hold here until the window closes.
+  if (gt911SleepEnteredAt != 0) {
+    const unsigned long sinceEntry = millis() - gt911SleepEnteredAt;
+    if (sinceEntry < 58) {
+      delay(58 - sinceEntry);
+    }
+  }
+  const unsigned long wakeStart = millis();
+  // Datasheet §8.1.d: wake requires 2–5 ms of INT HIGH, then the pin returns
+  // to input for the controller's own interrupt drive.
+  if (t.irq >= 0) {
+    pinMode(t.irq, OUTPUT);
+    digitalWrite(t.irq, HIGH);
+    delay(3);
+    pinMode(t.irq, INPUT);
+  }
+  // Response deadline is < 200 ms (datasheet §2). Do not hand control back
+  // before the controller ACKs again, or the caller's first poll would race
+  // an unresponsive chip and drop the first touch.
+  while (millis() - wakeStart <= 200) {
+    uint8_t status = 0;
+    if (gt911ReadReg(0x814E, &status, 1)) {
+      gt911Asleep.store(false, std::memory_order_release);
+      gt911SleepEnteredAt = 0;
+      gt911ClearStatus(); // drop any stale frame latched across sleep
+      LOG_INF("TOUCH", "GT911 wake, resuming poll (responsive after %lu ms)",
+              static_cast<unsigned long>(millis() - wakeStart));
+      return true;
+    }
+    delay(10);
+  }
+  // Could not confirm wake: stay parked so pollGt911 keeps skipping the dead
+  // bus; the caller retries wakeTouch() on its next activity event.
+  LOG_ERR("TOUCH", "GT911 wake timeout: no ACK within 200 ms");
+  return false;
+}
+
+#else // !FREEINK_CAP_TOUCH: no GT911 on this build — the toggle stays a no-op
+
+bool InputManager::setTouchSleep(const bool asleep) {
+  (void)asleep;
+  return false;
+}
+
+bool InputManager::wakeTouch() { return false; }
+
+#endif // FREEINK_CAP_TOUCH

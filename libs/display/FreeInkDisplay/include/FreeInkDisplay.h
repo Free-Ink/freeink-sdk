@@ -121,6 +121,9 @@ class FreeInkDisplay {
   // Uc8253X3Driver::preconditionGrayscale.
   void preconditionGrayscale();
   void preconditionGrayscale(uint16_t x, uint16_t y, uint16_t w, uint16_t h);
+  // Run the last refresh again on what the frame memory holds (no reload):
+  // the XTC reader's second pass over a dark page's leftovers.
+  void repeatLastRefresh();
 
   // Display the framebuffer as the base frame for a grayscale overlay that
   // follows. X3 uses the OEM differential base waveform; other panels display

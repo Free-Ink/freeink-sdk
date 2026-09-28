@@ -893,6 +893,11 @@ void FreeInkDisplay::displayGrayscaleBase(RefreshMode fallback, bool turnOffScre
   _driver->beginGrayscale(_bus, frameBuffer, GrayscaleMode::Overlay, toInternal(fallback), turnOffScreen);
 }
 
+void FreeInkDisplay::repeatLastRefresh() {
+  syncPendingAsync();
+  _driver->repeatLastRefresh(_bus);
+}
+
 void FreeInkDisplay::preconditionGrayscale() {
   if (_inverted) return;
   syncPendingAsync();

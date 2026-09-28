@@ -8,10 +8,16 @@
 #include "MultiTouchGestureMath.h"
 
 // Logging: the firmware's Logging.h LOG_INF facility (same convention as
-// FrontlightManager). Consumer projects without lib/Logging keep the existing
-// touchDebugPrintf path; nothing here depends on Logging.h being present in the
-// SDK's own include tree.
+// FrontlightManager) when the consumer provides it; silent fallback otherwise,
+// so SDK consumers without lib/Logging still compile with touch enabled.
+#if __has_include(<Logging.h>)
 #include <Logging.h>
+#define GT911_LOG_INF(...) LOG_INF("TOUCH", __VA_ARGS__)
+#define GT911_LOG_ERR(...) LOG_ERR("TOUCH", __VA_ARGS__)
+#else
+#define GT911_LOG_INF(...) ((void)0)
+#define GT911_LOG_ERR(...) ((void)0)
+#endif
 
 #if FREEINK_CAP_TOUCH
 #include <Wire.h>
@@ -2571,7 +2577,7 @@ bool InputManager::setTouchSleep(const bool asleep) {
   // pollGt911 runs every touch tick). Drop the request and report failure —
   // the uncertainty outcome keeps the throttle path polling as before.
   s_gt911TouchCmd.store(0, std::memory_order_release);
-  LOG_INF("TOUCH", "GT911 sleep request unserviced (no poll owner)");
+  GT911_LOG_INF("GT911 sleep request unserviced (no poll owner)");
   return false;
 }
 
@@ -2593,7 +2599,7 @@ bool InputManager::wakeTouch() {
     delay(5);
   }
   s_gt911TouchCmd.store(0, std::memory_order_release);
-  LOG_INF("TOUCH", "GT911 wake request unserviced (no poll owner)");
+  GT911_LOG_INF("GT911 wake request unserviced (no poll owner)");
   return !isTouchAsleep(); // report whatever the recorded state says
 }
 
@@ -2619,13 +2625,13 @@ void InputManager::enterGt911Sleep() {
   // produce a touchReleasedEvent. This runs on the polling task, so the
   // touchPressed read is authoritative.
   if (touchPressed) {
-    LOG_INF("TOUCH", "GT911 sleep skipped: finger down");
+    GT911_LOG_INF("GT911 sleep skipped: finger down");
     gt911Asleep.store(false, std::memory_order_release);
     return;
   }
   const auto &t = BoardConfig::ACTIVE.touch;
 
-  gt911SleepEnteredAt = millis();
+  gt911SleepEnteredAt = 0;
   // Datasheet §8.1.d: the INT pin must be driven LOW before the sleep command.
   // Held LOW while asleep so a floating pin cannot glitch HIGH and wake the
   // controller piecemeal; exitGt911Sleep() drives it HIGH from here.
@@ -2644,6 +2650,11 @@ void InputManager::enterGt911Sleep() {
   Wire.write(0x40);
   Wire.write(0x05);
   const bool sent = Wire.endTransmission() == 0;
+  // The >58 ms wake window (§8.1.d) is measured from the COMMAND, so stamp it
+  // only once the write actually went out.
+  if (sent) {
+    gt911SleepEnteredAt = millis();
+  }
 
   // One status read decides the outcome: a NACK means the controller dropped
   // off the bus (== asleep); a still-ACKing controller did not enter sleep.
@@ -2652,10 +2663,10 @@ void InputManager::enterGt911Sleep() {
   uint8_t status = 0;
   if (sent && !gt911ReadReg(0x814E, &status, 1)) {
     gt911Asleep.store(true, std::memory_order_release);
-    LOG_INF("TOUCH", "GT911 sleep entered (bus silent until wake)");
+    GT911_LOG_INF("GT911 sleep entered (bus silent until wake)");
     return;
   }
-  LOG_INF("TOUCH", "GT911 sleep command may not have taken (read OK)");
+  GT911_LOG_INF("GT911 sleep command may not have taken (read OK)");
   if (t.irq >= 0) {
     pinMode(t.irq, INPUT); // controller is awake: stop contending on INT
   }
@@ -2692,15 +2703,15 @@ bool InputManager::exitGt911Sleep() {
       gt911Asleep.store(false, std::memory_order_release);
       gt911SleepEnteredAt = 0;
       gt911ClearStatus(); // drop any stale frame latched across sleep
-      LOG_INF("TOUCH", "GT911 wake, resuming poll (responsive after %lu ms)",
-              static_cast<unsigned long>(millis() - wakeStart));
+      GT911_LOG_INF("GT911 wake, resuming poll (responsive after %lu ms)",
+                    static_cast<unsigned long>(millis() - wakeStart));
       return true;
     }
     delay(10);
   }
   // Could not confirm wake: stay parked so pollGt911 keeps skipping the dead
   // bus; the caller retries wakeTouch() on its next activity event.
-  LOG_ERR("TOUCH", "GT911 wake timeout: no ACK within 200 ms");
+  GT911_LOG_ERR("GT911 wake timeout: no ACK within 200 ms");
   return false;
 }
 

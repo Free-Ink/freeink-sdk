@@ -773,6 +773,12 @@ static const Ssd1677Config& ssd1677ActiveConfig() {
     // D7 fast), so it runs the same config. Grayscale LUT is Sticky's — same panel
     // class, but tune here if a unit shows banding.
     case BoardConfig::Board::WsEpaper397: return ssd1677StickyConfig();
+    // Onyx Picco / BOOX Tiles: same 3.97" 800x480 SSD1677-class glass as the Sticky
+    // and Waveshare 3.97, so it starts on the Sticky config (booster/border/update
+    // sequences + grayscale LUT). Retail units may auto-detect an SSD2677 controller
+    // variant; it shares the pin set and is treated as SSD1677 here. Tune if a unit
+    // shows banding.
+    case BoardConfig::Board::Picco: return ssd1677StickyConfig();
     // X4 Pro runs on the stock X4/GDEQ0426T82 config — same controller and panel
     // class, confirmed painting on hardware. No custom LUT or drive voltages needed.
     // Layers the fast-DU shortcut only when the build opts in (ssd1677X4ProConfig).

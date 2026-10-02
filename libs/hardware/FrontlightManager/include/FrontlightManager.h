@@ -67,6 +67,10 @@ class FrontlightManager {
     // An optional EEGO A4 LM3630A is present only after begin() gets an ACK.
     if (BoardConfig::ACTIVE.board == BoardConfig::Board::EegoA4 && BoardConfig::hasI2cFrontlight()) return _begun;
 #endif
+#if FREEINK_DEVICE_PICCO
+    // Picco's dual-channel I2C LED driver is present only after begin() gets an ACK.
+    if (BoardConfig::ACTIVE.board == BoardConfig::Board::Picco && BoardConfig::hasI2cFrontlight()) return _begun;
+#endif
     // GPIO, so viaPm1Pwm counts as present alongside the LEDC-pin boards.
     return BoardConfig::ACTIVE.frontlight.gpio != BoardConfig::PIN_UNASSIGNED ||
            BoardConfig::ACTIVE.frontlight.viaPm1Pwm;
@@ -80,6 +84,11 @@ class FrontlightManager {
   bool hasColorTemperature() const {
 #if FREEINK_DEVICE_EEGO_A4 && FREEINK_CAP_FRONTLIGHT
     if (BoardConfig::ACTIVE.board == BoardConfig::Board::EegoA4) {
+      return present() && BoardConfig::hasColorTemperatureFrontlight();
+    }
+#endif
+#if FREEINK_DEVICE_PICCO && FREEINK_CAP_FRONTLIGHT
+    if (BoardConfig::ACTIVE.board == BoardConfig::Board::Picco) {
       return present() && BoardConfig::hasColorTemperatureFrontlight();
     }
 #endif
@@ -107,6 +116,13 @@ class FrontlightManager {
   bool configureLm3630a();
   void applyLm3630a();
 #endif
+#if FREEINK_DEVICE_PICCO
+  // Picco dual-channel warm/cool I2C LED driver helpers — see FrontlightManager.cpp.
+  bool piccoWrite(uint8_t reg, uint8_t value);
+  bool piccoUpdate(uint8_t reg, uint8_t mask, uint8_t value);
+  bool configurePicco();
+  void applyPicco();
+#endif
 #endif
 #ifdef FREEINK_FRONTLIGHT_LS
   // Keep RC_FAST powered through light sleep only while the light is actually
@@ -122,7 +138,7 @@ class FrontlightManager {
 #endif
 
   bool _begun = false;
-#if FREEINK_DEVICE_EEGO_A4
+#if FREEINK_DEVICE_EEGO_A4 || FREEINK_DEVICE_PICCO
   bool _i2cConfigured = false;
 #endif
   uint8_t _brightness = 0;

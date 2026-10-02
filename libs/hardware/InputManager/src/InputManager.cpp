@@ -1251,6 +1251,10 @@ void InputManager::beginTouch() {
     beginGslx680();
     return;
   }
+  if (t.controller == BoardConfig::TouchController::PiccoCst) {
+    beginPiccoTouch();
+    return;
+  }
   // CHSC6x: I2C bus only. The IRQ is left unconfigured — it's a brief pulse on
   // this controller, so detection polls I2C and gates on the frame's touch bit
   // instead (see decodeChsc6xFrame / updateTouchFromIrq).
@@ -1290,6 +1294,8 @@ uint8_t InputManager::serviceTouch() {
     pollFt6336u(now);
   } else if (t.controller == BoardConfig::TouchController::Gslx680) {
     pollGslx680(now);
+  } else if (t.controller == BoardConfig::TouchController::PiccoCst) {
+    pollPiccoTouch(now);
   } else {
     updateTouchFromIrq(now, 0);  // detection polls I2C; the IRQ is unused now
     // Synthesized confirm tracks an actually-detected press, not the IRQ line.
@@ -1896,6 +1902,75 @@ void InputManager::pollGslx680(const unsigned long now) {
     if (absInt(dx) > TOUCH_TAP_RELEASE_SLOP_PX || absInt(dy) > TOUCH_TAP_RELEASE_SLOP_PX)
       touchMovedBeyondTapReleaseSlop = true;
   }
+}
+
+// --- Onyx Picco (PiccoCst, I2C 0x24) — TAP-DUMP SCAFFOLD --------------------
+//
+// Recovered from the retail firmware (Ghidra). Init/reset/INT are HIGH
+// confidence; the coordinate read is only PARTIALLY recovered, so this driver
+// brings the controller up and reads on INT but does NOT yet publish touch
+// coordinates. Enough is known to finish it from a hardware tap-dump:
+//   * INT (irq): active-low, falls when a sample is ready (attachInterrupt
+//     FALLING in FUN_4200bcc4). Here it is polled.
+//   * RST: pulse HIGH -> 1ms -> LOW -> 10ms -> HIGH, then ~50ms settle (FUN_4200b984).
+//   * The firmware writes a framed command (header 0x04, length, marker 0x2F/0x40,
+//     cmd, 16-bit checksum) then reads a 0x108-byte status block. In that block
+//     buf[0x36]==0x1F is the report id and buf[0x38]&0x7F is the touch-point count.
+//     The per-point X/Y byte offsets were NOT recovered (handler is in a packed
+//     .irom region). Build -DTOUCH_PROBE_DEBUG, tap a unit, read the dumped bytes
+//     to locate X/Y, then mirror pollFt6336u's publish/slop/press-release logic.
+void InputManager::beginPiccoTouch() {
+  const auto& t = BoardConfig::ACTIVE.touch;
+  if (t.sda < 0 || t.scl < 0 || t.i2cAddress == 0) return;
+
+  if (t.irq >= 0) pinMode(t.irq, INPUT_PULLUP);  // active-low, polled
+
+  Wire.begin(t.sda, t.scl, 400000);
+  Wire.setTimeOut(10);
+
+  if (t.reset >= 0) {
+    pinMode(t.reset, OUTPUT);
+    digitalWrite(t.reset, HIGH);
+    delay(1);
+    digitalWrite(t.reset, LOW);
+    delay(10);
+    digitalWrite(t.reset, HIGH);
+    delay(50);
+  }
+
+  // Presence probe at 0x24, retried while the controller stabilises.
+  for (int attempt = 0; attempt < 3 && !touchDataEnabled; ++attempt) {
+    if (attempt > 0) delay(120);
+    Wire.beginTransmission(t.i2cAddress);
+    touchDataEnabled = (Wire.endTransmission() == 0);
+  }
+}
+
+void InputManager::pollPiccoTouch(const unsigned long now) {
+  if (!touchDataEnabled) return;
+  const auto& t = BoardConfig::ACTIVE.touch;
+
+  // Gate on INT (active-low); keep polling while pressed to catch the release.
+  if (t.irq >= 0 && digitalRead(t.irq) != LOW && !touchPressed) return;
+  if (now < touchReadAt) return;
+  touchReadAt = now + TOUCH_SAMPLE_DELAY_MS;
+
+#ifdef TOUCH_PROBE_DEBUG
+  // Best-effort raw dump for coordinate discovery. The exact framed read command
+  // is not reproduced yet; this uses the simple-register entry (write 0x02, read)
+  // seen in FUN_4200bee0 as a starting point. Adjust on hardware.
+  uint8_t buf[64] = {};
+  Wire.beginTransmission(t.i2cAddress);
+  Wire.write(static_cast<uint8_t>(0x02));
+  if (Wire.endTransmission(false) == 0) {
+    const uint8_t got = Wire.requestFrom(t.i2cAddress, static_cast<uint8_t>(sizeof(buf)), static_cast<uint8_t>(true));
+    for (uint8_t i = 0; i < got && i < sizeof(buf); ++i) buf[i] = Wire.read();
+    touchDebugPrintf("[touch] Picco raw got=%u [%02X %02X %02X %02X %02X %02X %02X %02X]\r\n", got, buf[0], buf[1],
+                     buf[2], buf[3], buf[4], buf[5], buf[6], buf[7]);
+  }
+#endif
+  // TODO(hardware): decode point count + X/Y from the status block and publish
+  // touchPoint, mirroring pollFt6336u's press/slop/release machinery.
 }
 
 // --- GT911 (LilyGo) ---------------------------------------------------------

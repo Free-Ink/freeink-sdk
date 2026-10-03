@@ -459,6 +459,19 @@ void FreeInkDisplay::returnBuildStorage() {
 // is PSRAM-first with a malloc fallback, so this is correct with or without PSRAM.
 bool FreeInkDisplay::releaseSecondaryBuffer() {
   if (!frameBufferActive) return false;
+  // Carry the DISPLAYED frame into the write buffer before the secondary goes away.
+  //
+  // displayBuffer() ends in swapBuffers(), so in dual-buffer mode the secondary holds the frame on
+  // the panel and frameBuffer holds the frame from TWO refreshes ago. Dropping the secondary
+  // without this leaves the write buffer holding that stale frame while the display is now in
+  // single-buffer mode -- where every other path, including reallocSecondaryBuffer()'s own re-seed
+  // ("correct when the caller reallocs before drawing the next page (frameBuffer then still holds
+  // the on-screen frame)"), assumes the write buffer IS what the panel shows.
+  //
+  // syncWriteBufferFromActive() cannot repair it afterwards either: its memcpy is gated on the
+  // pointer freed here, so it returns having done nothing, with no error. A full render never
+  // notices because it clears first; a PARTIAL repaint composites onto the wrong frame.
+  syncWriteBufferFromActive();
   if (frameBufferActive == frameBuffer0) {
     free(frameBuffer0);
     frameBuffer0 = nullptr;
@@ -523,6 +536,11 @@ uint8_t* FreeInkDisplay::borrowSecondaryBuffer(size_t* size) {
   // it in displayFinish). Drain before the host scribbles — same reason
   // lendBuildStorage() syncs before lending the primary.
   syncPendingAsync();
+  // Same invariant as releaseSecondaryBuffer(): leaving dual-buffer mode carries the displayed
+  // frame into the write buffer. Here it is also the last chance to keep it -- the host is about
+  // to scribble on these bytes -- and it is what makes returnSecondaryBuffer()'s re-seed from
+  // frameBuffer restore the on-screen frame instead of a two-generations-old one.
+  syncWriteBufferFromActive();
   _secondaryLent = frameBufferActive;
   frameBufferActive = nullptr;  // single-buffer mode, same as releaseSecondaryBuffer()
   if (size) *size = bufferSize;

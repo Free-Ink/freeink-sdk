@@ -356,6 +356,9 @@ class FreeInkDisplay {
   // controller's retained RED plane. Without the opt-in a FAST refresh downgrades to
   // HALF (resolveReleasedMode) so it can't ghost off a stale baseline. Grayscale AA is
   // unavailable until restored with reallocSecondaryBuffer(). No-op if already released.
+  // The displayed frame is carried into the write buffer first (see syncWriteBufferFromActive),
+  // so the write buffer still holds what the panel shows -- partial repaints depend on that, and
+  // it is the state reallocSecondaryBuffer() re-seeds from.
   // Returns true if freed.
   bool releaseSecondaryBuffer();
 
@@ -377,7 +380,10 @@ class FreeInkDisplay {
   // Unlike release/realloc, the memory never enters the heap, so nothing can
   // allocate inside it and returnSecondaryBuffer() CANNOT fail — the
   // realloc-failure / fragmented-hole class of bugs is impossible by
-  // construction. Returns nullptr if there is no secondary buffer or it is
+  // construction. As with releaseSecondaryBuffer(), the displayed frame is
+  // carried into the write buffer first, so returnSecondaryBuffer() re-seeds
+  // the secondary from the on-screen frame rather than a stale one.
+  // Returns nullptr if there is no secondary buffer or it is
   // already lent. *size receives the block size.
   uint8_t* borrowSecondaryBuffer(size_t* size);
 

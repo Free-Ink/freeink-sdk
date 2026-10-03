@@ -134,19 +134,18 @@ void Uc8279cA4Driver::writeFrame(EpdBus& bus, const uint8_t command, const uint8
   memset(white, 0xff, sizeof(white));
   uint8_t rowBuf[96];
   bus.cmd(command);
-  bus.beginTxn();
+  auto txn = bus.beginTxn();
   for (int y = static_cast<int>(_height) - 1; y >= 0; --y) {
     const uint8_t* row = fb + static_cast<uint32_t>(y) * _widthBytes;
     if (invert) {
       for (uint16_t xb = 0; xb < _widthBytes; ++xb) rowBuf[xb] = static_cast<uint8_t>(~row[xb]);
       row = rowBuf;
     }
-    bus.rawWriteBytes(row, _widthBytes);
+    txn.writeBytes(row, _widthBytes);
   }
   for (uint16_t y = 0; y < PADDING_ROWS; ++y) {
-    bus.rawWriteBytes(white, _widthBytes);
+    txn.writeBytes(white, _widthBytes);
   }
-  bus.endTxn();
 }
 
 void Uc8279cA4Driver::fillControllerRam(EpdBus& bus, const uint8_t command, const uint8_t fill) {

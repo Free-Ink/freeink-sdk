@@ -459,6 +459,18 @@ void FreeInkDisplay::returnBuildStorage() {
 // is PSRAM-first with a malloc fallback, so this is correct with or without PSRAM.
 bool FreeInkDisplay::releaseSecondaryBuffer() {
   if (!frameBufferActive) return false;
+  // A deferred refresh is still reading these bytes: the last displayStart + swap parked the
+  // displayed frame here, and X3's post-waveform DTM1 sync reads it in displayFinish(). Freeing
+  // underneath that leaves the finish pointing at freed memory or, once it falls back to
+  // frameBuffer, reseeding the controller's previous-frame plane from a frame that was never
+  // displayed. Drain first -- the same reason, and the same one-line fix, as
+  // borrowSecondaryBuffer() above.
+  //
+  // Without this the obligation lands on every consumer: a caller that ships a refresh
+  // asynchronously must remember to finish it before freeing a framebuffer, and the failure is
+  // silent and deferred -- a later refresh diffs against a baseline that no longer describes the
+  // panel. Draining here retires that obligation rather than restating it at each call site.
+  syncPendingAsync();
   if (frameBufferActive == frameBuffer0) {
     free(frameBuffer0);
     frameBuffer0 = nullptr;

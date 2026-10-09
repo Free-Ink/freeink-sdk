@@ -173,10 +173,14 @@ uint8_t InputManager::getState() {
   if (BoardConfig::ACTIVE.inputStyle == BoardConfig::InputStyle::OnePageAdcLadder) {
     if (BoardConfig::ACTIVE.input.adcLadderPin >= 0) {
       const int mv = analogReadMilliVolts(BoardConfig::ACTIVE.input.adcLadderPin);
-      if (mv >= 2400 && mv <= 2800)      state |= (1 << BTN_BACK);    // ~2592 mV
-      else if (mv >= 1780 && mv <= 2140) state |= (1 << BTN_LEFT);    // ~1956 mV
-      else if (mv >= 1140 && mv <= 1500) state |= (1 << BTN_RIGHT);   // ~1316 mV
-      else if (mv >= 0 && mv <= 250)     state |= (1 << BTN_CONFIRM); // ~0 mV (ENTER)
+      if (mv >= 2400 && mv <= 2800)
+        state |= (1 << BTN_BACK);  // ~2592 mV
+      else if (mv >= 1780 && mv <= 2140)
+        state |= (1 << BTN_LEFT);  // ~1956 mV
+      else if (mv >= 1140 && mv <= 1500)
+        state |= (1 << BTN_RIGHT);  // ~1316 mV
+      else if (mv >= 0 && mv <= 250)
+        state |= (1 << BTN_CONFIRM);  // ~0 mV (ENTER)
     }
     if (BoardConfig::ACTIVE.input.up >= 0 && digitalRead(BoardConfig::ACTIVE.input.up) == LOW) {
       state |= (1 << BTN_UP);
@@ -558,6 +562,7 @@ void InputManager::update() {
 
   pressedEvents = 0;
   releasedEvents = 0;
+  touchCancelledEvent = false;
   touchPressedEvent = false;  // one-shot touch coord events, cleared each update()
   touchReleasedEvent = false;
   touchLongPressEvent = false;
@@ -676,6 +681,11 @@ bool InputManager::hasTouch() const {
 }
 
 InputManager::TouchPoint InputManager::getTouchPoint() const { return touchPoint; }
+
+uint8_t InputManager::touchContactCount() const {
+  if (!touchPressed) return 0;
+  return std::max<uint8_t>(1, supportsMultiTouch() ? touchSnapshot.reportedCount : touchReportedCount);
+}
 
 bool InputManager::supportsMultiTouch() const {
 #if FREEINK_CAP_TOUCH
@@ -1411,6 +1421,7 @@ bool InputManager::readChsc6xPoint(TouchPoint& point) {
   Wire.beginTransmission(addr);
   Wire.write(TOUCH_READ_COMMAND);
   if (Wire.endTransmission(false) != 0) {
+    if (touchPressed) touchCancelledEvent = true;
     return false;
   }
 
@@ -1418,6 +1429,7 @@ bool InputManager::readChsc6xPoint(TouchPoint& point) {
   const uint8_t received = Wire.requestFrom(addr, TOUCH_FRAME_SIZE, static_cast<uint8_t>(true));
   if (received != TOUCH_FRAME_SIZE) {
     while (Wire.available()) Wire.read();
+    if (touchPressed) touchCancelledEvent = true;
     return false;
   }
   for (uint8_t i = 0; i < TOUCH_FRAME_SIZE; ++i) {
@@ -1556,7 +1568,7 @@ void InputManager::beginFt5x06() {
 namespace {
 volatile bool cstInterrupt = false;
 void IRAM_ATTR cstTouchInterrupt() { cstInterrupt = true; }
-}
+}  // namespace
 
 void InputManager::beginCst816s() {
   const auto& t = BoardConfig::ACTIVE.touch;
@@ -1583,8 +1595,9 @@ void InputManager::pollCst816s(const unsigned long now) {
   const bool fresh = cstInterrupt || t.irq < 0 || digitalRead(t.irq) == LOW;
   if (!active && !fresh) return;
   cstInterrupt = false;
-  const auto release = [&]() {
+  const auto release = [&](bool cancelled = false) {
     if (touchPressed) {
+      if (cancelled) touchCancelledEvent = true;
       touchPressed = false;
       touchPoint.valid = false;
       touchReleasedEvent = true;
@@ -1599,11 +1612,15 @@ void InputManager::pollCst816s(const unsigned long now) {
   };
   // Re-reading CST816S can return the last sample after its event ends.
   // A stale successful read must not keep a contact pressed forever either.
-  if (active && !fresh && now - cstLastSample >= 100) { release(); return; }
+  if (active && !fresh && now - cstLastSample >= 100) {
+    release(true);
+    return;
+  }
   uint8_t data[5] = {};
   if (!ft5x06ReadReg(0x02, data, sizeof(data))) {
     // The device goes silent again after release; don't latch a key/contact.
-    if (active && now - cstLastSample >= 100) release();
+    if (touchPressed) touchCancelledEvent = true;
+    if (active && now - cstLastSample >= 100) release(true);
     return;
   }
   if (fresh) cstLastSample = now;
@@ -1616,8 +1633,14 @@ void InputManager::pollCst816s(const unsigned long now) {
   if (BoardConfig::isMetalioEInk4() && rawY >= 800) {
     // Vendor cover key centers: HOME=(80,900), NEXT=(240,900), PREV=(400,900).
     // Ignore invalid off-panel samples rather than clamping them into screen taps.
-    if (rawY < 860 || rawY > 940 || rawX > 479) { release(); return; }
-    if (touchPressed) { suppressTouchContact(); release(); }
+    if (rawY < 860 || rawY > 940 || rawX > 479) {
+      release(true);
+      return;
+    }
+    if (touchPressed) {
+      suppressTouchContact();
+      release(true);
+    }
     if (rawX < 160) {
       cstVirtualButtons = 0;
       if (!touchHomeKeyDown) {
@@ -1638,9 +1661,12 @@ void InputManager::pollCst816s(const unsigned long now) {
   if (touchHomeKeyDown || cstVirtualButtons) release();
   const uint16_t x = t.swapXY ? rawY : rawX;
   const uint16_t y = t.swapXY ? rawX : rawY;
-  if (x < t.rawMinX || x > t.rawMaxX || y < t.rawMinY || y > t.rawMaxY) { release(); return; }
+  if (x < t.rawMinX || x > t.rawMaxX || y < t.rawMinY || y > t.rawMaxY) {
+    release(true);
+    return;
+  }
   touchPoint = {true, mapTouchAxis(x, t.rawMinX, t.rawMaxX, t.rawMaxX - t.rawMinX),
-                     mapTouchAxis(y, t.rawMinY, t.rawMaxY, t.rawMaxY - t.rawMinY), now};
+                mapTouchAxis(y, t.rawMinY, t.rawMaxY, t.rawMaxY - t.rawMinY), now};
   if (t.flipX) touchPoint.x = t.rawMaxX - t.rawMinX - touchPoint.x;
   if (t.flipY) touchPoint.y = t.rawMaxY - t.rawMinY - touchPoint.y;
   if (!touchPressed) {
@@ -1682,6 +1708,7 @@ void InputManager::pollFt5x06(const unsigned long now) {
     // leave the contact latched — release once samples go stale.
     constexpr unsigned long STALE_RELEASE_MS = 100;
     if (touchPressed && now - touchPoint.timestamp > STALE_RELEASE_MS) {
+      touchCancelledEvent = true;
       touchPressed = false;
       touchPoint.valid = false;
       touchReleasedEvent = true;
@@ -1689,6 +1716,7 @@ void InputManager::pollFt5x06(const unsigned long now) {
     }
     return;
   }
+  touchReportedCount = data[0] & 0x0F;
   if ((data[0] & 0x0F) == 0) {
     // FT6336 may keep INT low until TD_STATUS has been drained. Treat the
     // controller's zero-contact frame as authoritative; waiting only for the
@@ -1892,7 +1920,10 @@ void InputManager::pollGslx680(const unsigned long now) {
 
   // Data register 0x80: byte 0 = finger count, then 4 bytes per finger.
   uint8_t frame[24] = {};
-  if (!gslRead(0x80, frame, sizeof(frame))) return;  // survive transient bus errors
+  if (!gslRead(0x80, frame, sizeof(frame))) {
+    if (touchPressed) touchCancelledEvent = true;
+    return;
+  }
 
   auto finishHomeKey = [&]() {
     if (!touchHomeKeyDown) return;
@@ -1903,6 +1934,7 @@ void InputManager::pollGslx680(const unsigned long now) {
   };
 
   const uint8_t count = frame[0] > 5 ? 5 : frame[0];
+  touchReportedCount = count;
   if (count == 0) {
     finishHomeKey();
     if (touchPressed) {
@@ -2439,7 +2471,10 @@ void InputManager::pollFt6336u(const unsigned long now) {
     }
   }
 #endif
-  if (!gotData) return;
+  if (!gotData) {
+    if (touchPressed) touchCancelledEvent = true;
+    return;
+  }
   // Reject garbage frames. Pattern A: all four bytes identical (0xE6/E7/E2/01/03).
   // Pattern B: last three bytes identical but first differs (e.g. 07 03 03 03) —
   // produces rawX=1795 or rawY=771 which are impossibly out of range and generate
@@ -2449,6 +2484,7 @@ void InputManager::pollFt6336u(const unsigned long now) {
   const int oneCount = (data[3] == 0x01) + (data[4] == 0x01) + (data[5] == 0x01) + (data[6] == 0x01);
   const bool stuckOneGarbage = data[0] == 0x01 && data[1] == 0x01 && (data[2] & 0x0F) == 0x01 && oneCount >= 3;
   if (uniformGarbage || stuckOneGarbage) {
+    if (touchPressed) touchCancelledEvent = true;
     // Do not let a one-byte glitch latch the input loop into continuous reads.
     if (touchPressed && BoardConfig::ACTIVE.touch.irq >= 0 && digitalRead(BoardConfig::ACTIVE.touch.irq) != 0) {
       touchPressed = false;
@@ -2458,6 +2494,7 @@ void InputManager::pollFt6336u(const unsigned long now) {
   }
 
   const uint8_t numPoints = data[2] & 0x0F;
+  touchReportedCount = numPoints;
   const uint8_t eventFlag = (data[3] >> 6) & 0x03;  // 0=down, 1=up, 2=contact
   const bool isTouching = (numPoints > 0) && (eventFlag != 1);
 
@@ -2506,6 +2543,7 @@ void InputManager::pollGt911(const unsigned long now) {
   }
   uint8_t status = 0;
   if (!gt911ReadReg(0x814E, &status, 1)) {
+    if (touchPressed) touchCancelledEvent = true;
     // Keep the last complete frame while the single-touch state remains
     // latched. Clearing only this snapshot makes a transient I2C failure look
     // like a multi-contact release to multi-touch consumers, which can split one
@@ -2614,6 +2652,7 @@ void InputManager::pollGt911(const unsigned long now) {
       // Retain the last complete snapshot until the controller provides an
       // authoritative contact count. The existing single-touch state is also
       // retained on this transient point-read failure.
+      if (touchPressed) touchCancelledEvent = true;
     }
   } else {
     touchSnapshot.count = 0;

@@ -117,6 +117,8 @@ class InputManager {
   TouchSnapshot getTouchSnapshot() const;
   // The most recent touch sampled during #update(). valid == false when idle.
   TouchPoint getTouchPoint() const;
+  uint8_t touchContactCount() const;
+  bool wasTouchCancelled() const { return touchCancelledEvent; }
   // True while a touch is currently down.
   bool isTouchPressed() const;
   // True if a touch began between the last two #update() calls.
@@ -459,9 +461,11 @@ class InputManager {
   bool touchMovedBeyondTapReleaseSlop = false;   // cancels tap-on-release once motion reaches swipe distance
   bool touchLongPressEvent = false;              // one-shot, mirrors touchHomeKeyLongEvent
   bool touchLongPressFired = false;              // latched for the current contact so long-press fires once
-  bool touchSuppressed = false;                  // suppressTouchContact() latch; holds through
-                                                 // the release-edge frame, cleared in
-                                                 // serviceTouch() once the contact is over
+  bool touchCancelledEvent = false;
+  uint8_t touchReportedCount = 0;
+  bool touchSuppressed = false;  // suppressTouchContact() latch; holds through
+                                 // the release-edge frame, cleared in
+                                 // serviceTouch() once the contact is over
 
   static constexpr int NUM_BUTTONS_1 = 4;
   static const int ADC_RANGES_1[];

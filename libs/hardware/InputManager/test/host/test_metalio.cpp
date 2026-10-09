@@ -1,13 +1,14 @@
+#include <BoardConfig.h>
+#include <Wire.h>
+
+#include <algorithm>
 #include <cassert>
 #include <cstdio>
-#include <algorithm>
-#include <Wire.h>
-#include <BoardConfig.h>
 #define private public
 #include <InputManager.h>
 #undef private
 
-static void point(InputManager& input, unsigned x, unsigned y, bool down=true) {
+static void point(InputManager& input, unsigned x, unsigned y, bool down = true) {
   Wire.touch = {uint8_t(down), uint8_t(x >> 8), uint8_t(x), uint8_t(y >> 8), uint8_t(y)};
   fakeNow += 25;
   if (touchIsr) touchIsr();
@@ -32,12 +33,11 @@ int main() {
   assert(freeink::metalio::ensureBooted());
   assert(Wire.writes[0][0] == 2 && Wire.writes[1][0] == 6);
   const unsigned out = Wire.expander[2] | (Wire.expander[3] << 8);
-  assert((out & ((1 << 5) | (1 << 6) | (1 << 9) | (1 << 11))) ==
-         ((1 << 5) | (1 << 6) | (1 << 9) | (1 << 11)));
-  assert(!(out & ((1 << 1) | (1 << 4)))); // amp off, ESP32 route
+  assert((out & ((1 << 5) | (1 << 6) | (1 << 9) | (1 << 11))) == ((1 << 5) | (1 << 6) | (1 << 9) | (1 << 11)));
+  assert(!(out & ((1 << 1) | (1 << 4))));  // amp off, ESP32 route
   const auto writes = Wire.writes.size();
   assert(freeink::metalio::ensureBooted());
-  assert(Wire.writes.size() == writes); // no reset when next manager begins
+  assert(Wire.writes.size() == writes);  // no reset when next manager begins
 
   InputManager input;
   // CST816S must be usable even when it NACKs all boot probes.
@@ -46,13 +46,26 @@ int main() {
   assert(input.hasTouch());
   Wire.failTouch = false;
   assert(touchIsr);
-  touchIsr(); // latch a pulse that has finished before update()
+  touchIsr();  // latch a pulse that has finished before update()
   point(input, 0, 0);
   assert(input.touchPressed && input.touchPoint.x == 0 && input.touchPoint.y == 479);
   point(input, 479, 799);
   assert(input.touchPoint.x == 799 && input.touchPoint.y == 0);
   point(input, 479, 799, false);
   assert(!input.touchPressed && input.touchReleasedEvent);
+  assert(!input.wasTouchCancelled());
+
+  point(input, 120, 200);
+  Wire.failTouch = true;
+  fakeNow += 25;
+  input.update();
+  assert(input.wasTouchCancelled());
+  Wire.failTouch = false;
+  point(input, 120, 200, false);
+
+  point(input, 120, 200);
+  point(input, 120, 820);
+  assert(input.wasTouchCancelled() && !input.touchPressed);
 
   touchIsr();
   point(input, 80, 900);
@@ -83,14 +96,15 @@ int main() {
   input.update();
   fakeNow += 25;
   input.update();
-  assert(!input.isPressed(InputManager::BTN_UP)); // bus loss releases held cover key
+  assert(!input.isPressed(InputManager::BTN_UP));  // bus loss releases held cover key
   Wire.failTouch = false;
 
   point(input, 120, 200);
   assert(input.touchPressed);
   fakeNow += 150;
-  input.update(); // stale successful frame, IRQ idle
+  input.update();  // stale successful frame, IRQ idle
   assert(!input.touchPressed);
+  assert(input.wasTouchCancelled());
 
   Wire.expander[0] &= ~(1 << 7);
   fakeNow += 25;
@@ -100,6 +114,6 @@ int main() {
   assert(!(input.getState() & (1 << InputManager::BTN_DOWN)));
   Wire.failExpander = false;
   assert(freeink::metalio::powerOff());
-  assert(Wire.expander[2] & (1 << 5)); // shared screen/card rail never cut
+  assert(Wire.expander[2] & (1 << 5));  // shared screen/card rail never cut
   std::puts("Metalio profile, expander boot/retry, buttons, touch, cover keys and shutdown passed");
 }

@@ -151,9 +151,12 @@ class FreeInkDisplay {
   void cleanupGrayscaleBuffers(const uint8_t* bwBuffer);
 #ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
   // Restore controller RAM and frameBuffer to the BW baseline after grayscale.
-  // Uses frameBufferActive as the source (falls back to frameBuffer when the
-  // secondary buffer has been released). Call once per page-turn after
-  // displayGrayBuffer() to ensure the next BW draw targets a valid BW frame.
+  // frameBufferActive is the only valid source: the caller is always inside a
+  // grayscale plane pass, which has left frameBuffer holding a PLANE, so there is
+  // no fallback. With the secondary away (lent or released) the driver is told
+  // there is no baseline and takes a clean sync on its next push. Call once per
+  // page-turn after displayGrayBuffer() to ensure the next BW draw targets a
+  // valid BW frame.
   void cleanupGrayscaleWithPreviousBuffer();
 #endif
 

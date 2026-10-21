@@ -71,6 +71,8 @@ struct Ssd1677Config {
   // halfRefreshTemp written) instead of the OTP sequences; nullptr keeps OTP.
   const unsigned char* fullLut = nullptr;
   const unsigned char* halfLut = nullptr;
+  // Clean retained panel content on first paint, including turnOff requests.
+  bool initialHalfRefresh = false;
 };
 
 // Standard config (Xteink X4 / GDEQ0426T82). Panel mounting (mirror/180°) is NOT
@@ -160,8 +162,8 @@ class Ssd1677Driver : public PanelDriver {
   bool _pendingPowerOff = false;
   // First paint after begin() (boot or deep-sleep wake) must be a full refresh to
   // clear whatever is physically on the panel (e.g. the black boot screen) and set
-  // a clean differential baseline. Only armed for boards whose self-powering fast
-  // sequence makes _isScreenOn useless as a cold-start signal (fullSeqOverride set).
+  // a clean differential baseline. Also applies when an incremental board opts
+  // into an initial HALF, since turnOff requests carry no cold-start signal.
   bool _needsInitialFull = false;
 };
 

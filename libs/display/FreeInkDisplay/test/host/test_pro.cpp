@@ -612,7 +612,72 @@ static void testMetalio() {
   assert(lastRegister(bus, 0x10) == 0x03);
 }
 
+static void testOnePage() {
+  BoardConfig::ACTIVE.board = BoardConfig::Board::OnePage;
+  auto& driver = static_cast<Ssd1677Driver&>(ssd1677Driver());
+  EpdBus bus;
+  driver.begin(bus);
+  assert(lastPlane(bus, 0x0C) == Bytes({0xAE, 0xC7, 0xC3, 0xC0, 0x40}));
+  assert(lastRegister(bus, 0x3C) == 0x01);
+  const auto bw = frame(42), next = frame(67);
+  // Quick Resume can paint first with sunlight compensation already enabled.
+  bus.clear();
+  driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, true);
+  assert(lastRegister(bus, 0x22) == 0xD7);
+  assert(!driver._isScreenOn);
+  bus.clear();
+  driver.display(bus, next.data(), nullptr, RefreshMode::Fast, true);
+  assert(lastRegister(bus, 0x22) == 0xDF);
+  driver.begin(bus);
+  // A cold paint clears the old screen; warm turns use the vendor's 0x1C.
+  bus.clear();
+  driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, false);
+  assert(lastRegister(bus, 0x22) == 0xD4);
+  assert(lastRegister(bus, 0x1A) == 0x5A);
+  bus.clear();
+  driver.display(bus, next.data(), nullptr, RefreshMode::Fast, false);
+  assert(lastRegister(bus, 0x22) == 0x1C);
+  assert(lastPlane(bus, 0x26) == next);
+  assert(driver._isScreenOn);
+  for (auto mode : {RefreshMode::Half, RefreshMode::Full}) {
+    bus.clear();
+    driver.display(bus, bw.data(), nullptr, mode, false);
+    assert(lastRegister(bus, 0x22) == (mode == RefreshMode::Half ? 0xD4 : 0x34));
+  }
+  // Sunlight compensation powers off within the update, without a second activation.
+  bus.clear();
+  driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, true);
+  assert(lastRegister(bus, 0x22) == 0x1F);
+  assert(!driver._isScreenOn);
+  assert(std::count_if(bus.writes.begin(), bus.writes.end(), [](const auto& w) { return w.command == 0x20; }) == 1);
+  bus.clear();
+  driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, true);
+  assert(lastRegister(bus, 0x22) == 0xDF);
+  assert(!driver._isScreenOn);
+  // Keep the facade's deferred-refresh and grayscale cleanup contracts.
+  bus.clear();
+  driver.displayStart(bus, next.data(), bw.data(), RefreshMode::Fast, false);
+  assert(lastRegister(bus, 0x22) == 0xD4);
+  assert(bus.waits == 0);
+  driver.displayFinish(bus, next.data());
+  assert(bus.waits == 1);
+  bus.clear();
+  driver.displayGray(bus, next.data(), false, nullptr, false);
+  assert(lastPlane(bus, 0x32) == Bytes(lut_grayscale, lut_grayscale + 105));
+  assert(lastRegister(bus, 0x2C) == 0x30);
+  driver.cleanupGrayscaleBuffers(bus, next.data());
+  bus.clear();
+  driver.displayStart(bus, bw.data(), next.data(), RefreshMode::Fast, false);
+  assert(lastRegister(bus, 0x22) == 0x1C);
+  driver.displayFinish(bus, bw.data());
+}
+
 int main(int argc, char** argv) {
+  if (argc > 1 && std::strcmp(argv[1], "onepage") == 0) {
+    testOnePage();
+    std::puts("OnePage vendor init, incremental refresh, power state and grayscale cleanup passed");
+    return 0;
+  }
   if (argc > 1 && std::strcmp(argv[1], "metalio") == 0) {
     testMetalio();
     std::puts("Metalio refresh, temperature, grayscale fallback and async power-down passed");

@@ -118,6 +118,22 @@ private:
     bool lastBaseWasPartial = false;
     bool lsbValid = false;
   } _grayState;
+  // The glass physically holds greys that the B/W planes do not describe: an AA
+  // or cover gray pass has run since the last waveform that drove every pixel.
+  //
+  // Distinct from _redRamSynced, which is a statement about controller RAM.
+  // cleanupGrayscaleBuffers() restores DTM1/DTM2 to the B/W frame and rightly
+  // reports the RAM in sync -- but it moves no particles, so the grey at every
+  // anti-aliased glyph edge is still on the panel. A differential update that
+  // trusts the RAM then treats those pixels as white-stays-white and gives them
+  // the gentle WW cell, which is not enough to clear them. Measured 2026-09-23
+  // on an X3: a reader page -> grayscale sleep cover left the page's text
+  // outline on the cover; a reader page -> _half scrub did not.
+  //
+  // Cleared only by a waveform that drives every pixel from a known state:
+  // _full (from white), _half (WW==BW, WB==BB), grayscaleRevert (to white).
+  // NOT cleared by _fast (differential) or by a RAM restore.
+  bool _grayOnGlass = false;
 
   // Refresh split state: what displayStart() decided, replayed by displayFinish()
   // for the post-waveform DTM1 sync + conditioning. _pendingRefresh guards against

@@ -7,6 +7,10 @@
 #include <Wire.h>
 #include <soc/soc_caps.h>
 
+#include <cstring>
+
+#include "Bmi270ConfigFile.h"
+
 namespace freeink {
 namespace {
 
@@ -70,6 +74,50 @@ constexpr uint8_t SC7_100HZ = 0x57;  // XYZ on, LPen off
 constexpr uint8_t SC7_DIG_CTRL = 0x57;
 constexpr float SC7_G_PER_RAW_LSB = 1.0f / 16384.0f;  // section 13.13: 0x4000 = 1 g at ±2 g
 
+// BMI270 register map (datasheet BST-BMI270-DS000; Bosch BMI270_SensorAPI
+// bmi2_defs.h). SDO selects 0x68 / 0x69.
+constexpr uint8_t BMI270_REG_CHIP_ID = 0x00;
+constexpr uint8_t BMI270_CHIP_ID_VALUE = 0x24;
+constexpr uint8_t BMI270_REG_DATA_8 = 0x0C;  // accel X..Z then gyro X..Z, 12 bytes LE
+constexpr uint8_t BMI270_REG_INTERNAL_STATUS = 0x21;
+constexpr uint8_t BMI270_INTERNAL_STATUS_MASK = 0x0F;
+constexpr uint8_t BMI270_INIT_OK = 0x01;
+constexpr uint8_t BMI270_REG_ACC_CONF = 0x40;
+constexpr uint8_t BMI270_REG_ACC_RANGE = 0x41;
+constexpr uint8_t BMI270_REG_GYR_CONF = 0x42;
+constexpr uint8_t BMI270_REG_GYR_RANGE = 0x43;
+constexpr uint8_t BMI270_REG_INIT_CTRL = 0x59;
+constexpr uint8_t BMI270_REG_INIT_ADDR_0 = 0x5B;  // INIT_ADDR_1 follows; offset in 16-bit words
+constexpr uint8_t BMI270_REG_INIT_DATA = 0x5E;
+constexpr uint8_t BMI270_REG_PWR_CONF = 0x7C;
+constexpr uint8_t BMI270_REG_PWR_CTRL = 0x7D;
+constexpr uint8_t BMI270_REG_CMD = 0x7E;
+constexpr uint8_t BMI270_CMD_SOFT_RESET = 0xB6;
+constexpr uint8_t BMI270_ADDR_68 = 0x68;
+constexpr uint8_t BMI270_ADDR_69 = 0x69;
+constexpr uint8_t BMI270_PWR_CONF_ACTIVE = 0x00;      // advanced power save off
+constexpr uint8_t BMI270_PWR_CONF_POWER_SAVE = 0x01;  // advanced power save on
+constexpr uint8_t BMI270_PWR_CTRL_OFF = 0x00;
+constexpr uint8_t BMI270_PWR_CTRL_ACC_GYR = 0x06;  // gyr_en | acc_en
+// 100 Hz, normal bandwidth, performance filter; ±2 g; ±500 dps (±250 dps
+// would clip the 270 dps flick threshold of tilt page turning).
+constexpr uint8_t BMI270_ACC_CONF_100HZ = 0xA8;
+constexpr uint8_t BMI270_ACC_RANGE_2G = 0x00;
+constexpr uint8_t BMI270_GYR_CONF_100HZ = 0xA8;
+constexpr uint8_t BMI270_GYR_RANGE_500DPS = 0x02;
+constexpr float BMI270_ACCEL_G_PER_LSB = 1.0f / 16384.0f;    // ±2 g
+constexpr float BMI270_GYRO_DPS_PER_LSB = 500.0f / 32768.0f;  // ±500 dps
+// While advanced power save is on, the part needs 450 us after each write.
+constexpr uint32_t BMI270_POWER_SAVE_WRITE_US = 500;
+// 64-byte bursts fit the Arduino Wire buffer. One burst takes ~6 ms at 100 kHz
+// (Paper Mono's sensor bus), more than the 4 ms timeout M5Pm1::beginBus()
+// leaves on Wire, so the upload raises the timeout and restores it afterwards.
+constexpr size_t BMI270_UPLOAD_CHUNK = 64;
+constexpr uint16_t BMI270_UPLOAD_TIMEOUT_MS = 50;
+// Datasheet: INTERNAL_STATUS reports init_ok within 20 ms of INIT_CTRL = 1.
+constexpr int BMI270_INIT_POLLS = 15;
+constexpr uint32_t BMI270_INIT_POLL_MS = 10;
+
 bool g_wireReady[2] = {false, false};
 TwoWire& sensorWire() {
 #if SOC_I2C_NUM > 1
@@ -101,6 +149,15 @@ bool writeReg(uint8_t addr, uint8_t reg, uint8_t value) {
   wire.beginTransmission(addr);
   wire.write(reg);
   wire.write(value);
+  return wire.endTransmission() == 0;
+}
+
+bool writeRegs(uint8_t addr, uint8_t reg, const uint8_t* src, size_t len) {
+  ensureWire();
+  auto& wire = sensorWire();
+  wire.beginTransmission(addr);
+  wire.write(reg);
+  for (size_t i = 0; i < len; ++i) wire.write(src[i]);
   return wire.endTransmission() == 0;
 }
 
@@ -143,6 +200,69 @@ bool configureSc7a20h(uint8_t addr) {
   return writeReg(addr, SC7_CTRL1, SC7_100HZ);
 }
 
+bool bmi270PresentAt(uint8_t addr) {
+  uint8_t who = 0;
+  return readRegs(addr, BMI270_REG_CHIP_ID, &who, 1) && who == BMI270_CHIP_ID_VALUE;
+}
+
+bool bmi270InitOk(uint8_t addr) {
+  uint8_t status = 0;
+  return readRegs(addr, BMI270_REG_INTERNAL_STATUS, &status, 1) &&
+         (status & BMI270_INTERNAL_STATUS_MASK) == BMI270_INIT_OK;
+}
+
+// Bosch's write_config_file(): the blob goes through the INIT_DATA window, each
+// burst preceded by its offset in 16-bit words (INIT_ADDR_0 [3:0], INIT_ADDR_1).
+bool uploadBmi270Config(uint8_t addr) {
+  auto& wire = sensorWire();
+  const auto oldTimeout = wire.getTimeOut();
+  wire.setTimeOut(BMI270_UPLOAD_TIMEOUT_MS);
+  bool ok = true;
+  for (size_t i = 0; ok && i < bmi270cfg::CONFIG_FILE_SIZE; i += BMI270_UPLOAD_CHUNK) {
+    const size_t word = i / 2;
+    const uint8_t offset[2] = {static_cast<uint8_t>(word & 0x0F), static_cast<uint8_t>(word >> 4)};
+    const size_t len =
+        bmi270cfg::CONFIG_FILE_SIZE - i < BMI270_UPLOAD_CHUNK ? bmi270cfg::CONFIG_FILE_SIZE - i : BMI270_UPLOAD_CHUNK;
+    ok = writeRegs(addr, BMI270_REG_INIT_ADDR_0, offset, sizeof(offset)) &&
+         writeRegs(addr, BMI270_REG_INIT_DATA, bmi270cfg::CONFIG_FILE + i, len);
+  }
+  wire.setTimeOut(oldTimeout);
+  return ok;
+}
+
+// Loads the configuration file unless the part still holds it (it kept power
+// across a host reset), then starts accel + gyro sampling.
+bool startBmi270(uint8_t addr) {
+  if (!bmi270InitOk(addr)) {
+    writeReg(addr, BMI270_REG_CMD, BMI270_CMD_SOFT_RESET);  // clean slate for a half-loaded part
+    delay(10);
+    if (!writeReg(addr, BMI270_REG_PWR_CONF, BMI270_PWR_CONF_ACTIVE)) return false;
+    delayMicroseconds(BMI270_POWER_SAVE_WRITE_US);
+    if (!writeReg(addr, BMI270_REG_INIT_CTRL, 0x00) || !uploadBmi270Config(addr) ||
+        !writeReg(addr, BMI270_REG_INIT_CTRL, 0x01)) {
+      return false;
+    }
+    bool ok = false;
+    for (int i = 0; i < BMI270_INIT_POLLS && !ok; ++i) {
+      delay(BMI270_INIT_POLL_MS);
+      ok = bmi270InitOk(addr);
+    }
+    if (!ok) return false;
+  }
+  if (!writeReg(addr, BMI270_REG_PWR_CONF, BMI270_PWR_CONF_ACTIVE)) return false;
+  delayMicroseconds(BMI270_POWER_SAVE_WRITE_US);
+  return writeReg(addr, BMI270_REG_ACC_CONF, BMI270_ACC_CONF_100HZ) &&
+         writeReg(addr, BMI270_REG_ACC_RANGE, BMI270_ACC_RANGE_2G) &&
+         writeReg(addr, BMI270_REG_GYR_CONF, BMI270_GYR_CONF_100HZ) &&
+         writeReg(addr, BMI270_REG_GYR_RANGE, BMI270_GYR_RANGE_500DPS) &&
+         writeReg(addr, BMI270_REG_PWR_CTRL, BMI270_PWR_CTRL_ACC_GYR);
+}
+
+bool powerDownBmi270(uint8_t addr) {
+  return writeReg(addr, BMI270_REG_PWR_CTRL, BMI270_PWR_CTRL_OFF) &&
+         writeReg(addr, BMI270_REG_PWR_CONF, BMI270_PWR_CONF_POWER_SAVE);
+}
+
 bool powerDownQmi8658(uint8_t addr) {
   // Do not short-circuit these writes: even if disabling the sensor engines
   // fails, still try to stop the internal oscillator. This is also used as the
@@ -157,6 +277,7 @@ bool powerDownQmi8658(uint8_t addr) {
 bool Imu::begin() {
   begun_ = false;
   sleeping_ = false;
+  configured_ = false;
   addr_ = 0;
 
   const auto& s = BoardConfig::ACTIVE.sensors;
@@ -217,6 +338,24 @@ bool Imu::begin() {
       delay(10);  // one 100 Hz sample period, also exceeds the 1 ms startup time
       break;
     }
+    case BoardConfig::ImuType::Bmi270: {
+      if (configuredAddr != BMI270_ADDR_68 && configuredAddr != BMI270_ADDR_69) return false;
+      const uint8_t alternate = configuredAddr == BMI270_ADDR_68 ? BMI270_ADDR_69 : BMI270_ADDR_68;
+      if (bmi270PresentAt(configuredAddr)) addr_ = configuredAddr;
+      else if (bmi270PresentAt(alternate)) addr_ = alternate;
+      else return false;
+      // Still configured (kept power across a host reset): sampling is a few
+      // register writes away. Otherwise defer the upload, see Imu.h.
+      if (bmi270InitOk(addr_)) {
+        if (!startBmi270(addr_)) {
+          powerDownBmi270(addr_);
+          addr_ = 0;
+          return false;
+        }
+        configured_ = true;
+      }
+      break;
+    }
     case BoardConfig::ImuType::None:
       return false;
   }
@@ -226,7 +365,8 @@ bool Imu::begin() {
 
 bool Imu::hasGyroscope() const {
   const auto type = BoardConfig::ACTIVE.sensors.imuType;
-  return begun_ && (type == BoardConfig::ImuType::Lsm6ds3 || type == BoardConfig::ImuType::Qmi8658);
+  return begun_ && (type == BoardConfig::ImuType::Lsm6ds3 || type == BoardConfig::ImuType::Qmi8658 ||
+                    type == BoardConfig::ImuType::Bmi270);
 }
 
 bool Imu::read(Sample& out) {
@@ -253,6 +393,16 @@ bool Imu::read(Sample& out) {
   } else if (s.imuType == BoardConfig::ImuType::Qmi8658) {
     if (!readRegs(addr, QMI8658_REG_GX_L, g, sizeof(g))) return false;
     if (!readRegs(addr, QMI8658_REG_AX_L, a, sizeof(a))) return false;
+  } else if (s.imuType == BoardConfig::ImuType::Bmi270) {
+    if (sleeping_) return false;
+    if (!configured_) {
+      if (!startBmi270(addr)) return false;
+      configured_ = true;
+    }
+    uint8_t raw[12] = {};
+    if (!readRegs(addr, BMI270_REG_DATA_8, raw, sizeof(raw))) return false;
+    std::memcpy(a, raw, sizeof(a));
+    std::memcpy(g, raw + sizeof(a), sizeof(g));
   } else {
     return false;
   }
@@ -264,8 +414,15 @@ bool Imu::read(Sample& out) {
   const int16_t ay = static_cast<int16_t>(a[2] | a[3] << 8);
   const int16_t az = static_cast<int16_t>(a[4] | a[5] << 8);
 
-  const float accelScale = s.imuType == BoardConfig::ImuType::Qmi8658 ? QMI8658_ACCEL_G_PER_LSB : ACCEL_G_PER_LSB;
-  const float gyroScale = s.imuType == BoardConfig::ImuType::Qmi8658 ? QMI8658_GYRO_DPS_PER_LSB : GYRO_DPS_PER_LSB;
+  float accelScale = ACCEL_G_PER_LSB;
+  float gyroScale = GYRO_DPS_PER_LSB;
+  if (s.imuType == BoardConfig::ImuType::Qmi8658) {
+    accelScale = QMI8658_ACCEL_G_PER_LSB;
+    gyroScale = QMI8658_GYRO_DPS_PER_LSB;
+  } else if (s.imuType == BoardConfig::ImuType::Bmi270) {
+    accelScale = BMI270_ACCEL_G_PER_LSB;
+    gyroScale = BMI270_GYRO_DPS_PER_LSB;
+  }
   out.ax = ax * accelScale;
   out.ay = ay * accelScale;
   out.az = az * accelScale;
@@ -308,6 +465,11 @@ bool Imu::sleep() {
       if (!writeReg(addr, SC7_CTRL1, SC7_POWER_DOWN)) return false;
       sleeping_ = true;
       return true;
+    case BoardConfig::ImuType::Bmi270:
+      // Not configured yet: still in its power-on suspend state.
+      if (configured_ && !powerDownBmi270(addr)) return false;
+      sleeping_ = true;
+      return true;
     case BoardConfig::ImuType::None:
       return false;
   }
@@ -327,6 +489,17 @@ bool Imu::wake() {
     case BoardConfig::ImuType::Sc7a20h:
       if (!writeReg(addr, SC7_CTRL1, SC7_100HZ)) return false;
       delay(10);
+      sleeping_ = false;
+      return true;
+    case BoardConfig::ImuType::Bmi270:
+      if (configured_) {
+        if (!writeReg(addr, BMI270_REG_PWR_CONF, BMI270_PWR_CONF_ACTIVE)) return false;
+        delayMicroseconds(BMI270_POWER_SAVE_WRITE_US);
+        if (!writeReg(addr, BMI270_REG_PWR_CTRL, BMI270_PWR_CTRL_ACC_GYR)) return false;
+      } else {
+        if (!startBmi270(addr)) return false;
+        configured_ = true;
+      }
       sleeping_ = false;
       return true;
     case BoardConfig::ImuType::None:

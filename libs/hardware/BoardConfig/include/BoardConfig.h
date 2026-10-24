@@ -358,7 +358,7 @@
 #ifndef FREEINK_CAP_IMU
 #define FREEINK_CAP_IMU \
   (FREEINK_DEVICE_X3 || FREEINK_DEVICE_STICKY || FREEINK_DEVICE_X4CLASSIC || FREEINK_DEVICE_WS397 || FREEINK_DEVICE_METALIO_EINK4 || \
-   FREEINK_DEVICE_PICCO)
+   FREEINK_DEVICE_PICCO || FREEINK_DEVICE_PAPERMONO)
 #endif
 // Consumer-triggered vibration output; independent of audio and input events.
 #ifndef FREEINK_CAP_HAPTIC
@@ -735,7 +735,7 @@ struct MicConfig {
 };
 
 enum class RtcType : uint8_t { None, Pcf8563, Ds3231, Rx8130, Pcf85063 };
-enum class ImuType : uint8_t { None, Lsm6ds3, Qmi8658, Sc7a20h };
+enum class ImuType : uint8_t { None, Lsm6ds3, Qmi8658, Sc7a20h, Bmi270 };
 
 // On-board I2C sensors sharing one bus (e.g. the Sticky's RTC + temp/humidity +
 // IMU on SDA1/SCL0, the same bus as its fuel gauge). Each addr is 0 when that
@@ -746,7 +746,7 @@ struct SensorsConfig {
   uint32_t i2cHz;
   uint8_t rtcAddr;           // PCF8563 = 0x51, DS3231 = 0x68; 0 = none
   uint8_t tempHumidityAddr;  // SHT40 = 0x44; 0 = none
-  uint8_t imuAddr;           // LSM6DS3TR-C = 0x6A, QMI8658 = 0x6B/0x6A; 0 = none
+  uint8_t imuAddr;           // LSM6DS3TR-C = 0x6A, QMI8658 = 0x6B/0x6A, BMI270 = 0x68/0x69; 0 = none
   uint8_t i2cBus = 0;        // 0 = Wire, 1 = Wire1 on multi-bus SoCs
   RtcType rtcType = RtcType::None;
   ImuType imuType = ImuType::None;
@@ -1176,7 +1176,11 @@ constexpr BoardProfile PAPER_MONO = {
     {13, 12, 11, 10, 9, 8, 4},
     NO_GAUGE,
     PAPER_MONO_MIC,
-    {47, 48, 100000, 0x32, 0, 0, 0, RtcType::Rx8130, ImuType::None},
+    // RX8130CE RTC at 0x32 and BMI270 IMU at 0x68 share the internal bus with
+    // the PM1, IOE1 and touch. The BMI270 sits rotated 180° against the
+    // X3-frame convention, so both tilt axes are flipped. Its INT1 reaches the
+    // PM1's GPIO4, not an ESP pin; it is not used here.
+    {47, 48, 100000, 0x32, 0, 0x68, 0, RtcType::Rx8130, ImuType::Bmi270, false, true, true},
     1.0f,  // uiScale: unchanged (was the struct default)
     {},    // power: none
     0,     // displayControllerVariant

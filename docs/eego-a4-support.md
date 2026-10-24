@@ -37,7 +37,7 @@ The original pin map and controller details came from stock-firmware analysis
 | MicroSD | dedicated **HSPI** bus: SCLK 39, MISO 40, MOSI 38, CS 47 · 20 MHz · power enable GPIO6 (active-low) |
 | Buttons | UP 5 and DOWN 7 active-low; POWER 8 active-high with INPUT_PULLDOWN |
 | Battery | **CW2015** fuel gauge at I²C 0x62 on SDA 2 / SCL 1 (shared with touch and RTC), probed at runtime; ADC GPIO 10 (divider ×1.559) when the gauge does not answer. Charge status GPIO 11 |
-| Touch | **GSLX680** — SDA 2, SCL 1, RST 3, addr 0x40. Firmware blob uploaded at boot (`gsl/EegoA4GslFirmware.h`, extracted + hash-verified); backend in InputManager. |
+| Touch | **GSLX680** — SDA 2, SCL 1, RST 3, addr 0x40. Firmware blob uploaded at boot (`gsl/EegoA4GslFirmware.h`, extracted + hash-verified); backend in InputManager, with a multi-touch snapshot mirroring the GT911 contract (track IDs from each record's high nibble, up to 4 stored / 5 reported contacts). |
 | Touch mapping | Calibration in `pollGslx680` returns panel-native X 0..767 / Y 0..551; profile swap/flip disabled |
 | Screen key | GSL sentinel `rawX=0x03a0, rawY=0x1020`; short press = Back, 700 ms hold = Home |
 | RTC | **PCF8563** at 0x51, on the **shared touch I2C bus** (SDA 2 / SCL 1), 400 kHz |
@@ -121,7 +121,9 @@ Build with `-DFREEINK_DEVICE_EEGO_A4=1`; see the `eego_a4` environment in
   phantom presses. Charge-status GPIO11 is active-high in the profile.
 - Validate GSLX680 touch on hardware: the firmware blob is byte-verified (SHA-256
   `076ac8…`) and the init/read sequence is RE-derived, but the
-  panel-native calibration needs a corner-tap check.
+  panel-native calibration needs a corner-tap check. Multi-finger frames (track
+  IDs, counts up to 5) are host-model-tested only — validate 2-/3-finger
+  reports on real glass.
 - Standby current with the GPIO4 latch + GPIO3-low sequence.
 - CW2015 on hardware: the stock profile and register sequence are recovered
   from stock V1.0.3 and match a live unit's resident profile byte for byte, but

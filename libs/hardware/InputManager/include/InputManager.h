@@ -90,11 +90,12 @@ class InputManager {
   };
 
   // Fixed-size contact snapshot for allocation-free multi-touch polling. `id`
-  // is the GT911 track ID when `idsStable` is true. Coordinate-only GT911
-  // frames expose frame-local record slots instead, so callers must not retain
-  // those IDs across frames. `count` is capped at MAX_TOUCH_CONTACTS;
-  // `reportedCount` keeps the controller's actual count so callers can detect
-  // truncation and opt into only the contact counts they support.
+  // is the controller's track ID (GT911, GSLX680) when `idsStable` is true.
+  // Coordinate-only GT911 frames expose frame-local record slots instead, so
+  // callers must not retain those IDs across frames. `count` is capped at
+  // MAX_TOUCH_CONTACTS; `reportedCount` keeps the controller's actual count
+  // so callers can detect truncation and opt into only the contact counts
+  // they support.
   static constexpr uint8_t MAX_TOUCH_CONTACTS = 4;
   struct MultiTouchPoint {
     uint8_t id;
@@ -109,11 +110,12 @@ class InputManager {
 
   // True if this board has a touch controller configured.
   bool hasTouch() const;
-  // True only while a GT911 controller is present. Other touch controllers
-  // retain their existing single-contact contract.
+  // True while a GT911 or GSLX680 controller is present. Other touch
+  // controllers retain their existing single-contact contract.
   bool supportsMultiTouch() const;
-  // Latest GT911 contacts, capped at MAX_TOUCH_CONTACTS. Gesture consumers
-  // should check reportedCount for the exact cardinality they support.
+  // Latest multi-touch contacts (GT911, GSLX680), capped at
+  // MAX_TOUCH_CONTACTS. Gesture consumers should check reportedCount for the
+  // exact cardinality they support.
   TouchSnapshot getTouchSnapshot() const;
   // The most recent touch sampled during #update(). valid == false when idle.
   TouchPoint getTouchPoint() const;

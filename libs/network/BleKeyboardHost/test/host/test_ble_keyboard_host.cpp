@@ -527,6 +527,323 @@ void testSelectedPeerThatDropsGetsAFreshPlan() {
   CHECK(attemptsAt(kRemote) == 0);
 }
 
+// --- Bonded pick (armBondedReconnect) ----------------------------------------------
+
+// Two bonded remotes, both off, the bonded pick armed; connects succeed again.
+void armPickWithTwoRemotesOff(freeink::PickPolicy policy, const char* priority) {
+  bondTwoRemotesThenSwitchThemOff();
+  fakeble::failConnects(false);
+  CHECK(host().armBondedReconnect(policy, priority));
+  pollOnce();
+}
+
+void testBondedPickTakesTheRemoteSwitchedOn() {
+  armPickWithTwoRemotesOff(freeink::PickPolicy::First, nullptr);
+  CHECK(host().isScanning());
+  CHECK(!fakeble::scanIsActive());                              // passive: no wait for a scan response
+  CHECK(fakeble::scanFiltersDuplicates());                      // one report per advertiser and scan
+  CHECK(attemptsAt(kRemote) + attemptsAt(kSecondRemote) == 0);  // nothing dialled blind
+  fakeble::advertise(kSecondRemote, "");
+  pollOnce();
+  CHECK(host().isConnected());
+  CHECK(std::strcmp(host().connectedAddr(), kSecondRemote) == 0);
+  CHECK(attemptsAt(kRemote) == 0);
+  CHECK(!host().isScanning());
+  CHECK(host().deviceCount() == 0);  // a bond heard here is not a pairing candidate
+}
+
+void testBondedPickIgnoresPeersThatAreNotBonded() {
+  armPickWithTwoRemotesOff(freeink::PickPolicy::First, nullptr);
+  fakeble::advertise("AA:BB:CC:DD:EE:99", "Keyboard");
+  pollOnce();
+  CHECK(!host().isConnected());
+  CHECK(fakeble::connectAddresses().size() == 2);
+  CHECK(host().deviceCount() == 0);
+}
+
+// The case reported with two remotes: the one used last is away, the other is on.
+void testBondedPickSwitchesToTheOtherRemoteAfterADrop() {
+  armPickWithTwoRemotesOff(freeink::PickPolicy::Priority, kRemote);
+  fakeble::advertise(kRemote, "");
+  pollOnce();
+  CHECK(std::strcmp(host().connectedAddr(), kRemote) == 0);
+  fakeble::peerDisconnect();
+  pollOnce();
+  CHECK(host().isScanning());
+  fakeble::advertise(kSecondRemote, "");
+  fakeble::advanceMillis(3000);
+  pollOnce();
+  CHECK(host().isConnected());
+  CHECK(std::strcmp(host().connectedAddr(), kSecondRemote) == 0);
+}
+
+void testPriorityWaitsForItsRemoteThenTakesAnother() {
+  armPickWithTwoRemotesOff(freeink::PickPolicy::Priority, kRemote);
+  fakeble::advertise(kSecondRemote, "");
+  pollOnce();
+  fakeble::advanceMillis(2999);
+  pollOnce();
+  CHECK(!host().isConnected());
+  fakeble::advanceMillis(1);
+  pollOnce();
+  CHECK(std::strcmp(host().connectedAddr(), kSecondRemote) == 0);
+
+  armPickWithTwoRemotesOff(freeink::PickPolicy::Priority, kRemote);
+  fakeble::advertise(kSecondRemote, "");
+  fakeble::advertise(kRemote, "");
+  pollOnce();
+  CHECK(std::strcmp(host().connectedAddr(), kRemote) == 0);
+  CHECK(attemptsAt(kSecondRemote) == 0);
+}
+
+void testBondedPickWaitsAfterAFailedConnect() {
+  armPickWithTwoRemotesOff(freeink::PickPolicy::First, nullptr);
+  fakeble::failConnects(true);
+  fakeble::advertise(kRemote, "");
+  pollOnce();
+  CHECK(attemptsAt(kRemote) == 1);
+  pollOnce();
+  fakeble::advertise(kRemote, "");
+  fakeble::advanceMillis(3999);
+  pollOnce();
+  CHECK(attemptsAt(kRemote) == 1);
+  fakeble::advertise(kRemote, "");
+  fakeble::advanceMillis(1);
+  pollOnce();
+  CHECK(attemptsAt(kRemote) == 2);
+}
+
+// A remote that fails to connect is not kept as the pick: the other one can win next.
+void testBondedPickMovesOnFromARemoteThatFailed() {
+  armPickWithTwoRemotesOff(freeink::PickPolicy::First, nullptr);
+  fakeble::failConnects(true);
+  fakeble::advertise(kRemote, "");
+  pollOnce();
+  CHECK(attemptsAt(kRemote) == 1);
+  fakeble::failConnects(false);
+  pollOnce();
+  fakeble::advertise(kSecondRemote, "");
+  fakeble::advanceMillis(4000);
+  pollOnce();
+  CHECK(std::strcmp(host().connectedAddr(), kSecondRemote) == 0);
+}
+
+// A bond that keeps failing (its side lost the keys) is dropped for the window, so it
+// cannot starve the remote that works.
+void testBondedPickDropsARemoteThatFailsTwice() {
+  armPickWithTwoRemotesOff(freeink::PickPolicy::First, nullptr);
+  fakeble::failSecurity(true);
+  for (int i = 0; i < 2; ++i) {
+    fakeble::advertise(kRemote, "");
+    pollOnce();
+    pollOnce();
+    fakeble::advanceMillis(4000);
+  }
+  CHECK(attemptsAt(kRemote) == 2);
+  // The other remote is heard (its connect times out, which does not count).
+  fakeble::failSecurity(false);
+  fakeble::failConnects(true);
+  fakeble::advertise(kSecondRemote, "");
+  pollOnce();
+  pollOnce();
+  CHECK(attemptsAt(kSecondRemote) == 1);
+  fakeble::failConnects(false);
+  fakeble::advanceMillis(4000);
+  fakeble::advertise(kRemote, "");
+  pollOnce();
+  CHECK(attemptsAt(kRemote) == 2);  // skipped: another remote is around
+  fakeble::advertise(kSecondRemote, "");
+  pollOnce();
+  CHECK(std::strcmp(host().connectedAddr(), kSecondRemote) == 0);
+  // A fresh window (after this link drops) gives the first remote its turns back.
+  fakeble::peerDisconnect();
+  pollOnce();
+  fakeble::advertise(kRemote, "");
+  pollOnce();
+  CHECK(std::strcmp(host().connectedAddr(), kRemote) == 0);
+}
+
+// With no other remote heard, the one that failed keeps its turns: skipping it would
+// only leave nothing to connect.
+void testTheOnlyRemoteHeardIsNotSkipped() {
+  armPickWithTwoRemotesOff(freeink::PickPolicy::First, nullptr);
+  fakeble::failSecurity(true);
+  for (int i = 0; i < 2; ++i) {
+    fakeble::advertise(kRemote, "");
+    pollOnce();
+    pollOnce();
+    fakeble::advanceMillis(4000);
+  }
+  fakeble::failSecurity(false);
+  fakeble::advertise(kRemote, "");
+  pollOnce();
+  CHECK(attemptsAt(kRemote) == 3);
+  CHECK(std::strcmp(host().connectedAddr(), kRemote) == 0);
+}
+
+// Connect timeouts (a remote still waking, or busy with a phone) do not shut out the
+// only remote: it keeps its turns.
+void testConnectTimeoutsDoNotShutOutARemote() {
+  armPickWithTwoRemotesOff(freeink::PickPolicy::First, nullptr);
+  fakeble::failConnects(true);
+  for (int i = 0; i < 3; ++i) {
+    fakeble::advertise(kRemote, "");
+    pollOnce();
+    pollOnce();
+    fakeble::advanceMillis(4000);
+  }
+  fakeble::failConnects(false);
+  fakeble::advertise(kRemote, "");
+  pollOnce();
+  CHECK(attemptsAt(kRemote) == 4);
+  CHECK(std::strcmp(host().connectedAddr(), kRemote) == 0);
+}
+
+// A refused plan leaves the bonded pick armed.
+void testRefusedSelectedPlanKeepsTheBondedPick() {
+  armPickWithTwoRemotesOff(freeink::PickPolicy::First, nullptr);
+  CHECK(!host().armSelectedPeerReconnect("AA:BB:CC:DD:EE:99"));  // not bonded
+  CHECK(host().isScanning());
+  fakeble::advertise(kSecondRemote, "");
+  pollOnce();
+  CHECK(std::strcmp(host().connectedAddr(), kSecondRemote) == 0);
+}
+
+void testSavedBondIsReadWithoutTheRadio() {
+  fakeble::resetWorld();
+  freeink::PairedHidDevice dev;
+  CHECK(!host().firstSavedBond(dev));
+  bondTwoRemotesThenSwitchThemOff();
+  CHECK(host().end());
+  CHECK(host().firstSavedBond(dev));
+  CHECK(std::strcmp(dev.addr, kRemote) == 0);
+  CHECK(fakeble::beginHost());
+  host().forget(kRemote);
+  CHECK(host().firstSavedBond(dev));
+  CHECK(std::strcmp(dev.addr, kSecondRemote) == 0);
+}
+
+void testBondedPickIsRefusedOrCancelled() {
+  fakeble::resetWorld();
+  CHECK(!host().armBondedReconnect(freeink::PickPolicy::First, nullptr));  // before begin()
+  CHECK(fakeble::beginHost());
+  CHECK(!host().armBondedReconnect(freeink::PickPolicy::First, nullptr));  // no bonds
+
+  // Refused during the app's own scan, which it does not take over.
+  bondTwoRemotesThenSwitchThemOff();
+  host().startScan(1000);
+  CHECK(!host().armBondedReconnect(freeink::PickPolicy::First, nullptr));
+  fakeble::advertise(kRemote, "Remote");
+  CHECK(host().deviceCount() == 1);
+  host().stopScan();
+
+  // A scan the app starts is a pairing scan again.
+  armPickWithTwoRemotesOff(freeink::PickPolicy::First, nullptr);
+  host().startScan(1000);
+  CHECK(fakeble::scanIsActive());
+  CHECK(!fakeble::scanFiltersDuplicates());  // names ride in later reports
+  fakeble::advertise(kRemote, "Remote");
+  pollOnce();
+  CHECK(!host().isConnected());
+  CHECK(host().deviceCount() == 1);
+
+  armPickWithTwoRemotesOff(freeink::PickPolicy::First, nullptr);
+  host().disconnect();
+  pollOnce();
+  CHECK(!host().isScanning());
+
+  armPickWithTwoRemotesOff(freeink::PickPolicy::First, nullptr);
+  CHECK(host().end());
+  CHECK(fakeble::beginHost());
+  pollOnce();
+  CHECK(!host().isScanning());
+}
+
+void testBondedPickSkipsABondThatCannotConnect() {
+  armPickWithTwoRemotesOff(freeink::PickPolicy::First, nullptr);
+  fakeble::advertise(kRemote, "", /*connectable=*/false);
+  pollOnce();
+  CHECK(!host().isConnected());
+  CHECK(fakeble::connectAddresses().size() == 2);
+}
+
+void testBondedPickScansAgainOnlyInsideItsWindow() {
+  armPickWithTwoRemotesOff(freeink::PickPolicy::First, nullptr);
+  fakeble::endScan();
+  pollOnce();
+  CHECK(host().isScanning());  // a timed-out scan starts again
+  fakeble::advanceMillis(120000);
+  fakeble::endScan();
+  pollOnce();
+  CHECK(!host().isScanning());  // no scan after the window: the app's idle stop can run
+  fakeble::advertise(kRemote, "");
+  pollOnce();
+  CHECK(!host().isConnected());
+}
+
+void testBondedPickDropOpensAFreshWindow() {
+  armPickWithTwoRemotesOff(freeink::PickPolicy::First, nullptr);
+  fakeble::advertise(kRemote, "");
+  pollOnce();
+  CHECK(host().isConnected());
+  fakeble::advanceMillis(200000);
+  fakeble::peerDisconnect();
+  pollOnce();
+  CHECK(host().isScanning());
+}
+
+void testBondedPickArmedWhileLinkedWaitsForTheDrop() {
+  bondTwoRemotesThenSwitchThemOff();
+  fakeble::failConnects(false);
+  CHECK(fakeble::connectTo(kRemote));
+  const size_t dialled = fakeble::connectAddresses().size();
+  CHECK(host().armBondedReconnect(freeink::PickPolicy::First, nullptr));
+  pollOnce();
+  CHECK(!host().isScanning());
+  CHECK(fakeble::connectAddresses().size() == dialled);
+  fakeble::peerDisconnect();
+  pollOnce();
+  CHECK(host().isScanning());
+  fakeble::advertise(kSecondRemote, "");
+  pollOnce();
+  CHECK(std::strcmp(host().connectedAddr(), kSecondRemote) == 0);
+}
+
+void testForgetWhileBondedPickWaits() {
+  armPickWithTwoRemotesOff(freeink::PickPolicy::Priority, kRemote);
+  fakeble::advertise(kSecondRemote, "");
+  host().forget(kSecondRemote);
+  fakeble::advanceMillis(3000);
+  pollOnce();
+  CHECK(!host().isConnected());  // the forgotten remote is not dialled
+  CHECK(fakeble::connectAddresses().size() == 2);
+
+  // Forgetting the priority remote leaves the pick as First.
+  armPickWithTwoRemotesOff(freeink::PickPolicy::Priority, kRemote);
+  host().forget(kRemote);
+  fakeble::advertise(kSecondRemote, "");
+  pollOnce();
+  CHECK(std::strcmp(host().connectedAddr(), kSecondRemote) == 0);
+}
+
+void testPriorityThatIsNotBondedActsAsFirst() {
+  armPickWithTwoRemotesOff(freeink::PickPolicy::Priority, "AA:BB:CC:DD:EE:99");
+  fakeble::advertise(kSecondRemote, "");
+  pollOnce();
+  CHECK(std::strcmp(host().connectedAddr(), kSecondRemote) == 0);
+}
+
+void testSelectedPlanAndBondedPickReplaceEachOther() {
+  armPickWithTwoRemotesOff(freeink::PickPolicy::First, nullptr);
+  CHECK(host().isScanning());
+  CHECK(host().armSelectedPeerReconnect(kSecondRemote));  // its own scan does not refuse it
+  CHECK(!host().isScanning());
+  fakeble::advertise(kRemote, "");
+  pollOnce();
+  CHECK(attemptsAt(kRemote) == 0);
+  CHECK(attemptsAt(kSecondRemote) == 1);
+}
+
 // --- Raw button edges ------------------------------------------------------------
 
 // A remote with no readable Report Map and one Input report declaring `reportId`.
@@ -838,6 +1155,25 @@ int main() {
   testArmIsRefusedWhenItCannotApply();
   testConnectAndDisconnectCancelThePlan();
   testSelectedPeerThatDropsGetsAFreshPlan();
+  testBondedPickTakesTheRemoteSwitchedOn();
+  testBondedPickIgnoresPeersThatAreNotBonded();
+  testBondedPickSwitchesToTheOtherRemoteAfterADrop();
+  testPriorityWaitsForItsRemoteThenTakesAnother();
+  testBondedPickWaitsAfterAFailedConnect();
+  testBondedPickMovesOnFromARemoteThatFailed();
+  testBondedPickDropsARemoteThatFailsTwice();
+  testTheOnlyRemoteHeardIsNotSkipped();
+  testConnectTimeoutsDoNotShutOutARemote();
+  testRefusedSelectedPlanKeepsTheBondedPick();
+  testSavedBondIsReadWithoutTheRadio();
+  testBondedPickIsRefusedOrCancelled();
+  testBondedPickSkipsABondThatCannotConnect();
+  testBondedPickScansAgainOnlyInsideItsWindow();
+  testBondedPickDropOpensAFreshWindow();
+  testBondedPickArmedWhileLinkedWaitsForTheDrop();
+  testForgetWhileBondedPickWaits();
+  testPriorityThatIsNotBondedActsAsFirst();
+  testSelectedPlanAndBondedPickReplaceEachOther();
   testRawEdgeNamesTheReportAndTheByte();
   testKeyboardModifierByteIsNotTheButton();
   testBareKeyArrayReadsByteZeroAsAKey();

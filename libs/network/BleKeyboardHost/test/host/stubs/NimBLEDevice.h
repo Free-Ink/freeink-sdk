@@ -156,12 +156,13 @@ class NimBLEAdvertisedDevice {
   bool haveAppearance() const { return false; }
   uint16_t getAppearance() const { return 0; }
   bool isAdvertisingService(const NimBLEUUID& uuid) const { return uuid.value16() == 0x1812; }
-  bool isConnectable() const { return true; }
+  bool isConnectable() const { return connectable_; }
 
  private:
   NimBLEAddress address_;
   std::string name_;
   int rssi_ = -60;
+  bool connectable_ = true;
   friend struct fakeble::FakeState;
 };
 
@@ -177,16 +178,21 @@ class NimBLEScan {
  public:
   void setScanCallbacks(NimBLEScanCallbacks* callbacks, bool wantDuplicates = false);
   void setActiveScan(bool active);
+  void setDuplicateFilter(uint8_t enabled) { duplicateFilter_ = enabled != 0; }
   void setInterval(uint16_t intervalMs);
   void setWindow(uint16_t windowMs);
   void setMaxResults(uint8_t maxResults);
   bool start(uint32_t durationMs, bool isContinue = false, bool restart = true);
   bool isScanning() const;
+  bool isActiveScan() const { return active_; }                // fake only
+  bool filtersDuplicates() const { return duplicateFilter_; }  // fake only
   bool stop();
   void clearResults();
 
  private:
   bool scanning_ = false;
+  bool active_ = false;
+  bool duplicateFilter_ = false;
   NimBLEScanCallbacks* callbacks_ = nullptr;
   uint8_t maxResults_ = 0xFF;
   std::vector<std::string> retained_;

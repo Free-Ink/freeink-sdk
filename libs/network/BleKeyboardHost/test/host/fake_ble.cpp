@@ -181,6 +181,7 @@ struct FakeState {
   size_t connectCalls = 0;
   std::vector<std::string> connectAddresses;
   bool failConnects = false;
+  bool failSecurity = false;
   std::vector<std::unique_ptr<NimBLERemoteCharacteristic>> owned;
   std::vector<NimBLERemoteCharacteristic*> chars;
   NimBLERemoteService service;
@@ -241,7 +242,7 @@ struct FakeState {
     if (client->callbacks_ != nullptr) client->callbacks_->onDisconnect(client, 0x08);
   }
 
-  void advertise(const char* addr, const char* name) {
+  void advertise(const char* addr, const char* name, bool connectable) {
     if (!scan.scanning_ || scan.callbacks_ == nullptr) return;
     if (scan.maxResults_ != 0 &&
         std::find(scan.retained_.begin(), scan.retained_.end(), addr) == scan.retained_.end()) {
@@ -250,6 +251,7 @@ struct FakeState {
     NimBLEAdvertisedDevice dev;
     dev.address_ = NimBLEAddress(std::string(addr), 0);
     dev.name_ = name;
+    dev.connectable_ = connectable;
     scan.callbacks_->onResult(&dev);
   }
 
@@ -272,6 +274,7 @@ struct FakeState {
     connectCalls = 0;
     connectAddresses.clear();
     failConnects = false;
+    failSecurity = false;
     delete client;
     client = nullptr;
     scan = NimBLEScan();
@@ -337,7 +340,10 @@ int addInputReport(uint8_t reportId) { return state().addInput(reportId); }
 void setValue(int index, const uint8_t* data, size_t len) { state().set(index, data, len); }
 bool notify(int index, const uint8_t* data, size_t len) { return state().notify(index, data, len); }
 
-void advertise(const char* addr, const char* name) { state().advertise(addr, name); }
+void advertise(const char* addr, const char* name, bool connectable) { state().advertise(addr, name, connectable); }
+void endScan() { state().scan.stop(); }
+bool scanIsActive() { return state().scan.isActiveScan(); }
+bool scanFiltersDuplicates() { return state().scan.filtersDuplicates(); }
 size_t retainedScanResults() { return state().retained(); }
 
 void holdAt(Stage stage) {
@@ -375,6 +381,7 @@ bool taskDeletedWhileHeld() { return g_deletedWhileHeld; }
 size_t connectCalls() { return state().connectCalls; }
 std::vector<std::string> connectAddresses() { return state().connectAddresses; }
 void failConnects(bool fail) { state().failConnects = fail; }
+void failSecurity(bool fail) { state().failSecurity = fail; }
 void failServiceSearchByUuid(bool fail) { state().uuidSearchFails = fail; }
 unsigned long clockMs() { return g_clockMs.load(); }
 void advanceMillis(uint32_t ms) { g_clockMs += ms; }
@@ -435,7 +442,7 @@ bool NimBLEClient::disconnect() {
 
 bool NimBLEClient::isConnected() const { return connected_; }
 
-bool NimBLEClient::secureConnection() { return !holdHere(Stage::Security); }
+bool NimBLEClient::secureConnection() { return !holdHere(Stage::Security) && !state().failSecurity; }
 
 bool NimBLEClient::cancelConnect() {
   releaseHeld(true);
@@ -468,7 +475,7 @@ void NimBLEClient::setConnectionParams(uint16_t, uint16_t, uint16_t, uint16_t) {
 void NimBLEClient::setClientCallbacks(NimBLEClientCallbacks* callbacks, bool) { callbacks_ = callbacks; }
 
 void NimBLEScan::setScanCallbacks(NimBLEScanCallbacks* callbacks, bool) { callbacks_ = callbacks; }
-void NimBLEScan::setActiveScan(bool) {}
+void NimBLEScan::setActiveScan(bool active) { active_ = active; }
 void NimBLEScan::setInterval(uint16_t) {}
 void NimBLEScan::setWindow(uint16_t) {}
 void NimBLEScan::setMaxResults(uint8_t maxResults) { maxResults_ = maxResults; }
@@ -586,8 +593,9 @@ uint8_t Preferences::getUChar(const char* key, uint8_t defaultValue) {
 
 size_t Preferences::getBytes(const char* key, void* buf, size_t maxLen) {
   const auto it = state().nvs.find(ns_ + "/" + key);
-  if (it == state().nvs.end() || buf == nullptr) return 0;
-  const size_t len = std::min(maxLen, it->second.size());
+  // Like the ESP32 Preferences: a buffer smaller than the stored value reads nothing.
+  if (it == state().nvs.end() || buf == nullptr || maxLen < it->second.size()) return 0;
+  const size_t len = it->second.size();
   std::memcpy(buf, it->second.data(), len);
   return len;
 }

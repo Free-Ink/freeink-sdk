@@ -92,8 +92,8 @@ inline uint8_t gray4(uint8_t base, uint8_t lsb, uint8_t msb, uint8_t mask) {
 }
 
 // The same pixel as a 2bpp level, 3/2/1/0 -- exactly gray4()'s four values if
-// the controller expands v to v*5. The IT8951E on the eMinimal bench expands
-// v<<2 (white = 0xC, grey), which is why It8951LoadDepth::Bpp2 is off there.
+// the controller expands v to v*5. The IT8951E on e-Minimal expands v<<2
+// (white = 0xC, grey), which is why It8951LoadDepth::Bpp2 is off there.
 inline uint8_t gray2(uint8_t base, uint8_t lsb, uint8_t msb, uint8_t mask) {
   if (base & mask) return 3;  // white
   const bool l = lsb & mask, m = msb & mask;
@@ -627,7 +627,7 @@ void It8951Driver::begin(EpdBus& bus) {
   waitReady();
   // SYS_RUN before anything else. deepSleep() leaves the controller in CMD_SLEEP,
   // and on boards whose IT8951 rail is not switched and whose RST is unassigned
-  // (eMinimal bench: HAT 5V straight off the devkit) it stays there across the
+  // (e-Minimal: HAT 5V straight off the devkit) it stays there across the
   // host's deep-sleep wake and even an EN reset — GET_DEV_INFO then reads nothing
   // (the fallback geometry hides it), every wait returns instantly and the glass
   // never changes until a power cycle. Only SYS_RUN wakes it; on a running
@@ -653,7 +653,7 @@ void It8951Driver::begin(EpdBus& bus) {
   if (esp_reset_reason() == ESP_RST_DEEPSLEEP && _cfg.wakeScrub != It8951WakeScrub::None) {
     // Waking with the sleep cover on the glass: INIT alone leaves faint
     // residue of dark art (most visible in dithered fields, and confirmed on
-    // eMinimal's glass too). Drive the pigment through a second pass: an
+    // e-Minimal's glass too). Drive the pigment through a second pass: an
     // explicit white GC16 between two INIT passes (the default), or just a
     // second INIT where the config says that is enough. Cold boots skip the
     // cost. _base is scratch here; the first display() re-snapshots it.
@@ -758,7 +758,8 @@ void It8951Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, 
   // coordinates and DPY_AREA takes panel ones). An empty box means the memory
   // is already right.
   uint16_t xb0 = 0, xb1 = 0, y0 = 0, y1 = 0;
-  const bool canDiff = _memMirrorsBase && _base && fb && _rotation == 0 && _panelW == _fbW && _panelH == _fbH;
+  const bool canDiff =
+      _memMirrorsBase && _base && fb && fb != _base && _rotation == 0 && _panelW == _fbW && _panelH == _fbH;
   const bool haveBox = canDiff && diffBox(fb, xb0, xb1, y0, y1);
   const bool unchanged = canDiff && !haveBox;
   const bool wholeFrame = !haveBox || (xb0 == 0 && xb1 == _fbWb - 1 && y0 == 0 && y1 == _fbH - 1);
@@ -772,12 +773,16 @@ void It8951Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, 
   // from a book" looked like. The planes are still buffered, so this is known
   // before the load, and such a refresh is promoted to GC16 on the box.
   const bool grayInBox = haveBox && _memHasGray && grayWithin(xb0, xb1, y0, y1);
+  // A clear the host asked for, or that the driver owes (first paint, wake from
+  // standby), resyncs everything. The others only need the box loaded.
+  const bool requestedClear = (mode != RefreshMode::Fast) || !_running || _firstPaintPending;
 
   // What this refresh is, and what it counts toward the periodic ghost-clear:
   //  - unchanged: nothing driven, counts nothing;
   //  - a partial box over B/W (a menu highlight move): DU on the box, counts
   //    nothing (residue there is mild and the next screen change clears it);
-  //  - gray under the box: GC16 on the box; a whole-frame one is a full clear;
+  //  - gray under the box: GC16 on the box, unless a clear is requested anyway;
+  //    a whole-frame one is a full clear;
   //  - a large box (a screen change): DU, one frame's worth -- or GC16 if
   //    menu moves have left residue behind (dirty), which also resets it.
   bool forceClear = false, boxClear = false;
@@ -786,19 +791,21 @@ void It8951Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, 
     weight = 0;
   } else if (grayInBox) {
     forceClear = true;
-    boxClear = !largeBox;
+    boxClear = !largeBox && !requestedClear;
   } else if (!largeBox) {
     weight = 0;
   } else if (_dirtyValid) {
     forceClear = true;
   }
-  // A clear the host asked for, or that the driver owes (first paint, wake from
-  // standby), resyncs everything. The others only need the box loaded.
-  const bool requestedClear = (mode != RefreshMode::Fast) || !_running || _firstPaintPending;
-  // A box-only GC16 leaves residue elsewhere, so it does not count as a clear
-  // for the periodic cadence; it just takes the clearing waveform on its box.
-  uint16_t dpyMode = resolveMode(mode, _cfg.fastMode, boxClear ? 0 : weight, forceClear && !boxClear);
-  if (boxClear) dpyMode = _cfg.fullMode;
+  // A box-only GC16 leaves residue elsewhere: it is not a clear for the periodic
+  // cadence and must not consume one that is due, so it bypasses resolveMode().
+  uint16_t dpyMode;
+  if (boxClear) {
+    dpyMode = _cfg.fullMode;
+    _lastClear = false;
+  } else {
+    dpyMode = resolveMode(mode, _cfg.fastMode, weight, forceClear);
+  }
 
 #ifdef IT8951_PROBE_DEBUG
   if (Serial)
@@ -808,7 +815,9 @@ void It8951Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, 
 
   // Snapshot this B/W frame: the consumer clears the live framebuffer during its
   // grayscale strip pass, so displayGray() needs this copy as the true base.
-  if (_base && fb) memcpy(_base, fb, static_cast<size_t>(_fbWb) * _fbH);
+  // (cleanupGrayscaleBuffers() and deepSleep() flush a staged base by passing
+  // the snapshot itself.)
+  if (_base && fb && fb != _base) memcpy(_base, fb, static_cast<size_t>(_fbWb) * _fbH);
 
   if (boxClear) {
     loadImageBand(fb, y0, y1);
@@ -864,12 +873,13 @@ void It8951Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, 
   }
 }
 
-// Combined base: nothing goes to the panel here. Snapshot the B/W frame and the
-// refresh the host wanted for it; displayGray() folds the planes in and drives
-// the glass once. If there is no snapshot buffer, fall back to a plain display so
-// the page still appears (the gray pass then re-refreshes, as before).
+// Separate base: a plain display(). Combined base: nothing goes to the panel
+// here. Snapshot the B/W frame and the refresh the host wanted for it;
+// displayGray() folds the planes in and drives the glass once. If there is no
+// snapshot buffer, fall back to a plain display so the page still appears (the
+// gray pass then re-refreshes, as in Separate).
 void It8951Driver::displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, RefreshMode fallback, bool turnOff) {
-  if (!_base || !fb) {
+  if (!_cfg.combinedGray || !_base || !fb) {
     display(bus, fb, nullptr, fallback, turnOff);
     return;
   }
@@ -881,7 +891,11 @@ void It8951Driver::displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, RefreshM
 }
 
 void It8951Driver::deepSleep(EpdBus& bus) {
-  (void)bus;
+  // A base still staged (the gray pass never ran) goes up as plain B/W first.
+  if (_baseStaged) {
+    _baseStaged = false;
+    display(bus, _base, nullptr, _stagedMode, false);
+  }
   waitDisplayReady();
   writeCommand(CMD_SLEEP);
   _running = false;
@@ -953,11 +967,12 @@ void It8951Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, con
 #ifdef IT8951_TIMING_LOG
   printTiming("displayGray", tEntry, gmode);
 #endif
-  // A whole-frame GC16 leaves nothing to clear; a DU4 page leaves the whole
-  // frame for the next periodic clear.
+  // A whole-frame GC16 leaves nothing to clear. With combinedGray a DU4 page was
+  // the page's only drive, so its residue covers the whole frame and the next
+  // B/W screen change is promoted to a clear (see display()).
   if (gmode == _cfg.fullMode) {
     _dirtyValid = false;
-  } else {
+  } else if (_cfg.combinedGray) {
     dirtyUnion(0, static_cast<uint16_t>(_fbWb - 1), 0, static_cast<uint16_t>(_fbH - 1));
   }
   if (turnOff) {
@@ -970,8 +985,8 @@ void It8951Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, con
 // One line per refresh: the bytes pushed and how long the push took, the
 // waveform that ran and what the rest of the call cost (the refresh itself,
 // plus any wait for a refresh still running on entry), and the format the
-// frame memory holds afterwards. What the bench reads to put a number on a
-// page turn or a menu move; the host's own "Page render" line brackets it.
+// frame memory holds afterwards: what it costs to put up a page turn or a
+// menu move.
 void It8951Driver::printTiming(const char* what, uint32_t t0Us, uint16_t dpyMode) {
   if (!Serial) return;
   const uint32_t totalUs = micros() - t0Us;
@@ -1010,8 +1025,9 @@ static const It8951Config& it8951ActiveConfig() { return eminimal78It8951Config(
 static const It8951Config& it8951ActiveConfig() { return it8951DefaultConfig(); }
 #endif
 
-// Picture pages (XTC reader): after a dark page, a second GC16 over the new
-// page, from what the frame memory already holds -- no reload (~0.55 s).
+// A second GC16 over what the frame memory already holds -- no reload (~0.55 s
+// on a 1872x1404 panel). For a page whose predecessor was dark enough that one
+// clearing pass leaves its shadow.
 void It8951Driver::repeatLastRefresh(EpdBus& bus) {
   (void)bus;
   if (!_running) return;

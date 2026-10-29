@@ -10,28 +10,27 @@ constexpr uint16_t IT8951_ROTATE_AUTO = 0xFF;
 
 // How begin() clears the glass when the host wakes from deep sleep with the
 // sleep cover still showing. Every boot starts with one INIT; this is what
-// follows it. Judge on real pages: the residue is a faint shadow of the cover
-// in the white margins after a wake, and a torture-pattern result (eMinimal's
-// M841 glass cleared a checkerboard in one INIT at G2) does not predict it —
-// the cover ghosted after a single INIT on the same glass.
+// follows it. The residue is a faint shadow of the cover in the white margins
+// after a wake, and a test pattern does not predict it: e-Minimal's M841 glass
+// cleared a checkerboard in one INIT, yet the cover ghosted after a single INIT.
 enum class It8951WakeScrub : uint8_t {
   WhiteGc16AndInit = 0,  // + white GC16 (a full-frame push) + INIT. Default; M5Paper.
-  SecondInit,            // + INIT. Two passes without the push. Ghosted on eMinimal:
+  SecondInit,            // + INIT. Two passes without the push. Ghosted on e-Minimal:
                          // the white GC16 is the pass that clears, not the INIT.
-  None,                  // the boot INIT only. Cheapest; ghosted on eMinimal.
+  None,                  // the boot INIT only. Cheapest; ghosted on e-Minimal.
   WhiteGc16,             // + white GC16, no trailing INIT.
 };
 
 // Pixel depth of the image loads. The host's frames only ever carry four
 // levels -- black, dark (0x5), light (0xA), white -- so 2bpp would be lossless
 // if the controller expanded a 2-bit value v to the 4-bit v*5, and it halves
-// the bytes on the wire: 1.31 MB -> 657 KB per full frame. Measured on the
-// eMinimal 7.8" (IT8951E, LUT M841) 2026-09-18: it expands v<<2 -- white lands
-// at 0xC, every page background comes up grey and a "white" GC16 ghosts. That
-// is the chip, not the firmware: the datasheet (V0.2.4.3 fig. 7-16) stores the
-// input bits in the top of an 8-bit pixel and zero-pads, for every depth below
-// 8bpp. Only 4bpp and 8bpp reach 0xF. 2bpp is kept for a controller that maps
-// it differently; do not enable without judging a page on glass.
+// the bytes on the wire: 1.31 MB -> 657 KB per full frame. The IT8951E on the
+// e-Minimal 7.8" (LUT M841) expands v<<2 instead: white lands at 0xC, every
+// page background comes up grey and a "white" GC16 ghosts. That is the chip,
+// not the firmware: the datasheet (V0.2.4.3 fig. 7-16) stores the input bits in
+// the top of an 8-bit pixel and zero-pads, for every depth below 8bpp. Only
+// 4bpp and 8bpp reach 0xF. 2bpp is kept for a controller that maps it
+// differently; it is untested anywhere it would be correct.
 //
 // The lever that does work is the IT8951's 1bpp BITMAP mode: the frame memory
 // holds one bit per pixel and the display engine paints the two levels from a
@@ -86,6 +85,17 @@ struct It8951Config {
                                 // Reads (device info, registers, HRDY-paced words)
                                 // are what fail first on long MISO runs, so a board
                                 // can push frames faster than it can talk.
+  bool combinedGray;            // anti-aliased pages as one load and one refresh.
+                                // false (value-initialised; M5Paper): the host
+                                // displays the B/W page, then the gray pass loads
+                                // base + planes again and refines the edges with
+                                // grayMode. true: advertise GrayscaleBase::Combined,
+                                // so the base is only staged and the gray pass is
+                                // the page's single refresh -- and because that
+                                // grayMode page is then the only drive the glass
+                                // got, the next B/W screen change is a clear
+                                // (fullMode) instead of fastMode. Validated on
+                                // e-Minimal 7.8" only.
 };
 
 }  // namespace freeink

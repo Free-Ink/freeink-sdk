@@ -192,8 +192,8 @@
 // M5Paper v1.1: ED047TC1 behind an IT8951E timing controller (its own framebuffer
 // SRAM, 16-bit-word SPI with MISO reads). The driver owns its SPI end to end.
 // e-Minimal 7.8" joins M5Paper here: the panel sits behind the same IT8951E
-// timing controller. This is the FIRST S3 target upstream to enable this driver —
-// every other S3 board drives its panel directly. See the porting note on
+// timing controller. It is the first S3 target on this driver; every other S3
+// board drives its panel directly. See the porting note on
 // EMINIMAL_78 below.
 #if FREEINK_DEVICE_M5PAPER || FREEINK_DEVICE_EMINIMAL
 #define FREEINK_DRIVER_IT8951 1
@@ -1507,9 +1507,9 @@ constexpr BoardProfile M5PAPER_V11 = {
 // driver body is plain Arduino SPIClass (beginTransaction / transfer16 /
 // writeBytes) and needed no MCU-specific change.
 //
-// PINS CONFIRMED ON THE BENCH (G2, 2026-09-18): GET_DEV_INFO reads 1872x1404,
-// full frames load and every waveform mode refreshes the glass on this wiring
-// at 10 MHz (13.3 clean too; 16 marginal on jumpers; 20 corrupts long reads).
+// Pins confirmed on hardware: GET_DEV_INFO reads 1872x1404, full frames load
+// and every waveform mode refreshes the glass on this wiring at 10 MHz (13.3
+// clean too; 16 marginal on jumpers; 20 corrupts long reads).
 // GPIO 33-37 are octal PSRAM on an N16R8 and must stay clear -- they are free
 // on an N8 part, which is why generic S3 pinouts recommend them.
 constexpr BoardProfile EMINIMAL_78 = {
@@ -1524,7 +1524,7 @@ constexpr BoardProfile EMINIMAL_78 = {
     // No RST: M5Paper leaves it unassigned too; wire it only if hard recovery needs it.
     {14, 16, 18, PIN_UNASSIGNED, PIN_UNASSIGNED, 38, 39},
     0,  // displaySpiHz: unused by It8951Driver, which owns its SPI and takes the
-        // clock from It8951Config.spiHz (10 MHz, swept at G2).
+        // clock from It8951Config.spiHz.
     // SdPins bus entries unused — the card is on SDMMC below; kept unassigned so
     // a stray SPI mount cannot half-work and confuse the diagnosis. The entry is
     // retained for powerEnable=GPIO21, which the SDMMC mount path drives: a PNP
@@ -1534,37 +1534,31 @@ constexpr BoardProfile EMINIMAL_78 = {
     // the sleep path parks it HIGH to cut the rail.
     {PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, 21, false, 0, false},
     // back, confirm, left, right, up, down, power, powerActiveHigh.
-    // Five buttons, active-low with internal pull-ups. Left/right unassigned:
-    // the spec's controls are Prev/Next/Select/Back plus Power, mapped
-    // up/down/confirm/back/power. Power is its own key on 15 (RTC-capable, the
-    // ext1 wake source): a hold wakes (HalGPIO::verifyPowerButtonWakeup) and a
-    // hold opens the power menu, so a tap in a bag does nothing. Back's long
-    // press is Home in CrossPoint, which is why sleep is not on Back.
+    // Five buttons, active-low with internal pull-ups: Back, Select, Up, Down
+    // and Power. Left/right unassigned. Power is its own key on 15 (RTC-capable,
+    // the ext1 wake source), so deep-sleep wake does not ride a navigation key.
     {7, 6, PIN_UNASSIGNED, PIN_UNASSIGNED, 4, 5, 15, false},
     // batteryAdc: GPIO 8 = ADC1_CH7 (ADC2 is arbitrated with WiFi and fails
     // during hotspot/join). 2 x 470k divider from the cell with 100 nF across
     // the lower leg — the S3's sample-and-hold starves on a 470k source without
-    // it. Bench: a 10k pot across 3V3 stands in for the cell until one exists.
+    // it.
     8,
     PIN_UNASSIGNED,  // batteryChargeStatus
     2.0f,            // batteryDividerMultiplier: equal legs, so cell = 2 x ADC
-    PIN_UNASSIGNED,  // usbDetect — reserved GPIO 9 from the charger's 5 V input via
-                     // 100k/100k; when it is wired, exempt EMINIMAL from the
-                     // AfterUSBPower re-sleep in main.cpp first
+    PIN_UNASSIGNED,  // usbDetect: not wired
     NO_TOUCH,        // buttons only, by design: touch on e-ink fights the refresh cycle
     NO_FRONTLIGHT,
     NO_AUDIO,
     NO_LEDS,
     NO_FLIP,
-    // clk, cmd, d0, d1, d2, d3, busWidth. 1-bit measured at 1.94 MB/s (323 ms per
-    // 2bpp page) on the bench; 4-bit is untested and would need D1-D3 broken out.
+    // clk, cmd, d0, d1, d2, d3, busWidth. 1-bit measured at 1.94 MB/s; 4-bit is
+    // untested and would need D1-D3 broken out.
     {12, 11, 13, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, 1},
     NO_GAUGE,
     NO_MIC,
     NO_SENSORS,
     // uiScale: ~300 PPI, far denser than the ~220-235 PPI boards above, so chrome
-    // sized for those would render about a third smaller here. Provisional until
-    // it can be judged on glass.
+    // sized for those would render about a third smaller here.
     1.5f,
     {}};  // no power latch: this board has no main-power MOSFET to hold
 // --- M5Stack PaperS3 4.7" (ED047TC1 raw-parallel EPD) — ESP32-S3 ---------------

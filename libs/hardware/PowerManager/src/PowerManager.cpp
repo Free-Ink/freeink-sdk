@@ -81,25 +81,6 @@ bool PowerManager::armPowerButtonWakeup() {
 
   // Hold the idle level with the opposite pull so the line is defined in sleep.
   pinMode(pin, activeHigh ? INPUT_PULLDOWN : INPUT_PULLUP);
-#if SOC_PM_SUPPORT_EXT1_WAKEUP
-  // On parts where the RTC pads are independent of the IO_MUX (S2/S3), pinMode's
-  // pull lives in the IO_MUX and stops applying once ext1 routes the pad to its
-  // RTC function for deep sleep; only the RTC-domain pull survives (kept through
-  // sleep by CONFIG_ESP_SLEEP_GPIO_ENABLE_INTERNAL_RESISTORS). A button with no
-  // external resistor then floats and ghost-wakes on noise — seen on the eMinimal
-  // bench as a wake/re-sleep loop every ~1.4 s. Harmless where the board already
-  // has an external pull (LilyGo BOOT, X4 Pro).
-  if (rtc_gpio_is_valid_gpio(static_cast<gpio_num_t>(pin))) {
-    const auto g = static_cast<gpio_num_t>(pin);
-    if (activeHigh) {
-      rtc_gpio_pullup_dis(g);
-      rtc_gpio_pulldown_en(g);
-    } else {
-      rtc_gpio_pulldown_dis(g);
-      rtc_gpio_pullup_en(g);
-    }
-  }
-#endif
   armWakeOnPins(1ULL << pin, /*wakeLow=*/!activeHigh);
   return true;
 }

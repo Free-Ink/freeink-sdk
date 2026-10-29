@@ -1,6 +1,7 @@
 #pragma once
 
-// IT8951E controller driver — M5Paper v1.1 (ED047TC1, 540x960, 16-gray, ESP32).
+// IT8951E controller driver — M5Paper v1.1 (ED047TC1, 540x960, 16-gray, ESP32)
+// and e-Minimal 7.8" (Waveshare 1872x1404 HAT, ESP32-S3).
 //
 // Unlike the panel-direct controllers (SSD1677/UC8253), the IT8951E is a timing
 // controller with its own framebuffer SRAM. The host doesn't push waveforms: it
@@ -14,7 +15,8 @@
 // its own SPIClass end to end (pins from BoardConfig::ACTIVE.display; MISO,
 // rotation, VCOM, and clock from the injectable It8951Config).
 //
-// Selection: linked only when -DFREEINK_DRIVER_IT8951 (M5Paper env).
+// Selection: linked only when FREEINK_DRIVER_IT8951 (derived from the device
+// flags in BoardConfig.h).
 
 #include <It8951Config.h>
 #include <SPI.h>
@@ -44,16 +46,15 @@ class It8951Driver : public PanelDriver {
   // hands displayGray() the true base buffer (the no-strip fallback overwrites the
   // framebuffer with the MSB plane, which would paint a near-black, inverted page).
   //
-  // Combined base: the controller takes a whole 4bpp frame per load, so the B/W
-  // base and the gray planes go up together in ONE load and ONE refresh.
-  // Advertising a Separate base made the host display() the B/W page first and
-  // then re-load and re-refresh the whole panel for the AA edges -- two 1.3 MB
-  // loads and two waveforms per page turn, seen as a second "flash" ~1.5 s after
-  // the text appeared. displayGrayscaleBase() now only stages the base;
-  // displayGray() commits it.
+  // Base: Separate by default -- the host display()s the B/W page, then the gray
+  // pass re-loads the whole frame and refines the AA edges. With
+  // It8951Config::combinedGray the base is Combined: displayGrayscaleBase() only
+  // stages it and displayGray() puts base and planes up in one load and one
+  // refresh (one 4bpp frame push and one waveform per page instead of two).
   GrayscaleCapabilities grayscaleCapabilities(GrayscaleMode mode = GrayscaleMode::Overlay) const override {
     if (mode != GrayscaleMode::Overlay) return {};
-    return {GrayscaleEncoding::OverlayMasks, GrayscaleBase::Combined, true, false, false};
+    return {GrayscaleEncoding::OverlayMasks, _cfg.combinedGray ? GrayscaleBase::Combined : GrayscaleBase::Separate,
+            true, false, false};
   }
   void displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, RefreshMode fallback, bool turnOff) override;
   void repeatLastRefresh(EpdBus& bus) override;
@@ -88,8 +89,8 @@ class It8951Driver : public PanelDriver {
   void loadImageArea(const uint8_t* fb, uint16_t xb0, uint16_t xb1, uint16_t y0, uint16_t y1);
   // Rows y0..y1 at full width. Partial display() loads use this rather than the
   // exact box: a load with a non-zero x offset scattered a centred cover image
-  // along the right edge on the eMinimal bench (2026-09-18), so the horizontal
-  // extent of a box is trusted for the refresh area only, never for the load.
+  // along the right edge on e-Minimal's IT8951E, so the horizontal extent of a
+  // box is trusted for the refresh area only, never for the load.
   void loadImageBand(const uint8_t* fb, uint16_t y0, uint16_t y1) {
     loadImageArea(fb, 0, static_cast<uint16_t>(_fbWb - 1), y0, y1);
   }
@@ -166,7 +167,7 @@ class It8951Driver : public PanelDriver {
   bool _memBitmap = false;
   bool _bitmapModeOn = false;  // what the UP1SR bitmap bit was last set to
 #ifdef IT8951_TIMING_LOG
-  // Bench instrument (-DIT8951_TIMING_LOG): one serial line per display() /
+  // Timing log (-DIT8951_TIMING_LOG): one serial line per display() /
   // displayGray() with what the push and the refresh cost. The load functions
   // add their bytes and microseconds here; display() zeroes them on entry.
   uint32_t _loadUs = 0;
@@ -208,9 +209,10 @@ class It8951Driver : public PanelDriver {
   // push becomes ~80 ms. False after begin() (INIT wiped the glass, memory is
   // stale or unknown) and while a base is staged but not yet loaded.
   bool _memMirrorsBase = false;
-  // A base staged by displayGrayscaleBase() and not yet on the glass. displayGray()
-  // commits it with the mode the host asked for; cleanupGrayscaleBuffers() flushes
-  // it as plain B/W if the gray pass never arrived, so a page is never lost.
+  // A base staged by displayGrayscaleBase() (combinedGray) and not yet on the
+  // glass. displayGray() commits it with the mode the host asked for;
+  // cleanupGrayscaleBuffers() and deepSleep() flush it as plain B/W if the gray
+  // pass never arrived, so a page is never lost.
   bool _baseStaged = false;
   RefreshMode _stagedMode = RefreshMode::Fast;
   bool _stagedTurnOff = false;

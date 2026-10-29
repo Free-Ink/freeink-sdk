@@ -13,7 +13,7 @@ This document describes the FreeInk SDK board support profile for OnePage (`FREE
 |:---|:---|
 | **SoC** | ESP32-C61 (ESP32-C61HR2, 160MHz RISC-V, Wi-Fi 6, BLE 5.4, 16MB Flash, 2MB PSRAM @ 40MHz) |
 | **Display** | 4.26" E-Ink Display, **SSD1677** controller, **800 × 480** resolution, 4-level grayscale |
-| **Display SPI** | SCLK: `GPIO22`, MOSI: `GPIO23`, CS: `GPIO25`, DC: `GPIO8`, RST: `GPIO27`, BUSY: `GPIO29` · **40 MHz** |
+| **Display SPI** | SCLK: `GPIO22`, MOSI: `GPIO23`, CS: `GPIO25`, DC: `GPIO8`, RST: `GPIO27`, BUSY: `GPIO29` · **20 MHz** |
 | **MicroSD Card** | SPI mode (shared SPI bus with EPD): SCLK: `GPIO22`, MISO: `GPIO24`, MOSI: `GPIO23`, CS: `GPIO26` · **20 MHz** |
 | **Buttons (Front 4-Key)** | Single resistor ADC ladder on `GPIO4` (ADC1_CH2):<br>• `BACK`: 2400..2800 mV (~2592 mV)<br>• `LEFT`: 1780..2140 mV (~1956 mV)<br>• `RIGHT`: 1140..1500 mV (~1316 mV)<br>• `CONFIRM` (ENTER): 0..250 mV (~0 mV) |
 | **Buttons (Side 3-Key)** | Active-low GPIO buttons with internal pull-up:<br>• `UP` (PREV): `GPIO6`<br>• `DOWN` (NEXT): `GPIO9`<br>• `POWER` (WAKE): `GPIO2` (Deep-sleep wakeup source) |
@@ -34,7 +34,7 @@ constexpr BoardProfile ONEPAGE = {
     800,
     480,
     {22, 23, 25, 8, 27, 29, PIN_UNASSIGNED},  // display SPI
-    40000000,                                 // display 40 MHz; SD 20 MHz
+    20000000,                                 // display 20 MHz; SD 20 MHz
     {22, 24, 23, 26, PIN_UNASSIGNED, false, 20000000, true}, // microSD
     {PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, 6, 9, 2, false, 4}, // input
     5,                                         // batteryAdc (GPIO5)
@@ -60,12 +60,20 @@ constexpr BoardProfile ONEPAGE = {
 
 ## Display configuration
 
-OnePage uses the display settings from
-[MoveCall's Arduino SDK, revision 16b6755](https://github.com/MoveCall/onepage-reader-sdk-arduino/tree/16b6755ded7341861d277f7f8c75efb6bff41337):
-40 MHz display SPI, booster `AE C7 C3 C0 40`, border `0x01`, and incremental
-refresh sequences. Warm B/W page turns use `0x1C`; a cold paint uses the warmed
+OnePage uses the Level 2 booster `AE C7 C3 C0 80` and B/W partial update
+sequence `0xFC` from the
+[Osptek EPD0426A02 reference driver](https://github.com/osptek/display-epd-4.26inch-480x800/blob/4dda8930794924713c0def9d492cc7b91464139f/examples/esp32s3-ssd1677-spi-bringup/main/app_init/epd_ssd1677.c).
+Partial updates load temperature and keep the panel powered; sunlight fading
+compensation powers it off separately after the update. Contrast and edge
+quality with these settings still require hardware validation.
+
+Display SPI runs at 20 MHz, the write limit in the
+[SSD1677 timing table](https://github.com/osptek/display-epd-4.26inch-480x800/blob/4dda8930794924713c0def9d492cc7b91464139f/versions/EPD0426A02/datasheets/SSD_1677_447731c055.pdf).
+This increases transfer time compared with 40 MHz; the panel waveform timing
+is unchanged. Border remains `0x01`. A cold paint uses the warmed
 HALF waveform, including when sunlight fading compensation requests power-off.
-The vendor grayscale tables match the existing SDK tables.
+Grayscale retains the existing SDK tables; Osptek's absolute four-tone table
+is not a replacement for the SDK's text anti-aliasing overlay.
 
 These settings use the shared SSD1677 driver through a OnePage-specific
 configuration. The FreeInk HAL, deferred refresh, buffer cleanup, and sleep/wake

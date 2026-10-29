@@ -76,11 +76,11 @@ const Ssd1677Config& ssd1677DefaultConfig() {
 }
 
 #if FREEINK_DEVICE_ONEPAGE
-// MoveCall/onepage-reader-sdk-arduino @ 16b6755: incremental updates keep the
-// rails on between page turns; init uses its own booster and border values.
+// Osptek EPD0426A02 reference: Level 2 booster and temperature-loaded partial updates.
 static const Ssd1677Config& ssd1677OnePageConfig() {
   static const Ssd1677Config cfg = [] {
-    Ssd1677Config config = {{0xAE, 0xC7, 0xC3, 0xC0, 0x40}, DRIVER_OUTPUT_SCAN, 0x01, 0x5A, lut_grayscale};
+    Ssd1677Config config = {{0xAE, 0xC7, 0xC3, 0xC0, 0x80}, DRIVER_OUTPUT_SCAN, 0x01, 0x5A, lut_grayscale};
+    config.fastSeqOverride = 0xFC;
     config.absoluteGrayscale = true;
     config.initialHalfRefresh = true;
     return config;

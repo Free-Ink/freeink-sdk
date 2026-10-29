@@ -617,7 +617,7 @@ static void testOnePage() {
   auto& driver = static_cast<Ssd1677Driver&>(ssd1677Driver());
   EpdBus bus;
   driver.begin(bus);
-  assert(lastPlane(bus, 0x0C) == Bytes({0xAE, 0xC7, 0xC3, 0xC0, 0x40}));
+  assert(lastPlane(bus, 0x0C) == Bytes({0xAE, 0xC7, 0xC3, 0xC0, 0x80}));
   assert(lastRegister(bus, 0x3C) == 0x01);
   const auto bw = frame(42), next = frame(67);
   // Quick Resume can paint first with sunlight compensation already enabled.
@@ -627,16 +627,17 @@ static void testOnePage() {
   assert(!driver._isScreenOn);
   bus.clear();
   driver.display(bus, next.data(), nullptr, RefreshMode::Fast, true);
-  assert(lastRegister(bus, 0x22) == 0xDF);
+  assert(lastRegister(bus, 0x22) == 0x03);
+  assert(!driver._isScreenOn);
   driver.begin(bus);
-  // A cold paint clears the old screen; warm turns use the vendor's 0x1C.
+  // A cold paint clears the old screen; warm turns use Osptek's 0xFC.
   bus.clear();
   driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, false);
   assert(lastRegister(bus, 0x22) == 0xD4);
   assert(lastRegister(bus, 0x1A) == 0x5A);
   bus.clear();
   driver.display(bus, next.data(), nullptr, RefreshMode::Fast, false);
-  assert(lastRegister(bus, 0x22) == 0x1C);
+  assert(lastRegister(bus, 0x22) == 0xFC);
   assert(lastPlane(bus, 0x26) == next);
   assert(driver._isScreenOn);
   for (auto mode : {RefreshMode::Half, RefreshMode::Full}) {
@@ -644,15 +645,15 @@ static void testOnePage() {
     driver.display(bus, bw.data(), nullptr, mode, false);
     assert(lastRegister(bus, 0x22) == (mode == RefreshMode::Half ? 0xD4 : 0x34));
   }
-  // Sunlight compensation powers off within the update, without a second activation.
+  // The partial sequence keeps power on; sunlight compensation powers off separately.
   bus.clear();
   driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, true);
-  assert(lastRegister(bus, 0x22) == 0x1F);
+  assert(lastRegister(bus, 0x22) == 0x03);
   assert(!driver._isScreenOn);
-  assert(std::count_if(bus.writes.begin(), bus.writes.end(), [](const auto& w) { return w.command == 0x20; }) == 1);
+  assert(std::count_if(bus.writes.begin(), bus.writes.end(), [](const auto& w) { return w.command == 0x20; }) == 2);
   bus.clear();
   driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, true);
-  assert(lastRegister(bus, 0x22) == 0xDF);
+  assert(lastRegister(bus, 0x22) == 0x03);
   assert(!driver._isScreenOn);
   // Keep the facade's deferred-refresh and grayscale cleanup contracts.
   bus.clear();
@@ -668,14 +669,23 @@ static void testOnePage() {
   driver.cleanupGrayscaleBuffers(bus, next.data());
   bus.clear();
   driver.displayStart(bus, bw.data(), next.data(), RefreshMode::Fast, false);
-  assert(lastRegister(bus, 0x22) == 0x1C);
+  assert(lastRegister(bus, 0x22) == 0xFC);
   driver.displayFinish(bus, bw.data());
+  // Power-off waits for the deferred partial update to finish.
+  bus.clear();
+  driver.displayStart(bus, next.data(), bw.data(), RefreshMode::Fast, true);
+  assert(lastRegister(bus, 0x22) == 0xFC);
+  assert(bus.waits == 0);
+  assert(driver._isScreenOn && driver._pendingPowerOff);
+  driver.displayFinish(bus, next.data());
+  assert(lastRegister(bus, 0x22) == 0x03);
+  assert(!driver._isScreenOn && !driver._pendingPowerOff);
 }
 
 int main(int argc, char** argv) {
   if (argc > 1 && std::strcmp(argv[1], "onepage") == 0) {
     testOnePage();
-    std::puts("OnePage vendor init, incremental refresh, power state and grayscale cleanup passed");
+    std::puts("OnePage Osptek init, partial refresh, power state and grayscale cleanup passed");
     return 0;
   }
   if (argc > 1 && std::strcmp(argv[1], "metalio") == 0) {

@@ -2035,7 +2035,7 @@ constexpr BoardProfile ONEPAGE = {
     480,
     // Display SPI: SCLK 22, MOSI 23, CS 25, DC 8, RST 27, BUSY 29, powerEnable PIN_UNASSIGNED
     {22, 23, 25, 8, 27, 29, PIN_UNASSIGNED},
-    40000000,  // displaySpiHz: vendor OnePage driver (SD transactions remain at 20 MHz)
+    20000000,  // displaySpiHz: SSD1677 write limit (SD transactions remain at 20 MHz)
     // MicroSD (shared SPI bus): SCLK 22, MISO 24, MOSI 23, CS 26, powerEnable 27
     {22, 24, 23, 26, 27, false, 20000000, true},
     // Input: 4-key front ADC ladder on GPIO4 + 3 side GPIO keys (UP=6, DOWN=9, POWER=2)

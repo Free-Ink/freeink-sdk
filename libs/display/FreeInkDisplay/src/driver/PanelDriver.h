@@ -153,6 +153,11 @@ class PanelDriver {
     (void)w;
     (void)h;
   }
+
+  // Run the last refresh again on what the frame memory already holds, with
+  // the clearing waveform (a second pass over a dark page's leftovers).
+  // Default no-op.
+  virtual void repeatLastRefresh(EpdBus& bus) { (void)bus; }
   virtual void copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
     (void)bus;
     (void)lsb;

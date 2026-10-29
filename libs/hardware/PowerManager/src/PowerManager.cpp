@@ -95,6 +95,9 @@ void PowerManager::waitForPowerButtonRelease() {
   while (digitalRead(pin) == pressedLevel) {
     delay(50);
   }
+  // The wake source is level-triggered and armed right after this returns; let
+  // the contacts settle so release bounce cannot wake the board in hand.
+  delay(50);
 }
 
 namespace {

@@ -78,7 +78,7 @@ firmware  ─calls─▶  EInkDisplay  (alias of freeink::FreeInkDisplay, the fa
                           ▼
                        EpdBus  (SPI/GPIO framing, BUSY polarity, reset, mirror)
 
-  External-bus drivers (M5OfficialDriver, LgfxEpdDriver/LilyGo, It8951Driver/M5Paper)
+  External-bus drivers (M5OfficialDriver, LgfxEpdDriver/LilyGo, It8951Driver/M5Paper + e-Minimal)
   own their own bus and report usesExternalBus(), so the facade leaves EpdBus down.
 ```
 
@@ -141,6 +141,7 @@ so the SD manager itself stays device-agnostic.
 | **Waveshare ESP32-S3-ePaper-3.97** | ESP32-S3 | SSD1677 | 3.97" 800×480 B/W | reuses the SSD1677 driver with the Sticky's vendor sequences, 3 side keys + BOOT (no touch), native 4-bit SDMMC, AXP2101 PMIC as EPD rail + battery gauge + power key, PCF85063 RTC, QMI8658 IMU; orientation pending hardware validation — see docs/waveshare-epaper-397-support.md |
 | **M5Stack PaperS3** | ESP32-S3 | ED047TC1 (raw parallel) | 960×540 16-gray | same LovyanGFX EPD driver class as the LilyGo T5 S3 (plain-GPIO EPD rails, no PMIC), GT911 touch (touch-only navigation — no GPIO buttons), BM8563 RTC, GPIO3 ADC battery, LEDC buzzer, SPI MicroSD; power-off is a GPIO44 pulse to the PMS150G latch (`BoardPaperS3::powerOff()`); rotation/touch-flip pending hardware validation |
 | **Onyx Picco / BOOX Tiles** (initial) | ESP32-S3 (16MB flash, 8MB octal PSRAM) | SSD1677 / SSD2677 (auto) | 3.97" 800×480 B/W (portrait) | reuses the SSD1677 driver, native 4-bit SDMMC, GPIO2 power/wake button, PCF8563/BM8563 RTC @0x51 + QMI8658 IMU @0x6A on the shared I2C bus (SDA7/SCL8); Parade TMA525C touch (I2C 0x24, multi-touch when panel GET_SYSINFO confirms it), 2-channel warm/cool I2C frontlight (@0x38), slide switch (GPIO6), SGM41562 charger (@0x03) and battery ADC (GPIO1) are wired; nav-button roles are provisional |
+| **e-Minimal 7.8"** (DIY) | ESP32-S3 (16MB flash, 8MB octal PSRAM) | IT8951E | 7.8" 1872×1404 16-gray (Waveshare HAT) | the M5Paper IT8951 driver on its own SPI bus, with board-opted partial-area refresh, 1bpp bitmap loads and one-refresh anti-aliased pages; five buttons (no touch, no frontlight), native 1-bit SDMMC, ADC battery; see [docs/eminimal-78-support.md](docs/eminimal-78-support.md) |
 
 X3 and X4 share the ESP32-C3 and a pinout, so **one firmware binary drives both**:
 it carries both board profiles (`XTEINK_X4` and `XTEINK_X3`) and picks one at
@@ -155,7 +156,7 @@ profile. In builds without an Xteink profile the helpers compile to no-ops that
 return false without touching any pins, so an unconditional call is safe on
 every device. Devices on a different MCU build their own binary, selected with a
 `-DFREEINK_DEVICE_*` flag. A build targets exactly one of the four MCU families — ESP32-C3 (X3/X4),
-ESP32-C61 (OnePage), ESP32-S3 (de-link/PaperColor/Murphy/LilyGo/Sticky/X4 Pro/Paper Mono/PaperS3/Waveshare 3.97), or classic ESP32 (M5Paper);
+ESP32-C61 (OnePage), ESP32-S3 (de-link/PaperColor/Murphy/LilyGo/Sticky/X4 Pro/Paper Mono/PaperS3/Waveshare 3.97/e-Minimal), or classic ESP32 (M5Paper);
 `BoardConfig` rejects mixing families at compile time.
 
 #### Per-batch panel controllers (`applyXteinkDisplayController()`)
@@ -345,6 +346,7 @@ MCU (a C3-vs-S3 mix is a compile error):
 | `-DFREEINK_DEVICE_X4CLASSIC` | Xteink X4 Classic / X4C (S3, SSD1677/UC8179/UC8279 auto-detect, buttons-only — no touch/frontlight, + SDMMC) |
 | `-DFREEINK_DEVICE_PAPERMONO` | M5Stack Paper Mono (S3, SSD1677 + FT6336 touch + PMIC frontlight) |
 | `-DFREEINK_DEVICE_PAPERS3` | M5Stack PaperS3 (S3, ED047TC1 raw-parallel EPD via LovyanGFX + GT911 touch) |
+| `-DFREEINK_DEVICE_EMINIMAL` | e-Minimal 7.8" (S3, IT8951E 1872×1404, five buttons, 1-bit SDMMC; add `BoardEMinimal78` to `lib_deps`) |
 | *(none)* | **compile error** — a build must select at least one device |
 
 Multiple **different-pinout** devices on one MCU are runtime-selected: `ACTIVE`

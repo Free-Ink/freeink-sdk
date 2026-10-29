@@ -644,6 +644,15 @@ void FreeInkDisplay::syncPendingAsync() {
   _refreshPending = false;
 }
 
+void FreeInkDisplay::powerOffBetweenFrames() {
+#if FREEINK_DEVICE_PICCO
+  if (!_driver || !BoardConfig::isPicco()) return;
+  DisplayPmLock pmLock;
+  waitRefreshComplete();
+  _driver->powerOffBetweenFrames(_bus);
+#endif
+}
+
 bool FreeInkDisplay::supportsAsyncRefresh() const {
   return !_inverted && !_inversionDirty && _driver != nullptr && _driver->supportsAsyncDisplay();
 }

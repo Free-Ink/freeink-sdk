@@ -89,6 +89,7 @@ class Ssd1677Driver : public PanelDriver {
 
   void begin(EpdBus& bus) override;
   void deepSleep(EpdBus& bus) override;
+  void powerOffBetweenFrames(EpdBus& bus) override;
 
   void display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) override;
   // Deferred refresh: displayStart() runs the full update (RAM writes,
@@ -138,7 +139,7 @@ class Ssd1677Driver : public PanelDriver {
   void powerOn(EpdBus& bus);
   // Documented SSD1677 analog/oscillator shutdown. Used after a 0xFC update
   // when turnOff was requested and by deepSleep().
-  void powerOffController(EpdBus& bus);
+  void powerOffController(EpdBus& bus, uint16_t settleMs = 200);
   void displayImpl(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff, bool async);
 
   const Ssd1677Config& _cfg;

@@ -64,6 +64,46 @@ static void expectStickyGray(Ssd1677Driver& d) {
   assert(lastRegister(bus, 0x2C) == lut_factory_quality[109] && lastRegister(bus, 0x22) == 0xCC);
 }
 
+// A complete frame can span an async base and a grayscale overlay. Idle
+// shutdown must retain RAM/state, and the next page must remain partial.
+static void expectIdlePower(Ssd1677Driver& d) {
+  FreeInkDisplay frame(1, 2, 3, 4, 5, 6);
+  frame.selectDriver();
+  auto& bus = frame._bus;
+  const Bytes fb(48000, 0xAA);
+  d.begin(bus);
+  d.display(bus, fb.data(), nullptr, RefreshMode::Full, false);
+  bus.clear();
+  assert(d.supportsAsyncDisplay());
+  assert(d.displayStart(bus, fb.data(), fb.data(), RefreshMode::Fast, false));
+  const bool needsShutdown = d._isScreenOn;
+  assert(bus.waits == 0);
+  frame._refreshPending = true;
+  fakeDelayMs = 0;
+  frame.powerOffBetweenFrames();
+  assert(!frame._refreshPending && !d._isScreenOn && !d._needsInitialFull);
+  assert(lastRegister(bus, 0x22) == (needsShutdown ? 0x03 : d._cfg.fastSeqOverride));
+  assert(bus.waits == (needsShutdown ? 2u : 1u));
+  assert(fakeDelayMs == (needsShutdown ? 1u : 0u));  // command propagation only; never the 200 ms helper delay
+  for (const auto& w : bus.writes) assert(w.command != 0x10 && w.command != 0x12);  // no sleep/reset
+  bus.clear();
+  frame.powerOffBetweenFrames();
+  assert(bus.writes.empty());
+  assert(d.displayStart(bus, fb.data(), fb.data(), RefreshMode::Fast, false));
+  assert(lastRegister(bus, 0x22) == (d._cfg.fastLut ? 0xCC : d._cfg.fastSeqOverride));
+  d.displayFinish(bus, fb.data());
+  // Keep power through intermediate AA work. Shutdown follows the overlay and
+  // baseline cleanup, rather than being attached to every refresh completion.
+  d.displayGray(bus, fb.data(), false, nullptr, false);
+  assert(d._isScreenOn);
+  d.cleanupGrayscaleBuffers(bus, fb.data());
+  frame.powerOffBetweenFrames();
+  assert(!d._isScreenOn && !d._inGrayscaleMode && !d._needsInitialFull);
+  d.displayGray(bus, fb.data(), false, nullptr, true);
+  frame.powerOffBetweenFrames();
+  assert(!d._isScreenOn && d._needsGrayClear);
+}
+
 int main(int argc, char** argv) {
   const char* which = argc > 1 ? argv[1] : "yrd";
   static const uint8_t yrd[10] = {0xCA, 0xFE, 0x00, 0x16, 0x77, 0x02, 0x10, 0x01, 0x00, 0x91};
@@ -90,7 +130,7 @@ int main(int argc, char** argv) {
     memcpy(fakePanelRev, rev, 3);
     checkController("SSD2677");
     assert(piccoProbePanel() == PiccoSe0400nqw47);
-    auto& s = ssd2677Driver();
+    auto& s = static_cast<Ssd2677Driver&>(ssd2677Driver());
     assert(s.busyPolarity() == BusyPolarity::ActiveLow);
     EpdBus bus;
     s.begin(bus);
@@ -156,6 +196,23 @@ int main(int argc, char** argv) {
     for (const auto& w : bus.writes)
       if (w.command == 0x20) lut = &w.bytes;
     assert(*lut == Bytes(lut_picco_se0400_gray, lut_picco_se0400_gray + 535));
+    const auto old = Bytes(s._old, s._old + 48000);
+    bus.clear();
+    fakeDelayMs = 0;
+    s.powerOffBetweenFrames(bus);
+    assert(lastRegister(bus, 0x02) == 0 && s._needsPowerOn && !s._needsInitialFull);
+    assert(fakeDelayMs == 0 && old == Bytes(s._old, s._old + 48000));
+    bus.clear();
+    s.powerOffBetweenFrames(bus);
+    assert(bus.writes.empty());
+    s.display(bus, white.data(), nullptr, RefreshMode::Fast, false);
+    bool poweredOn = false;
+    for (const auto& w : bus.writes) {
+      if (w.command == 0x04) poweredOn = true;
+      if (w.command == 0x12) assert(poweredOn);
+      assert(w.command != 0x07);  // no deep sleep
+    }
+    assert(poweredOn && !s._needsPowerOn);
     s.deepSleep(bus);
     assert(lastRegister(bus, 0x07) == 0xA5);
     std::printf("Picco se0400: probe, init, packing and refresh passed\n");
@@ -189,6 +246,7 @@ int main(int argc, char** argv) {
     assert(variant == 0);
     assert(d._cfg.fullLut == nullptr && d._cfg.fastLut == nullptr && d._cfg.grayLut == lut_grayscale_sticky);
   }
+  expectIdlePower(d);
   std::printf("Picco %s: probe, config and refresh sequences passed\n", which);
   return 0;
 }

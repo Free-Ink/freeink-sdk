@@ -40,6 +40,7 @@ class Ssd2677Driver : public PanelDriver {
 
   void begin(EpdBus& bus) override;
   void deepSleep(EpdBus& bus) override;
+  void powerOffBetweenFrames(EpdBus& bus) override;
   void display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) override;
 
   // Overlay AA with the Picco's uploaded gray LUT on both boards. Sticky also

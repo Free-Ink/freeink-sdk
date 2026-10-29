@@ -216,6 +216,14 @@ void Ssd2677Driver::sendPacked(EpdBus& bus, const uint8_t* hi, const uint8_t* lo
   if (n) txn.writeBytes(chunk, n);
 }
 
+void Ssd2677Driver::powerOffBetweenFrames(EpdBus& bus) {
+  if (_needsPowerOn) return;
+  bus.cmd(CMD_POWER_OFF);
+  bus.data(0x00);
+  bus.waitBusy(" SSD2677 power off");
+  _needsPowerOn = true;
+}
+
 void Ssd2677Driver::powerAndRefresh(EpdBus& bus, bool turnOff) {
   if (_needsPowerOn) {
     bus.cmd(CMD_POWER_ON);
@@ -225,12 +233,7 @@ void Ssd2677Driver::powerAndRefresh(EpdBus& bus, bool turnOff) {
   bus.cmd(CMD_REFRESH);
   bus.data(0x00);
   bus.waitRefreshComplete("refresh");
-  if (turnOff) {
-    bus.cmd(CMD_POWER_OFF);
-    bus.data(0x00);
-    bus.waitBusy(" SSD2677 power off");
-    _needsPowerOn = true;
-  }
+  if (turnOff) powerOffBetweenFrames(bus);
 }
 
 void Ssd2677Driver::refreshWith(EpdBus& bus, const unsigned char* lut, bool turnOff) {

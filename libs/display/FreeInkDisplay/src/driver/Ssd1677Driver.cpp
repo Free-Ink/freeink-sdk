@@ -611,7 +611,13 @@ void Ssd1677Driver::powerOn(EpdBus& bus) {
   _isScreenOn = true;
 }
 
-void Ssd1677Driver::powerOffController(EpdBus& bus) {
+void Ssd1677Driver::powerOffBetweenFrames(EpdBus& bus) {
+  // Picco idle shutdown uses BUSY, with one tick for command propagation.
+  // Other callers keep their existing production shutdown timing.
+  powerOffController(bus, 1);
+}
+
+void Ssd1677Driver::powerOffController(EpdBus& bus, uint16_t settleMs) {
   if (!_isScreenOn) return;
   bus.cmd(CMD_BORDER_WAVEFORM);
   bus.data(_cfg.borderWaveformInit);  // X4 Pro: 0x80
@@ -620,7 +626,7 @@ void Ssd1677Driver::powerOffController(EpdBus& bus) {
   bus.cmd(CMD_MASTER_ACTIVATION);
   // Production X4 Pro power-off time. If BUSY remains asserted after the fixed
   // interval, wait out the remainder before changing the state flag.
-  delay(200);
+  delay(settleMs);
   bus.waitBusy(" display power-down");
   _isScreenOn = false;
 }

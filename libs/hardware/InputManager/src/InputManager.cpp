@@ -2106,6 +2106,13 @@ void InputManager::pollGslx680(const unsigned long now) {
     }
     if (sampleX >= 920) continue;
     if (sampleX == 0 && sampleY == 0) continue;
+    // Raw x far below the glass domain is the bezel key pad's phantom
+    // co-report (hardware-validated 2026-10-29: a pad press leaks a contact
+    // at raw x 4-5 alongside the sentinel, while the stock calibration's
+    // lowest glass point is 374 — a real finger cannot report raw x < 64).
+    // Dropping it keeps the pad press a pure key event: the phantom neither
+    // cancels the key ("a touch is in progress") nor becomes a screen tap.
+    if (sampleX < 64) continue;
     ++survived;
     if (stored < MAX_TOUCH_CONTACTS) {
       // Stock factory calibration to portrait screen pixels, then into the

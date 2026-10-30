@@ -93,9 +93,10 @@ class InputManager {
   // is the controller's track ID (GT911, GSLX680) when `idsStable` is true.
   // Coordinate-only GT911 frames expose frame-local record slots instead, so
   // callers must not retain those IDs across frames. `count` is capped at
-  // MAX_TOUCH_CONTACTS; `reportedCount` keeps the controller's actual count
-  // so callers can detect truncation and opt into only the contact counts
-  // they support.
+  // MAX_TOUCH_CONTACTS; `reportedCount` keeps the frame's actual on-glass
+  // contact count (on GSLX680 the raw controller count also carries home-key,
+  // past-glass and padding records, which are filtered per-contact) so callers
+  // can detect truncation and opt into only the contact counts they support.
   static constexpr uint8_t MAX_TOUCH_CONTACTS = 4;
   struct MultiTouchPoint {
     uint8_t id;

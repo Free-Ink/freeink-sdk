@@ -2094,6 +2094,7 @@ void InputManager::pollGslx680(const unsigned long now) {
   bool anyKey = false;
   bool anyOnGlass = false;
   uint8_t stored = 0;
+  uint8_t survived = 0;  // on-glass contacts past the storage cap still count
   for (uint8_t i = 0; i < count; ++i) {
     const uint16_t rawYWord = static_cast<uint16_t>(frame[5 + 4 * i]) << 8 | frame[4 + 4 * i];
     const uint16_t rawXWord = static_cast<uint16_t>(frame[7 + 4 * i]) << 8 | frame[6 + 4 * i];
@@ -2105,6 +2106,7 @@ void InputManager::pollGslx680(const unsigned long now) {
     }
     if (sampleX >= 920) continue;
     if (sampleX == 0 && sampleY == 0) continue;
+    ++survived;
     if (stored < MAX_TOUCH_CONTACTS) {
       // Stock factory calibration to portrait screen pixels, then into the
       // panel-native frame (x = portrait y, y = 551 - portrait x). The
@@ -2144,8 +2146,12 @@ void InputManager::pollGslx680(const unsigned long now) {
   // On-glass contacts: publish the snapshot, run the gesture state machine,
   // and keep the single-touch API on the first contact — mirroring the GT911
   // path, including that a multi-contact gesture must not become a
-  // primary-contact tap.
-  touchSnapshot.reportedCount = count;
+  // primary-contact tap. reportedCount is the frame's surviving on-glass
+  // contact count (the raw controller count also carries key, past-glass and
+  // padding records), so dropped records neither block the gesture state
+  // machine nor suppress the single-touch tap; contacts past the storage cap
+  // still count, keeping truncation detectable.
+  touchSnapshot.reportedCount = survived;
   touchSnapshot.idsStable = true;
   touchSnapshot.count = stored;
   updateMultiTouchGesture(touchSnapshot, now);

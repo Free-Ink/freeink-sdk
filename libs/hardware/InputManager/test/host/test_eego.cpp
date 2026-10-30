@@ -164,6 +164,16 @@ int main() {
   const auto clearTouchState = [&]() {
     reset();
     input.touchSnapshot = {};
+    // Independent cases must not inherit gesture or event state: a stale
+    // multi-contact sequence or release flag made later assertions vacuous.
+    input.resetMultiTouchGesture();
+    input.touchPressedEvent = false;
+    input.touchReleasedEvent = false;
+    input.touchMovedBeyondTapSlop = false;
+    input.touchMovedBeyondTapReleaseSlop = false;
+    input.touchLongPressEvent = false;
+    input.touchLongPressFired = false;
+    input.touchSuppressed = false;
   };
 
   // Two contacts: reportedCount for truncation detection, both stored with
@@ -203,11 +213,12 @@ int main() {
   assert(input.touchSnapshot.reportedCount == 5);
   assert(input.touchSnapshot.count == InputManager::MAX_TOUCH_CONTACTS && "stored contacts must cap");
 
-  // A past-glass contact (X >= 920) drops per-contact, not per-frame.
+  // A past-glass contact (X >= 920) drops per-contact, not per-frame, and is
+  // excluded from reportedCount: the frame is a single-contact touch.
   clearTouchState();
-  feedMulti({{0x1000 | 549, 0x1000 | 337}, {0x2000 | 0x3a0, 0x2000 | 0x020}}, 2080);
+  feedMulti({{0x1000 | 549, 0x1000 | 337}, {0x2000 | 950, 0x2000 | 306}}, 2080);
   assert(!input.touchHomeKeyEvent && input.touchPressed);
-  assert(input.touchSnapshot.reportedCount == 2 && input.touchSnapshot.count == 1 &&
+  assert(input.touchSnapshot.reportedCount == 1 && input.touchSnapshot.count == 1 &&
          "past-glass contact must drop alone");
 
   // A key contact alongside an on-glass contact: the touch wins, no key
@@ -215,12 +226,14 @@ int main() {
   clearTouchState();
   feedMulti({{0x1000 | 549, 0x1000 | 337}, {0x03a0, 0x1020}}, 2100);
   assert(!input.touchHomeKeyEvent && !input.touchHomeKeyDown && input.touchPressed);
-  assert(input.touchSnapshot.count == 1 && "key contact must not enter the snapshot");
+  assert(input.touchSnapshot.count == 1 && input.touchSnapshot.reportedCount == 1 &&
+         "key contact must not enter the snapshot");
 
-  // An all-zero record is an absent contact (padded frame), never on-glass.
+  // An all-zero record is an absent contact (padded frame), never on-glass and
+  // never counted in reportedCount.
   clearTouchState();
   feedMulti({{0x1000 | 549, 0x1000 | 337}, {0, 0}}, 2120);
-  assert(input.touchSnapshot.reportedCount == 2 && input.touchSnapshot.count == 1);
+  assert(input.touchSnapshot.reportedCount == 1 && input.touchSnapshot.count == 1);
 
   // Release: the authoritative zero-contact frame clears the snapshot.
   feedMulti({}, 2140);
@@ -233,6 +246,23 @@ int main() {
   feedMulti({}, 2260);
   float tapNx = -1, tapNy = -1;
   assert(!input.wasTouchTap(tapNx, tapNy) && "multi-contact release must not tap");
+
+  // A finger sharing its frame with a dropped record (key sentinel, past-glass
+  // sample, padded slot) is still a single-contact touch and must still tap:
+  // reportedCount counts only the contacts that survive the filters.
+  clearTouchState();
+  feedMulti({{0x1000 | 549, 0x1000 | 337}, {0x03a0, 0x1020}}, 2300);
+  assert(input.touchPressed && !input.touchMovedBeyondTapSlop);
+  feedMulti({}, 2320);
+  float tapKeyX = -1, tapKeyY = -1;
+  assert(input.wasTouchTap(tapKeyX, tapKeyY) && "a finger with a key record must still tap");
+
+  clearTouchState();
+  feedMulti({{0x1000 | 549, 0x1000 | 337}, {0x2000 | 950, 0x2000 | 306}}, 2340);
+  assert(input.touchPressed && !input.touchMovedBeyondTapSlop);
+  feedMulti({}, 2360);
+  float tapOffX = -1, tapOffY = -1;
+  assert(input.wasTouchTap(tapOffX, tapOffY) && "a finger with a past-glass record must still tap");
 
   std::puts("A4 firmware bytes, batching, failure handling, touch sleep and wake, home key classification, stock "
             "calibration, multi-touch snapshot passed");

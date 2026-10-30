@@ -139,6 +139,13 @@ class PanelDriver {
     display(bus, fb, nullptr, fallback, turnOff);
   }
 
+  // Starts an Overlay base without touching the framebuffer until displayFinish.
+  virtual bool supportsDeferredGrayscaleBase() const { return false; }
+  virtual bool displayGrayscaleBaseStart(EpdBus& bus, const uint8_t* fb, RefreshMode fallback, bool turnOff) {
+    beginGrayscale(bus, fb, GrayscaleMode::Overlay, fallback, turnOff);
+    return false;
+  }
+
   // Mode is fixed before uploads; drivers may adapt the common host encoding.
   virtual void beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode mode, RefreshMode fallback, bool turnOff) {
     (void)mode;

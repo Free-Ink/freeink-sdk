@@ -90,9 +90,11 @@ class InputManager {
   };
 
   // Fixed-size contact snapshot for allocation-free multi-touch polling. `id`
-  // is the controller's track ID (GT911, GSLX680) when `idsStable` is true.
-  // Coordinate-only GT911 frames expose frame-local record slots instead, so
-  // callers must not retain those IDs across frames. `count` is capped at
+  // is the controller's track ID (GT911) when `idsStable` is true.
+  // Coordinate-only frames — GT911's coordsAtByte0 variant and the EEGO A4's
+  // GSLX680 (hardware-validated 2026-10-29: record top nibbles are always 0)
+  // — expose frame-local record slots instead, so callers must not retain
+  // those IDs across frames. `count` is capped at
   // MAX_TOUCH_CONTACTS; `reportedCount` keeps the frame's actual on-glass
   // contact count (on GSLX680 the raw controller count also carries home-key,
   // past-glass and padding records, which are filtered per-contact) so callers

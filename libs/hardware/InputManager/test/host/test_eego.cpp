@@ -177,46 +177,47 @@ int main() {
   };
 
   // Two contacts: reportedCount for truncation detection, both stored with
-  // their track ids and stock-calibrated panel-native coordinates; the
-  // single-touch API keeps the first contact and stops being a tap candidate.
+  // stock-calibrated panel-native coordinates; the single-touch API keeps the
+  // first contact and stops being a tap candidate. Hardware-validated on the
+  // A4 LITE (2026-10-29): the real glass reports record top nibbles of 0 —
+  // the A4's records are coordinate-only (no track ids), so ids are
+  // frame-local record slots and idsStable is false, mirroring GT911's
+  // coordinate-only contract. Callers must not retain ids across frames.
   clearTouchState();
-  feedMulti({{0x1000 | 549, 0x1000 | 337}, {0x2000 | 720, 0x2000 | 94}}, 2000);
+  feedMulti({{549, 337}, {720, 94}}, 2000);
   assert(input.touchPressed);
   assert(input.touchSnapshot.reportedCount == 2 && input.touchSnapshot.count == 2);
-  assert(input.touchSnapshot.idsStable && "GSL record ids must be stable track ids");
-  assert(input.touchSnapshot.points[0].id == 1 && input.touchSnapshot.points[1].id == 2);
+  assert(!input.touchSnapshot.idsStable && "A4 records are coordinate-only (no track ids)");
+  assert(input.touchSnapshot.points[0].id == 0 && input.touchSnapshot.points[1].id == 1 &&
+         "coordinate-only ids are frame-local record slots");
   assert(input.touchSnapshot.points[0].point.x == 306 && input.touchSnapshot.points[0].point.y == 275);
   assert(input.touchSnapshot.points[1].point.x == 168 && input.touchSnapshot.points[1].point.y == 471);
   assert(input.touchSnapshot.points[0].point.timestamp == 2000);
   assert(input.touchPoint.x == 306 && input.touchPoint.y == 275 && "primary contact must stay the first");
   assert(input.touchMovedBeyondTapSlop && "a multi-contact frame must not remain a tap candidate");
 
-  // Track ids follow contacts across frames (id 1 and id 2 swap records).
-  feedMulti({{0x2000 | 720, 0x2000 | 94}, {0x1000 | 549, 0x1000 | 337}}, 2020);
-  assert(input.touchSnapshot.points[0].id == 2 && input.touchSnapshot.points[0].point.x == 168);
+  // Records swap slots across frames; slot ids follow records, not fingers.
+  feedMulti({{720, 94}, {549, 337}}, 2020);
+  assert(input.touchSnapshot.points[0].id == 0 && input.touchSnapshot.points[0].point.x == 168);
   assert(input.touchSnapshot.points[1].id == 1 && input.touchSnapshot.points[1].point.x == 306);
 
   // Three contacts.
-  feedMulti({{0x1000 | 549, 0x1000 | 337}, {0x2000 | 720, 0x2000 | 94}, {0x3000 | 694, 0x3000 | 560}}, 2040);
+  feedMulti({{549, 337}, {720, 94}, {694, 560}}, 2040);
   assert(input.touchSnapshot.reportedCount == 3 && input.touchSnapshot.count == 3);
-  assert(input.touchSnapshot.points[2].id == 3 && input.touchSnapshot.points[2].point.x == 168 &&
+  assert(input.touchSnapshot.points[2].id == 2 && input.touchSnapshot.points[2].point.x == 168 &&
          input.touchSnapshot.points[2].point.y == 79);
 
   // Five contacts: stored count caps at MAX_TOUCH_CONTACTS, reportedCount keeps 5.
   clearTouchState();
-  feedMulti({{0x1000 | 549, 0x1000 | 337},
-             {0x2000 | 720, 0x2000 | 94},
-             {0x3000 | 694, 0x3000 | 560},
-             {0x4000 | 374, 0x4000 | 97},
-             {0x5000 | 455, 0x5000 | 40}},
-            2060);
+  feedMulti({{549, 337}, {720, 94}, {694, 560}, {374, 97}, {455, 40}}, 2060);
   assert(input.touchSnapshot.reportedCount == 5);
   assert(input.touchSnapshot.count == InputManager::MAX_TOUCH_CONTACTS && "stored contacts must cap");
+  assert(input.touchSnapshot.points[3].id == 3);
 
   // A past-glass contact (X >= 920) drops per-contact, not per-frame, and is
   // excluded from reportedCount: the frame is a single-contact touch.
   clearTouchState();
-  feedMulti({{0x1000 | 549, 0x1000 | 337}, {0x2000 | 950, 0x2000 | 306}}, 2080);
+  feedMulti({{549, 337}, {0x2000 | 950, 0x2000 | 306}}, 2080);
   assert(!input.touchHomeKeyEvent && input.touchPressed);
   assert(input.touchSnapshot.reportedCount == 1 && input.touchSnapshot.count == 1 &&
          "past-glass contact must drop alone");
@@ -224,7 +225,7 @@ int main() {
   // A key contact alongside an on-glass contact: the touch wins, no key
   // event, and the key contact is excluded from the snapshot.
   clearTouchState();
-  feedMulti({{0x1000 | 549, 0x1000 | 337}, {0x03a0, 0x1020}}, 2100);
+  feedMulti({{549, 337}, {0x03a0, 0x1020}}, 2100);
   assert(!input.touchHomeKeyEvent && !input.touchHomeKeyDown && input.touchPressed);
   assert(input.touchSnapshot.count == 1 && input.touchSnapshot.reportedCount == 1 &&
          "key contact must not enter the snapshot");
@@ -232,7 +233,7 @@ int main() {
   // An all-zero record is an absent contact (padded frame), never on-glass and
   // never counted in reportedCount.
   clearTouchState();
-  feedMulti({{0x1000 | 549, 0x1000 | 337}, {0, 0}}, 2120);
+  feedMulti({{549, 337}, {0, 0}}, 2120);
   assert(input.touchSnapshot.reportedCount == 1 && input.touchSnapshot.count == 1);
 
   // Release: the authoritative zero-contact frame clears the snapshot.
@@ -242,7 +243,7 @@ int main() {
 
   // A multi-contact press/release never becomes a primary tap.
   clearTouchState();
-  feedMulti({{0x1000 | 549, 0x1000 | 337}, {0x2000 | 720, 0x2000 | 94}}, 2200);
+  feedMulti({{549, 337}, {720, 94}}, 2200);
   feedMulti({}, 2260);
   float tapNx = -1, tapNy = -1;
   assert(!input.wasTouchTap(tapNx, tapNy) && "multi-contact release must not tap");

@@ -2076,7 +2076,7 @@ void InputManager::pollGslx680(const unsigned long now) {
     // read above keeps the last complete frame instead.
     touchSnapshot.count = 0;
     touchSnapshot.reportedCount = 0;
-    touchSnapshot.idsStable = true;
+    touchSnapshot.idsStable = false;  // coordinate-only records (see below)
     updateMultiTouchGesture(touchSnapshot, now);
     return;
   }
@@ -2119,7 +2119,12 @@ void InputManager::pollGslx680(const unsigned long now) {
       point.x = mapTouchAxis(static_cast<uint16_t>(screenY), t.rawMinX, t.rawMaxX, t.rawMaxX - t.rawMinX);
       point.y = mapTouchAxis(static_cast<uint16_t>(551 - screenX), t.rawMinY, t.rawMaxY, t.rawMaxY - t.rawMinY);
       point.timestamp = now;
-      touchSnapshot.points[stored].id = static_cast<uint8_t>(rawXWord >> 12);
+      // Hardware-validated on the A4 LITE (2026-10-29): the record top nibble
+      // is always 0 on real glass — records are coordinate-only (no track
+      // ids). Ids are frame-local record slots; consumers must not retain
+      // them across frames (idsStable = false), mirroring GT911's
+      // coordinate-only contract.
+      touchSnapshot.points[stored].id = stored;
       ++stored;
     }
     anyOnGlass = true;
@@ -2152,7 +2157,7 @@ void InputManager::pollGslx680(const unsigned long now) {
   // machine nor suppress the single-touch tap; contacts past the storage cap
   // still count, keeping truncation detectable.
   touchSnapshot.reportedCount = survived;
-  touchSnapshot.idsStable = true;
+  touchSnapshot.idsStable = false;  // A4 records are coordinate-only (no track ids)
   touchSnapshot.count = stored;
   updateMultiTouchGesture(touchSnapshot, now);
 

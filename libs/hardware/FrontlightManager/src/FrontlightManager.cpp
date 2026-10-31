@@ -507,6 +507,10 @@ void FrontlightManager::apply() {
   if (totalDuty > 0 && holdFloor > 0) {
     totalDuty = holdFloor + static_cast<uint32_t>((static_cast<uint64_t>(totalDuty) * (full - holdFloor)) / full);
   }
+  if (fl.maxPermille > 0 && totalDuty > 0) {
+    const uint32_t scaled = static_cast<uint32_t>((static_cast<uint64_t>(totalDuty) * fl.maxPermille + 500u) / 1000u);
+    totalDuty = scaled > 0 ? scaled : 1u;  // a lit level stays lit
+  }
   uint32_t warmDuty = 0;
   uint32_t coolDuty = totalDuty;
   if (dual) {

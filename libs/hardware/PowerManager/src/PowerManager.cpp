@@ -120,6 +120,12 @@ void PowerManager::powerDownRailsForSleep() {
     // Keep the shared display/SD rail up, as required by the vendor shutdown.
   }
 #endif
+#if FREEINK_DEVICE_METALIO_EINK4_PLUS
+  if (BoardConfig::isMetalioEInk4Plus()) {
+    metalio_plus::setAmplifier(false);
+    metalio_plus::setOutput(metalio_plus::PIN_MOTOR, false);
+  }
+#endif
 #if FREEINK_DEVICE_WS397
   // The EPD rail is an AXP2101 LDO, not a GPIO, so holdRailOff() below cannot
   // reach it — drop it here or the panel stays powered all through deep sleep.
@@ -163,8 +169,14 @@ void PowerManager::powerDownRailsForSleep() {
 }
 
 void PowerManager::deepSleep() {
+  // Arduino-ESP32 4.0.0-RC1's ESP32-S31 libraries declare this but do not define it.
+#if !FREEINK_MCU_S31
   esp_sleep_config_gpio_isolate();
-#if !FREEINK_MCU_C61
+#endif
+// Chips with per-pad deep-sleep hold (SOC_GPIO_SUPPORT_HOLD_SINGLE_IO_IN_DSLP,
+// e.g. ESP32-S31) keep every gpio_hold_en() pad held without the global switch,
+// and ESP-IDF does not declare it there.
+#if !FREEINK_MCU_C61 && !SOC_GPIO_SUPPORT_HOLD_SINGLE_IO_IN_DSLP
   gpio_deep_sleep_hold_en();
 #endif
   esp_deep_sleep_start();

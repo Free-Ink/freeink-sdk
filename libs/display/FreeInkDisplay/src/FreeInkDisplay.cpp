@@ -57,6 +57,9 @@
 #if FREEINK_DRIVER_LGFX_EPD
 #include "driver/LgfxEpdDriver.h"
 #endif
+#if FREEINK_DRIVER_EPDIY
+#include "driver/EpdiyDriver.h"
+#endif
 #if FREEINK_DRIVER_IT8951
 #include "driver/It8951Driver.h"
 #endif
@@ -242,6 +245,8 @@ void FreeInkDisplay::selectDriver() {
       _driver = &uc8253X3Driver();
 #elif FREEINK_DRIVER_LGFX_EPD
       _driver = &lgfxEpdDriver();
+#elif FREEINK_DRIVER_EPDIY
+      _driver = &epdiyDriver();
 #elif FREEINK_DRIVER_IT8951
       _driver = &it8951Driver();
 #endif

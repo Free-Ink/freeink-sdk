@@ -101,7 +101,7 @@ class GfxRendererTarget final : public DrawTarget {
 
   // Ink from glyph metrics: drawText puts the baseline `ascender` below the
   // line top, and a glyph's ink starts `top` above the baseline.
-  // ponytail: ASCII only (status labels, clocks); other text keeps the line box.
+  // ASCII only (status labels, clocks); other text keeps the line box.
   Rect inkBounds(const FontId font, const char* text, const TextStyle style) const override {
     const Rect lineBox = DrawTarget::inkBounds(font, text, style);
     const int fontId = gfxFont(font);

@@ -101,7 +101,7 @@ InputManager::InputManager()
       twoButtonPressStart(0),
       twoButtonLongPressActive(false) {}
 
-#if FREEINK_DEVICE_METALIO_EINK4
+#if FREEINK_DEVICE_METALIO_EINK4 || FREEINK_DEVICE_METALIO_EINK4_PLUS
 // The vendor firmware waits up to ~2 s for the expander on slow-starting boards.
 static constexpr uint32_t METALIO_BOOT_WAIT_MS = 3000;
 #endif
@@ -115,6 +115,9 @@ void InputManager::begin() {
 #endif
 #if FREEINK_DEVICE_METALIO_EINK4
   if (BoardConfig::isMetalioEInk4()) freeink::metalio::ensureBooted(METALIO_BOOT_WAIT_MS);
+#endif
+#if FREEINK_DEVICE_METALIO_EINK4_PLUS
+  if (BoardConfig::isMetalioEInk4Plus()) freeink::metalio_plus::ensureBooted(METALIO_BOOT_WAIT_MS);
 #endif
   if (hasToggleSwitch()) {
     pinMode(BoardConfig::ACTIVE.input.toggleSwitch, INPUT_PULLUP);
@@ -421,6 +424,16 @@ uint8_t InputManager::getDigitalState() const {
     const uint16_t pins = freeink::metalio::readButtons();
     if (!(pins & (1u << freeink::metalio::PIN_VOLUME_UP))) state |= (1 << BTN_UP);
     if (!(pins & (1u << freeink::metalio::PIN_VOLUME_DOWN))) state |= (1 << BTN_DOWN);
+  }
+#endif
+#if FREEINK_DEVICE_METALIO_EINK4_PLUS
+  if (BoardConfig::isMetalioEInk4Plus()) {
+    // Expander keys are active-low: volume +/- page, P1.7 is the power key.
+    namespace mp = freeink::metalio_plus;
+    const uint16_t pins = mp::readInputs();
+    if (!(pins & (1u << mp::PIN_VOLUME_UP))) state |= (1 << BTN_UP);
+    if (!(pins & (1u << mp::PIN_VOLUME_DOWN))) state |= (1 << BTN_DOWN);
+    if (!(pins & (1u << mp::PIN_POWER_KEY))) state |= (1 << BTN_POWER);
   }
 #endif
 
@@ -1487,6 +1500,9 @@ uint8_t InputManager::serviceTouch() {
 
 #if FREEINK_TOUCH_CST816S
   if (t.controller == BoardConfig::TouchController::Cst816s) return cstVirtualButtons;
+#endif
+#if FREEINK_TOUCH_FT6336U && FREEINK_DEVICE_METALIO_EINK4_PLUS
+  if (BoardConfig::isMetalioEInk4Plus()) return cstVirtualButtons;  // cover-glass page keys
 #endif
   return (t.synthesizeConfirm && now < touchIrqPulseUntil) ? (1 << BTN_CONFIRM) : 0;
 #else
@@ -2783,6 +2799,13 @@ static bool m4NativeBegin(const int sda, const int scl, const uint8_t address) {
 
 void InputManager::beginFt6336u() {
   const auto& t = BoardConfig::ACTIVE.touch;
+#if FREEINK_DEVICE_METALIO_EINK4_PLUS
+  // Reset is expander P1.2; the vendor pulses it before first use.
+  if (BoardConfig::isMetalioEInk4Plus()) {
+    if (!freeink::metalio_plus::ensureBooted()) return;
+    freeink::metalio_plus::resetTouch();
+  }
+#endif
 
   if (t.powerEnable >= 0) {
     gpio_hold_dis(static_cast<gpio_num_t>(t.powerEnable));
@@ -2924,6 +2947,55 @@ void InputManager::pollFt6336u(const unsigned long now) {
   const uint8_t numPoints = data[2] & 0x0F;
   const uint8_t eventFlag = (data[3] >> 6) & 0x03;  // 0=down, 1=up, 2=contact
   const bool isTouching = (numPoints > 0) && (eventFlag != 1);
+
+#if FREEINK_DEVICE_METALIO_EINK4_PLUS
+  if (BoardConfig::isMetalioEInk4Plus()) {
+    const auto releaseCoverKeys = [&]() {
+      if (touchHomeKeyDown) {
+        if (!touchHomeKeyLongFired) touchHomeKeyTapEvent = true;
+        touchHomeKeyDown = false;
+        touchHomeKeyLongFired = false;
+      }
+      cstVirtualButtons = 0;
+    };
+    const uint16_t keyX = (static_cast<uint16_t>(data[3] & 0x0F) << 8) | data[4];
+    const uint16_t keyY = (static_cast<uint16_t>(data[5] & 0x0F) << 8) | data[6];
+    // Cover-glass keys report as points below the 1216-row portrait frame
+    // (vendor: y ~1600, HOME x=100, PREV x=200, NEXT x=300, tolerance 30).
+    if (isTouching && keyY >= 1216) {
+      constexpr int KEY_Y = 1600, KEY_TOL = 30;
+      const auto near = [&](int value, int center) { return value >= center - KEY_TOL && value <= center + KEY_TOL; };
+      if (touchPressed) {
+        suppressTouchContact();
+        touchPressed = false;
+        touchPoint.valid = false;
+      }
+      if (!near(keyY, KEY_Y)) {
+        releaseCoverKeys();
+        return;
+      }
+      if (near(keyX, 100)) {
+        cstVirtualButtons = 0;
+        if (!touchHomeKeyDown) {
+          touchHomeKeyDown = true;
+          touchHomeKeyEvent = true;
+          touchHomeKeyDownAt = now;
+          touchHomeKeyLongFired = false;
+        } else if (!touchHomeKeyLongFired && now - touchHomeKeyDownAt >= HOME_KEY_LONG_PRESS_MS) {
+          touchHomeKeyLongEvent = true;
+          touchHomeKeyLongFired = true;
+        }
+      } else if (near(keyX, 200) || near(keyX, 300)) {
+        if (touchHomeKeyDown) releaseCoverKeys();
+        cstVirtualButtons = static_cast<uint8_t>(1 << (near(keyX, 200) ? BTN_UP : BTN_DOWN));
+      } else {
+        releaseCoverKeys();
+      }
+      return;
+    }
+    if (touchHomeKeyDown || cstVirtualButtons) releaseCoverKeys();
+  }
+#endif
 
   if (isTouching) {
     const uint16_t rawX = (static_cast<uint16_t>(data[3] & 0x0F) << 8) | data[4];

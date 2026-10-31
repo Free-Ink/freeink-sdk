@@ -1,0 +1,23 @@
+{
+  "name": "BoardMetalioEInk4Plus",
+  "version": "0.1.0",
+  "description": "FreeInk board support for the Metalio E-Ink4-Plus (ESP32-S31): EPDiy board definition (TPS65185 via TCA9555, E0470A14-AF parallel bus) and panel waveforms.",
+  "keywords": "metalio, esp32s31, epaper, epdiy, board",
+  "authors": [
+    {
+      "name": "FreeInk SDK Contributors"
+    }
+  ],
+  "dependencies": {
+    "BoardConfig": "*",
+    "EInkDisplay": "*",
+    "epdiy": "*"
+  },
+  "platforms": "espressif32",
+  "frameworks": [
+    "arduino"
+  ],
+  "build": {
+    "libArchive": false
+  }
+}

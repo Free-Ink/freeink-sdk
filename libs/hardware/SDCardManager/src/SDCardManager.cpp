@@ -25,6 +25,9 @@ bool SDCardManager::begin() {
 #if FREEINK_DEVICE_METALIO_EINK4
   if (BoardConfig::isMetalioEInk4() && !freeink::metalio::ensureBooted()) return false;
 #endif
+#if FREEINK_DEVICE_METALIO_EINK4_PLUS
+  if (BoardConfig::isMetalioEInk4Plus() && !freeink::metalio_plus::ensureBooted()) return false;
+#endif
 
   // Native SDMMC: SdFat can't drive SDIO, so mount a plain FsVolume on the esp-idf
   // SDMMC block device. FsFile from this volume is the same type the SPI path
@@ -468,7 +471,7 @@ bool SDCardManager::writeFile(const char* path, const String& content) {
     return false;
   }
 
-  // ponytail: a power cut between replaceFile's remove and rename leaves only
+  // A power cut between replaceFile's remove and rename leaves only
   // the complete .tmp; recover it on read if that window ever matters.
   if (!replaceFile(tmp.c_str(), path)) {
     vol().remove(tmp.c_str());

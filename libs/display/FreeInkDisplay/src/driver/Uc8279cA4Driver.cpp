@@ -57,19 +57,19 @@ void Uc8279cA4Driver::hardwareReset(EpdBus& bus) {
 }
 
 void Uc8279cA4Driver::initController(EpdBus& bus, const Session session) {
-  // Gray3 uses stock V1.0.3's reader session and four-gray stock V1.3.0's image session.
+  // Gray3 and four-gray use stock V1.0.3's gray session (its lockscreen paint).
   // B/W keeps stronger rails because this driver changes UI screens with fast
-  // refreshes, with stock's VCOM_DC 0x32.
-  const bool fourGray = session == Session::FourGray;
+  // refreshes. VCOM_DC is tuned on hardware: B/W 0x24 fuzzed at idle and
+  // stock 0x32 left charge that gray paints showed as white cut-outs; four-gray
+  // images at 0x32 or 0x2b showed earlier screens. Gray3 keeps stock's 0x32.
   const uint8_t panel[] = {0x3f, 0x4a};
-  const uint8_t gray3Power[] = {0x03, 0x00, 0x72, 0x72};
-  const uint8_t fourGrayPower[] = {0x03, 0x00, 0x78, 0x78, 0x17};
+  const uint8_t grayPower[] = {0x03, 0x00, 0x72, 0x72};
   const uint8_t bwPower[] = {0x43, 0x00, 0x78, 0x78, 0x17};
   const uint8_t booster[] = {0x25, 0x25, 0x3c};
   const uint8_t resolution[] = {0x03, 0x00, 0x02, 0x58};  // 768x600
-  const uint8_t interval[] = {0x00, 0x00, static_cast<uint8_t>(fourGray ? 0x20 : 0x00), 0x00};
+  const uint8_t interval[] = {0x00, 0x00, 0x00, 0x00};
   const uint8_t powerOffSequence = 0x20;
-  const uint8_t vcom = fourGray ? 0x20 : 0x32;
+  const uint8_t vcom = session == Session::Bw ? 0x2b : session == Session::FourGray ? 0x27 : 0x32;
   const uint8_t pll = 0x0f;
   const uint8_t tcon = 0x02;
 
@@ -77,10 +77,8 @@ void Uc8279cA4Driver::initController(EpdBus& bus, const Session session) {
   bus.cmdData(CMD_POWER_OFF_SEQUENCE, &powerOffSequence, 1);
   if (session == Session::Bw)
     bus.cmdData(CMD_POWER_SETTING, bwPower, sizeof(bwPower));
-  else if (fourGray)
-    bus.cmdData(CMD_POWER_SETTING, fourGrayPower, sizeof(fourGrayPower));
   else
-    bus.cmdData(CMD_POWER_SETTING, gray3Power, sizeof(gray3Power));
+    bus.cmdData(CMD_POWER_SETTING, grayPower, sizeof(grayPower));
   bus.cmdData(CMD_BOOSTER_SOFT_START, booster, sizeof(booster));
   bus.cmdData(CMD_VCOM_DC, &vcom, 1);
   bus.cmdData(CMD_PLL_CONTROL, &pll, 1);
@@ -108,6 +106,24 @@ void Uc8279cA4Driver::loadFullLut(EpdBus& bus) {
                                 A4_UC8279C_LUT_24};
   for (uint8_t i = 0; i < 5; ++i) {
     bus.cmdData(static_cast<uint8_t>(CMD_LUT_VCOM + i), lut[i], A4_UC8279C_LUT_LENGTH);
+  }
+}
+
+// Stock's lockscreen pre-clear: the GC waveform with every phase's frame count
+// halved, (b & 0xc0) | (((b & 0x3f) + 1) >> 1) on bytes 1-4 of each 7-byte group.
+void Uc8279cA4Driver::loadHalfFullLut(EpdBus& bus) {
+  const uint8_t* const lut[] = {A4_UC8279C_LUT_20, A4_UC8279C_LUT_21, A4_UC8279C_LUT_22, A4_UC8279C_LUT_23,
+                                A4_UC8279C_LUT_24};
+  for (uint8_t i = 0; i < 5; ++i) {
+    uint8_t record[A4_UC8279C_LUT_LENGTH];
+    memcpy(record, lut[i], sizeof(record));
+    for (uint8_t g = 0; g + 7 <= sizeof(record); g += 7) {
+      for (uint8_t k = 1; k <= 4; ++k) {
+        const uint8_t b = record[g + k];
+        record[g + k] = static_cast<uint8_t>((b & 0xc0) | (((b & 0x3f) + 1) >> 1));
+      }
+    }
+    bus.cmdData(static_cast<uint8_t>(CMD_LUT_VCOM + i), record, sizeof(record));
   }
 }
 
@@ -381,6 +397,22 @@ void Uc8279cA4Driver::displayGray(EpdBus& bus, const uint8_t* fb, const bool tur
   _gray3HistoryValid = false;
   _gray3Session = false;
 
+  // Stock V1.0.3's lockscreen sequence. Pre-clear ("GC-black-2x-half") in the
+  // B/W session: black to DTM2, no DTM1 write, two refreshes with the halved
+  // GC waveform.
+  if (_grayControllerMode) {
+    hardwareReset(bus);
+    initController(bus, Session::Bw);
+  }
+  ensurePowerOn(bus);
+  const uint8_t clearInterval = 0x97;
+  bus.cmdData(CMD_VCOM_DATA_INTERVAL, &clearInterval, 1);
+  loadHalfFullLut(bus);
+  fillControllerRam(bus, CMD_DTM2, 0x00);
+  bus.cmd(CMD_DISPLAY_REFRESH);
+  bus.waitBusy(" A4 refresh");
+  refresh(bus);
+
   hardwareReset(bus);
   initController(bus, Session::FourGray);
   // Stock wire order: MSB -> DTM1 (0x10), LSB -> DTM2 (0x13), uninverted, so
@@ -390,7 +422,14 @@ void Uc8279cA4Driver::displayGray(EpdBus& bus, const uint8_t* fb, const bool tur
   // Both gray planes are fully written, replacing the unknown startup state.
   _firstRefreshPending = false;
   loadGrayLut(bus);
-  refresh(bus);
+  ensurePowerOn(bus);
+  bus.cmd(CMD_DISPLAY_REFRESH);
+  bus.waitBusy(" A4 refresh");
+  // Stock re-seeds the old plane white before powering off.
+  fillControllerRam(bus, CMD_DTM1, 0xff);
+  bus.cmd(CMD_POWER_OFF);
+  bus.waitBusy(" A4 power-off");
+  _screenOn = false;
   _redriveAfterGray = true;
 }
 

@@ -629,7 +629,7 @@ uint16_t piccoPercent(uint16_t mv, bool charging) {
     pct = static_cast<uint16_t>(100 - 5 * i + (hi > lo ? 5 * (mv - lo) / (hi - lo) : 5));
     break;
   }
-  return static_cast<uint16_t>((pct + 5) / 10 * 10);  // the SDK's 10% notches
+  return pct;
 }
 #endif
 

@@ -93,10 +93,56 @@ char g_selectedAddr[18] = {0};
 uint8_t g_selectedAttemptsLeft = 0;
 uint32_t g_selectedStartedMs = 0;
 
+// armBondedReconnect(): while armed, poll() scans and connects to a bond heard
+// advertising, and only within the window from arming or from the last drop.
+// Guarded by g_mux.
+constexpr uint32_t kPriorityWaitMs = 3000;
+constexpr uint32_t kBondedScanMs = 5000;
+bool g_bondedArmed = false;
+uint32_t g_bondedStartedMs = 0;
+PickPolicy g_pickPolicy = PickPolicy::First;
+char g_priorityAddr[18] = {0};
+char g_candidateAddr[18] = {0};
+uint8_t g_candidateType = 0;
+uint32_t g_candidateFirstMs = 0;
+bool g_candidateReady = false;
+// A bond whose link came up and then failed this many times in a row is not picked
+// again until the window reopens, once another bond has been heard, so it cannot
+// starve a remote that works. With no other bond around it keeps its turns.
+constexpr uint8_t kBondedFailLimit = 2;
+char g_failedAddr[18] = {0};
+uint8_t g_failedCount = 0;
+bool g_otherBondHeard = false;
+// The connect being made got a link before it failed (service, pairing or HID setup).
+// A connect timeout does not count: the remote may only be waking. Connection task only.
+bool g_failedAfterLink = false;
+
 // Caller holds g_mux.
-void clearSelectedPlanLocked() {
+void clearCandidateLocked() {
+  g_candidateAddr[0] = '\0';
+  g_candidateReady = false;
+}
+
+// Caller holds g_mux. A new scan window: every bond gets its turns again.
+void openBondedWindowLocked() {
+  g_bondedStartedMs = millis();
+  g_failedAddr[0] = '\0';
+  g_failedCount = 0;
+  g_otherBondHeard = false;
+}
+
+// Caller holds g_mux.
+void cancelBondedLocked() {
+  g_bondedArmed = false;
+  g_priorityAddr[0] = '\0';
+  clearCandidateLocked();
+}
+
+// Caller holds g_mux.
+void clearReconnectPlansLocked() {
   g_selectedAddr[0] = '\0';
   g_selectedAttemptsLeft = 0;
+  cancelBondedLocked();
 }
 
 // HID Report Map hints (parsed once per connection in setupHid). Many BLE
@@ -383,6 +429,7 @@ void cancelPendingConnect() {
 }
 
 void doConnect(const char* addrStr, uint8_t type) {
+  g_failedAfterLink = false;
   if (!g_client) {
     self().onConnectFailed("BLE client unavailable");
     return;
@@ -414,6 +461,7 @@ void doConnect(const char* addrStr, uint8_t type) {
       return;
     }
   }
+  g_failedAfterLink = true;  // the link is up: a failure from here counts toward the skip
   if (!hasHidService(g_client)) {
 #if FREEINK_BLE_HID_SCAN_DEBUG
     Serial.printf("[BleHid] no HID service: %s\n", addrStr);
@@ -457,6 +505,14 @@ class ScanCB : public NimBLEScanCallbacks {
     // connect time. The name falls back to the address. Keep the callback cheap
     // so heavy logging can't choke the C3's advertisement-report queue.
     const std::string a = dev->getAddress().toString();
+    // A bonded-reconnect scan only asks whether a bond advertises: skip the name work.
+    portENTER_CRITICAL(&g_mux);
+    const bool bondedScan = g_bondedArmed;
+    portEXIT_CRITICAL(&g_mux);
+    if (bondedScan) {
+      self().onScanResultIngest(a.c_str(), nullptr, 0, dev->getAddress().getType(), false, dev->isConnectable());
+      return;
+    }
     const bool named = dev->haveName();
     const std::string nm = named ? dev->getName() : a;
     const uint8_t type = dev->getAddress().getType();
@@ -519,7 +575,7 @@ bool BleKeyboardHost::begin(const char* hostName) {
   if (g_teardownPending.load()) return false;
   g_autoReconnect = true;
   portENTER_CRITICAL(&g_mux);
-  clearSelectedPlanLocked();
+  clearReconnectPlansLocked();
   portEXIT_CRITICAL(&g_mux);
 
 #if FREEINK_BLE_HID_SCAN_DEBUG
@@ -631,7 +687,7 @@ bool BleKeyboardHost::end(uint32_t timeoutMs) {
   const uint32_t budgetMs = timeoutMs > kMaxTeardownTimeoutMs ? kMaxTeardownTimeoutMs : timeoutMs;
   const uint32_t startMs = millis();
   portENTER_CRITICAL(&g_mux);
-  clearSelectedPlanLocked();
+  clearReconnectPlansLocked();
   portEXIT_CRITICAL(&g_mux);
   if (begun_) {
     // Stopping before not-running: an observer of isRunning()/isStopping() never
@@ -687,7 +743,7 @@ bool BleKeyboardHost::end(uint32_t timeoutMs) {
   ringHead_ = 0;
   ringTail_ = 0;
   heldUsage_ = 0;
-  clearSelectedPlanLocked();
+  clearReconnectPlansLocked();
   rawHead_ = 0;
   rawTail_ = 0;
   rawCode_ = 0;
@@ -747,9 +803,37 @@ void BleKeyboardHost::poll() {
     --g_selectedAttemptsLeft;
   }
   portEXIT_CRITICAL(&g_mux);
+
+  // Bonded pick: scan, and connect to the bond heard advertising.
+  char picked[sizeof(g_candidateAddr)] = {0};
+  bool scanForBonds = false;
+  portENTER_CRITICAL(&g_mux);
+  const bool bondedArmed = g_bondedArmed;
+  if (bondedArmed && !connected_ && !g_connecting) {
+    const uint32_t now = millis();
+    if (g_candidateAddr[0] && (g_candidateReady || now - g_candidateFirstMs >= kPriorityWaitMs)) {
+      g_candidateReady = true;
+      if (now - g_lastReconnectMs >= kReconnectBackoffMs) memcpy(picked, g_candidateAddr, sizeof(picked));
+    }
+    scanForBonds = !picked[0] && !scanning_ && now - g_bondedStartedMs < kSelectedReconnectWindowMs;
+  }
+  portEXIT_CRITICAL(&g_mux);
+  if (picked[0]) {
+    stopScan();
+    connectInternal(picked, /*explicitRequest=*/false);
+  } else if (scanForBonds && begun_ && clientReleased()) {  // end() may run on another task
+    NimBLEScan* scan = NimBLEDevice::getScan();
+    // Passive: an active scan holds a scannable bond's report until its scan response.
+    scan->setActiveScan(false);
+    scan->setDuplicateFilter(1);  // one report per advertiser and 5 s scan
+    scan->start(kBondedScanMs, false, true);
+    scanning_ = scan->isScanning();
+  }
+
   if (selected[0]) {
     connectInternal(selected, /*explicitRequest=*/false);
-  } else if (!planArmed && g_autoReconnect && !connected_ && !g_connecting && !scanning_ && bondCount_ > 0) {
+  } else if (!planArmed && !bondedArmed && g_autoReconnect && !connected_ && !g_connecting && !scanning_ &&
+             bondCount_ > 0) {
     const uint32_t now = millis();
     if (now - g_lastReconnectMs > kReconnectBackoffMs) {
       g_lastReconnectMs = now;
@@ -779,10 +863,13 @@ void BleKeyboardHost::startScan(uint32_t ms) {
     }
   }
   portENTER_CRITICAL(&g_mux);
+  cancelBondedLocked();  // a scan the app starts is a pairing scan
   deviceCount_ = 0;
   portEXIT_CRITICAL(&g_mux);
   NimBLEScan* scan = NimBLEDevice::getScan();
   scan->clearResults();
+  scan->setActiveScan(true);    // names ride in scan responses
+  scan->setDuplicateFilter(0);  // and in later reports of the same advertiser
 #if FREEINK_BLE_HID_SCAN_DEBUG
   Serial.printf("[BleHid] scan start: active, continuous, %lu ms wasScanning=%d\n", static_cast<unsigned long>(ms),
                 scan->isScanning() ? 1 : 0);
@@ -821,15 +908,23 @@ bool BleKeyboardHost::connect(const char* addr) { return connectInternal(addr, /
 
 bool BleKeyboardHost::armSelectedPeerReconnect(const char* addr) {
   if (!addr || strnlen(addr, sizeof(g_selectedAddr)) != sizeof(g_selectedAddr) - 1) return false;
-  if (!begun_ || !g_connTask || connected_ || g_connecting || scanning_) return false;
+  if (!begun_ || !g_connTask || connected_ || g_connecting) return false;
   bool bonded = false;
   for (uint8_t i = 0; i < bondCount_; ++i) {
     if (strncmp(bonds_[i].addr, addr, sizeof(bonds_[i].addr)) == 0) bonded = true;
   }
   if (!bonded) return false;
+  // The bonded pick's own scan does not refuse the plan: it gives way. The app's scan does.
+  portENTER_CRITICAL(&g_mux);
+  const bool bondedScan = g_bondedArmed;
+  cancelBondedLocked();
+  portEXIT_CRITICAL(&g_mux);
+  if (bondedScan) stopScan();
+  if (scanning_) return false;
   portENTER_CRITICAL(&g_mux);
   const bool armed = g_selectedAddr[0] == '\0';
   if (armed) {
+    cancelBondedLocked();
     memcpy(g_selectedAddr, addr, sizeof(g_selectedAddr));
     g_selectedAttemptsLeft = kSelectedReconnectAttempts;
     g_selectedStartedMs = millis();
@@ -839,11 +934,32 @@ bool BleKeyboardHost::armSelectedPeerReconnect(const char* addr) {
   return armed;
 }
 
+bool BleKeyboardHost::armBondedReconnect(const PickPolicy policy, const char* priorityAddr) {
+  if (!begun_ || !g_connTask) return false;
+  portENTER_CRITICAL(&g_mux);
+  bool bondedPriority = false;
+  for (uint8_t i = 0; policy == PickPolicy::Priority && priorityAddr && i < bondCount_; ++i) {
+    if (strncmp(bonds_[i].addr, priorityAddr, sizeof(bonds_[i].addr)) == 0) bondedPriority = true;
+  }
+  if (bondCount_ == 0 || (scanning_ && !g_bondedArmed)) {  // nothing to find, or the app's own scan
+    portEXIT_CRITICAL(&g_mux);
+    return false;
+  }
+  clearReconnectPlansLocked();
+  g_bondedArmed = true;
+  g_pickPolicy = bondedPriority ? PickPolicy::Priority : PickPolicy::First;
+  if (bondedPriority) memcpy(g_priorityAddr, priorityAddr, sizeof(g_priorityAddr) - 1);
+  openBondedWindowLocked();
+  g_lastReconnectMs = g_bondedStartedMs - kReconnectBackoffMs;  // the first pick connects at once
+  portEXIT_CRITICAL(&g_mux);
+  return true;
+}
+
 bool BleKeyboardHost::connectInternal(const char* addr, const bool explicitRequest) {
   if (!begun_ || !addr || g_connecting) return false;
   if (explicitRequest) {
     portENTER_CRITICAL(&g_mux);
-    clearSelectedPlanLocked();
+    clearReconnectPlansLocked();
     g_autoReconnect = true;
     portEXIT_CRITICAL(&g_mux);
   }
@@ -865,6 +981,20 @@ bool BleKeyboardHost::connectInternal(const char* addr, const bool explicitReque
     }
   }
 
+  if (!explicitRequest) {
+    // poll() copied the pick outside the lock: a drop, a failure or forget() may have cleared it since.
+    portENTER_CRITICAL(&g_mux);
+    const bool bonded = g_bondedArmed;
+    const bool stillPicked =
+        bonded && g_candidateReady && !connected_ && strncmp(g_candidateAddr, addr, sizeof(g_candidateAddr)) == 0;
+    if (stillPicked) {
+      type = g_candidateType;
+      knownType = true;
+    }
+    portEXIT_CRITICAL(&g_mux);
+    if (bonded && !stillPicked) return false;
+  }
+
   strncpy(g_targetAddr, addr, sizeof(g_targetAddr) - 1);
   g_targetAddr[sizeof(g_targetAddr) - 1] = '\0';
   g_targetType = type;
@@ -881,8 +1011,10 @@ bool BleKeyboardHost::connectInternal(const char* addr, const bool explicitReque
 void BleKeyboardHost::disconnect() {
   g_autoReconnect = false;
   portENTER_CRITICAL(&g_mux);
-  clearSelectedPlanLocked();
+  const bool bondedScan = g_bondedArmed;
+  clearReconnectPlansLocked();
   portEXIT_CRITICAL(&g_mux);
+  if (bondedScan) stopScan();
   if (g_client && g_client->isConnected()) g_client->disconnect();
 }
 
@@ -897,11 +1029,18 @@ void BleKeyboardHost::forget(const char* addr) {
   for (uint8_t i = 0; i < bondCount_; ++i) {
     if (strncmp(bonds_[i].addr, addr, sizeof(bonds_[i].addr)) != 0) continue;
     NimBLEDevice::deleteBond(NimBLEAddress(std::string(bonds_[i].addr), bonds_[i].addrType));
+    // Under the lock, for the bonded scan's reads on the NimBLE task. onLinkUp() adds
+    // bonds outside it; the scan skips the table while a connect is in progress.
     portENTER_CRITICAL(&g_mux);
-    if (strncmp(g_selectedAddr, addr, sizeof(g_selectedAddr)) == 0) clearSelectedPlanLocked();
-    portEXIT_CRITICAL(&g_mux);
+    if (strncmp(g_selectedAddr, addr, sizeof(g_selectedAddr)) == 0) clearReconnectPlansLocked();
+    if (strncmp(g_candidateAddr, addr, sizeof(g_candidateAddr)) == 0) clearCandidateLocked();
+    if (strncmp(g_priorityAddr, addr, sizeof(g_priorityAddr)) == 0) {
+      g_priorityAddr[0] = '\0';
+      g_pickPolicy = PickPolicy::First;
+    }
     for (uint8_t j = i + 1; j < bondCount_; ++j) bonds_[j - 1] = bonds_[j];
     bondCount_--;
+    portEXIT_CRITICAL(&g_mux);
     persistBonds();
     return;
   }
@@ -1221,6 +1360,29 @@ void BleKeyboardHost::ingestRawEdge(const uint8_t* data, size_t len, const uint3
 void BleKeyboardHost::onScanResultIngest(const char* addr, const char* name, int rssi, uint8_t type, bool hid,
                                          bool connectable) {
   if (!addr) return;
+  portENTER_CRITICAL(&g_mux);
+  if (g_bondedArmed) {
+    // Only a bond that can take a connection counts; nothing enters the device list.
+    for (uint8_t i = 0; connectable && !connected_ && !g_connecting && i < bondCount_; ++i) {
+      if (strncmp(bonds_[i].addr, addr, sizeof(bonds_[i].addr)) != 0) continue;
+      const bool failedOne = g_failedAddr[0] && strncmp(g_failedAddr, addr, sizeof(g_failedAddr)) == 0;
+      if (g_failedAddr[0] && !failedOne) g_otherBondHeard = true;
+      if (failedOne && g_failedCount >= kBondedFailLimit && g_otherBondHeard) break;
+      const bool priority =
+          g_pickPolicy == PickPolicy::Priority && strncmp(g_priorityAddr, addr, sizeof(g_priorityAddr)) == 0;
+      if (!g_candidateAddr[0] || (priority && !g_candidateReady)) {
+        memcpy(g_candidateAddr, bonds_[i].addr, sizeof(g_candidateAddr));
+        g_candidateType = type;
+        g_candidateFirstMs = millis();
+        g_candidateReady = g_pickPolicy == PickPolicy::First || priority;
+      }
+      break;
+    }
+    portEXIT_CRITICAL(&g_mux);
+    return;
+  }
+  portEXIT_CRITICAL(&g_mux);
+  if (!name) return;  // a bonded-scan report that arrived after the pick was cancelled
   // A "real" name (not the address fallback) should never be downgraded back to
   // the address on a later primary-only advertisement.
   const bool realName = name && name[0] && strcmp(name, addr) != 0;
@@ -1371,6 +1533,10 @@ void BleKeyboardHost::onLinkDown() {
     g_selectedStartedMs = millis();
     g_lastReconnectMs = g_selectedStartedMs;
   }
+  if (g_bondedArmed) {
+    clearCandidateLocked();
+    if (connected_) openBondedWindowLocked();  // a drop opens a fresh scan window
+  }
   connected_ = false;
   connecting_ = false;
   connAddr_[0] = '\0';
@@ -1395,7 +1561,16 @@ void BleKeyboardHost::onConnectFailed(const char* reason) {
   connectFailure_[sizeof(connectFailure_) - 1] = '\0';
   connectFailed_ = true;
   heldUsage_ = 0;
-  if (g_selectedAddr[0]) g_lastReconnectMs = millis();  // the next attempt waits from the failure
+  if (g_selectedAddr[0] || g_bondedArmed) g_lastReconnectMs = millis();  // the next attempt waits from the failure
+  if (g_bondedArmed && g_failedAfterLink) {
+    if (strncmp(g_failedAddr, g_targetAddr, sizeof(g_failedAddr)) == 0) {
+      ++g_failedCount;
+    } else {
+      memcpy(g_failedAddr, g_targetAddr, sizeof(g_failedAddr));
+      g_failedCount = 1;
+    }
+  }
+  if (g_bondedArmed) clearCandidateLocked();
   portEXIT_CRITICAL(&g_mux);
 }
 
@@ -1433,6 +1608,13 @@ bool BleKeyboardHost::takePairingPasskey(uint32_t& out) {
 }
 
 // --- NVS persistence ---------------------------------------------------------
+bool BleKeyboardHost::firstSavedBond(PairedHidDevice& out) {
+  if (!begun_) loadBonds();  // the table in flash; begin() loads it again
+  if (bondCount_ == 0 || bonds_[0].addr[0] == '\0') return false;
+  out = bonds_[0];
+  return true;
+}
+
 void BleKeyboardHost::loadBonds() {
   Preferences p;
   if (!p.begin("freeink-hid", true)) return;
@@ -1477,6 +1659,7 @@ const DiscoveredDevice& BleKeyboardHost::device(uint8_t) const {
 void BleKeyboardHost::releaseScanResults() {}
 bool BleKeyboardHost::connect(const char*) { return false; }
 bool BleKeyboardHost::armSelectedPeerReconnect(const char*) { return false; }
+bool BleKeyboardHost::armBondedReconnect(PickPolicy, const char*) { return false; }
 void BleKeyboardHost::disconnect() {}
 const PairedHidDevice& BleKeyboardHost::paired(uint8_t) const {
   static const PairedHidDevice kEmpty{};
@@ -1496,6 +1679,7 @@ bool BleKeyboardHost::takePairingPasskey(uint32_t&) { return false; }
 void BleKeyboardHost::enqueue(const KeyEvent&) {}
 void BleKeyboardHost::emitUsage(uint8_t, uint8_t) {}
 void BleKeyboardHost::persistBonds() {}
+bool BleKeyboardHost::firstSavedBond(PairedHidDevice&) { return false; }
 void BleKeyboardHost::loadBonds() {}
 
 }  // namespace freeink

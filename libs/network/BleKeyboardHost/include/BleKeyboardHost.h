@@ -27,6 +27,9 @@
 
 namespace freeink {
 
+// Which bonded peer armBondedReconnect() takes when more than one advertises.
+enum class PickPolicy : uint8_t { Priority = 0, First = 1 };
+
 // Non-character keys an editor/UI cares about. Printable keys arrive as `ch`.
 enum class SpecialKey : uint8_t {
   None = 0,
@@ -172,6 +175,18 @@ class BleKeyboardHost {
   // connect(), disconnect(), end(), and forget() of that peer cancel the plan; a
   // link to the peer that later drops on its own starts a fresh one.
   bool armSelectedPeerReconnect(const char* addr);
+  // Reconnect to whichever bonded peer is switched on: scan (passive) and connect
+  // to a bond heard advertising. First takes the first one heard; Priority waits up
+  // to three seconds for priorityAddr before taking another (no bonded priorityAddr
+  // acts as First). Advertisers stay out of the device list. New 5 s scans start
+  // for up to 120 seconds after arming, and again after a link drops. A bond whose
+  // link comes up and then fails twice (service, pairing or HID setup) is skipped
+  // until then, once another bond has been heard; connect timeouts do not count.
+  // While armed, the turn over the
+  // bonds and a selected plan do not run. Refused (false) before begin(), with no
+  // bonds, or during the app's own scan. connect(), disconnect(), startScan(),
+  // armSelectedPeerReconnect() and end() cancel it.
+  bool armBondedReconnect(PickPolicy policy, const char* priorityAddr);
   // Drop the link and pause auto-reconnect until the next connect() or begin().
   void disconnect();
   bool isConnected() const { return connected_; }
@@ -185,6 +200,9 @@ class BleKeyboardHost {
   bool takePairingPasskey(uint32_t& out);
 
   // --- Pairings (persisted) --------------------------------------------------
+  // The first saved bond. With the radio off it loads the table from flash (begin()
+  // loads it again). False when none.
+  bool firstSavedBond(PairedHidDevice& out);
   uint8_t pairedCount() const { return bondCount_; }
   const PairedHidDevice& paired(uint8_t i) const;
   void forget(const char* addr);

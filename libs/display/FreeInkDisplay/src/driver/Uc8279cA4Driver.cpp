@@ -58,7 +58,8 @@ void Uc8279cA4Driver::hardwareReset(EpdBus& bus) {
 
 void Uc8279cA4Driver::initController(EpdBus& bus, const Session session) {
   // Gray3 uses stock V1.0.3's reader session and four-gray stock V1.3.0's image session.
-  // B/W keeps a stronger drive because this driver changes UI screens with fast refreshes.
+  // B/W keeps stronger rails because this driver changes UI screens with fast
+  // refreshes, with stock's VCOM_DC 0x32.
   const bool fourGray = session == Session::FourGray;
   const uint8_t panel[] = {0x3f, 0x4a};
   const uint8_t gray3Power[] = {0x03, 0x00, 0x72, 0x72};
@@ -68,7 +69,7 @@ void Uc8279cA4Driver::initController(EpdBus& bus, const Session session) {
   const uint8_t resolution[] = {0x03, 0x00, 0x02, 0x58};  // 768x600
   const uint8_t interval[] = {0x00, 0x00, static_cast<uint8_t>(fourGray ? 0x20 : 0x00), 0x00};
   const uint8_t powerOffSequence = 0x20;
-  const uint8_t vcom = session == Session::Bw ? 0x24 : fourGray ? 0x20 : 0x32;
+  const uint8_t vcom = fourGray ? 0x20 : 0x32;
   const uint8_t pll = 0x0f;
   const uint8_t tcon = 0x02;
 

@@ -74,8 +74,8 @@ refreshes made later four-gray images show earlier screens as ghosts.
 
 Gray3 pages use the stock V1.0.3 reader session (PWR 03 00 72 72,
 VCOM_DC 0x32). Four-gray images use the stock V1.3.0 image session
-(PWR 03 00 78 78 17, VCOM_DC 0x20, gate/source 00 00 20 00). B/W uses a
-stronger drive (PWR 43 00 78 78 17, VCOM_DC 0x24) because UI screens change
+(PWR 03 00 78 78 17, VCOM_DC 0x20, gate/source 00 00 20 00). B/W uses
+stronger rails (PWR 43 00 78 78 17) with the stock VCOM_DC 0x32 because UI screens change
 with fast refreshes. B/W and Gray3 use gate/source 00 00 00 00. Every session
 seeds DTM1 white before power-on.
 Full refresh uses the stock GC waveform (0x50 = 0x97); fast refresh

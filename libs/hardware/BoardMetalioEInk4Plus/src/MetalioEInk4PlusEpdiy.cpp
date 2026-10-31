@@ -56,9 +56,8 @@ void outputLow(gpio_num_t pin) {
   gpio_set_level(pin, 0);
 }
 
-void boardInit(uint32_t epdRowWidth, const EpdInitConfig* initConfig) {
+void boardInit(uint32_t epdRowWidth) {
   (void)epdRowWidth;
-  (void)initConfig;
   mp::ensureBooted(3000);
   mp::setOutputs(TPS_LINES, 0);
   // A previous deep sleep may have left the bus pins held.
@@ -70,7 +69,9 @@ void boardInit(uint32_t epdRowWidth, const EpdInitConfig* initConfig) {
 
   const EpdDisplay_t* display = epd_get_display();
   LcdEpdConfig_t config = {};
-  config.pixel_clock = static_cast<size_t>(display->bus_speed) * 1000 * 1000;
+  // Pixel clock. The vendor runs the panel's 20 MHz; 16 MHz on this build while line underruns are investigated.
+  config.pixel_clock = 16u * 1000 * 1000;
+  (void)display->bus_speed;
   config.ckv_high_time = 60;
   config.line_front_porch = 4;
   config.le_high_time = 9;

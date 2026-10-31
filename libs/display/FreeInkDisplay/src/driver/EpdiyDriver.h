@@ -45,12 +45,13 @@ class EpdiyDriver : public PanelDriver {
   void displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut, bool factoryMode) override;
 
  private:
-  bool update(enum EpdDrawMode mode);
+  bool update(enum EpdDrawMode mode, bool full);
   int temperature() const;
 
   const EpdiyConfig& _cfg;
   EpdiyHighlevelState _hl{};
   bool _ready = false;
+  bool _panelKnown = false;  // false until a clear has put the glass in a known state
   uint8_t* _lsb = nullptr;
   uint8_t* _msb = nullptr;
   enum EpdDrawMode _lastBaseMode = MODE_GL16;

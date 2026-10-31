@@ -93,12 +93,25 @@ void EpdiyDriver::deepSleep(EpdBus& bus) {
   _ready = false;
 }
 
-bool EpdiyDriver::update(enum EpdDrawMode mode) {
-  // Rails up only for the waveform; the panel is powered off between refreshes.
+// Rails up only for the waveform; the panel is powered off between refreshes.
+// A differential update only drives pixels EPDiy's previous frame says changed,
+// so the first draw clears the glass and draws from white, and full refreshes
+// drive every pixel (the vendor firmware's sequence).
+bool EpdiyDriver::update(enum EpdDrawMode mode, bool full) {
   epd_poweron();
-  const enum EpdDrawError err = epd_hl_update_screen(&_hl, mode, temperature());
+  enum EpdDrawError err;
+  if (!_panelKnown) {
+    err = epd_clear_checked();
+    if (err == EPD_DRAW_SUCCESS) err = epd_hl_update_screen_from_white(&_hl, MODE_GC16, temperature());
+  } else if (full) {
+    err = epd_hl_update_screen_full(&_hl, mode, temperature());
+  } else {
+    err = epd_hl_update_screen(&_hl, mode, temperature());
+  }
   epd_poweroff();
-  return err == EPD_DRAW_SUCCESS;
+  // An interrupted waveform leaves the optical state unknown: clear again next time.
+  _panelKnown = err == EPD_DRAW_SUCCESS;
+  return _panelKnown;
 }
 
 void EpdiyDriver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
@@ -110,7 +123,7 @@ void EpdiyDriver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, R
   auto* dst = reinterpret_cast<uint32_t*>(epd_hl_get_framebuffer(&_hl));
   for (uint32_t i = 0; i < g.bufferSize; ++i) dst[i] = gExpand[fb[i]];
   _lastBaseMode = modeFor(mode);
-  update(_lastBaseMode);
+  update(_lastBaseMode, mode != RefreshMode::Fast);
 }
 
 void EpdiyDriver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
@@ -157,7 +170,7 @@ void EpdiyDriver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, cons
     }
   }
   // A clean (GC16) base keeps its mode; otherwise GL16 moves only the gray pixels.
-  update(_lastBaseMode == MODE_GC16 ? MODE_GC16 : MODE_GL16);
+  update(_lastBaseMode == MODE_GC16 ? MODE_GC16 : MODE_GL16, false);
 }
 
 PanelDriver& epdiyDriver() {

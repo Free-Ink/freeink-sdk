@@ -414,6 +414,10 @@ const std::vector<NimBLERemoteCharacteristic*>& NimBLERemoteService::getCharacte
 bool NimBLEClient::connect(const NimBLEAddress& address) {
   state().connectCalls++;
   state().connectAddresses.push_back(address.toString());
+  if (connected_ || disconnecting_) {  // like NimBLE: only a DISCONNECTED client connects
+    state().lastError = BLE_HS_EREJECT;
+    return false;
+  }
   if (holdHere(Stage::Connect) || state().failConnects) {
     state().lastError = BLE_HS_ETIMEOUT;
     return false;

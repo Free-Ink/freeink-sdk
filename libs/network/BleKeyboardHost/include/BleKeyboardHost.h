@@ -161,7 +161,10 @@ class BleKeyboardHost {
 
   // --- Connection ------------------------------------------------------------
   // Begin an async connect to a scanned/bonded address. isConnected() flips once
-  // the link is encrypted and the HID input report is subscribed.
+  // the link is encrypted and the HID input report is subscribed. An attempt still in
+  // progress (an automatic reconnect or an earlier connect()) is ended first; the
+  // call waits for that, at most about 8.5 s (usually milliseconds), and returns
+  // false if it could not end it.
   bool connect(const char* addr);
   // Reconnect to one bonded peer only, for a bounded time: at most six attempts,
   // each four seconds after the last one failed, none started later than 120

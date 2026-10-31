@@ -59,9 +59,9 @@ void Uc8279cA4Driver::hardwareReset(EpdBus& bus) {
 void Uc8279cA4Driver::initController(EpdBus& bus, const Session session) {
   // Gray3 and four-gray use stock V1.0.3's gray session (its lockscreen paint).
   // B/W keeps stronger rails because this driver changes UI screens with fast
-  // refreshes. VCOM_DC is tuned on hardware: B/W 0x24 fuzzed at idle and
-  // stock 0x32 left charge that gray paints showed as white cut-outs; four-gray
-  // images at 0x32 or 0x2b showed earlier screens. Gray3 keeps stock's 0x32.
+  // refreshes. B/W VCOM_DC is tuned on hardware: 0x24 fuzzed at idle, stock
+  // 0x32 left charge that gray paints showed as white cut-outs and ghosts.
+  // Gray sessions keep stock's 0x32.
   const uint8_t panel[] = {0x3f, 0x4a};
   const uint8_t grayPower[] = {0x03, 0x00, 0x72, 0x72};
   const uint8_t bwPower[] = {0x43, 0x00, 0x78, 0x78, 0x17};
@@ -69,7 +69,7 @@ void Uc8279cA4Driver::initController(EpdBus& bus, const Session session) {
   const uint8_t resolution[] = {0x03, 0x00, 0x02, 0x58};  // 768x600
   const uint8_t interval[] = {0x00, 0x00, 0x00, 0x00};
   const uint8_t powerOffSequence = 0x20;
-  const uint8_t vcom = session == Session::Bw ? 0x2b : session == Session::FourGray ? 0x27 : 0x32;
+  const uint8_t vcom = session == Session::Bw ? 0x26 : 0x32;
   const uint8_t pll = 0x0f;
   const uint8_t tcon = 0x02;
 
@@ -135,10 +135,19 @@ void Uc8279cA4Driver::loadFastLut(EpdBus& bus) {
   }
 }
 
+// Stock Factory B drives white pixels only about 12 frames toward white after
+// the black pre-clear; on hardware, light and white areas then showed charge
+// left by earlier screens. Record 0x21 (white) gets its last two white pulses
+// lengthened to 6 frames each (stock 0x81, 0x82).
 void Uc8279cA4Driver::loadGrayLut(EpdBus& bus) {
   for (uint8_t i = 0; i < 5; ++i) {
-    bus.cmdData(static_cast<uint8_t>(CMD_LUT_VCOM + i), A4_UC8279C_GRAY_LUT + i * A4_UC8279C_GRAY_RECORD_LENGTH,
-                A4_UC8279C_GRAY_RECORD_LENGTH);
+    uint8_t record[A4_UC8279C_GRAY_RECORD_LENGTH];
+    memcpy(record, A4_UC8279C_GRAY_LUT + i * A4_UC8279C_GRAY_RECORD_LENGTH, sizeof(record));
+    if (i == 1) {
+      record[15] = 0x86;
+      record[17] = 0x86;
+    }
+    bus.cmdData(static_cast<uint8_t>(CMD_LUT_VCOM + i), record, sizeof(record));
   }
 }
 

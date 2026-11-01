@@ -4,6 +4,8 @@
 #include "FrontlightManager.h"
 
 #include <M5Pm1.h>
+
+#include <algorithm>
 #include <Wire.h>
 #include <driver/gpio.h>  // gpio_hold_en/dis in prepareForDeepSleep()/begin()
 #ifdef FREEINK_FRONTLIGHT_LS
@@ -481,7 +483,10 @@ void FrontlightManager::apply() {
   }
   if (fl.gpio == BoardConfig::PIN_UNASSIGNED) return;
 
-  const uint32_t full = maxDuty(fl.pwmResolutionBits);
+  // The curve spans [0, ceiling]; PWM writes and polarity still use the full scale.
+  const uint32_t pwmFull = maxDuty(fl.pwmResolutionBits);
+  const uint32_t ceiling = fl.maxPermille < 1000u ? (pwmFull * fl.maxPermille + 500u) / 1000u : pwmFull;
+  const uint32_t full = ceiling ? ceiling : 1u;
   const bool dual = fl.gpioWarm != BoardConfig::PIN_UNASSIGNED;
 
   // Convert brightness to PWM precision BEFORE splitting it between channels.
@@ -509,7 +514,12 @@ void FrontlightManager::apply() {
   }
   uint32_t warmDuty = 0;
   uint32_t coolDuty = totalDuty;
-  if (dual) {
+  if (dual && fl.saturatingMix) {
+    const uint32_t warmMix = std::min<uint32_t>(100u, 2u * _warmPercent);
+    const uint32_t coolMix = std::min<uint32_t>(100u, 2u * (100u - _warmPercent));
+    warmDuty = (totalDuty * warmMix + 50u) / 100u;
+    coolDuty = (totalDuty * coolMix + 50u) / 100u;
+  } else if (dual) {
     warmDuty = (totalDuty * _warmPercent + 50u) / 100u;
     coolDuty = totalDuty - warmDuty;
   }
@@ -523,18 +533,18 @@ void FrontlightManager::apply() {
   const uint32_t startFloor = (full * fl.minStartPermille + 500u) / 1000u;
   if (_lastTotalDuty == 0 && totalDuty > 0 && startFloor > 0 && totalDuty < startFloor) {
     const uint32_t kickWarm = dual ? (startFloor * _warmPercent + 50u) / 100u : 0;
-    writeChannel(fl.gpio, LEDC_CH_COOL, physicalDuty(startFloor - kickWarm, full, fl.activeHigh));
+    writeChannel(fl.gpio, LEDC_CH_COOL, physicalDuty(startFloor - kickWarm, pwmFull, fl.activeHigh));
     if (dual) {
-      writeChannel(fl.gpioWarm, LEDC_CH_WARM, physicalDuty(kickWarm, full, fl.activeHigh));
+      writeChannel(fl.gpioWarm, LEDC_CH_WARM, physicalDuty(kickWarm, pwmFull, fl.activeHigh));
     }
     delay(30);  // one boost soft-start; the output cap carries the dip that follows
   }
   _lastTotalDuty = totalDuty;
 
-  writeChannel(fl.gpio, LEDC_CH_COOL, physicalDuty(coolDuty, full, fl.activeHigh));
+  writeChannel(fl.gpio, LEDC_CH_COOL, physicalDuty(coolDuty, pwmFull, fl.activeHigh));
 
   if (dual) {
-    writeChannel(fl.gpioWarm, LEDC_CH_WARM, physicalDuty(warmDuty, full, fl.activeHigh));
+    writeChannel(fl.gpioWarm, LEDC_CH_WARM, physicalDuty(warmDuty, pwmFull, fl.activeHigh));
   }
   LOG_INF("FrontlightMgr", "apply: brightness=%u level=%u totalDuty=%u coolDuty=%u warmDuty=%u lit=%d", _brightness,
            _brightnessLevel, totalDuty, coolDuty, warmDuty, totalDuty != 0 ? 1 : 0);

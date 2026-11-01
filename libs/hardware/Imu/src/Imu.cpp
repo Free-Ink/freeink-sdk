@@ -291,6 +291,9 @@ bool Imu::begin() {
 #if FREEINK_DEVICE_METALIO_EINK4
   if (BoardConfig::isMetalioEInk4() && !metalio::ensureBooted()) return false;
 #endif
+#if FREEINK_DEVICE_METALIO_EINK4_PLUS
+  if (BoardConfig::isMetalioEInk4Plus() && !metalioplus::ensureBooted()) return false;
+#endif
   ensureWire();
   uint8_t who = 0;
   switch (s.imuType) {

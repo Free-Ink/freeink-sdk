@@ -14,7 +14,7 @@ lib_deps =
   HapticManager=symlink://freeink-sdk/libs/hardware/HapticManager
 ```
 
-`FREEINK_CAP_HAPTIC` defaults on for Metalio. Setting it to `0` builds inert
+`FREEINK_CAP_HAPTIC` defaults on for both Metalio boards. Setting it to `0` builds inert
 methods without timer/PWM dependencies. Other boards default to no haptics;
 enabling the capability alone does not assign a motor pin. The board profile's
 `haptic` field specifies the GPIO, polarity and PWM frequency. Select the active
@@ -78,6 +78,12 @@ dispatch is not hard real-time: a busy timer task can delay a transition. On lat
 dispatch, elapsed steps are skipped instead of replaying a burst of old pulses.
 
 ## Metalio hardware notes
+
+The E-Ink4-Plus motor is an on/off line on TCA9555 P0.3 (`HapticConfig::viaExpander`):
+any non-zero intensity runs it, so strength comes from pulse length. A failed
+expander write is retried three times so a lost "off" cannot leave it running.
+
+The rest of this section is about the original E-Ink 4.
 
 Metalio uses 8-bit LEDC PWM at 20 kHz. Full intensity is the same continuous HIGH
 drive used by the vendor's 35 ms pulse. Reduced-intensity PWM and motor response

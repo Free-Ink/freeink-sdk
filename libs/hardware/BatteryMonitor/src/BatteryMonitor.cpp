@@ -31,6 +31,8 @@ constexpr uint8_t BQ27220_STATE_OF_CHARGE = 0x2C;  // SoC, percent (u16 LE)
 constexpr uint8_t BQ25896_REG_STATUS = 0x0B;       // CHRG_STAT in bits [4:3]
 constexpr uint8_t SGM41562_REG_STATUS = 0x08;      // CHRG_STAT [4:3]; bit 1 = input present (stock)
 constexpr uint8_t SGM41562_REG_BATFET = 0x06;      // bit 5 = BATFET off (ship mode)
+constexpr uint8_t CX25601N_REG_STATUS = 0x1E;      // CHG_STAT [4:3] (vendor driver)
+constexpr uint8_t CX25601N_REG_FAULT = 0x1F;       // bit 7 set while VBUS is absent (measured)
 
 // The gauge's I2C controller (Wire or Wire1) per BoardConfig. On single-bus SoCs
 // (ESP32-C3, SOC_I2C_NUM == 1) Wire1 doesn't exist, so always use Wire there.
@@ -524,18 +526,26 @@ bool readGaugeMillivolts(uint16_t& out) {
 }
 
 uint8_t chargerStatusReg() {
-  return BoardConfig::ACTIVE.batteryGauge.chargerType == BoardConfig::ChargerType::Sgm41562 ? SGM41562_REG_STATUS
-                                                                                          : BQ25896_REG_STATUS;
+  switch (BoardConfig::ACTIVE.batteryGauge.chargerType) {
+    case BoardConfig::ChargerType::Sgm41562:
+      return SGM41562_REG_STATUS;
+    case BoardConfig::ChargerType::Cx25601n:
+      return CX25601N_REG_STATUS;
+    default:
+      return BQ25896_REG_STATUS;
+  }
 }
 
 // CHRG_STAT [4:3] from the charger IC: 01 pre-charge or 10 fast-charge means
-// charging (11 = charge done). `known` is false with no charger or a failed read.
+// charging (11 = charge done). The CX25601N counts 11 as top-off, still charging.
+// `known` is false with no charger or a failed read.
 bool readChargerCharging(bool& known) {
   const auto& g = BoardConfig::ACTIVE.batteryGauge;
   uint8_t status = 0;
   known = g.chargerAddr != 0 && readReg8(g.chargerAddr, chargerStatusReg(), status);
   if (!known) return false;
   const uint8_t chrg = (status >> 3) & 0x03;
+  if (g.chargerType == BoardConfig::ChargerType::Cx25601n) return chrg != 0x00;
   return chrg == 0x01 || chrg == 0x02;
 }
 
@@ -592,13 +602,18 @@ bool readChargerExternalPower(bool& known) {
     return false;
   }
   uint8_t status = 0;
-  if (!readReg8(g.chargerAddr, chargerStatusReg(), status)) {
+  // The CX25601N's VBUS_STAT reads 000 with USB in (the vendor init disables
+  // D+/D- detection); 0x1F bit 7 is set exactly while the cable is out.
+  const uint8_t reg =
+      g.chargerType == BoardConfig::ChargerType::Cx25601n ? CX25601N_REG_FAULT : chargerStatusReg();
+  if (!readReg8(g.chargerAddr, reg, status)) {
     known = false;
     return false;
   }
   known = true;
   // Stock (FUN_4200a124 -> FUN_42011620) treats REG08 bit 1 as "USB present".
   if (g.chargerType == BoardConfig::ChargerType::Sgm41562) return (status & 0x02) != 0;
+  if (g.chargerType == BoardConfig::ChargerType::Cx25601n) return (status & 0x80) == 0;
   const uint8_t vbus = (status >> 5) & 0x07;
   const bool powerGood = (status & 0x04) != 0;
   return (vbus != 0x00 && vbus != 0x07) || powerGood;

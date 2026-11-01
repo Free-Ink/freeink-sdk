@@ -29,9 +29,15 @@ Touch, RTC, haptics, IMU, frontlight, the battery gauge and SDMMC enable
 automatically. Set `USE_BLOCK_DEVICE_INTERFACE=1` for SdFat's SDMMC
 block-device interface and `BOARD_HAS_PSRAM`; the panel buffers live in PSRAM.
 
+USB mass storage (`UsbMassStorage`) is opt-in with `FREEINK_CAP_USB_MSC=1`. The
+S31's OTG controller has its own high-speed UTMI PHY, separate from USB
+Serial/JTAG, so no PHY handoff is needed: while the drive is up, GPIO36 (the
+ANA_SW analog switch) is driven low to route the USB-C port to the OTG PHY, and
+high again afterwards, as the vendor does.
+
 Not supported yet: the BH1098G Bluetooth audio module (speaker and microphone),
-the 4G modem, the camera connector and USB mass-storage mode. The charger is
-left as the hardware configures it.
+the 4G modem and the camera connector. The charger is left as the hardware
+configures it.
 
 ## Pins
 

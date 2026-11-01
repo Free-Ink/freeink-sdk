@@ -35,6 +35,9 @@ constexpr uint8_t PIN_POWER_KEY = 15;    // input
 // The expander's open-drain INT, wired-AND with the SC7A20H INT1 (vendor config.h).
 // Any change on an expander input pulls it low until the input port is read.
 constexpr gpio_num_t EXPANDER_INT_GPIO = GPIO_NUM_2;
+// ANA_SW analog switch: low routes the USB-C port to the OTG (UTMI) PHY for USB
+// mass storage, high to USB Serial/JTAG (vendor usb_virtual_disk.cc).
+constexpr int USB_SWITCH_GPIO = 36;
 
 constexpr uint16_t OUTPUTS = (1u << PIN_TPS_VCOM_CTRL) | (1u << PIN_TPS_PWRUP) | (1u << PIN_TPS_WAKEUP) |
                              (1u << PIN_MOTOR) | (1u << PIN_AMP_ENABLE) | (1u << PIN_SCREEN_POWER) |
@@ -166,6 +169,11 @@ inline uint16_t readPressedKeys() {
     pressed = 0;
   }
   return pressed;
+}
+
+inline void routeUsbToOtg(bool otg) {
+  pinMode(USB_SWITCH_GPIO, OUTPUT);
+  digitalWrite(USB_SWITCH_GPIO, otg ? LOW : HIGH);
 }
 
 // Call only after display.deepSleep() and storage shutdown. The vendor firmware

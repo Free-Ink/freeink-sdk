@@ -75,6 +75,14 @@ void PowerManager::armWakeOnPins(uint64_t gpioMask, bool wakeLow) {
 }
 
 bool PowerManager::armPowerButtonWakeup() {
+#if FREEINK_DEVICE_METALIO_EINK4_PLUS
+  // The power key is expander P1.7; it wakes through the expander INT (GPIO2).
+  if (BoardConfig::isMetalioEInk4Plus()) {
+    if (!metalio_plus::prepareWakeOnPowerKey()) return false;
+    armWakeOnPins(1ULL << metalio_plus::EXPANDER_INT_GPIO, /*wakeLow=*/true);
+    return true;
+  }
+#endif
   const int8_t pin = powerPin();
   if (pin < 0) return false;
   const bool activeHigh = powerActiveHigh();
@@ -86,6 +94,12 @@ bool PowerManager::armPowerButtonWakeup() {
 }
 
 void PowerManager::waitForPowerButtonRelease() {
+#if FREEINK_DEVICE_METALIO_EINK4_PLUS
+  if (BoardConfig::isMetalioEInk4Plus()) {
+    while (metalio_plus::powerKeyPressed()) delay(50);
+    return;
+  }
+#endif
   const int8_t pin = powerPin();
   if (pin < 0) return;
   const bool activeHigh = powerActiveHigh();

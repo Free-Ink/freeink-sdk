@@ -390,7 +390,7 @@
 #endif
 // Consumer-triggered vibration output; independent of audio and input events.
 #ifndef FREEINK_CAP_HAPTIC
-#define FREEINK_CAP_HAPTIC (FREEINK_DEVICE_METALIO_EINK4)
+#define FREEINK_CAP_HAPTIC (FREEINK_DEVICE_METALIO_EINK4 || FREEINK_DEVICE_METALIO_EINK4_PLUS)
 #endif
 // LEDC PWM buzzer (tone beeper). The Buzzer lib drives the AudioConfig.buzzer
 // pin; on for boards that wire one (Sticky GPIO48, Murphy GPIO46, PaperS3
@@ -941,6 +941,10 @@ struct BoardProfile {
   // readouts) when those corners need more room than cornerRadius. 0 = use
   // cornerRadius.
   uint8_t bottomCornerRadius = 0;
+  // Multiplier the firmware applies to its fixed-pixel layout (padding, row and
+  // icon sizes) for panels much denser than the ~220-235 PPI the themes were
+  // drawn for. 1.0 = the themes' own pixel sizes.
+  float layoutScale = 1.0f;
 };
 
 constexpr TouchConfig NO_TOUCH = {TouchController::None,
@@ -1813,7 +1817,7 @@ constexpr BoardProfile METALIO_EINK4 = {
 // Touch: the FT6336U reports the portrait 684x1216 frame; the vendor maps it to
 // the native panel as x = rawY, y = 683 - rawX, i.e. swapXY + flipY. Its reset
 // is expander P1.2 (driven by metalio_plus::ensureBooted()).
-constexpr BoardProfile METALIO_EINK4_PLUS = {
+constexpr BoardProfile METALIO_EINK4_PLUS_BASE = {
     Board::MetalioEInk4Plus, "metalio_eink4_plus", InputStyle::DigitalButtons,
     DisplayController::Epdiy, 1216, 684,
     {PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED,
@@ -1834,6 +1838,12 @@ constexpr BoardProfile METALIO_EINK4_PLUS = {
     NO_MIC,
     {0, 1, 400000, 0x51, 0, 0x19, 0, RtcType::Pcf8563, ImuType::Sc7a20h},
     1.2f};  // uiScale: starting value (CrossMux's Read Pico on the same 1216x684 glass)
+// The ~297 PPI 684x1216 portrait UI uses a 1.6x layout, sized on hardware.
+constexpr BoardProfile METALIO_EINK4_PLUS = [] {
+  BoardProfile p = METALIO_EINK4_PLUS_BASE;
+  p.layoutScale = 1.6f;
+  return p;
+}();
 
 // --- Onyx Picco / BOOX Tiles — ESP32-S3 (16MB flash, 8MB octal PSRAM), SSD1677/2677 ---
 // Ultra-compact 3.97" 800x480 mono e-reader. Everything below was recovered from
@@ -2541,7 +2551,8 @@ inline void releaseSdRail() {
   }
 }
 inline bool hasMic() { return ACTIVE.mic.input != MicInput::None; }
-inline bool hasHaptics() { return ACTIVE.haptic.gpio != PIN_UNASSIGNED; }
+// The Metalio E-Ink4-Plus motor is an expander output (metalio_plus::PIN_MOTOR).
+inline bool hasHaptics() { return ACTIVE.haptic.gpio != PIN_UNASSIGNED || isMetalioEInk4Plus(); }
 inline bool hasBuzzer() { return ACTIVE.audio.buzzer != PIN_UNASSIGNED; }
 inline bool hasRtc() { return ACTIVE.sensors.rtcAddr != 0; }
 inline bool hasTempHumidity() { return ACTIVE.sensors.tempHumidityAddr != 0; }

@@ -207,6 +207,35 @@ inline void resetTouch() {
   delay(300);
 }
 
+inline bool powerKeyPressed() { return !(readInputs() & (1u << PIN_POWER_KEY)); }
+
+// Before sleep: the expander INT line (GPIO2, open drain, active low) is the
+// only wake path for the power key. As the vendor does before light sleep,
+// every expander pin except P1.7 becomes an output at its idle level (panel PMIC
+// lines low, key lines high) so nothing else can pull INT, then the ports are
+// read to clear it. Returns false if INT does not go idle.
+inline bool prepareWakeOnPowerKey() {
+  if (!ensureBooted()) return false;
+  constexpr uint16_t tpsLines = (1u << PIN_TPS_VCOM_CTRL) | (1u << PIN_TPS_PWRUP) | (1u << PIN_TPS_WAKEUP);
+  constexpr uint16_t idleHigh = (1u << PIN_VOLUME_UP) | (1u << PIN_VOLUME_DOWN) | (1u << PIN_RTC_INT) |
+                                (1u << PIN_POWER_KEY);
+  {
+    std::lock_guard<std::mutex> lock(outputMutex());
+    uint16_t& latch = outputLatch();
+    latch = (latch & ~(tpsLines | (1u << PIN_TPS_PWR_GOOD) | (1u << PIN_POWER_PULSE))) | idleHigh;
+    if (!writeRegister(2, latch) || !writeRegister(6, 1u << PIN_POWER_KEY)) return false;
+  }
+  uint16_t v;
+  readRegister(0, v);
+  pinMode(EXPANDER_INT_GPIO, INPUT_PULLUP);
+  for (int ms = 0; ms < 100; ms += 5) {
+    if (digitalRead(EXPANDER_INT_GPIO) == HIGH) return true;
+    readRegister(0, v);
+    delay(5);
+  }
+  return false;
+}
+
 // Call only after display.deepSleep() and storage shutdown. The vendor powers
 // off by toggling P1.3 (100 ms high, 100 ms low) until the power-switch chip
 // cuts power. On battery this does not return; it returns once maxMs have

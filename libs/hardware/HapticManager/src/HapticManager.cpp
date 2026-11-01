@@ -44,6 +44,14 @@ class Lock {
   bool locked_;
 };
 
+// Metalio E-Ink4-Plus: the motor is TCA9555 P0.3, on/off only. Any non-zero
+// level runs it; the pattern timing is unchanged.
+#if FREEINK_DEVICE_METALIO_EINK4_PLUS
+bool expanderMotor() { return BoardConfig::isMetalioEInk4Plus(); }
+#else
+constexpr bool expanderMotor() { return false; }
+#endif
+
 uint32_t duty(const State& s, uint8_t level) {
   const uint32_t scaled = (uint32_t(level) * s.gain + 127) / 255;
   return s.config.activeHigh ? scaled : 255 - scaled;
@@ -51,6 +59,12 @@ uint32_t duty(const State& s, uint8_t level) {
 
 void off(State& s) {
   if (!s.begun) return;
+#if FREEINK_DEVICE_METALIO_EINK4_PLUS
+  if (expanderMotor()) {
+    metalio_plus::setOutput(metalio_plus::PIN_MOTOR, false);
+    return;
+  }
+#endif
   if (!ledcWrite(s.config.gpio, s.config.activeHigh ? 0 : 255)) {
     // If PWM ownership was lost, leave a plain inactive GPIO instead.
     ledcDetach(s.config.gpio);
@@ -84,8 +98,16 @@ bool serviceLocked(State& s) {
     if (position >= boundary) continue;
     s.stepIntensity = s.steps[i].intensity;
     esp_timer_stop(s.timer);
-    if (esp_timer_start_once(s.timer, boundary - position) != ESP_OK ||
-        !ledcWrite(s.config.gpio, duty(s, s.stepIntensity))) {
+    bool written;
+#if FREEINK_DEVICE_METALIO_EINK4_PLUS
+    if (expanderMotor()) {
+      written = metalio_plus::setOutput(metalio_plus::PIN_MOTOR, duty(s, s.stepIntensity) > 0);
+    } else
+#endif
+    {
+      written = ledcWrite(s.config.gpio, duty(s, s.stepIntensity));
+    }
+    if (esp_timer_start_once(s.timer, boundary - position) != ESP_OK || !written) {
       stopLocked(s);
       return false;
     }
@@ -108,6 +130,7 @@ HapticManager& HapticManager::getInstance() {
 }
 
 bool HapticManager::supported() const {
+  if (expanderMotor()) return true;
   return BoardConfig::ACTIVE.haptic.gpio >= 0 && BoardConfig::ACTIVE.haptic.pwmFrequency > 0;
 }
 
@@ -123,6 +146,21 @@ bool HapticManager::begin() {
   if (BoardConfig::isMetalioEInk4() && !metalio::ensureBooted()) return false;
 #endif
   s.config = BoardConfig::ACTIVE.haptic;
+#if FREEINK_DEVICE_METALIO_EINK4_PLUS
+  if (expanderMotor()) {
+    if (!metalio_plus::ensureBooted()) return false;
+    if (!s.timer) {
+      esp_timer_create_args_t args{};
+      args.callback = timerCallback;
+      args.dispatch_method = ESP_TIMER_TASK;
+      args.name = "freeink_haptic";
+      if (esp_timer_create(&args, &s.timer) != ESP_OK) return false;
+    }
+    s.begun = true;
+    off(s);
+    return true;
+  }
+#endif
   pinMode(s.config.gpio, OUTPUT);
   digitalWrite(s.config.gpio, s.config.activeHigh ? LOW : HIGH);
   if (!s.timer) {
@@ -148,6 +186,10 @@ void HapticManager::end() {
   if (!lock) return;
   stopLocked(s);
   if (!s.begun) return;
+  if (expanderMotor()) {
+    s.begun = false;
+    return;
+  }
   ledcDetach(s.config.gpio);
   pinMode(s.config.gpio, OUTPUT);
   digitalWrite(s.config.gpio, s.config.activeHigh ? LOW : HIGH);

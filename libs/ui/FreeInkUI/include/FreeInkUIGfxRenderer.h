@@ -22,6 +22,7 @@
 #include <GfxRenderer.h>
 
 #include <algorithm>
+#include <cmath>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -101,14 +102,16 @@ class GfxRendererTarget final : public DrawTarget {
 
   // Ink from glyph metrics: drawText puts the baseline `ascender` below the
   // line top, and a glyph's ink starts `top` above the baseline.
-  // ponytail: ASCII only (status labels, clocks); other text keeps the line box.
+  // ASCII only (status labels, clocks); other text keeps the line box.
   Rect inkBounds(const FontId font, const char* text, const TextStyle style) const override {
     const Rect lineBox = DrawTarget::inkBounds(font, text, style);
     const int fontId = gfxFont(font);
     const auto it = renderer.getFontMap().find(fontId);
     if (!text || it == renderer.getFontMap().end()) return lineBox;
-    const int ascender = renderer.getFontAscenderSize(fontId);
-    int top = lineBox.height;
+    // Glyph metrics are physical pixels; work in physical, return logical.
+    const float scale = renderer.uiScale();
+    const int ascender = it->second.getData(EpdFontFamily::REGULAR)->ascender;
+    int top = static_cast<int>(lroundf(lineBox.height * scale));
     int bottom = 0;
     for (const char* p = text; *p; ++p) {
       if (static_cast<unsigned char>(*p) >= 0x80) return lineBox;
@@ -118,7 +121,9 @@ class GfxRendererTarget final : public DrawTarget {
       bottom = std::max(bottom, ascender - static_cast<int>(glyph->top) + static_cast<int>(glyph->height));
     }
     if (top >= bottom) return lineBox;
-    return Rect{0, static_cast<int16_t>(top), lineBox.width, static_cast<int16_t>(bottom - top)};
+    const int logicalTop = static_cast<int>(lroundf(top / scale));
+    const int logicalBottom = static_cast<int>(lroundf(bottom / scale));
+    return Rect{0, static_cast<int16_t>(logicalTop), lineBox.width, static_cast<int16_t>(logicalBottom - logicalTop)};
   }
 
   void fill(const Rect rect, const Paint paint, const uint8_t radius = 0,
@@ -284,10 +289,14 @@ class GfxRendererTarget final : public DrawTarget {
         // spellings are testable for presence and read their metrics through `->`.
         if (font != fonts.end()) {
           const auto glyph = font->second.getGlyph(static_cast<uint32_t>(textLine[0]), epdStyle);
-          if (glyph && glyph->width > 0 && glyph->height > 0 && glyph->width <= rect.width &&
-              glyph->height <= rect.height) {
-            x = rect.x + (rect.width - glyph->width) / 2 - glyph->left;
-            drawY = rect.y + (rect.height - glyph->height) / 2 + glyph->top - renderer.getFontAscenderSize(fontId);
+          // Glyph metrics are physical pixels; rect and the ascender are logical.
+          const float scale = renderer.uiScale();
+          const auto logical = [scale](const int v) { return static_cast<int>(lroundf(v / scale)); };
+          const int glyphW = glyph ? logical(glyph->width) : 0;
+          const int glyphH = glyph ? logical(glyph->height) : 0;
+          if (glyphW > 0 && glyphH > 0 && glyphW <= rect.width && glyphH <= rect.height) {
+            x = rect.x + (rect.width - glyphW) / 2 - logical(glyph->left);
+            drawY = rect.y + (rect.height - glyphH) / 2 + logical(glyph->top) - renderer.getFontAscenderSize(fontId);
           }
         }
       }

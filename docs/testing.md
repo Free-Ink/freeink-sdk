@@ -110,8 +110,10 @@ sh libs/hardware/FrontlightManager/test/host/run.sh
 Compiles the Picco frontlight backend and real board profile against a register
 model with a wake-settling interval. Covers the first nonzero brightness write,
 off/on level restoration, warm/cool channels, slider updates without repeated
-wake delays, and retry after a failed wake transaction. Physical light output
-and the actual controller settling time still require a device check.
+wake delays, and retry after a failed wake transaction. Sweeps brightness in both
+directions at all ten color presets, checking fine register steps, unchanged
+endpoints, channel/current limits, and restoration after off/on. Physical light
+output and the actual controller settling time still require a device check.
 
 ## Display drivers
 

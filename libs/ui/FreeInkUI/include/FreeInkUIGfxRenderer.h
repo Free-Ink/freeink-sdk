@@ -31,6 +31,26 @@
 namespace freeink {
 namespace ui {
 
+namespace detail {
+template <typename Renderer, typename = void>
+struct HasUiScale : std::false_type {};
+template <typename Renderer>
+struct HasUiScale<Renderer, std::void_t<decltype(std::declval<const Renderer&>().uiScale())>> : std::true_type {};
+
+// The renderer's UI scale: the factor between its glyph metrics (physical
+// pixels) and the units its rects use. A GfxRenderer without uiScale() draws
+// unscaled, so its factor is 1.
+template <typename Renderer>
+float uiScaleOf(const Renderer& renderer) {
+  if constexpr (HasUiScale<Renderer>::value) {
+    return renderer.uiScale();
+  } else {
+    (void)renderer;
+    return 1.0f;
+  }
+}
+}  // namespace detail
+
 class GfxRendererTarget final : public DrawTarget {
  public:
   static constexpr FontId FONT_SMALL = 0;
@@ -109,7 +129,7 @@ class GfxRendererTarget final : public DrawTarget {
     const auto it = renderer.getFontMap().find(fontId);
     if (!text || it == renderer.getFontMap().end()) return lineBox;
     // Glyph metrics are physical pixels; work in physical, return logical.
-    const float scale = renderer.uiScale();
+    const float scale = detail::uiScaleOf(renderer);
     const int ascender = it->second.getData(EpdFontFamily::REGULAR)->ascender;
     int top = static_cast<int>(lroundf(lineBox.height * scale));
     int bottom = 0;
@@ -290,7 +310,7 @@ class GfxRendererTarget final : public DrawTarget {
         if (font != fonts.end()) {
           const auto glyph = font->second.getGlyph(static_cast<uint32_t>(textLine[0]), epdStyle);
           // Glyph metrics are physical pixels; rect and the ascender are logical.
-          const float scale = renderer.uiScale();
+          const float scale = detail::uiScaleOf(renderer);
           const auto logical = [scale](const int v) { return static_cast<int>(lroundf(v / scale)); };
           const int glyphW = glyph ? logical(glyph->width) : 0;
           const int glyphH = glyph ? logical(glyph->height) : 0;

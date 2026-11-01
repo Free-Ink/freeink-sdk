@@ -99,7 +99,7 @@ never brought up.
 | Full | Black/white clear cycles, then GC16 on every pixel from white (the vendor's deep clean) |
 | Half | GC16 on every pixel, unchanged ones included, which cleans the residue DU leaves |
 | Fast | DU on changed pixels; a change over a quarter of the screen runs GC16 on the changed pixels, because DU leaves a ghost |
-| Grayscale overlay | Two extra grey levels written into the front buffer, drawn with GC16 on the changed pixels |
+| Grayscale overlay | Two extra grey levels (EPDiy levels 3 and 5) written into the front buffer, drawn with GC16 on the changed pixels |
 
 At `begin()` the driver clears the glass with three black/white cycles, as the
 vendor firmware does, and the first frame after that drives every pixel with
@@ -112,7 +112,11 @@ Home's grey areas.
 
 Grayscale reports `OverlayMasks` with strip uploads. The base must be displayed
 first; the planes are then applied to the front buffer the base left behind,
-since the facade's framebuffer holds the last plane by then.
+since the facade's framebuffer holds the last plane by then. The panel's GC16
+greys are far from linear: a photographed ramp put level 3 at about 38% of the
+way from black to the paper, level 5 at 66%, and everything from level 8 up at
+96% or more. With levels 5 and 10 the light grey matched the paper and text
+looked aliased; 3 and 5 sit near a third and two thirds.
 
 Three things the S31 needs:
 

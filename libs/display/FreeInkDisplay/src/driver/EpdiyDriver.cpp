@@ -74,8 +74,12 @@ uint32_t expandFrame(const uint8_t* fb) {
 
 // Overlay grey levels on EPDiy's 0 (black) .. 15 (white) scale, and the two
 // 1-bpp selector planes the facade sends (PSRAM, allocated on first use).
-constexpr uint8_t kGrayDark = 0x5;
-constexpr uint8_t kGrayLight = 0xA;
+// Picked from a photographed 16-level ramp drawn with MY_WAVEFORM's GC16:
+// levels 3 and 5 land about a third and two thirds of the way from black to the
+// paper. The response saturates near level 8, so the linear 0x5/0xA left the
+// light grey indistinguishable from the paper and text edges looked aliased.
+constexpr uint8_t kGrayDark = 0x3;
+constexpr uint8_t kGrayLight = 0x5;
 uint8_t* g_lsb = nullptr;
 uint8_t* g_msb = nullptr;
 

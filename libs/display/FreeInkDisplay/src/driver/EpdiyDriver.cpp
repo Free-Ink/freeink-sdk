@@ -35,6 +35,10 @@ bool g_firstFrameAllPixels = false;
 // False after a failed draw: the glass then differs from the front buffer, so
 // an unchanged next frame must still be drawn.
 bool g_glassMatchesFront = false;
+// A grayscale base staged by displayGrayscaleBase() and not drawn yet, and the
+// refresh mode it asked for.
+bool g_basePending = false;
+RefreshMode g_baseMode = RefreshMode::Fast;
 
 // A Fast update changing more than this share of the screen (a new screen rather
 // than a menu move) runs GC16 on the changed pixels instead: DU leaves a visible
@@ -213,6 +217,7 @@ void EpdiyDriver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, R
   (void)turnOff;  // the rails are always dropped below
   if (!g_started || !fb) return;
   const uint32_t changed = expandFrame(fb);
+  g_basePending = false;  // a plain frame replaces any staged grayscale base
   // CrossPoint's Half is its periodic and screen-change cleanup, so it drives
   // every pixel (the vendor firmware draws its GC16 that way too); driving only
   // the changed ones left traces of earlier DU frames in areas that stayed white.
@@ -258,9 +263,34 @@ void EpdiyDriver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, cons
   (void)turnOff;
   (void)lut;
   (void)factoryMode;
-  if (!g_started || !overlayGray()) return;
-  // Only the grey pixels differ from the glass, so GC16 drives just those.
-  drawFront(Draw::Gc16Changed);
+  if (!g_started) return;
+  const bool grey = overlayGray();
+  if (!grey && !g_basePending) return;
+  // One waveform for the staged base and the grey pixels: GC16 on the pixels
+  // that differ from the glass, or the base's own full refresh.
+  Draw how = Draw::Gc16Changed;
+  if (g_basePending) {
+    if (g_baseMode == RefreshMode::Full) how = Draw::Clean;
+    if (g_baseMode == RefreshMode::Half) how = Draw::Gc16All;
+    if (g_resyncPending || g_firstFrameAllPixels) {
+      how = Draw::Gc16All;
+      g_resyncPending = false;
+      g_firstFrameAllPixels = false;
+    }
+    g_basePending = false;
+  }
+  drawFront(how);
+}
+
+void EpdiyDriver::displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, RefreshMode fallback, bool turnOff) {
+  (void)bus;
+  (void)turnOff;
+  if (!g_started || !fb) return;
+  expandFrame(fb);
+  g_basePending = true;
+  g_baseMode = fallback;
+  // Until displayGray() draws it, the glass no longer matches the front buffer.
+  g_glassMatchesFront = false;
 }
 
 PanelDriver& epdiyDriver() {

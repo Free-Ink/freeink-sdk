@@ -498,12 +498,77 @@ static void IRAM_ATTR build_du_1ppB_lut_64k(
     build_1ppB_lut_64k(lut, &phase, 0);
 }
 
+#if defined(CONFIG_IDF_TARGET_ESP32S31)
+// FreeInk: the 1K lookup costs ~37 us per 1216-pixel row on the S31 against a
+// 34 us budget per producer, so the LCD stream underruns. A 64K table indexed
+// by a pixel pair halves the loads (~21 us per row). It is expanded from the
+// 1K table each phase, so its actions and S31 bit order (p0 in bits 7:6) are
+// exactly those of lookup_pixels_in_VE_LUT.
+__attribute__((optimize("O3"))) static void IRAM_ATTR expand_1k_to_pairs_s31(uint8_t* lut) {
+    // The 1K table keeps each action in the low byte of a 32-bit slot. Collect
+    // them pre-shifted for the first pixel, four to a word.
+    uint32_t first[64];
+    uint8_t second[256];
+    for (int i = 0; i < 256; i++) {
+        second[i] = lut[i << 2];
+    }
+    for (int w = 0; w < 64; w++) {
+        first[w] = (uint32_t)second[4 * w] << 2 | (uint32_t)second[4 * w + 1] << 10
+            | (uint32_t)second[4 * w + 2] << 18 | (uint32_t)second[4 * w + 3] << 26;
+    }
+    // Entry (p1 << 8 | p0) is a little-endian load of the two pixel bytes.
+    // Rewritten a word at a time: this runs before every waveform phase.
+    uint32_t* lut32 = (uint32_t*)lut;
+    for (int p1 = 0; p1 < 256; p1++) {
+        const uint32_t splat = second[p1] * 0x01010101u;
+        uint32_t* row = lut32 + (p1 << 6);
+        for (int w = 0; w < 64; w++) {
+            row[w] = first[w] | splat;
+        }
+    }
+}
+
+static void IRAM_ATTR build_1ppB_pairs_s31(uint8_t* lut, const EpdWaveformPhases* phases, int frame) {
+    build_1ppB_lut_S3_VE_1k(lut, phases, frame);
+    expand_1k_to_pairs_s31(lut);
+}
+
+static void IRAM_ATTR build_changed_1ppB_pairs_s31(uint8_t* lut, const EpdWaveformPhases* phases, int frame) {
+    build_changed_1ppB_lut_S3_VE_1k(lut, phases, frame);
+    expand_1k_to_pairs_s31(lut);
+}
+
+static void IRAM_ATTR build_du_1ppB_pairs_s31(uint8_t* lut, const EpdWaveformPhases* phases, int frame) {
+    build_du_1ppB_lut_S3_VE_1k(lut, phases, frame);
+    expand_1k_to_pairs_s31(lut);
+}
+
+__attribute__((optimize("O3"))) static void IRAM_ATTR calc_epd_input_1ppB_pairs_s31(
+    const uint32_t* ld, uint8_t* epd_input, const uint8_t* conversion_lut, uint32_t epd_width
+) {
+    const uint16_t* pairs = (const uint16_t*)ld;
+    for (uint32_t j = 0; j < epd_width / 4; j++) {
+        epd_input[j] = (uint8_t)(conversion_lut[pairs[2 * j]] << 4 | conversion_lut[pairs[2 * j + 1]]);
+    }
+}
+#endif
+
 LutFunctionPair find_lut_functions(enum EpdDrawMode mode, uint32_t lut_size) {
     LutFunctionPair pair;
     pair.build_func = NULL;
     pair.lookup_func = NULL;
 
     if (mode & MODE_PACKING_1PPB_DIFFERENCE) {
+#if defined(CONFIG_IDF_TARGET_ESP32S31)
+        if (!(mode & MODE_FORCE_NO_PIE) && lut_size >= 1 << 16) {
+            pair.build_func = mode & MODE_SKIP_UNCHANGED
+                ? ((mode & MODE_UNKNOWN_WAVEFORM) == MODE_DU
+                    ? &build_du_1ppB_pairs_s31 : &build_changed_1ppB_pairs_s31)
+                : &build_1ppB_pairs_s31;
+            pair.lookup_func = &calc_epd_input_1ppB_pairs_s31;
+            return pair;
+        }
+#endif
         if (EPD_CURRENT_RENDER_METHOD == RENDER_METHOD_LCD && !(mode & MODE_FORCE_NO_PIE)
             && lut_size >= 1024) {
             pair.build_func = mode & MODE_SKIP_UNCHANGED

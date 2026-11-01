@@ -1,0 +1,13 @@
+{
+  "name": "Epdiy",
+  "version": "0.1.0",
+  "description": "EPDiy parallel e-paper rendering core (LCD peripheral output, waveform LUTs, high-level framebuffer API) as ported by Metalio for the ESP32-S31. LGPL-3.0, unlike the rest of the SDK; see NOTICE.md. Used only by the Metalio E-Ink4-Plus panel driver (FREEINK_DRIVER_EPDIY).",
+  "keywords": "epd, e-paper, epdiy, parallel, tps65185",
+  "license": "LGPL-3.0-only",
+  "authors": [{"name": "EPDiy contributors"}, {"name": "Shenzhen Xinzhi Future Technology Co., Ltd."}],
+  "platforms": "espressif32",
+  "frameworks": ["arduino", "espidf"],
+  "build": {
+    "srcFilter": ["+<*>", "-<output_common/lut.S>"]
+  }
+}

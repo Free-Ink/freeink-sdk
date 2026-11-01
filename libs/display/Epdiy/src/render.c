@@ -394,7 +394,10 @@ void epd_renderer_init(enum EpdInitOptions options) {
         queue_len = max(queue_len, 64);
     }
     // 流式预填约 127 行、两线程均分；128 行缓冲约 2～3ms，吃短毛刺（仍靠 panel busy 挡 WiFi）
-    queue_len = max(queue_len, 128);
+    // FreeInk: 104, not the vendor's 128. The 192-row prefill needs 96 slots per
+    // producer; the 24 rows saved per queue (~14.6 KB of internal RAM for both)
+    // pay for the light-sleep code the Metalio Plus standby needs.
+    queue_len = max(queue_len, 104);
     ESP_LOGD("epd", "line queue len=%d threads=%d (stream prefill)", queue_len, NUM_RENDER_THREADS);
 
     if (render_context.conversion_lut == NULL) {

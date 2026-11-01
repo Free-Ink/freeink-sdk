@@ -896,11 +896,9 @@ struct BoardProfile {
   // On-board I2C sensors (RTC / temp+humidity / IMU). Defaulted to "none"; a
   // board with sensors sets the bus pins + each present sensor's address.
   SensorsConfig sensors = {PIN_UNASSIGNED, PIN_UNASSIGNED, 0, 0, 0, 0, 0, RtcType::None, ImuType::None};
-  // UI scale multiplier the firmware applies to its theme metrics and chrome fonts.
-  // 1.0 keeps the original button-era pixel sizes. Touch devices bump this so rows,
-  // buttons, and tap targets are finger-sized: these panels are ~220-235 PPI, so a
-  // 30px row is only ~3mm. Per-board and hand-tuned (PPI alone can't tell the 4.26"
-  // X4 from the 3.97" Sticky); the firmware owns how it maps to metrics/fonts.
+  // Multiplier the firmware applies to its whole fixed-pixel layout (fonts,
+  // padding, row and icon sizes) for panels denser than the ~220-235 PPI the
+  // themes were drawn for. 1.0 = the themes' own pixel sizes.
   float uiScale = 1.0f;
   // Power-rail latch pins (see PowerConfig). Defaulted so existing profiles
   // need no change; a board with a latch sets it.
@@ -1345,7 +1343,7 @@ constexpr BoardProfile MURPHY_M4 = {
     NO_GAUGE,
     NO_MIC,
     NO_SENSORS,
-    1.2f,  // uiScale: touch device
+    1.0f,  // uiScale
 };
 
 // --- de-link (X4-class GDEQ0426T82 panel on ESP32-S3) — SSD1677 + frontlight ---
@@ -1424,7 +1422,7 @@ constexpr BoardProfile LILYGO_T5S3 = {
     // mounted part. Was NO_SENSORS, so the board kept time in software and lost
     // it whenever power was actually cut rather than merely deep-slept.
     {39, 40, 400000, 0x51, 0, 0, 0, RtcType::Pcf8563, ImuType::None},
-    1.2f,  // uiScale: 4.7" 960x540 touch (~234 PPI) — finger-sized chrome, like Sticky
+    1.0f,  // uiScale
     // Power latch: main-power MOSFET on GPIO2, driven HIGH first thing in boot
     // via holdPowerRails() or the board powers off when USB is unplugged.
     {2},
@@ -1497,7 +1495,7 @@ constexpr BoardProfile M5PAPER_V11 = {
     NO_GAUGE,
     NO_MIC,
     NO_SENSORS,
-    1.2f,  // uiScale: 4.7" 960x540 touch (~234 PPI) — finger-sized chrome, like Sticky
+    1.0f,  // uiScale
     // Power latch: main-power MOSFET on GPIO2, driven HIGH first thing in boot
     // via holdPowerRails() or the board powers off when USB is unplugged.
     {2}};
@@ -1564,7 +1562,7 @@ constexpr BoardProfile M5PAPER_S3 = {
     // touch/RTC bus. The RTC INT line feeds the PMS150G power latch (wake-from-off
     // via Rtc alarm), not an ESP32 GPIO. BMI270 IMU (0x68) unsupported — omitted.
     {41, 42, 400000, 0x51, 0, 0, 0, RtcType::Pcf8563, ImuType::None},
-    1.2f,  // uiScale: 4.7" 960x540 touch (~234 PPI) — finger-sized chrome, like LilyGo/M5Paper
+    1.0f,  // uiScale
     {},     // power: no latch (PMS150G self-latches; off = GPIO44 pulse via BoardPaperS3)
     0,      // displayControllerVariant
     {},     // viewableInsets
@@ -1715,7 +1713,7 @@ constexpr BoardProfile STICKY = {
     // report: left/right tilt gestures landed on the up/down axis. Flip signs
     // pending hardware validation of gesture direction.
     {1, 0, 400000, 0x51, 0x44, 0x6A, 1, RtcType::Pcf8563, ImuType::Lsm6ds3, true},
-    1.2f,  // uiScale: touch device, 3.97" 800x480 — bump chrome to finger size
+    1.0f,  // uiScale
     // Power latch: PWR_HOLD GPIO45 + PWR_LOCK GPIO46, driven HIGH first thing in
     // boot (the vendor demo's first init step) — see holdPowerRails().
     // chargeEnable: EN_BAT_CHGn GPIO39 -> BQ25616 /CE, active-low (confirmed by
@@ -1877,7 +1875,7 @@ constexpr BoardProfile PICCO = {
     // build 2912 (RTC: 7-byte read from reg 0x02, VL-strip, BCD; IMU: probe 0x6A/0x6B/
     // 0x6D, WHO_AM_I reg0==0x05, CTRL init). {sda,scl,hz,rtcAddr,tempHum,imuAddr,bus,rtcType,imuType}
     {7, 8, 400000, 0x51, 0, 0x6A, 0, RtcType::Pcf8563, ImuType::Qmi8658},
-    1.2f,   // uiScale: small 3.97" touch device — bump chrome toward finger size
+    1.0f,   // uiScale
     // power.latch0 = GPIO4: stock drives it HIGH at boot and gpio_hold_en()s it through
     // deep sleep (FUN_420094f4).
     {4},
@@ -1940,7 +1938,7 @@ constexpr BoardProfile METALIO_EINK4_PLUS = {
     NO_MIC,
     // PCF8563 RTC (0x51) and SC7A20H accelerometer (0x19) on the shared bus.
     {0, 1, 400000, 0x51, 0, 0x19, 0, RtcType::Pcf8563, ImuType::Sc7a20h},
-    1.5f,  // uiScale: 4.7" 1216x684 is ~300 PPI
+    1.6f,  // uiScale: 4.7" 1216x684 is ~300 PPI; 1.6 sized on hardware
     {},    // power: no latch GPIO; the power switch is pulsed through the TCA9555
     0,     // displayControllerVariant: not probed
     // viewableInsets (portrait): the case covers the glass's bottom edge more than
@@ -2071,7 +2069,7 @@ constexpr BoardProfile XTEINK_X4_PRO = {
     // 0x420a2834 adds device 0x51; the bus object is configured with {39,38,400000}). Bus 0
     // (Wire), matching the touch driver so both drive the same peripheral on the shared pins.
     {39, 38, 400000, 0x51, 0, 0, 0, RtcType::Pcf8563, ImuType::None},  // temp/hum + IMU: none
-    1.2f,  // uiScale: 800x480 touch device — finger-sized chrome, like the other touch boards
+    1.0f,  // uiScale
     // Master peripheral-rail enable on GPIO1: the OEM board-init drives it HIGH first, before
     // any SPI/display/SD bring-up (recovered: standalone OUTPUT, level=1, acted on first in
     // board_begin at IROM 0x420a23dc). Carried as power.latch0 so holdPowerRails() asserts it

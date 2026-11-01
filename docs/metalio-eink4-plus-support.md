@@ -122,10 +122,12 @@ Home's grey areas.
 Grayscale reports `OverlayMasks` with strip uploads. The base must be displayed
 first; the planes are then applied to the front buffer the base left behind,
 since the facade's framebuffer holds the last plane by then. The panel's GC16
-greys are far from linear: a photographed ramp put level 3 at about 38% of the
-way from black to the paper, level 5 at 66%, and everything from level 8 up at
-96% or more. With levels 5 and 10 the light grey matched the paper and text
-looked aliased; 3 and 5 sit near a third and two thirds.
+greys are not linear. A flatbed scan of a 16-level ramp put level 3 at about
+22% of the way from black to the paper, level 5 at 40%, level 7 at 62% and level
+10 at 86%. With levels 5 and 10 the light grey nearly matched the paper and text
+looked aliased. Levels 3 and 5 give slightly bold anti-aliasing; 4 and 7 would
+split the range evenly, but the difference needs a magnifier to see. VCOM at
+1200 and 1700 mV gave the same ramp within a few percent.
 
 Three things the S31 needs:
 

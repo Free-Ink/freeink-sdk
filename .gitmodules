@@ -4,3 +4,4 @@
 [submodule "libs/display/epdiy"]
 	path = libs/display/epdiy
 	url = https://github.com/Free-Ink/epdiy.git
+	branch = esp32s31

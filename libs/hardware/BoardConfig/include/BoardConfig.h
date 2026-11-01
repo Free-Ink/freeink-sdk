@@ -212,7 +212,7 @@
 #define FREEINK_DRIVER_UC8279C 0
 #endif
 // Metalio E-Ink4-Plus: raw-parallel E0470A14-AF (1216x684) driven by the EPDiy
-// core (libs/display/Epdiy, LGPL-3.0) on the S31 LCD peripheral. External bus.
+// core (libs/display/epdiy submodule, LGPL-3.0) on the S31 LCD peripheral. External bus.
 #if FREEINK_DEVICE_METALIO_EINK4_PLUS
 #define FREEINK_DRIVER_EPDIY 1
 #else

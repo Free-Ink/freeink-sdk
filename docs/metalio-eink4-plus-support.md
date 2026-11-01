@@ -88,11 +88,14 @@ test build in which that corruption occurred, so not an available mode.
 
 ## Display
 
-The panel has no controller. EPDiy (`libs/display/Epdiy`, LGPL-3.0; see its
-[NOTICE](../libs/display/Epdiy/NOTICE.md)) clocks a 4-bit-per-pixel frame out
+The panel has no controller. EPDiy (the `libs/display/epdiy` submodule,
+LGPL-3.0; see its `FREEINK.md`) clocks a 4-bit-per-pixel frame out
 of the S31 LCD peripheral, and `EpdiyDriver` expands FreeInk's 1-bit frames
 into it. The driver uses the bus itself (`usesExternalBus()`), so `EpdBus` is
 never brought up.
+
+Fetch the submodule before building: `git submodule update --init
+libs/display/epdiy`.
 
 | Mode | Waveform |
 |---|---|

@@ -62,8 +62,8 @@ field testing than the upstream.
 > License note: this repository is distributed under the **MIT License** (see
 > `LICENSE`) — the same permissive, open-source terms as the upstream. Portions
 > are derived from MIT-licensed upstream code; that attribution is preserved in
-> `NOTICE`. The one exception is `libs/display/Epdiy` (the EPDiy core used only by
-> the Metalio E-Ink4-Plus), which is **LGPL-3.0**; see its `NOTICE.md`.
+> `NOTICE`. The one exception is the `libs/display/epdiy` submodule (the EPDiy core
+> used only by the Metalio E-Ink4-Plus), which is **LGPL-3.0**; see its `FREEINK.md`.
 
 ## Architecture
 

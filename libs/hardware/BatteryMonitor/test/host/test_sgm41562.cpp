@@ -1,5 +1,7 @@
 // Picco: ADC battery + SGM41562 charger @0x03 (CHRG_STAT REG08[4:3], input present REG08[1],
 // ship mode REG06 bit 5) against a register-file model of the charger.
+#include <BatteryEstimate.h>
+
 #include <cstdio>
 #include <vector>
 
@@ -19,6 +21,7 @@ int checksFailed = 0;
 
 uint8_t regs[16] = {};
 bool present = true;
+unsigned chargerReads = 0;
 }  // namespace
 
 bool hostI2cWrite(const uint8_t addr, const std::vector<uint8_t>& bytes) {
@@ -28,6 +31,7 @@ bool hostI2cWrite(const uint8_t addr, const std::vector<uint8_t>& bytes) {
 }
 bool hostI2cRead(const uint8_t addr, const uint8_t reg, uint8_t* out, const size_t length) {
   if (addr != 0x03 || !present || length != 1 || reg >= sizeof(regs)) return false;
+  ++chargerReads;
   *out = regs[reg];
   return true;
 }
@@ -68,12 +72,33 @@ int main() {
   hostAdcMv = 1965;  // 3930 mV -> 66%
   CHECK(bm.readPercentage() == 66);
   regs[0x08] = 0x12;  // fast charging
-  hostAdcMv = 2152;   // 4304 mV under charge -> 94%
-  CHECK(bm.readPercentage() == 94);
-  hostAdcMv = 2170;  // above 4305 -> full
+  hostAdcMv = 2152;   // 4304 mV under charge -> 98%
+  CHECK(bm.readPercentage() == 98);
+  hostAdcMv = 2170;  // Above stock's full-voltage estimate; completion is separate.
   CHECK(bm.readPercentage() == 100);
   hostAdcMv = 0;  // failed read never reads full
   CHECK(bm.readPercentage() == 0);
+
+  // Regression: flashing clears estimate history. A cell already above the
+  // stock full-voltage reference must not restart at 98% just because the
+  // charger is still reporting its final charging phase.
+  hostAdcMv = 2170;  // 4340 mV, which the previous build reinterpreted as 98%.
+  regs[0x08] = 0x12;
+  BatteryEstimate afterFlash;
+  const auto toppedOff = bm.readStatus();
+  CHECK(toppedOff.percentage == 100);
+  CHECK(afterFlash.update(toppedOff, 0) == 100);
+  CHECK(afterFlash.state().power == BatteryEstimate::Power::Charging);
+  CHECK(!toppedOff.chargeComplete);
+
+  hostAdcMv = 2150;  // 4300 mV -> 90%
+  CHECK(bm.readPercentage() == 90);
+  hostAdcMv = 2151;  // 4302 mV -> 94%
+  CHECK(bm.readPercentage() == 94);
+  hostAdcMv = 2152;  // 4304 mV -> 98%, then full at the 4305 mV reference
+  CHECK(bm.readPercentage() == 98);
+  hostAdcMv = 2153;
+  CHECK(bm.readPercentage() == 100);
 
   // Both curves must stay bounded and monotonic, and expose every integer
   // percentage below 70 rather than only the old ten-point notches.
@@ -90,6 +115,34 @@ int main() {
     CHECK(previous == 100 && nextBelow70 == 70);
   }
   regs[0x08] = 0x00;
+
+  // A single ADC spike cannot become a sudden battery drop, and one status
+  // sample needs exactly three ADC conversions and one charger transaction.
+  const uint32_t readings[] = {2140, 1700, 2141};
+  hostAdcSequence = readings;
+  hostAdcSequenceSize = 3;
+  hostAdcReads = chargerReads = 0;
+  const auto filtered = bm.readStatus();
+  CHECK(filtered.millivolts == 4280 && filtered.percentage == 98);
+  CHECK(hostAdcReads == 3 && chargerReads == 1);
+  hostAdcSequence = nullptr;
+  regs[0x08] = 0x1A;
+  hostAdcMv = 2140;
+  const auto full = bm.readStatus();
+  CHECK(full.chargeCompleteKnown && full.chargeComplete && full.externalPower && !full.charging);
+  CHECK(full.chargerStatus == 0x1A);
+  regs[0x08] = 0x12;
+  hostAdcMv = 2153;
+  CHECK(bm.readPercentage() == 100);
+  hostAdcMv = 2175;
+  CHECK(bm.readPercentage() == 100);  // estimated full; charge completion remains its own status field
+  hostAdcMv = 0;
+  uint16_t unchanged = 73;
+  CHECK(!bm.readPercentageChecked(unchanged) && unchanged == 73);
+  hostAdcMv = 2140;
+  present = false;
+  CHECK(!bm.readStatus().chargeCompleteKnown);
+  present = true;
 
   // Stock charger init: gated on REG0B == 0, then read-modify-write per step.
   regs[0x0B] = 0x01;

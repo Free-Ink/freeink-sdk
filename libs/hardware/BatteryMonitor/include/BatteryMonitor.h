@@ -28,6 +28,9 @@ public:
         uint16_t millivolts = 0;
         bool charging = false;
         bool externalPower = false;
+        bool chargeCompleteKnown = false;
+        bool chargeComplete = false;
+        int16_t chargerStatus = -1;  // Raw charger register, or -1 when not sampled/unknown.
         // Raw M5PM1 telemetry for diagnostics; -1 when not read (non-PM1 boards
         // or failed I/O). VIN is the DC input rail, 5VINOUT the bidirectional
         // USB-C rail, powerSource the PM1's PWR_SRC bitmap (reg 0x04 [2:0]:
@@ -49,8 +52,8 @@ public:
 
     // Like readPercentage(), but reports whether the read succeeded. An I2C gauge
     // can fail transiently; on failure this returns false and leaves `out`
-    // unchanged, so a caller can keep its last good value. The ADC path always
-    // succeeds.
+    // unchanged, so a caller can keep its last good value. Picco also rejects
+    // missing/implausible ADC voltage rather than interpreting it as empty.
     bool readPercentageChecked(uint16_t& out) const;
 
     // Read every battery field the active board can report. `supported` is false

@@ -213,11 +213,12 @@ int main(int argc, char** argv) {
     for (const auto& w : bus.writes)
       if (w.command == 0x20) lut = &w.bytes;
     assert(*lut == Bytes(lut_picco_se0400_gray, lut_picco_se0400_gray + 535));
+    assert(lastRegister(bus, 0x02) == 0 && s._needsPowerOn);
     const auto old = Bytes(s._old, s._old + 48000);
     bus.clear();
     fakeDelayMs = 0;
     s.powerOffBetweenFrames(bus);
-    assert(lastRegister(bus, 0x02) == 0 && s._needsPowerOn && !s._needsInitialFull);
+    assert(bus.writes.empty() && s._needsPowerOn && !s._needsInitialFull);
     assert(fakeDelayMs == 0 && old == Bytes(s._old, s._old + 48000));
     bus.clear();
     s.powerOffBetweenFrames(bus);
@@ -229,7 +230,7 @@ int main(int argc, char** argv) {
       if (w.command == 0x12) assert(poweredOn);
       assert(w.command != 0x07);  // no deep sleep
     }
-    assert(poweredOn && !s._needsPowerOn);
+    assert(poweredOn && lastRegister(bus, 0x02) == 0 && s._needsPowerOn);
     s.deepSleep(bus);
     assert(lastRegister(bus, 0x07) == 0xA5);
     std::printf("Picco se0400: probe, init, packing and refresh passed\n");

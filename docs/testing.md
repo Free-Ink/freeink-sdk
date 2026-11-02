@@ -70,6 +70,17 @@ profile against a model CW2015: the battery-profile check and upload sequence,
 the voltage and percentage conversion, and the ADC fallback when no gauge
 answers.
 
+The battery suite also covers Picco's SGM41562 status as a single register
+snapshot, three-conversion ADC median, charging endpoint and completion state,
+and the allocation-free `BatteryEstimate` presentation filter. The estimator
+checks include unplug settling, low-voltage correction, failed samples, sleep
+reconciliation and retained-state validation.
+The flash-at-near-full regression covers a 4.340 V cell still reporting active
+charging: its stock voltage estimate can reach 100% without inventing charger
+completion. Lower voltage held on USB alone does not become full over time.
+These are model checks; actual voltage calibration, charge termination and power
+usage still need a Picco.
+
 ## Motion sensors
 
 ```sh

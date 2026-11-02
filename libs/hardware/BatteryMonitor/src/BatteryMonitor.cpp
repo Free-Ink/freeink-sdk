@@ -1,11 +1,15 @@
 #include "BatteryMonitor.h"
 
+// BoardConfig.h uses initializer_list in inline functions. Keep this prerequisite first.
+#include <initializer_list>
+
+// Hardware headers
 #include <Arduino.h>
-#include <initializer_list>  // BoardConfig.h range-for over the latch pins
 #include <BoardConfig.h>
 #include <I2cBusLock.h>
 #include <M5Pm1.h>
 #include <esp_idf_version.h>
+
 #if ESP_IDF_VERSION_MAJOR < 5
 #include <esp_adc_cal.h>
 #endif
@@ -613,6 +617,9 @@ namespace {
 // the stock firmware's tables (build 2912, DROM 0x3c823ce8 / 0x3c823d3c): battery
 // mV at 100%, 95%, ... 0%, one for charging (terminal voltage runs high under
 // charge current) and one for discharging. Interpolated like stock.
+// Keep stock's ADC estimate anchors: the configured charge-regulation voltage
+// is not a calibration of the voltage measured through the board's divider.
+// Duplicate top anchors are interpolated over the next distinct voltage below.
 constexpr uint16_t PICCO_CHARGING_MV[21] = {4305, 4305, 4300, 4290, 4235, 4187, 4124, 4078, 4045, 4013, 3984,
                                             3961, 3941, 3923, 3906, 3894, 3876, 3840, 3805, 3760, 3500};
 constexpr uint16_t PICCO_DISCHARGING_MV[21] = {4305, 4229, 4171, 4118, 4065, 4019, 3955, 3915, 3876, 3841, 3812,
@@ -626,7 +633,10 @@ uint16_t piccoPercent(uint16_t mv, bool charging) {
   for (uint8_t i = 1; i <= 20; ++i) {
     if (mv < t[i]) continue;
     const uint16_t hi = t[i - 1], lo = t[i];
-    pct = static_cast<uint16_t>(100 - 5 * i + (hi > lo ? 5 * (mv - lo) / (hi - lo) : 5));
+    // The charging table has the same voltage for 95% and 100%. Span that
+    // duplicate anchor from 90% to 100%, rather than jumping 94% -> 100%.
+    const uint16_t span = hi == t[0] ? 5 * i : 5;
+    pct = static_cast<uint16_t>(100 - 5 * i + (hi > lo ? span * (mv - lo) / (hi - lo) : span));
     break;
   }
   return pct;
@@ -696,6 +706,9 @@ bool BatteryMonitor::hasM5Pm1Backend() const {
 }
 
 uint16_t BatteryMonitor::readPercentage() const {
+#if FREEINK_DEVICE_PICCO && FREEINK_BATTERY_I2C_GAUGE
+  if (BoardConfig::isPicco()) return readStatus().percentage;
+#endif
 #if FREEINK_BATTERY_I2C_GAUGE
   // Runtime, per active profile: gauge boards (X3, LilyGo, X4 Pro) read SoC over I2C;
   // ADC boards (X4) in the same binary fall through to the divider path below.
@@ -715,6 +728,14 @@ uint16_t BatteryMonitor::readPercentage() const {
 }
 
 bool BatteryMonitor::readPercentageChecked(uint16_t& out) const {
+#if FREEINK_DEVICE_PICCO && FREEINK_BATTERY_I2C_GAUGE
+  if (BoardConfig::isPicco()) {
+    const Status status = readStatus();
+    if (!status.percentageKnown) return false;
+    out = status.percentage;
+    return true;
+  }
+#endif
 #if FREEINK_BATTERY_I2C_GAUGE
   if (hasGaugeBackend()) {
     uint16_t soc = 0;
@@ -788,6 +809,28 @@ bool BatteryMonitor::loadDesignCapacity() {
 BatteryMonitor::Status BatteryMonitor::readStatus() const {
   Status status;
 
+#if FREEINK_DEVICE_PICCO && FREEINK_BATTERY_I2C_GAUGE
+  if (BoardConfig::isPicco()) {
+    status.supported = true;
+    status.millivolts = readMillivolts();
+    status.millivoltsKnown = status.millivolts >= 2500 && status.millivolts <= 4500;
+    // Decode the whole charger state from ONE transaction. Do not sample charge
+    // and USB presence separately across a cable transition.
+    uint8_t charger = 0;
+    if (readReg8(BoardConfig::ACTIVE.batteryGauge.chargerAddr, SGM41562_REG_STATUS, charger)) {
+      status.chargerStatus = charger;
+      status.chargingKnown = status.externalPowerKnown = status.chargeCompleteKnown = true;
+      status.externalPower = (charger & 0x02) != 0;
+      const uint8_t charge = (charger >> 3) & 0x03;
+      status.charging = status.externalPower && (charge == 1 || charge == 2);
+      status.chargeComplete = status.externalPower && charge == 3;
+    }
+    status.percentageKnown = status.millivoltsKnown;
+    if (status.percentageKnown) status.percentage = piccoPercent(status.millivolts, status.charging);
+    return status;
+  }
+#endif
+
 #if FREEINK_BATTERY_I2C_GAUGE
   if (hasGaugeBackend()) {
     status.supported = true;
@@ -856,6 +899,18 @@ uint16_t BatteryMonitor::readMillivolts() const {
     return 0;
   }
   if (!hasAdcBackend()) return 0;
+#if FREEINK_DEVICE_PICCO && ESP_IDF_VERSION_MAJOR >= 5
+  if (BoardConfig::isPicco()) {
+    // Three immediate conversions, once per caller-requested sample. No delays,
+    // background sampler, or extra wakeups. A median rejects one isolated spike.
+    uint32_t a = analogReadMilliVolts(_adcPin);
+    uint32_t b = analogReadMilliVolts(_adcPin);
+    const uint32_t c = analogReadMilliVolts(_adcPin);
+    if (a > b) std::swap(a, b);
+    const uint32_t median = c < a ? a : (c > b ? b : c);
+    return static_cast<uint16_t>(median * _dividerMultiplier);
+  }
+#endif
 #if ESP_IDF_VERSION_MAJOR < 5
   // ESP-IDF 4.x doesn't have analogReadMilliVolts, so calibrate manually.
   const uint16_t raw = analogRead(_adcPin);

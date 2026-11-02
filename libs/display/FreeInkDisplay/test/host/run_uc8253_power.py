@@ -39,13 +39,14 @@ inline struct { unsigned short displayWidth=792, displayHeight=528; unsigned dis
 #include <cstdint>
 #include <cstddef>
 #include <vector>
+#include <cstring>
 namespace freeink {
 enum class BusyPolarity { X3TwoPhase };
 class EpdBus {
   uint8_t command=0;
 public:
   std::vector<uint8_t> oldPlane, newPlane, lastBank, rawRegisters;
-  unsigned powerOns=0, refreshes=0;
+  unsigned powerOns=0, refreshes=0, pollingRefreshWaits=0, interruptWaits=0;
   void cmd(uint8_t c) { command=c; if(c == 4) ++powerOns; if(c == 0x12) ++refreshes; }
   void cmdData2(uint8_t c, uint8_t a, uint8_t b) { cmd(c); data(a); data(b); }
   void data(uint8_t) {}
@@ -64,8 +65,8 @@ public:
     (c == 0x10 ? oldPlane : newPlane).assign(size_t(h)*wb,v);
   }
   void reset(int) {}
-  void waitBusy(const char*) {}
-  void waitRefreshComplete(const char*) {}
+  void waitBusy(const char* tag) { if (!std::strcmp(tag, " X3_DRF")) ++pollingRefreshWaits; }
+  void waitRefreshComplete(const char*) { ++interruptWaits; }
   struct Pins { int8_t busy=0; };
   Pins pins() const { return {}; }
   struct Transaction { void writeBytes(const uint8_t*, size_t) {} void end() {} };
@@ -84,7 +85,17 @@ int main() {
  assert(caps.supported() && caps.stripUploads && !caps.asyncBase && !caps.stagingWhileBusy);
  assert(d.grayscaleCapabilities(freeink::GrayscaleMode::Direct).base == freeink::GrayscaleBase::Combined);
  std::vector<uint8_t> fb(792/8*528, 0xAA); d.begin(bus);
- d.display(bus,fb.data(),nullptr,freeink::RefreshMode::Full,false);
+ // Rollback: both splash and first real screen clean; only the third paint is fast.
+ assert(!d.supportsAsyncDisplay());
+ assert(!d.displayStart(bus,fb.data(),nullptr,freeink::RefreshMode::Fast,false));
+ assert(bus.refreshes == 2 && bus.pollingRefreshWaits == 2);
+ assert(bus.oldPlane == fb && bus.newPlane == fb);
+ d.displayFinish(bus,fb.data());
+ assert(bus.refreshes == 2);
+ d.display(bus,fb.data(),nullptr,freeink::RefreshMode::Fast,false);
+ assert(bus.refreshes == 5 && bus.pollingRefreshWaits == 5);
+ d.display(bus,fb.data(),nullptr,freeink::RefreshMode::Fast,false);
+ assert(bus.refreshes == 6 && bus.pollingRefreshWaits == 6 && bus.interruptWaits == 0);
  assert(bus.powerOns == 1);
  d.display(bus,fb.data(),nullptr,freeink::RefreshMode::Full,false);
  assert(bus.powerOns == 1);
@@ -105,48 +116,16 @@ int main() {
    d.display(bus,fb.data(),nullptr,freeink::RefreshMode::Full,false);
    assert(bus.newPlane == fb && bus.oldPlane == fb);
  }
- // A grayscale base after an AA page must not run as a differential. The reader's AA pass
- // leaves greys on the glass that cleanupGrayscaleBuffers() restores the RAM around but does
- // not remove; the differential base then gives those pixels the gentle WW settle and the
- // absolute gray pass idles the endpoints, so the page's text outline survives onto the next
- // grayscale image (X3, 2026-09-23). The clean branch costs one extra refresh: display(Half)
- // plus the settle, versus the differential's single settle -- which is how the two are told
- // apart here.
- const auto absolute = freeink::GrayscaleMode::Absolute;
- d.display(bus,fb.data(),nullptr,freeink::RefreshMode::Fast,false);          // B/W base, as the reader pushes it
- d.copyGrayscaleLsb(bus, fb.data());
- d.copyGrayscaleMsb(bus, fb.data());
- d.displayGray(bus, fb.data(), false, nullptr, false);                        // overlay gc nudge: greys now on glass
- d.cleanupGrayscaleBuffers(bus, fb.data());                                   // RAM restored; glass untouched
- auto before = bus.refreshes;
- d.beginGrayscale(bus, fb.data(), absolute, freeink::RefreshMode::Half, false);
- assert(bus.refreshes == before + 2);                                         // clean base, not differential
- d.copyGrayscaleLsb(bus, fb.data());
- d.copyGrayscaleMsb(bus, fb.data());
- d.displayGray(bus, fb.data(), false, nullptr, true);                         // absolute pass: greys on glass again
- d.cleanupGrayscaleBuffers(bus, fb.data());
- // A half drives every pixel to its target, which is what retires the claim: the next
- // grayscale base may diff again.
- d.display(bus,fb.data(),nullptr,freeink::RefreshMode::Half,false);
- before = bus.refreshes;
- d.beginGrayscale(bus, fb.data(), absolute, freeink::RefreshMode::Half, false);
- assert(bus.refreshes == before + 1);                                         // differential base
- // The reader's page turn asks for a _fast base. The clean branch's display(Fast) gives the
- // same gentle WW cell as the differential, so greys on the glass must not double the refresh.
+ // Rollback: restored B/W RAM permits a differential gray base after an AA pass.
+ d.display(bus,fb.data(),nullptr,freeink::RefreshMode::Fast,false);
  d.copyGrayscaleLsb(bus, fb.data());
  d.copyGrayscaleMsb(bus, fb.data());
  d.displayGray(bus, fb.data(), false, nullptr, false);
  d.cleanupGrayscaleBuffers(bus, fb.data());
- for (int page = 0; page < 3; ++page) {
-   before = bus.refreshes;
-   d.beginGrayscale(bus, fb.data(), absolute, freeink::RefreshMode::Fast, false);
-   assert(bus.refreshes == before + 1);                                       // single differential base
-   d.copyGrayscaleLsb(bus, fb.data());
-   d.copyGrayscaleMsb(bus, fb.data());
-   d.displayGray(bus, fb.data(), false, nullptr, false);
-   d.cleanupGrayscaleBuffers(bus, fb.data());
- }
- std::cout << "PASS: UC8253 cold power-on, warm Full, power-off/wake, and clean gray base after AA\\n";
+ const auto before = bus.refreshes;
+ d.beginGrayscale(bus, fb.data(), freeink::GrayscaleMode::Absolute, freeink::RefreshMode::Half, false);
+ assert(bus.refreshes == before + 1 && bus.interruptWaits == 0);
+ std::cout << "PASS: UC8253 rollback boot cleans, blocking polling, gray baseline, power and Direct grayscale\\n";
 }
 """)
     exe = root / "test_uc8253_power"

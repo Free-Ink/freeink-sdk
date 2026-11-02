@@ -32,6 +32,7 @@ for the full device list.
 - [M5Stack PaperS3](m5stack-papers3-support.md)
 - [Metalio E-Ink 4](metalio-eink4-support.md)
 - [OnePage ESP32-C61](onepage-c61-support.md)
+- [e-Minimal 7.8"](eminimal-78-support.md)
 - [Waveshare ESP32-S3-ePaper-3.97](waveshare-epaper-397-support.md)
 
 ## Driver provenance

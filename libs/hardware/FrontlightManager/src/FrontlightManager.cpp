@@ -1,5 +1,9 @@
 #include "FrontlightManager.h"
 
+#if FREEINK_DEVICE_PICCO
+#include <cmath>
+#endif
+
 #if FREEINK_CAP_FRONTLIGHT
 #include <M5Pm1.h>
 #include <Wire.h>
@@ -370,36 +374,111 @@ void FrontlightManager::applyLm3630a() {
 //   reg0  = master enable  (bit2/0x04 = cool on, bit1/0x02 = warm on; bit7 = standby, cleared on shutdown)
 //   reg1  = mode           (low 3 bits)         reg2 = 0x38 config      reg0x50 = 0x03
 //   reg3  = cool PWM        reg4 = warm PWM      reg5/6 = per-channel current limit (5-bit)
-// Brightness/color-temperature come from a 10x10x4 LUT the firmware indexes as
-// base + 40*colorTemp + 4*brightness, each entry {cool_pwm, warm_pwm, cool_cur,
-// warm_cur}. The table below is byte-verbatim from the vendor image (base
-// 0x3c78d4c4, confirmed via the l32r in FUN_42008d44). NOTE: the firmware's
-// brightness axis is 10 discrete steps; entries [*][0]/[*][1] are anomalous
-// (non-monotonic), so the SDK uses only brightness indices 2..9, interpolating
-// their register values to avoid eight large steps across the slider. CONFIDENCE:
-// register protocol high; exact UI index mapping medium — validate/tune on hardware.
+// Ten brightness steps per warmth row, starting eight bytes after 0x3c78d4c4
+// in the vendor image. Each step holds cool/warm PWM followed by cool/warm current.
+// The final two warm-only steps extend the recovered ramp up to its warm PWM limit.
 namespace {
-constexpr uint8_t PICCO_FL_LUT[400] = {
-    136, 1,   100, 0,  11,  2,   150, 0,  1,  0,   24, 0,  14,  0,   31, 0,  34,  0,   31, 0,
-    55,  0,   31,  0,  75,  0,   31,  0,  95, 0,   31, 0,  116, 0,   31, 0,  136, 0,   31, 0,  // colorTemp 0
-    157, 0,   31,  0,  177, 0,   31,  0,  1,  1,   19, 0,  10,  3,   31, 1,  30,  1,   31, 8,
-    50,  1,   31,  19, 71,  8,   31,  31, 91, 28,  31, 31, 112, 48,  31, 31, 132, 69,  31, 31,  // colorTemp 1
-    152, 89,  31,  31, 173, 110, 31,  31, 1,  3,   17, 2,  5,   1,   31, 10, 25,  1,   31, 22,
-    46,  12,  31,  31, 66,  32,  31,  31, 86, 53,  31, 31, 107, 73,  31, 31, 127, 94,  31, 31,  // colorTemp 2
-    148, 114, 31,  31, 168, 134, 31,  31, 1,  2,   14, 7,  1,   1,   29, 18, 20,  6,   31, 31,
-    40,  27,  31,  31, 61,  47,  31,  31, 81, 67,  31, 31, 101, 88,  31, 31, 122, 108, 31, 31,  // colorTemp 3
-    142, 129, 31,  31, 162, 149, 31,  31, 2,  1,   10, 12, 1,   1,   23, 26, 13,  16,  31, 31,
-    34,  37,  31,  31, 54,  57,  31,  31, 74, 78,  31, 31, 95,  98,  31, 31, 115, 118, 31, 31,  // colorTemp 4
-    136, 139, 31,  31, 156, 159, 31,  31, 1,  2,   7,  16, 1,   4,   17, 31, 5,   24,  31, 31,
-    26,  45,  31,  31, 46,  65,  31,  31, 66, 86,  31, 31, 87,  106, 31, 31, 107, 126, 31, 31,  // colorTemp 5
-    128, 147, 31,  31, 148, 167, 31,  31, 3,  1,   3,  21, 2,   11,  11, 31, 1,   31,  25, 31,
-    15,  51,  31,  31, 36,  72,  31,  31, 56, 92,  31, 31, 76,  113, 31, 31, 97,  133, 31, 31,  // colorTemp 6
-    117, 153, 31,  31, 138, 174, 31,  31, 2,  1,   0,  26, 2,   16,  5,  31, 2,   37,  14, 31,
-    1,   57,  31,  31, 21,  77,  31,  31, 42, 98,  31, 31, 62,  118, 31, 31, 82,  138, 31, 31,  // colorTemp 7
-    103, 159, 31,  31, 123, 179, 31,  31, 1,  1,   0,  26, 1,   21,  0,  31, 1,   41,  4,  31,
-    1,   62,  12,  31, 1,   82,  26,  31, 17, 102, 31, 31, 37,  123, 31, 31, 58,  143, 31, 31,  // colorTemp 8
-    78,  164, 31,  31, 98,  184, 31,  31, 0,  5,   0,  31, 0,   25,  0,  31, 0,   46,  0,  31,
-    0,   66,  0,   31, 0,   86,  0,   31, 0,  107, 0,  31, 0,   127, 0,  31, 0,   147, 0,  31,  // colorTemp 9
+constexpr uint8_t PICCO_FL_LUT[10][10][4] = {
+    {{1, 0, 24, 0},
+     {14, 0, 31, 0},
+     {34, 0, 31, 0},
+     {55, 0, 31, 0},
+     {75, 0, 31, 0},
+     {95, 0, 31, 0},
+     {116, 0, 31, 0},
+     {136, 0, 31, 0},
+     {157, 0, 31, 0},
+     {177, 0, 31, 0}},
+    {{1, 1, 19, 0},
+     {10, 3, 31, 1},
+     {30, 1, 31, 8},
+     {50, 1, 31, 19},
+     {71, 8, 31, 31},
+     {91, 28, 31, 31},
+     {112, 48, 31, 31},
+     {132, 69, 31, 31},
+     {152, 89, 31, 31},
+     {173, 110, 31, 31}},
+    {{1, 3, 17, 2},
+     {5, 1, 31, 10},
+     {25, 1, 31, 22},
+     {46, 12, 31, 31},
+     {66, 32, 31, 31},
+     {86, 53, 31, 31},
+     {107, 73, 31, 31},
+     {127, 94, 31, 31},
+     {148, 114, 31, 31},
+     {168, 134, 31, 31}},
+    {{1, 2, 14, 7},
+     {1, 1, 29, 18},
+     {20, 6, 31, 31},
+     {40, 27, 31, 31},
+     {61, 47, 31, 31},
+     {81, 67, 31, 31},
+     {101, 88, 31, 31},
+     {122, 108, 31, 31},
+     {142, 129, 31, 31},
+     {162, 149, 31, 31}},
+    {{2, 1, 10, 12},
+     {1, 1, 23, 26},
+     {13, 16, 31, 31},
+     {34, 37, 31, 31},
+     {54, 57, 31, 31},
+     {74, 78, 31, 31},
+     {95, 98, 31, 31},
+     {115, 118, 31, 31},
+     {136, 139, 31, 31},
+     {156, 159, 31, 31}},
+    {{1, 2, 7, 16},
+     {1, 4, 17, 31},
+     {5, 24, 31, 31},
+     {26, 45, 31, 31},
+     {46, 65, 31, 31},
+     {66, 86, 31, 31},
+     {87, 106, 31, 31},
+     {107, 126, 31, 31},
+     {128, 147, 31, 31},
+     {148, 167, 31, 31}},
+    {{3, 1, 3, 21},
+     {2, 11, 11, 31},
+     {1, 31, 25, 31},
+     {15, 51, 31, 31},
+     {36, 72, 31, 31},
+     {56, 92, 31, 31},
+     {76, 113, 31, 31},
+     {97, 133, 31, 31},
+     {117, 153, 31, 31},
+     {138, 174, 31, 31}},
+    {{2, 1, 0, 26},
+     {2, 16, 5, 31},
+     {2, 37, 14, 31},
+     {1, 57, 31, 31},
+     {21, 77, 31, 31},
+     {42, 98, 31, 31},
+     {62, 118, 31, 31},
+     {82, 138, 31, 31},
+     {103, 159, 31, 31},
+     {123, 179, 31, 31}},
+    {{1, 1, 0, 26},
+     {1, 21, 0, 31},
+     {1, 41, 4, 31},
+     {1, 62, 12, 31},
+     {1, 82, 26, 31},
+     {17, 102, 31, 31},
+     {37, 123, 31, 31},
+     {58, 143, 31, 31},
+     {78, 164, 31, 31},
+     {98, 184, 31, 31}},
+    {{0, 5, 0, 31},
+     {0, 25, 0, 31},
+     {0, 46, 0, 31},
+     {0, 66, 0, 31},
+     {0, 86, 0, 31},
+     {0, 107, 0, 31},
+     {0, 127, 0, 31},
+     {0, 147, 0, 31},
+     {0, 167, 0, 31},
+     {0, 184, 0, 31}},
 };
 }  // namespace
 
@@ -451,31 +530,30 @@ void FrontlightManager::applyPicco() {
   }
   if (!_i2cConfigured && !configurePicco()) return;
 
-  // Spread 1..100% continuously across vendor entries 2..9. Interpolate PWM
-  // AND current: the dimmest entries adjust both. Weighted unsigned arithmetic
-  // also handles channels whose PWM decreases as the current increases.
-  constexpr uint16_t range = 99;
-  const uint16_t position = static_cast<uint16_t>(_brightness - 1) * 7;
-  const uint8_t lower = 2 + position / range;
-  const uint8_t upper = lower < 9 ? lower + 1 : 9;
-  const uint16_t fraction = position % range;
-  const uint8_t ct = static_cast<uint8_t>((static_cast<uint16_t>(_warmPercent) * 9 + 50) / 100);
-  const uint8_t* lo = &PICCO_FL_LUT[ct * 40 + lower * 4];
-  const uint8_t* hi = &PICCO_FL_LUT[ct * 40 + upper * 4];
-  const auto blend = [fraction](const uint8_t a, const uint8_t b) {
-    return static_cast<uint8_t>((a * (range - fraction) + b * fraction + range / 2) / range);
+  // Spend more of the slider on low light, where a change is easiest to see.
+  const float brightness = (_brightness - 1) / 99.0f;
+  const float step = 9.0f * brightness * std::sqrt(brightness);
+  const float warmth = (9 * _warmPercent) / 100.0f;
+  const int b = step >= 9 ? 8 : static_cast<int>(step);
+  const int w = warmth >= 9 ? 8 : static_cast<int>(warmth);
+  const float bf = step - b;
+  const float wf = warmth - w;
+  const auto blend = [&](int field) {
+    const float lo = (1 - bf) * PICCO_FL_LUT[w][b][field] + bf * PICCO_FL_LUT[w][b + 1][field];
+    const float hi = (1 - bf) * PICCO_FL_LUT[w + 1][b][field] + bf * PICCO_FL_LUT[w + 1][b + 1][field];
+    return static_cast<uint8_t>((1 - wf) * lo + wf * hi + 0.5f);
   };
-  const uint8_t coolPwm = blend(lo[0], hi[0]);
-  const uint8_t warmPwm = blend(lo[1], hi[1]);
-  const uint8_t coolCur = blend(lo[2] & 0x1f, hi[2] & 0x1f);
-  const uint8_t warmCur = blend(lo[3] & 0x1f, hi[3] & 0x1f);
+  const uint8_t coolPwm = blend(0);
+  const uint8_t warmPwm = blend(1);
+  const uint8_t coolCur = coolPwm ? blend(2) : 0;
+  const uint8_t warmCur = warmPwm ? blend(3) : 0;
 
   piccoWrite(0x03, coolPwm);  // cool brightness
   piccoWrite(0x04, warmPwm);  // warm brightness
   piccoUpdate(0x05, 0x1f, coolCur);
   piccoUpdate(0x06, 0x1f, warmCur);
-  piccoUpdate(0x00, 0x14, (coolPwm || coolCur) ? 0x04 : 0x00);  // cool channel enable
-  piccoUpdate(0x00, 0x0b, (warmPwm || warmCur) ? 0x02 : 0x00);  // warm channel enable
+  piccoUpdate(0x00, 0x14, coolPwm ? 0x04 : 0x00);  // cool channel enable
+  piccoUpdate(0x00, 0x0b, warmPwm ? 0x02 : 0x00);  // warm channel enable
 }
 #endif
 

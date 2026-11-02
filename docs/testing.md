@@ -111,8 +111,8 @@ Compiles the Picco frontlight backend and real board profile against a register
 model with a wake-settling interval. Covers the first nonzero brightness write,
 off/on level restoration, warm/cool channels, slider updates without repeated
 wake delays, and retry after a failed wake transaction. Sweeps brightness in both
-directions at all ten color presets, checking fine register steps, unchanged
-endpoints, channel/current limits, and restoration after off/on. Physical light
+directions at all 101 warmth settings, checking fine PWM steps, minimum and maximum
+output, disabled channels at zero PWM, and restoration after off/on. Physical light
 output and the actual controller settling time still require a device check.
 
 ## Display drivers

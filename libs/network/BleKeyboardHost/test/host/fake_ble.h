@@ -87,4 +87,12 @@ void failServiceSearchByUuid(bool fail);
 unsigned long clockMs();
 void advanceMillis(uint32_t ms);
 
+// NimBLE events initialised and not yet deinitialised now, and when deinit() last
+// ran (ESP-IDF 6 asserts at deinit unless that is zero).
+size_t eventsOutstanding();
+size_t eventsOutstandingAtLastDeinit();
+// Scan stops made on the host task (an event on the default queue) and elsewhere.
+size_t scanStopsOnHostTask();
+size_t scanStopsOffHostTask();
+
 }  // namespace fakeble

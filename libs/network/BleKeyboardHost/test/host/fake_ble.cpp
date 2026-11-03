@@ -5,6 +5,8 @@
 #include "fake_ble.h"
 
 #include <Preferences.h>
+#include <freertos/semphr.h>
+#include <nimble/nimble_port.h>
 
 #include <algorithm>
 #include <atomic>
@@ -168,6 +170,59 @@ uint32_t ulTaskNotifyTake(BaseType_t clearOnExit, uint32_t) {
   if (task->stop) throw TaskStop{};
   if (clearOnExit == pdTRUE) task->notified = false;
   return 1;
+}
+
+struct FakeSemaphore {
+  std::mutex m;
+  std::condition_variable cv;
+  bool given = false;
+};
+
+SemaphoreHandle_t xSemaphoreCreateBinary() { return new FakeSemaphore(); }
+
+BaseType_t xSemaphoreGive(SemaphoreHandle_t sem) {
+  std::lock_guard<std::mutex> lock(sem->m);
+  if (sem->given) return pdFALSE;
+  sem->given = true;
+  sem->cv.notify_all();
+  return pdTRUE;
+}
+
+BaseType_t xSemaphoreTake(SemaphoreHandle_t sem, uint32_t ticksToWait) {
+  std::unique_lock<std::mutex> lock(sem->m);
+  if (!sem->cv.wait_for(lock, std::chrono::milliseconds(ticksToWait), [sem] { return sem->given; })) return pdFALSE;
+  sem->given = false;
+  return pdTRUE;
+}
+
+// --- NimBLE event queue -----------------------------------------------------------
+namespace {
+std::atomic<size_t> g_eventsOutstanding{0};
+std::atomic<size_t> g_eventsAtLastDeinit{0};
+std::atomic<size_t> g_scanStopsOnHostTask{0};
+std::atomic<size_t> g_scanStopsOffHostTask{0};
+thread_local bool t_onHostTask = false;
+ble_npl_eventq g_defaultQueue;
+}  // namespace
+
+ble_npl_eventq* nimble_port_get_dflt_eventq() { return &g_defaultQueue; }
+
+void ble_npl_event_init(ble_npl_event* ev, ble_npl_event_fn* fn, void* arg) {
+  if (!ev->inPool) g_eventsOutstanding++;
+  ev->inPool = true;
+  ev->fn = fn;
+  ev->arg = arg;
+}
+
+void ble_npl_event_deinit(ble_npl_event* ev) {
+  if (ev->inPool) g_eventsOutstanding--;
+  ev->inPool = false;
+}
+
+void ble_npl_eventq_put(ble_npl_eventq*, ble_npl_event* ev) {
+  t_onHostTask = true;
+  ev->fn(ev);
+  t_onHostTask = false;
 }
 
 // --- Fake stack state -----------------------------------------------------------
@@ -478,6 +533,7 @@ bool NimBLEScan::start(uint32_t, bool, bool) {
 }
 bool NimBLEScan::isScanning() const { return scanning_; }
 bool NimBLEScan::stop() {
+  (t_onHostTask ? g_scanStopsOnHostTask : g_scanStopsOffHostTask)++;
   scanning_ = false;
   return true;
 }
@@ -530,7 +586,15 @@ void resetTeardownInstrumentation() {
   releaseDeinit();
   g_teardownStallMs = 0;
   g_maxTeardownOverlap = 0;
+  g_eventsAtLastDeinit = 0;
+  g_scanStopsOnHostTask = 0;
+  g_scanStopsOffHostTask = 0;
 }
+
+size_t eventsOutstanding() { return g_eventsOutstanding.load(); }
+size_t eventsOutstandingAtLastDeinit() { return g_eventsAtLastDeinit.load(); }
+size_t scanStopsOnHostTask() { return g_scanStopsOnHostTask.load(); }
+size_t scanStopsOffHostTask() { return g_scanStopsOffHostTask.load(); }
 
 }  // namespace fakeble
 
@@ -540,6 +604,7 @@ bool NimBLEDevice::init(const std::string&) {
 }
 bool NimBLEDevice::deinit(bool) {
   TeardownScope scope;
+  g_eventsAtLastDeinit = g_eventsOutstanding.load();
   if (g_deinitHoldArmed.exchange(false)) {
     g_deinitHeld = true;
     while (!g_deinitReleased.load()) std::this_thread::sleep_for(std::chrono::milliseconds(1));

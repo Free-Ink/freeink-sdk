@@ -105,6 +105,10 @@ InputManager::InputManager()
 // The vendor firmware waits up to ~2 s for the expander on slow-starting boards.
 static constexpr uint32_t METALIO_BOOT_WAIT_MS = 3000;
 #endif
+#if FREEINK_DEVICE_PAPERMONO
+// After a PMIC restart (sleep and wake) the IO expander can miss the first probe.
+static constexpr uint32_t PAPERMONO_BOOT_WAIT_MS = 2000;
+#endif
 
 void InputManager::begin() {
 #if FREEINK_DEVICE_PICCO
@@ -115,6 +119,9 @@ void InputManager::begin() {
 #endif
 #if FREEINK_DEVICE_METALIO_EINK4
   if (BoardConfig::isMetalioEInk4()) freeink::metalio::ensureBooted(METALIO_BOOT_WAIT_MS);
+#endif
+#if FREEINK_DEVICE_PAPERMONO
+  if (BoardConfig::isPaperMono()) freeink::papermono::ensureBooted(PAPERMONO_BOOT_WAIT_MS);
 #endif
   if (hasToggleSwitch()) {
     pinMode(BoardConfig::ACTIVE.input.toggleSwitch, INPUT_PULLUP);
@@ -1633,7 +1640,10 @@ void InputManager::beginFt5x06() {
 #if FREEINK_DEVICE_PAPERMONO
   // The FT6336's power rail and reset line live on the M5IOE1 expander, not
   // ESP GPIOs — raise/release them before the probe below.
-  freeink::papermono::enableTouch();
+  [[maybe_unused]] const bool railUp = freeink::papermono::enableTouch();
+#ifdef TOUCH_PROBE_DEBUG
+  touchDebugPrintf("[touch] Paper Mono rail and reset: %s\n", railUp ? "up" : "FAILED");
+#endif
 #endif
 
   // The bus is shared with M5PM1/M5IOE1/RX8130, whose standing profile is

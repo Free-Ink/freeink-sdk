@@ -39,27 +39,50 @@ inline WakeState& bootWakeState() {
   return state;
 }
 
-// One-time boot bring-up (idempotent, cheap after the first call): PMIC bus up
-// with watchdog off, wake source cleared, power button taken over (the PMIC's
+// Boot bring-up (idempotent, cheap once it has succeeded): PMIC bus up with
+// watchdog off, wake source cleared, power button taken over (the PMIC's
 // single-click reset is disabled so clicks reach the firmware; its hardware
 // long-hold download escape stays), and all expander-switched rails/resets
 // driven to a known LOW. Rails come up individually as each manager needs them.
-inline bool ensureBooted() {
-  static bool booted = false;
-  static bool ok = false;
-  if (booted) return ok;
-  booted = true;
+//
+// After a PMIC restart (sleep and wake) the expander can miss the first probe,
+// so a failure is not cached. waitMs bounds how long this call retries; callers
+// passing 0 retry at most every RETRY_GAP_MS, so a missing expander does not
+// stall every rail write.
+inline bool ensureBooted(uint32_t waitMs = 0) {
+  constexpr unsigned long RETRY_GAP_MS = 500;
+  constexpr unsigned long RETRY_DELAY_MS = 25;
+  static bool ready = false;
+  static bool tried = false;
+  static unsigned long lastFailure = 0;
+  if (ready) return true;
+  if (waitMs == 0 && tried && millis() - lastFailure < RETRY_GAP_MS) return false;
   m5pm1::beginBus();
-  auto& wake = bootWakeState();
-  wake.valid = m5pm1::readWakeSource(&wake.source) && m5pm1::readReg(m5pm1::REG_GPIO_WAKE_EN, &wake.enabledPins);
-  m5pm1::clearWakeSource();
+  if (!tried) {
+    // The wake snapshot is taken once: the clear is destructive.
+    auto& wake = bootWakeState();
+    wake.valid = m5pm1::readWakeSource(&wake.source) && m5pm1::readReg(m5pm1::REG_GPIO_WAKE_EN, &wake.enabledPins);
+    m5pm1::clearWakeSource();
+  }
+  tried = true;
   m5pm1::configureAppPowerButton();
   // The red RGB leg lives in the PM1's PWR_CFG, which the PMIC retains across
   // reflashes — stock firmware leaves it lit. Drive it to the same known-off
   // state configureOutputs() gives the IOE1 green/blue legs.
   m5pm1::updateReg(m5pm1::REG_PWR_CFG, m5pm1::LED_R_EN, 0);
-  ok = m5ioe1::configureOutputs();
-  return ok;
+  const unsigned long start = millis();
+  for (;;) {
+    if (m5ioe1::configureOutputs()) {
+      ready = true;
+      return true;
+    }
+    m5ioe1::forgetFailedProbe();
+    if (millis() - start >= waitMs) {
+      lastFailure = millis();
+      return false;
+    }
+    delay(RETRY_DELAY_MS);
+  }
 }
 
 // RTC /IRQ is PM1 GPIO0, separate from the ESP's GPIO wake sources.
@@ -108,14 +131,28 @@ inline void setSdPower(bool enabled) {
 }
 
 // Touch rail up + reset released so the FT6336 answers its I2C probe. Same
-// 8 ms low / 10 ms settle as the reference bring-up.
-inline void enableTouch() {
-  ensureBooted();
-  m5ioe1::write(m5ioe1::PIN_TOUCH_POWER, true);
-  m5ioe1::write(m5ioe1::PIN_TOUCH_RESET, false);
-  delay(8);
-  m5ioe1::write(m5ioe1::PIN_TOUCH_RESET, true);
-  delay(10);
+// 8 ms low / 10 ms settle as the reference bring-up. Seen on the device: an
+// expander read can fail right after the rail switches on; m5ioe1::write() then
+// skips its write and the controller stays in reset (OUT 0x1000). So the outputs
+// are read back and the sequence repeated, for up to about 1 s. Returns false if
+// the rail and reset never both read high.
+inline bool enableTouch() {
+  constexpr int ATTEMPTS = 16;
+  constexpr uint16_t WANTED = m5ioe1::PIN_TOUCH_POWER | m5ioe1::PIN_TOUCH_RESET;
+  if (!ensureBooted()) return false;
+  for (int attempt = 0; attempt < ATTEMPTS; ++attempt) {
+    if (attempt > 0) delay(50);
+    m5ioe1::write(m5ioe1::PIN_TOUCH_POWER, true);
+    m5ioe1::write(m5ioe1::PIN_TOUCH_RESET, false);
+    delay(8);
+    m5ioe1::write(m5ioe1::PIN_TOUCH_RESET, true);
+    uint16_t out = 0;
+    if (m5ioe1::readReg16(m5ioe1::REG_GPIO_OUT_L, &out) && (out & WANTED) == WANTED) {
+      delay(10);
+      return true;
+    }
+  }
+  return false;
 }
 
 // Poll the PM1's power button (the event bit is read-clear in the PMIC).

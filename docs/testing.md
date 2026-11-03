@@ -14,6 +14,17 @@ Checks that native USB Serial/JTAG output is serviced without a blocking flush,
 and that UART, TinyUSB, Sticky's UART bridge, and simulator builds remain no-ops.
 Device tests must also verify timely acknowledgements and intact transfer data.
 
+## Paper Mono bring-up
+
+```sh
+python3 libs/hardware/BoardConfig/test/host/run_papermono_boot.py
+```
+
+Runs `PaperMonoBoard.h` against a model PMIC and IO expander: an expander that
+misses its first probes after a PMIC restart must still come up within the boot
+wait, a missing one must be retried at most every 500 ms afterwards, and a failed
+expander read during `enableTouch()` must not leave the touch controller in reset.
+
 ## UI, books, credentials, and input
 
 ```sh

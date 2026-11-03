@@ -1,6 +1,7 @@
 #include "FrontlightManager.h"
 
 #if FREEINK_DEVICE_PICCO
+#include <algorithm>
 #include <cmath>
 #endif
 
@@ -543,10 +544,16 @@ void FrontlightManager::applyPicco() {
     const float hi = (1 - bf) * PICCO_FL_LUT[w + 1][b][field] + bf * PICCO_FL_LUT[w + 1][b + 1][field];
     return static_cast<uint8_t>((1 - wf) * lo + wf * hi + 0.5f);
   };
-  const uint8_t coolPwm = blend(0);
-  const uint8_t warmPwm = blend(1);
-  const uint8_t coolCur = coolPwm ? blend(2) : 0;
-  const uint8_t warmCur = warmPwm ? blend(3) : 0;
+  // Both channels stay on (PWM >= 1) for warmth 1-99%; a channel switches off
+  // only at 0% (warm) or 100% (cool). Even PWM 1 / current 0 is visibly lit,
+  // so switching a channel off mid-slider, where its blended PWM rounds to 0,
+  // was a colour jump at every brightness (e.g. warmth 94->95%).
+  const bool coolOn = _warmPercent < 100;
+  const bool warmOn = _warmPercent > 0;
+  const uint8_t coolPwm = coolOn ? std::max<uint8_t>(blend(0), 1) : 0;
+  const uint8_t warmPwm = warmOn ? std::max<uint8_t>(blend(1), 1) : 0;
+  const uint8_t coolCur = coolOn ? blend(2) : 0;
+  const uint8_t warmCur = warmOn ? blend(3) : 0;
 
   piccoWrite(0x03, coolPwm);  // cool brightness
   piccoWrite(0x04, warmPwm);  // warm brightness

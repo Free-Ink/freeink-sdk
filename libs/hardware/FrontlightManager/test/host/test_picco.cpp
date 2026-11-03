@@ -39,6 +39,8 @@ void testBrightnessRamp(FrontlightManager& light) {
       assert(Wire.regs[4] || !Wire.regs[6]);
       assert(bool(Wire.regs[0] & 4) == bool(Wire.regs[3]));
       assert(bool(Wire.regs[0] & 2) == bool(Wire.regs[4]));
+      // No channel switches off mid-slider: that was a visible colour jump.
+      if (warmth > 0 && warmth < 100) assert(Wire.regs[3] && Wire.regs[4]);
       if (warmth == 0) assert(Wire.regs[4] == 0 && !(Wire.regs[0] & 2));
       if (warmth == 100) assert(Wire.regs[3] == 0 && !(Wire.regs[0] & 4));
     }

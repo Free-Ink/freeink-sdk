@@ -34,7 +34,7 @@ The original pin map and controller details came from stock-firmware analysis
 | Panel RAM | 768 × **600**; host FB is 768×552 sent **bottom-up**, then 48 white rows |
 | Framebuffer | 52,992 bytes (768/8 × 552); grayscale planes 52,992 B each, lazy from PSRAM |
 | Display SPI | SCLK 42, MOSI 45, CS 21, DC 14, RST 13, BUSY 41 · **20 MHz** |
-| MicroSD | dedicated **HSPI** bus: SCLK 39, MISO 40, MOSI 38, CS 47 · 20 MHz · power enable GPIO6 (active-low) |
+| MicroSD | dedicated **HSPI** bus: SCLK 39, MISO 40, MOSI 38, CS 47 · 20 MHz; power enable GPIO6 (active-low) on units with the CW2015 gauge, otherwise GPIO6 is left HIGH |
 | Buttons | UP 5 and DOWN 7 active-low; POWER 8 active-high with INPUT_PULLDOWN |
 | Battery | **CW2015** fuel gauge at I²C 0x62 on SDA 2 / SCL 1 (shared with touch and RTC), probed at runtime; ADC GPIO 10 (divider ×1.559) when the gauge does not answer. Charge status GPIO 11 |
 | Touch | **GSLX680** — SDA 2, SCL 1, RST 3, addr 0x40. Firmware blob uploaded at boot (`gsl/EegoA4GslFirmware.h`, extracted + hash-verified); backend in InputManager, with a multi-touch snapshot mirroring the GT911 contract (track IDs from each record's high nibble, up to 4 stored / 5 reported contacts). |
@@ -65,15 +65,24 @@ Gray3 history: the next page shows its base with a normal B/W refresh, which
 fully clears the previous screen, and its grays follow as a Gray3 transition
 from that base.
 
-Full images (absolute/direct planes) use the stock four-gray waveform (five
-42-byte records), which drives every pixel from any prior state, with no B/W
-base pass. Planes go out MSB to DTM1 and LSB to DTM2, so
-black/dark/light/white are 00/01/10/11.
+Full images (absolute/direct planes) follow the stock V1.0.3 lockscreen
+sequence. First a pre-clear in the B/W session: black to DTM2, no DTM1 write,
+and two refreshes with the GC waveform at half its frame counts. Then the
+stock four-gray waveform (five 42-byte records) with planes MSB to DTM1 and
+LSB to DTM2, so black/dark/light/white are 00/01/10/11. The white record
+(0x21) has its last two white pulses lengthened to 6 frames (stock 0x81,
+0x82 become 0x86, 0x86). DTM1 is seeded white again before power-off.
 
-Gray refreshes use the stock V1.0.3 panel session (PWR 0x03 00 72 72,
-VCOM_DC 0x32); B/W uses a stronger drive (PWR 0x43 00 78 78 17, VCOM_DC 0x24)
-because UI screens change with fast refreshes. Both use gate/source
-0x65 00 00 00 00 and seed DTM1 white before power-on. Full refresh uses the stock GC waveform (0x50 = 0x97); fast refresh
+Every refresh powers the panel off afterwards. Leaving it powered between
+refreshes made later four-gray images show earlier screens as ghosts.
+
+Gray3 pages and four-gray images use the stock V1.0.3 gray session
+(PWR 03 00 72 72, VCOM_DC 0x32). B/W uses stronger rails
+(PWR 43 00 78 78 17) because UI screens change with fast refreshes, and
+VCOM_DC 0x26: at stock 0x32, gray content showed white cut-outs of earlier
+black; at 0x24 the image fuzzed while the panel sat idle. Every session uses gate/source 00 00 00 00 and seeds
+DTM1 white before power-on.
+Full refresh uses the stock GC waveform (0x50 = 0x97); fast refresh
 uses the stock production "DU-factory-previous" waveform (0x50 = 0xd7), both
 49-byte records. The planes are
 lazily allocated, PSRAM first; if allocation fails the driver leaves the
@@ -98,6 +107,14 @@ Build with `-DFREEINK_DEVICE_EEGO_A4=1`; see the `eego_a4` environment in
   100, matching the stock battery icon. Samples outside 2500–4500 mV or above
   100% are rejected. When the gauge does not answer, the ADC pin is used.
   Charging comes from GPIO 11; the gauge cannot observe it.
+  GPIO6 depends on the unit. On units whose CW2015 answers, it is the SD
+  card's active-low power enable, as stock V1.0.3 drives it; held HIGH, the
+  card does not answer. On a tested unlit unit without the gauge, the GPIO10
+  ADC reads the battery only with GPIO6 HIGH (a 40-minute trace showed about
+  4.12 to 4.08 V). Before mounting the card, `SDCardManager` checks for the
+  gauge at 0x62: if it answers, GPIO6 becomes the SD power enable and display
+  initialization leaves it alone; otherwise display initialization drives it
+  HIGH. The profile describes the gauge-less case.
 - `FrontlightManager` probes the optional LM3630A through
   `BoardProfile::i2cFrontlight`. The profile's PWM frontlight field is `NO_FRONTLIGHT`.
   The controller is fitted on some unlit units too, so a unit the stock
@@ -127,7 +144,8 @@ Build with `-DFREEINK_DEVICE_EEGO_A4=1`; see the `eego_a4` environment in
 - Standby current with the GPIO4 latch + GPIO3-low sequence.
 - CW2015 on hardware: the stock profile and register sequence are recovered
   from stock V1.0.3 and match a live unit's resident profile byte for byte, but
-  the SDK's upload path and ADC fallback have only run against a host model.
+  the SDK's upload path has only run against a host model. ADC fallback has
+  been tested on an unlit unit with GPIO6 HIGH; other revisions need checking.
 
 ## Provenance
 

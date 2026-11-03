@@ -599,7 +599,7 @@ bool FtFont::prepareLoad() {
 bool FtFont::loadGlyph(const GlyphId glyph, const uint32_t pixelSize26_6) {
   lastGlyphFailure_ = GlyphFailure::None;
   lastGlyphError_ = 0;
-  if (!glyph) {
+  if (!face_ || glyph >= static_cast<FT_Face>(face_)->num_glyphs) {
     lastGlyphFailure_ = GlyphFailure::MissingGlyph;
     return false;
   }

@@ -6,6 +6,7 @@
 #if FREEINK_CAP_RTC
 
 #include <Wire.h>
+#include <I2cBusLock.h>
 #include <soc/soc_caps.h>
 
 namespace freeink {
@@ -76,6 +77,7 @@ uint8_t bcdToDec(uint8_t v) { return static_cast<uint8_t>((v >> 4) * 10U + (v & 
 uint8_t decToBcd(uint8_t v) { return static_cast<uint8_t>((v / 10U) << 4 | (v % 10U)); }
 
 bool writeReg(uint8_t addr, uint8_t reg, uint8_t value) {
+  const freeink::I2cBusLock busLock;
   ensureWire();
   auto& wire = sensorWire();
   wire.beginTransmission(addr);
@@ -85,6 +87,7 @@ bool writeReg(uint8_t addr, uint8_t reg, uint8_t value) {
 }
 
 bool readRegs(uint8_t addr, uint8_t reg, uint8_t* dst, uint8_t len) {
+  const freeink::I2cBusLock busLock;
   ensureWire();
   auto& wire = sensorWire();
   wire.beginTransmission(addr);
@@ -215,6 +218,7 @@ bool Rtc::now(DateTime& out) {
 }
 
 bool Rtc::set(const DateTime& dt) {
+  const freeink::I2cBusLock busLock;  // direct transfers below, not only helpers
   const uint8_t addr = BoardConfig::ACTIVE.sensors.rtcAddr;
   if (!begun_ || addr == 0) return false;
   const auto& s = BoardConfig::ACTIVE.sensors;
@@ -295,6 +299,7 @@ bool Rtc::cancelWakeTimer() {
 }
 
 bool Rtc::armWakeTimer(const uint32_t seconds) {
+  const freeink::I2cBusLock busLock;  // direct transfers below, not only helpers
   if (!begun_ || BoardConfig::ACTIVE.sensors.rtcType != BoardConfig::RtcType::Rx8130 || seconds == 0 ||
       seconds > 65535UL * 60UL)
     return false;

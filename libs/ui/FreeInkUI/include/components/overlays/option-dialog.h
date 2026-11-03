@@ -43,10 +43,31 @@ struct OptionDialogProps {
   // Stack options vertically (one per row) instead of in one bottom row;
   // better for narrow portrait panels or more than three options.
   bool verticalOptions = false;
+  // Vertical options only: show visibleOptions of them, starting at
+  // firstOption, with a scroll bar beside them; 0 shows all. The caller moves
+  // firstOption to keep the selected option in view. Only the shown options
+  // are registered, so InputPrev/InputNext focus stops at the window's edge;
+  // a scrolling dialog needs the caller to own button navigation.
+  uint8_t firstOption = 0;
+  uint8_t visibleOptions = 0;
   // Dim everything behind the dialog with a dither so stale chrome reads as
   // inactive on e-paper.
   bool dimBackground = false;
 };
+
+// How many options optionDialog draws, and the first one, for a vertical
+// window; every option otherwise.
+inline uint8_t optionDialogShownCount(const OptionDialogProps& props) {
+  if (!props.verticalOptions || props.visibleOptions == 0 || props.visibleOptions >= props.optionCount) {
+    return props.optionCount;
+  }
+  return props.visibleOptions;
+}
+
+inline uint8_t optionDialogFirstShown(const OptionDialogProps& props) {
+  const uint8_t last = static_cast<uint8_t>(props.optionCount - optionDialogShownCount(props));
+  return props.firstOption < last ? props.firstOption : last;
+}
 
 // Panel height optionDialog needs at the given width — thin sugar over
 // measureWrappedText so callers size the dialog instead of guessing:
@@ -73,10 +94,10 @@ inline int16_t optionDialogHeight(const DrawTarget& target, const OptionDialogPr
     height = static_cast<int16_t>(height + props.gap + props.contentHeight);
   }
   if (props.options && props.optionCount > 0) {
-    const int16_t buttonsH =
-        props.verticalOptions
-            ? static_cast<int16_t>(props.optionCount * props.buttonHeight + (props.optionCount - 1) * props.gap)
-            : props.buttonHeight;
+    const uint8_t shown = optionDialogShownCount(props);
+    const int16_t buttonsH = props.verticalOptions
+                                 ? static_cast<int16_t>(shown * props.buttonHeight + (shown - 1) * props.gap)
+                                 : props.buttonHeight;
     height = static_cast<int16_t>(height + props.gap + buttonsH);
   }
   return height;
@@ -132,12 +153,12 @@ Rect optionDialog(Frame<MaxInteractions>& frame, Rect rect, const OptionDialogPr
     cursorY = static_cast<int16_t>(cursorY + lines * lh + props.gap);
   }
 
+  const uint8_t shown = optionDialogShownCount(props);
+  const uint8_t first = optionDialogFirstShown(props);
   int16_t buttonsH = 0;
   if (props.options && props.optionCount > 0) {
-    buttonsH = props.verticalOptions
-                   ? static_cast<int16_t>(props.optionCount * props.buttonHeight +
-                                          (props.optionCount - 1) * props.gap)
-                   : props.buttonHeight;
+    buttonsH = props.verticalOptions ? static_cast<int16_t>(shown * props.buttonHeight + (shown - 1) * props.gap)
+                                     : props.buttonHeight;
   }
 
   // Caller-drawn content band, directly above the buttons.
@@ -156,6 +177,20 @@ Rect optionDialog(Frame<MaxInteractions>& frame, Rect rect, const OptionDialogPr
 
   if (!props.options || props.optionCount == 0) return contentBand;
   Rect buttons{content.x, static_cast<int16_t>(content.bottom() - buttonsH), content.width, buttonsH};
+  if (shown < props.optionCount) {
+    // Scroll bar right of the options: a light track and a solid thumb sized
+    // to the shown share.
+    constexpr int16_t BAR_W = 4;
+    buttons.width = static_cast<int16_t>(buttons.width - BAR_W - props.gap);
+    const Rect track{static_cast<int16_t>(buttons.right() + props.gap), buttons.y, BAR_W, buttons.height};
+    frame.target().fill(track, Paint::dither(Color::LightGray));
+    // At least BAR_W tall so a long list still shows a thumb.
+    int16_t thumbH = static_cast<int16_t>(track.height * shown / props.optionCount);
+    if (thumbH < BAR_W) thumbH = BAR_W;
+    int16_t thumbY = static_cast<int16_t>(track.y + track.height * first / props.optionCount);
+    if (thumbY + thumbH > track.bottom()) thumbY = static_cast<int16_t>(track.bottom() - thumbH);
+    frame.target().fill(Rect{track.x, thumbY, BAR_W, thumbH}, Paint::solid(Color::Black));
+  }
   // Horizontal rows: fixed-width options keep their width, the rest split the
   // remainder equally.
   int32_t fixedW = 0;
@@ -167,11 +202,11 @@ Rect optionDialog(Frame<MaxInteractions>& frame, Rect rect, const OptionDialogPr
   const int32_t flexTotal = buttons.width - (props.optionCount - 1) * props.gap - fixedW;
   const int16_t flexW = flexCount > 0 && flexTotal > 0 ? static_cast<int16_t>(flexTotal / flexCount) : 0;
   int16_t optionX = buttons.x;
-  for (uint8_t i = 0; i < props.optionCount; ++i) {
+  for (uint8_t i = first; i < first + shown; ++i) {
     const DialogOption& option = props.options[i];
     Rect optionRect;
     if (props.verticalOptions) {
-      optionRect = Rect{buttons.x, static_cast<int16_t>(buttons.y + i * (props.buttonHeight + props.gap)),
+      optionRect = Rect{buttons.x, static_cast<int16_t>(buttons.y + (i - first) * (props.buttonHeight + props.gap)),
                         buttons.width, props.buttonHeight};
     } else {
       const int16_t w = option.width > 0 ? option.width : flexW;

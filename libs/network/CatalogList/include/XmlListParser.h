@@ -45,6 +45,7 @@ class XmlListParser {
   // malformed XML. Large (2 KB read buffer): allocate the parser on the heap.
   bool parse(ReadFn read, void* readCtx);
   void setUrlOptions(UrlOptions options);
+  void setCaptureBudget(size_t bytes) { captureBudget = bytes; }
 
  private:
   struct Selector {
@@ -70,6 +71,9 @@ class XmlListParser {
   ItemSink sink;
   void* sinkCtx;
   size_t parsedItems = 0;
+  size_t captureBudget = 64 * 1024;
+  size_t capturedBytes = 0;
+  bool limitExceeded = false;
   RawItem current;
   bool done[F_COUNT] = {};
   uint8_t capturingMask = 0;

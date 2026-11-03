@@ -19,13 +19,13 @@
 
 #ifdef FREEINK_CONTENT_WOLFSSL
 
-#include <wolfssl/wolfcrypt/curve25519.h>
-#include <wolfssl/wolfcrypt/hmac.h>
-#include <wolfssl/wolfcrypt/random.h>
 #include <wolfssl/wolfcrypt/aes.h>
 #include <wolfssl/wolfcrypt/asn.h>
 #include <wolfssl/wolfcrypt/asn_public.h>
+#include <wolfssl/wolfcrypt/curve25519.h>
+#include <wolfssl/wolfcrypt/hmac.h>
 #include <wolfssl/wolfcrypt/pkcs12.h>
+#include <wolfssl/wolfcrypt/random.h>
 #include <wolfssl/wolfcrypt/rsa.h>
 #include <wolfssl/wolfcrypt/sha.h>
 #include <wolfssl/wolfcrypt/sha256.h>
@@ -68,6 +68,28 @@ class ScopedRsaKey {
   RsaKey* key_;
 };
 
+// AES includes GCM tables even for CBC operations in common wolfSSL builds.
+// Keep this scratch off the small firmware task stack and release it on errors.
+class ScopedAes {
+ public:
+  ScopedAes() : aes_(new (std::nothrow) Aes) {
+    if (aes_ && wc_AesInit(aes_, nullptr, INVALID_DEVID) != 0) {
+      delete aes_;
+      aes_ = nullptr;
+    }
+  }
+  ~ScopedAes() {
+    if (aes_) {
+      wc_AesFree(aes_);
+      delete aes_;
+    }
+  }
+  Aes* get() const { return aes_; }
+
+ private:
+  Aes* aes_;
+};
+
 // --- tiny DER helpers -------------------------------------------------------
 
 // Number of bytes DER uses to encode `len`, in minimal (definite) form:
@@ -76,8 +98,8 @@ class ScopedRsaKey {
 // length field and corrupts the whole structure.
 size_t derLenLen(size_t len) {
   if (len < 128) return 1;
-  if (len < 0x100) return 2;    // 0x81 <lo>
-  return 3;                     // 0x82 <hi> <lo>  (key material never exceeds 64 KB)
+  if (len < 0x100) return 2;  // 0x81 <lo>
+  return 3;                   // 0x82 <hi> <lo>  (key material never exceeds 64 KB)
 }
 
 uint8_t* derWriteLen(uint8_t* p, size_t len) {
@@ -144,8 +166,7 @@ bool wrapPkcs8(const uint8_t* pkcs1, size_t pkcs1Len, std::vector<uint8_t>* out)
 // SEQUENCE. Works without wolfSSL's cert parser (kept as a fallback for
 // feature-trimmed builds). Returns nullptr when not found.
 const uint8_t* spkiFromX509(const uint8_t* cert, size_t len, size_t* spkiLen) {
-  static const uint8_t kRsaAlgId[13] = {0x30, 0x0D, 0x06, 0x09, 0x2A, 0x86, 0x48,
-                                        0x86, 0xF7, 0x0D, 0x01, 0x01, 0x01};
+  static const uint8_t kRsaAlgId[13] = {0x30, 0x0D, 0x06, 0x09, 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x01};
   for (size_t i = 0; i + sizeof(kRsaAlgId) + 4 < len; i++) {
     if (memcmp(cert + i, kRsaAlgId, sizeof(kRsaAlgId)) != 0) continue;
     // SPKI header immediately precedes the algid: 30 81 <len> (3 bytes) or
@@ -201,8 +222,8 @@ void WolfsslCrypto::sha256(const uint8_t* data, size_t len, uint8_t out[32]) {
   wc_Sha256Hash(data, static_cast<word32>(len), out);
 }
 
-int32_t WolfsslCrypto::rsaPrivateRaw(const uint8_t* pkcs8Der, size_t pkcs8Len, const uint8_t* in,
-                                     size_t inLen, uint8_t* out, size_t outCap) {
+int32_t WolfsslCrypto::rsaPrivateRaw(const uint8_t* pkcs8Der, size_t pkcs8Len, const uint8_t* in, size_t inLen,
+                                     uint8_t* out, size_t outCap) {
   if (!rngOk_) return -1;
   ScopedRsaKey key;
   if (!key.get()) return -2;
@@ -214,16 +235,15 @@ int32_t WolfsslCrypto::rsaPrivateRaw(const uint8_t* pkcs8Der, size_t pkcs8Len, c
     // set: RSA_PRIVATE_ENCRYPT==2 is m^d. Do NOT pass RSA_PRIVATE (==1) — that
     // aliases RSA_PUBLIC_DECRYPT and computes m^e with the public exponent,
     // yielding signatures the server rejects as BadPadding.
-    if (wc_RsaFunction(in, static_cast<word32>(inLen), out, &outLen, RSA_PRIVATE_ENCRYPT, key.get(),
-                       &rng_) == 0) {
+    if (wc_RsaFunction(in, static_cast<word32>(inLen), out, &outLen, RSA_PRIVATE_ENCRYPT, key.get(), &rng_) == 0) {
       result = static_cast<int32_t>(outLen);
     }
   }
   return result;
 }
 
-bool WolfsslCrypto::rsaPrivateSignRaw(const uint8_t* pkcs8Der, size_t pkcs8Len,
-                                      const uint8_t hash[20], uint8_t out[128]) {
+bool WolfsslCrypto::rsaPrivateSignRaw(const uint8_t* pkcs8Der, size_t pkcs8Len, const uint8_t hash[20],
+                                      uint8_t out[128]) {
   uint8_t padded[128];
   memset(padded, 0xFF, sizeof(padded));
   padded[0] = 0x00;
@@ -306,8 +326,8 @@ bool WolfsslCrypto::rsaGenerate(RsaKeyPairDer* out) {
 #endif
 }
 
-bool WolfsslCrypto::rsaPublicEncrypt(const uint8_t* certDer, size_t certLen, const uint8_t* in,
-                                     size_t inLen, uint8_t* out, size_t outCap, size_t* outLen) {
+bool WolfsslCrypto::rsaPublicEncrypt(const uint8_t* certDer, size_t certLen, const uint8_t* in, size_t inLen,
+                                     uint8_t* out, size_t outCap, size_t* outLen) {
   lastError.clear();
   if (!rngOk_) {
     lastError = "rng init failed";
@@ -356,8 +376,8 @@ bool WolfsslCrypto::rsaPublicEncrypt(const uint8_t* certDer, size_t certLen, con
   if (!ok) {
     lastError = "wc_RsaPublicKeyDecode failed";
   } else {
-    const int n = wc_RsaPublicEncrypt(in, static_cast<word32>(inLen), out,
-                                      static_cast<word32>(outCap), key.get(), &rng_);
+    const int n =
+        wc_RsaPublicEncrypt(in, static_cast<word32>(inLen), out, static_cast<word32>(outCap), key.get(), &rng_);
     if (n > 0) {
       *outLen = static_cast<size_t>(n);
     } else {
@@ -368,27 +388,26 @@ bool WolfsslCrypto::rsaPublicEncrypt(const uint8_t* certDer, size_t certLen, con
 #else
       const char* path = "SW";
 #endif
-      lastError = "wc_RsaPublicEncrypt rc=" + std::to_string(n) + " modbits=" + std::to_string(modBits) +
-                  " " + path;
+      lastError = "wc_RsaPublicEncrypt rc=" + std::to_string(n) + " modbits=" + std::to_string(modBits) + " " + path;
     }
   }
   return ok;
 }
 
-bool WolfsslCrypto::aes128CbcDecrypt(const uint8_t key[16], const uint8_t iv[16], const uint8_t* in,
-                                     size_t len, uint8_t* out) {
+bool WolfsslCrypto::aes128CbcDecrypt(const uint8_t key[16], const uint8_t iv[16], const uint8_t* in, size_t len,
+                                     uint8_t* out) {
   if (len % 16 != 0) return false;
-  Aes aes;
-  if (wc_AesSetKey(&aes, key, 16, iv, AES_DECRYPTION) != 0) return false;
-  return wc_AesCbcDecrypt(&aes, out, in, static_cast<word32>(len)) == 0;
+  ScopedAes aes;
+  if (!aes.get() || wc_AesSetKey(aes.get(), key, 16, iv, AES_DECRYPTION) != 0) return false;
+  return wc_AesCbcDecrypt(aes.get(), out, in, static_cast<word32>(len)) == 0;
 }
 
-bool WolfsslCrypto::aes256CbcDecrypt(const uint8_t key[32], const uint8_t iv[16], const uint8_t* in,
-                                     size_t len, uint8_t* out) {
+bool WolfsslCrypto::aes256CbcDecrypt(const uint8_t key[32], const uint8_t iv[16], const uint8_t* in, size_t len,
+                                     uint8_t* out) {
   if (len % 16 != 0) return false;
-  Aes aes;
-  if (wc_AesSetKey(&aes, key, 32, iv, AES_DECRYPTION) != 0) return false;
-  return wc_AesCbcDecrypt(&aes, out, in, static_cast<word32>(len)) == 0;
+  ScopedAes aes;
+  if (!aes.get() || wc_AesSetKey(aes.get(), key, 32, iv, AES_DECRYPTION) != 0) return false;
+  return wc_AesCbcDecrypt(aes.get(), out, in, static_cast<word32>(len)) == 0;
 }
 
 // RFC 7748 little-endian raw keys (wolfSSL defaults to big-endian).
@@ -400,8 +419,8 @@ bool WolfsslCrypto::x25519MakeKey(uint8_t priv[32], uint8_t pub[32]) {
   word32 pubLen = 32;
   const bool ok = wc_curve25519_init(&key) == 0 && wc_curve25519_make_key(&rng, 32, &key) == 0 &&
                   wc_curve25519_export_private_raw_ex(&key, priv, &privLen, EC25519_LITTLE_ENDIAN) == 0 &&
-                  wc_curve25519_export_public_ex(&key, pub, &pubLen, EC25519_LITTLE_ENDIAN) == 0 &&
-                  privLen == 32 && pubLen == 32;
+                  wc_curve25519_export_public_ex(&key, pub, &pubLen, EC25519_LITTLE_ENDIAN) == 0 && privLen == 32 &&
+                  pubLen == 32;
   wc_curve25519_free(&key);
   wc_FreeRng(&rng);
   return ok;
@@ -442,8 +461,8 @@ bool WolfsslCrypto::aes256GcmDecrypt(const uint8_t key[32], const uint8_t iv[12]
   return ok;
 }
 
-bool WolfsslCrypto::aes128CbcEncrypt(const uint8_t key[16], const uint8_t iv[16], const uint8_t* in,
-                                     size_t len, uint8_t* out) {
+bool WolfsslCrypto::aes128CbcEncrypt(const uint8_t key[16], const uint8_t iv[16], const uint8_t* in, size_t len,
+                                     uint8_t* out) {
   // PKCS#7 pad first (wolfSSL does no padding).
   const size_t paddedLen = ((len / 16) + 1) * 16;
   std::vector<uint8_t> padded(paddedLen);
@@ -451,9 +470,9 @@ bool WolfsslCrypto::aes128CbcEncrypt(const uint8_t key[16], const uint8_t iv[16]
   const uint8_t pad = static_cast<uint8_t>(paddedLen - len);
   for (size_t i = len; i < paddedLen; i++) padded[i] = pad;
 
-  Aes aes;
-  if (wc_AesSetKey(&aes, key, 16, iv, AES_ENCRYPTION) != 0) return false;
-  return wc_AesCbcEncrypt(&aes, out, padded.data(), static_cast<word32>(paddedLen)) == 0;
+  ScopedAes aes;
+  if (!aes.get() || wc_AesSetKey(aes.get(), key, 16, iv, AES_ENCRYPTION) != 0) return false;
+  return wc_AesCbcEncrypt(aes.get(), out, padded.data(), static_cast<word32>(paddedLen)) == 0;
 }
 
 bool WolfsslCrypto::pkcs12Extract(const uint8_t* p12, size_t len, const std::string& password,

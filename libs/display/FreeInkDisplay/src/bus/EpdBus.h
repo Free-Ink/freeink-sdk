@@ -18,10 +18,11 @@ namespace freeink {
 
 // BUSY line conventions differ by controller family.
 enum class BusyPolarity : uint8_t {
-  ActiveHigh,  // SSD1677 (X4 / de-link): busy while HIGH
-  ActiveLow,   // ED2208 (M5 PaperColor): busy while LOW
-  X3TwoPhase,  // UC8253 (X3): wait for the LOW edge, then wait back to HIGH
-  UcIdleHigh,  // UC8179/UC8279 X4 Pro: delay one tick, then wait until BUSY_N is HIGH
+  ActiveHigh,      // SSD1677 (X4 / de-link): busy while HIGH
+  ActiveLow,       // ED2208 (M5 PaperColor): busy while LOW
+  X3TwoPhase,      // UC8253 (X3): wait for the LOW edge, then wait back to HIGH
+  UcIdleHigh,      // UC8179/UC8279 X4 Pro: delay one tick, then wait until BUSY_N is HIGH
+  ActiveLowReady,  // SSD2677 Sticky: settle briefly, then wait for idle HIGH (bounded)
 };
 
 struct EpdPins {

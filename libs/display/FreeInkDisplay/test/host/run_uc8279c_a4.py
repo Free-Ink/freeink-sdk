@@ -45,14 +45,16 @@ enum class BusyPolarity { ActiveLow };
 class EpdBus {
   uint8_t command=0;
 public:
-  unsigned refreshes=0;
+  unsigned refreshes=0, powerOffs=0;
   uint8_t interval=0;
   size_t lutBytes=0;
+  std::vector<std::vector<uint8_t>> lut20s;
   std::vector<uint8_t> oldPlane, newPlane, oldAtRefresh, newAtRefresh;
   void cmd(uint8_t c) {
     command=c;
     if(c==0x10) oldPlane.clear();
     if(c==0x13) newPlane.clear();
+    if(c==0x02) ++powerOffs;
     if(c==0x12) {
       ++refreshes;
       oldAtRefresh=oldPlane;
@@ -61,7 +63,7 @@ public:
   }
   void cmdData(uint8_t c, const uint8_t* p, size_t n) {
     if(c==0x50 && n==1) interval=*p;
-    if(c==0x20) lutBytes=n;
+    if(c==0x20) { lutBytes=n; lut20s.emplace_back(p, p+n); }
     cmd(c);
   }
   void fillPlane(uint8_t c, uint8_t value, uint16_t height, uint16_t widthBytes) {

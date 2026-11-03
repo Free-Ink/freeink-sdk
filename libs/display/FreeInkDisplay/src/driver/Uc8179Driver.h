@@ -58,6 +58,7 @@ const Uc8179Config& uc8179DefaultConfig();
 
 class Uc8179Driver : public PanelDriver {
  public:
+  const char* controllerName() const override { return "UC8179"; }
   explicit Uc8179Driver(const Uc8179Config& cfg = uc8179DefaultConfig());
 
   uint32_t spiHz() const override;
@@ -80,20 +81,16 @@ class Uc8179Driver : public PanelDriver {
   // with the displayed B/W base to recover Factory.bin's absolute 2-bit planes,
   // then sends plane0 -> DTM 0x10 and plane1 -> DTM 0x13. Full-buffer path only
   // (supportsStripGrayscale stays false; conversion needs the complete base).
-  void displayGrayscaleBase(EpdBus &bus, const uint8_t *fb,
-                                  RefreshMode fallback, bool turnOff) override;
-  void preconditionGrayscale(EpdBus &bus, uint16_t x, uint16_t y, uint16_t w,
-                             uint16_t h) override;
-  GrayscaleCapabilities grayscaleCapabilities(
-      GrayscaleMode mode = GrayscaleMode::Overlay) const override {
+  void displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, RefreshMode fallback, bool turnOff) override;
+  bool supportsDeferredGrayscaleBase() const override { return true; }
+  bool displayGrayscaleBaseStart(EpdBus& bus, const uint8_t* fb, RefreshMode fallback, bool turnOff) override;
+  void preconditionGrayscale(EpdBus& bus, uint16_t x, uint16_t y, uint16_t w, uint16_t h) override;
+  GrayscaleCapabilities grayscaleCapabilities(GrayscaleMode mode = GrayscaleMode::Overlay) const override {
     if (mode == GrayscaleMode::Absolute || mode == GrayscaleMode::Direct)
       return {GrayscaleEncoding::AbsolutePlanes,
-              mode == GrayscaleMode::Direct ? GrayscaleBase::Combined : GrayscaleBase::Separate,
-              false, false, false};
-    if (mode != GrayscaleMode::Overlay)
-      return {};
-    return {GrayscaleEncoding::OverlayMasks, GrayscaleBase::Separate, false,
-            false, false};
+              mode == GrayscaleMode::Direct ? GrayscaleBase::Combined : GrayscaleBase::Separate, false, false, false};
+    if (mode != GrayscaleMode::Overlay) return {};
+    return {GrayscaleEncoding::OverlayMasks, GrayscaleBase::Separate, false, false, false};
   }
   void beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode mode, RefreshMode fallback, bool turnOff) override;
   void copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) override;
@@ -104,8 +101,8 @@ class Uc8179Driver : public PanelDriver {
  private:
   void initController(EpdBus& bus);
   void startBwRefresh(EpdBus& bus, bool fast);
-  void configureDirectGrayscale(EpdBus &bus);
-  void restoreBwConfiguration(EpdBus &bus);
+  void configureDirectGrayscale(EpdBus& bus);
+  void restoreBwConfiguration(EpdBus& bus);
   // Stream a framebuffer into a RAM plane (ramCmd): reverse row order, use PSR
   // SHL for horizontal panel direction, then pad to the addressed gate count.
   // Used for both NEW plane (0x13) and OLD-plane sync (0x10).
@@ -117,6 +114,12 @@ class Uc8179Driver : public PanelDriver {
   // DTM1 and the new base in DTM2. It replaces the ordinary B/W activation and
   // leaves analog power on for the AA pass that follows.
   void runGrayscalePrecondition(EpdBus& bus);
+  bool startGrayscalePrecondition(EpdBus& bus);
+  void finishGrayscalePrecondition(EpdBus& bus);
+  bool transitionGrayscaleBaseStart(EpdBus& bus, const uint8_t* fb);
+  void transitionGrayscaleBaseFinish(EpdBus& bus, const uint8_t* fb, bool turnOff, bool pending);
+  bool _pendingGrayBase = false;
+  bool _pendingGrayPre = false;
   // Blocking, non-flashing B/W transition used by a Fast page immediately
   // after AA. The generic reader path does not call displayGrayscaleBase(), so
   // display() routes its post-AA Fast base here as well.
@@ -124,10 +127,10 @@ class Uc8179Driver : public PanelDriver {
 
   const Uc8179Config& _cfg;
 
-  uint16_t _w;        // visible width (800)
-  uint16_t _h;        // visible height (480)
-  uint16_t _wb;       // width in bytes (100)
-  uint16_t _tresH;    // addressed gate count (600) — DTM padded to this
+  uint16_t _w;      // visible width (800)
+  uint16_t _h;      // visible height (480)
+  uint16_t _wb;     // width in bytes (100)
+  uint16_t _tresH;  // addressed gate count (600) — DTM padded to this
   uint32_t _bufferSize;
 
   // Stock Factory.bin uses absolute AA planes and derives its B/W base as

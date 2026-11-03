@@ -5,6 +5,7 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <mutex>
+#include "I2cBusLock.h"
 
 namespace freeink {
 namespace metalio {
@@ -21,6 +22,7 @@ constexpr int VIBRATION_GPIO = 44;
 constexpr int SD_DAT3_GPIO = 46;  // input-only; held high even with 1-bit SDMMC
 
 inline bool writeRegister(uint8_t reg, uint16_t value) {
+  const freeink::I2cBusLock busLock;
   Wire.beginTransmission(EXPANDER_ADDR);
   Wire.write(reg);
   Wire.write(static_cast<uint8_t>(value));
@@ -29,6 +31,7 @@ inline bool writeRegister(uint8_t reg, uint16_t value) {
 }
 
 inline bool readRegister(uint8_t reg, uint16_t& value) {
+  const freeink::I2cBusLock busLock;
   Wire.beginTransmission(EXPANDER_ADDR);
   Wire.write(reg);
   if (Wire.endTransmission(false) != 0) return false;
@@ -50,17 +53,63 @@ inline bool setOutput(uint8_t pin, bool high) {
   return writeRegister(2, high ? value | mask : value & ~mask);
 }
 
-inline bool ensureBooted() {
+// A device reset mid-transfer can hold SDA low; clock it free and send STOP. Call with the
+// bus stopped (Wire.end()), since it drives the pins directly.
+inline void clearBus() {
+  constexpr int SDA_PIN = 41, SCL_PIN = 42;
+  pinMode(SDA_PIN, INPUT_PULLUP);
+  pinMode(SCL_PIN, OUTPUT_OPEN_DRAIN);
+  digitalWrite(SCL_PIN, HIGH);
+  delayMicroseconds(5);
+  for (int i = 0; i < 9 && digitalRead(SDA_PIN) == LOW; ++i) {
+    digitalWrite(SCL_PIN, LOW);
+    delayMicroseconds(5);
+    digitalWrite(SCL_PIN, HIGH);
+    delayMicroseconds(5);
+  }
+  pinMode(SDA_PIN, OUTPUT_OPEN_DRAIN);  // STOP: SDA rises while SCL is high
+  digitalWrite(SDA_PIN, LOW);
+  delayMicroseconds(5);
+  digitalWrite(SDA_PIN, HIGH);
+  delayMicroseconds(5);
+  pinMode(SDA_PIN, INPUT_PULLUP);
+  pinMode(SCL_PIN, INPUT_PULLUP);
+}
+
+// On some boards the I2C bus cannot start until ~2 s after power-up, so each failed attempt
+// restarts the bus. waitMs bounds how long this call retries; callers passing 0 retry at most
+// every RETRY_GAP_MS, so a missing expander does not stall every poll.
+inline bool ensureBooted(uint32_t waitMs = 0) {
+  constexpr unsigned long RETRY_GAP_MS = 500;
   static bool ready = false;
+  static bool tried = false;
+  static unsigned long lastFailure = 0;
   if (ready) return true;
-  if (!Wire.begin(41, 42, 400000)) return false;
-  Wire.setTimeOut(10);
+  freeink::enableI2cBusLock();  // first call runs in setup(), before the render task exists
+  if (waitMs == 0 && tried && millis() - lastFailure < RETRY_GAP_MS) return false;
+  tried = true;
   constexpr uint16_t outputs = (1u << PIN_AMP_SELECT) | (1u << PIN_AMP_ENABLE) |
       (1u << PIN_SCREEN_SD_POWER) | (1u << PIN_MAIN_POWER) |
       (1u << PIN_TOUCH_RESET) | (1u << PIN_POWER_PULSE);
   constexpr uint16_t inputs = (1u << PIN_VOLUME_DOWN) | (1u << PIN_VOLUME_UP) | (1u << 12);
   uint16_t latch, config, polarity;
-  if (!readRegister(2, latch) || !readRegister(6, config) || !readRegister(4, polarity)) return false;
+  const unsigned long start = millis();
+  for (;;) {
+    {
+      const freeink::I2cBusLock busLock;  // begin/end must not race a transfer
+      if (Wire.begin(41, 42, 400000)) {
+        Wire.setTimeOut(10);
+        if (readRegister(2, latch) && readRegister(6, config) && readRegister(4, polarity)) break;
+      }
+      Wire.end();
+      clearBus();
+    }
+    if (millis() - start >= waitMs) {
+      lastFailure = millis();
+      return false;
+    }
+    delay(50);
+  }
   // Set safe levels BEFORE switching directions: no shutdown pulse or amp pop.
   latch = (latch & ~outputs) | (1u << PIN_MAIN_POWER) | (1u << PIN_POWER_PULSE);
   if (!writeRegister(2, latch) || !writeRegister(6, (config & ~outputs) | inputs) ||
@@ -76,16 +125,25 @@ inline bool ensureBooted() {
   return true;
 }
 
-// A failed read releases keys instead of retaining a stale pressed state.
+// Isolated failed reads keep the last good sample, as the vendor firmware does. Reads failing
+// for longer than HOLD_MS release the keys instead of retaining a stale pressed state.
 inline uint16_t readButtons() {
+  constexpr unsigned long HOLD_MS = 100;
   static unsigned long sampledAt = 0;
+  static unsigned long goodAt = 0;
   static uint16_t value = 0xFFFF;
   static bool sampled = false;
   const unsigned long now = millis();
   if (sampled && now - sampledAt < 20) return value;
   sampled = true;
   sampledAt = now;
-  if (!ensureBooted() || !readRegister(0, value)) value = 0xFFFF;
+  uint16_t fresh;
+  if (ensureBooted() && readRegister(0, fresh)) {
+    value = fresh;
+    goodAt = now;
+  } else if (now - goodAt > HOLD_MS) {
+    value = 0xFFFF;
+  }
   return value;
 }
 

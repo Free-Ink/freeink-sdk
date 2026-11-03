@@ -15,6 +15,11 @@ JsonListParser::JsonListParser(const std::string& itemsPath, const std::string* 
           this,
           [](void* c, const char* k, size_t n) {
             auto& p = self(c);
+            if (p.malformed) return;
+            if (n > 128) {
+              p.malformed = true;
+              return;
+            }
             if (!p.stack.empty() && !p.stack.back().isArray) p.stack.back().key.assign(k, n);
           },
           [](void* c, const char* v, size_t n) { self(c).onScalar(v, n, true); },
@@ -32,12 +37,13 @@ JsonListParser::JsonListParser(const std::string& itemsPath, const std::string* 
 }
 
 bool JsonListParser::parse(const ReadFn read, void* readCtx) {
-  for (int n; (n = read(readCtx, buf, sizeof(buf))) > 0;) {
+  int n;
+  for (; (n = read(readCtx, buf, sizeof(buf))) > 0;) {
     json.feed(buf, static_cast<size_t>(n));
     if (json.hasError() || malformed) return false;
   }
   // JsonSax does not check nesting; an unclosed container means a cut-off body.
-  return stack.empty();
+  return n == 0 && stack.empty();
 }
 
 void JsonListParser::split(const std::string& dotted, Path& out) {
@@ -78,6 +84,7 @@ bool JsonListParser::atItem() const {
 }
 
 void JsonListParser::onContainerStart(const bool isArray) {
+  if (malformed) return;
   beginValue();
   if (itemDepth == 0 && !isArray && atItem()) {
     current = Row{};
@@ -87,6 +94,7 @@ void JsonListParser::onContainerStart(const bool isArray) {
 }
 
 void JsonListParser::onContainerEnd(const bool isArray) {
+  if (malformed) return;
   if (stack.empty() || stack.back().isArray != isArray) {
     malformed = true;
     return;
@@ -99,6 +107,7 @@ void JsonListParser::onContainerEnd(const bool isArray) {
 }
 
 void JsonListParser::onScalar(const char* value, const size_t len, const bool isString) {
+  if (malformed) return;
   beginValue();
   if (itemDepth == 0) return;
   // Item-relative paths start at the item object's frame, whose current key is
@@ -106,11 +115,21 @@ void JsonListParser::onScalar(const char* value, const size_t len, const bool is
   const size_t base = itemDepth - 1;
   for (int i = 0; i < F_COUNT; i++) {
     if (!fields[i].empty() && current.field[i].empty() && framesMatch(base, fields[i])) {
+      if (len > captureBudget - capturedBytes) {
+        malformed = true;
+        return;
+      }
+      capturedBytes += len;
       current.field[i].assign(value, len);
     }
   }
   // A files element: the frames spell filesPath, plus the array holding it.
   if (isString && !files.empty() && stack.back().isArray && framesMatch(base, files, 1)) {
+    if (current.files.size() >= 64 || len > 240 || len > captureBudget - capturedBytes) {
+      malformed = true;
+      return;
+    }
+    capturedBytes += len;
     current.files.emplace_back(value, len);
   }
 }

@@ -41,6 +41,10 @@ enum class KeyboardLayoutId : uint8_t {
   // Arabic: same shape as Hebrew -- no case, one layer, no shift, RTL left to
   // the renderer. Standard 101 arrangement; alef madda long-presses off أ.
   ArabicAr,
+  // Greek: the standard Greek arrangement on the QWERTY grid, two explicit
+  // layers like Cyrillic. Vowels long-press to their tonos form, and ι/υ have
+  // their own dialytika keys, so every monotonic letter is reachable.
+  GreekEl,
 };
 
 struct KeyboardKey {

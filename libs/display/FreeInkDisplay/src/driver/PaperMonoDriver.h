@@ -37,6 +37,7 @@ struct PaperMonoGrayParams {
 
 class PaperMonoDriver final : public PanelDriver {
  public:
+  const char* controllerName() const override { return "SSD1677"; }
   uint32_t spiHz() const override;
   BusyPolarity busyPolarity() const override { return BusyPolarity::ActiveHigh; }
   PanelGeometry geometry() const override;

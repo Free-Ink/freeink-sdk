@@ -3263,6 +3263,59 @@ void testMeasureWrappedText() {
 }
 
 
+void testOptionDialogWindow() {
+  // A vertical dialog showing 4 of 10 options draws (and registers) only that
+  // window, sizes itself for 4 buttons, and adds a scroll bar.
+  FakeDrawTarget draw;
+  DialogOption options[10];
+  for (int i = 0; i < 10; ++i) {
+    options[i].label = "Option";
+    options[i].action = 30;
+    options[i].value = static_cast<int16_t>(i);
+  }
+  OptionDialogProps d;
+  d.options = options;
+  d.optionCount = 10;
+  d.verticalOptions = true;
+  d.visibleOptions = 4;
+  d.firstOption = 3;
+  // 24 padding + (8 + 4 * 44 + 3 * 8) buttons
+  const int16_t h = optionDialogHeight(draw, d, 300);
+  CHECK_EQ(h, 232);
+
+  DeviceContext device = makeDevice();
+  InputSnapshot input;
+  InteractionBuffer<16> interactions;
+  Frame<16> frame(draw, device, input, interactions);
+  optionDialog(frame, Rect{20, 20, 300, h}, d);
+  CHECK_EQ(interactions.count(), 4u);
+  CHECK_EQ(interactions.data()[0].value, 3);
+  CHECK_EQ(interactions.data()[3].value, 6);
+  // The scroll bar's solid thumb sits right of the narrowed option column.
+  bool thumb = false;
+  for (const auto& op : draw.ops) {
+    if (op.kind == FakeDrawTarget::Op::Fill && op.paint == PaintKind::Solid && op.rect.width == 4) thumb = true;
+  }
+  CHECK(thumb);
+
+  // A first option past the end clamps so the window stays full.
+  d.firstOption = 9;
+  InteractionBuffer<16> clamped;
+  FakeDrawTarget draw2;
+  Frame<16> frame2(draw2, device, input, clamped);
+  optionDialog(frame2, Rect{20, 20, 300, h}, d);
+  CHECK_EQ(clamped.count(), 4u);
+  CHECK_EQ(clamped.data()[0].value, 6);
+
+  // visibleOptions 0 keeps the old behavior: every option, no window.
+  d.visibleOptions = 0;
+  CHECK_EQ(optionDialogShownCount(d), 10);
+  // A horizontal row ignores the window.
+  d.visibleOptions = 4;
+  d.verticalOptions = false;
+  CHECK_EQ(optionDialogShownCount(d), 10);
+}
+
 void testButtonHitPadding() {
   // hitPadding gives adjacent controls contiguous, non-overlapping tap bands
   // with a single interaction each — no separate band registration.
@@ -3707,6 +3760,18 @@ void testGermanAndFrenchLetters() {
   CHECK(std::strcmp(buf, "\xc3\xaatre") == 0);  // être
 }
 
+void testGreekLayout() {
+  const KeyboardLayout& lower = builtinKeyboardLayout(KeyboardLayoutId::GreekEl);
+  const KeyboardLayout& upper = builtinKeyboardLayout(KeyboardLayoutId::GreekEl, true);
+  CHECK(std::strcmp(keyboardOutputFor(lower, 0x3C3), "σ") == 0);
+  CHECK(std::strcmp(keyboardAltOutputFor(lower, 0x3C3), "Σ") == 0);   // hold flips case
+  CHECK(std::strcmp(keyboardAltOutputFor(upper, 0x3A3), "σ") == 0);
+  CHECK(std::strcmp(keyboardAltOutputFor(lower, 0x3B5), "έ") == 0);   // vowels hold to tonos
+  CHECK(std::strcmp(keyboardAltOutputFor(lower, 0x3CA), "ΐ") == 0);
+  CHECK(keyboardAltOutputFor(lower, 0x3C2) == nullptr);                // ς has no capital
+  CHECK(std::strcmp(keyboardOutputFor(upper, ';'), ";") == 0);
+}
+
 void testCompactLayoutsMatchBuiltin() {
   // buildKeyboardLayout() must be builtinKeyboardLayout() without the tables:
   // every layer of every layout, one id past the last as the unknown-id path,
@@ -3717,7 +3782,7 @@ void testCompactLayoutsMatchBuiltin() {
   };
   KeyboardLayoutBuffer buffer;
   size_t keysCompared = 0;
-  for (uint8_t raw = 0; raw <= static_cast<uint8_t>(KeyboardLayoutId::ArabicAr) + 1; ++raw) {
+  for (uint8_t raw = 0; raw <= static_cast<uint8_t>(KeyboardLayoutId::GreekEl) + 1; ++raw) {
     const auto id = static_cast<KeyboardLayoutId>(raw);
     for (uint8_t flags = 0; flags < 16; ++flags) {
       const bool shifted = flags & 1, symbols = flags & 2, numbers = flags & 4, lang = flags & 8;
@@ -3983,12 +4048,12 @@ void testSymbolKeyboardPages() {
 }
 
 void testKeyboardLayoutVariants() {
-  for (int id = 0; id <= static_cast<int>(KeyboardLayoutId::ArabicAr); ++id) {
+  for (int id = 0; id <= static_cast<int>(KeyboardLayoutId::GreekEl); ++id) {
     for (int flags = 0; flags < 16; ++flags) {
       const auto layoutId = static_cast<KeyboardLayoutId>(id);
       const bool shifted = flags & 1, symbols = flags & 2, numbers = flags & 4, lang = flags & 8;
       const KeyboardLayout& layout = builtinKeyboardLayout(layoutId, shifted, symbols, numbers, lang);
-      const bool hasCase = id < static_cast<int>(KeyboardLayoutId::HebrewIl);
+      const bool hasCase = layoutId != KeyboardLayoutId::HebrewIl && layoutId != KeyboardLayoutId::ArabicAr;
       const bool hasLang = lang || id >= static_cast<int>(KeyboardLayoutId::CyrillicRu);
       CHECK_EQ(layout.rowCount, numbers && !symbols ? 5 : 4);
       CHECK_EQ(keyboardActivationFor(layout, QWERTY_KEY_BACKSPACE).kind, KeyboardActivationKind::Delete);
@@ -4634,7 +4699,7 @@ void testResponsiveKeyboardSizing() {
   CHECK_EQ(keyboardPreferredHeight(480, 5), 312);
   CHECK_EQ(keyboardPreferredHeight(800, 5), 312);
   CHECK_EQ(keyboardPreferredHeight(480, 5, Insets{4, 4, 4, 4}, 6, 28, 10), 287);
-  for (int id = 0; id <= static_cast<int>(KeyboardLayoutId::ArabicAr); ++id) {
+  for (int id = 0; id <= static_cast<int>(KeyboardLayoutId::GreekEl); ++id) {
     for (int flags = 0; flags < 8; ++flags) {
       FakeDrawTarget draw;
       DeviceContext device = makeDevice(480, 800);
@@ -6050,6 +6115,7 @@ int main() {
   testLayoutTextWrapping();
   testTouchToLogical();
   testMeasureWrappedText();
+  testOptionDialogWindow();
   testButtonHitPadding();
   testInvertedDrawTarget();
   testStyleSetUnset();
@@ -6060,6 +6126,7 @@ int main() {
   testLocalizedKeyboardLayout();
   testGermanAndFrenchLetters();
   testCompactLayoutsMatchBuiltin();
+  testGreekLayout();
   testKeyboardUniformRowWidths();
   testKeyboardOuterControlAlignment();
   testWideScriptNumberRowWidth();

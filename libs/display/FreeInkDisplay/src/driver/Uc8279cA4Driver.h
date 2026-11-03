@@ -10,6 +10,7 @@ namespace freeink {
 
 class Uc8279cA4Driver : public PanelDriver {
  public:
+  const char* controllerName() const override { return "UC8279C"; }
   Uc8279cA4Driver();
 
   uint32_t spiHz() const override;
@@ -38,17 +39,19 @@ class Uc8279cA4Driver : public PanelDriver {
 
  private:
   void hardwareReset(EpdBus& bus);
-  void initController(EpdBus& bus, bool grayMode = false);
+  enum class Session : uint8_t { Bw, Gray3, FourGray };
+  void initController(EpdBus& bus, Session session);
   void ensurePowerOn(EpdBus& bus);
   void loadFullLut(EpdBus& bus);
+  void loadHalfFullLut(EpdBus& bus);
   void loadFastLut(EpdBus& bus);
   void loadGrayLut(EpdBus& bus);
   void writeFrame(EpdBus& bus, uint8_t command, const uint8_t* fb, bool invert = false);
-  void showGray3(EpdBus& bus, bool turnOff);
+  void showGray3(EpdBus& bus);
   void writeGray3Codes(EpdBus& bus, bool dtm1, bool& anyBlack, bool& anyWhiteClear);
   void loadGray3Lut(EpdBus& bus, bool anyBlack, bool anyWhiteClear);
   void fillControllerRam(EpdBus& bus, uint8_t command, uint8_t fill);
-  void refresh(EpdBus& bus, bool turnOff, const uint8_t* bwBaseline = nullptr);
+  void refresh(EpdBus& bus, const uint8_t* bwBaseline = nullptr);
   uint8_t* allocateGrayBuffer();
   bool allocateGray3();
 

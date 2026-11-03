@@ -252,6 +252,8 @@ void FreeInkDisplay::selectDriver() {
   if (_driver) _driver->setBackgroundHint(_inverted);
 }
 
+const char* FreeInkDisplay::getControllerName() const { return _driver ? _driver->controllerName() : nullptr; }
+
 void FreeInkDisplay::begin() {
   cancelGrayscalePass();
   DisplayPmLock pmLock;
@@ -522,6 +524,18 @@ void FreeInkDisplay::returnBuildStorage() {
 // is PSRAM-first with a malloc fallback, so this is correct with or without PSRAM.
 bool FreeInkDisplay::releaseSecondaryBuffer() {
   if (!frameBufferActive) return false;
+  // A deferred refresh is still reading these bytes: the last displayStart + swap parked the
+  // displayed frame here, and X3's post-waveform DTM1 sync reads it in displayFinish(). Freeing
+  // underneath that leaves the finish pointing at freed memory or, once it falls back to
+  // frameBuffer, reseeding the controller's previous-frame plane from a frame that was never
+  // displayed. Drain first -- the same reason, and the same one-line fix, as
+  // borrowSecondaryBuffer() above.
+  //
+  // Without this the obligation lands on every consumer: a caller that ships a refresh
+  // asynchronously must remember to finish it before freeing a framebuffer, and the failure is
+  // silent and deferred -- a later refresh diffs against a baseline that no longer describes the
+  // panel. Draining here retires that obligation rather than restating it at each call site.
+  syncPendingAsync();
   if (frameBufferActive == frameBuffer0) {
     free(frameBuffer0);
     frameBuffer0 = nullptr;
@@ -628,6 +642,15 @@ void FreeInkDisplay::syncPendingAsync() {
   _driver->displayFinish(_bus, frameBufferActive ? frameBufferActive : frameBuffer);
 #endif
   _refreshPending = false;
+}
+
+void FreeInkDisplay::powerOffBetweenFrames() {
+#if FREEINK_DEVICE_PICCO
+  if (!_driver || !BoardConfig::isPicco()) return;
+  DisplayPmLock pmLock;
+  waitRefreshComplete();
+  _driver->powerOffBetweenFrames(_bus);
+#endif
 }
 
 bool FreeInkDisplay::supportsAsyncRefresh() const {
@@ -931,8 +954,8 @@ void FreeInkDisplay::cancelGrayscalePass() {
 bool FreeInkDisplay::acceptGrayscaleRows(unsigned plane, const uint8_t* data, uint16_t y, uint16_t rows) {
   if (_grayscaleMode == GrayscaleMode::Overlay) return true;
   const auto h = getDisplayHeight();
-  if (_grayPassFailed || !data || !rows || (plane == 1 && _grayRows[0] == 0) ||
-      y != _grayRows[plane] || y >= h || rows > h - y) {
+  if (_grayPassFailed || !data || !rows || (plane == 1 && _grayRows[0] == 0) || y != _grayRows[plane] || y >= h ||
+      rows > h - y) {
     _grayPassFailed = true;
     return false;
   }
@@ -967,6 +990,35 @@ void FreeInkDisplay::displayGrayscaleBase(RefreshMode fallback, bool turnOffScre
   syncPendingAsync();
   _shadowValid = false;
   _driver->beginGrayscale(_bus, frameBuffer, GrayscaleMode::Overlay, toInternal(fallback), turnOffScreen);
+}
+
+bool FreeInkDisplay::supportsDeferredGrayscaleBase() const {
+#ifdef EINK_DISPLAY_SINGLE_BUFFER_MODE
+  return !_inverted && !_inversionDirty && _driver && _driver->supportsDeferredGrayscaleBase();
+#else
+  // The deferred API borrows the current draw frame without swapping buffers.
+  // Dual-buffer consumers retain their established blocking grayscale path.
+  return false;
+#endif
+}
+
+bool FreeInkDisplay::displayGrayscaleBaseAsync(RefreshMode fallback) {
+#ifdef EINK_DISPLAY_SINGLE_BUFFER_MODE
+  if (supportsDeferredGrayscaleBase()) {
+    DisplayPmLock pmLock;
+    cancelGrayscalePass();
+    syncPendingAsync();
+    _grayPassFailed = false;
+    _shadowValid = false;
+    _grayscaleMode = GrayscaleMode::Overlay;
+    _grayRows[0] = _grayRows[1] = 0;
+    _refreshPending = _driver->displayGrayscaleBaseStart(_bus, frameBuffer, toInternal(fallback), false);
+    _pendingSingleBufferFrame = _refreshPending ? frameBuffer : nullptr;
+    return _refreshPending;
+  }
+#endif
+  displayGrayscaleBase(fallback, false);
+  return false;
 }
 
 void FreeInkDisplay::preconditionGrayscale() {
@@ -1011,9 +1063,7 @@ void FreeInkDisplay::writeGrayscalePlaneStrip(GrayPlane plane, const uint8_t* ro
                                     rows, yStart, numRows);
 }
 
-bool FreeInkDisplay::supportsBusyGrayscaleStaging() const {
-  return grayscaleCapabilities().stagingWhileBusy;
-}
+bool FreeInkDisplay::supportsBusyGrayscaleStaging() const { return grayscaleCapabilities().stagingWhileBusy; }
 
 void FreeInkDisplay::prepareGrayscaleTarget() {
   if (grayscaleCapabilities().stagingWhileBusy) {
@@ -1021,13 +1071,9 @@ void FreeInkDisplay::prepareGrayscaleTarget() {
   }
 }
 
-bool FreeInkDisplay::supportsStripGrayscale() const {
-  return grayscaleCapabilities().stripUploads;
-}
+bool FreeInkDisplay::supportsStripGrayscale() const { return grayscaleCapabilities().stripUploads; }
 
-bool FreeInkDisplay::combinesGrayscaleBase() const {
-  return grayscaleCapabilities().base == GrayscaleBase::Combined;
-}
+bool FreeInkDisplay::combinesGrayscaleBase() const { return grayscaleCapabilities().base == GrayscaleBase::Combined; }
 
 void FreeInkDisplay::cleanupGrayscaleBuffers(const uint8_t* bwBuffer) {
   cancelGrayscalePass();
@@ -1043,12 +1089,40 @@ void FreeInkDisplay::cleanupGrayscaleBuffers(const uint8_t* bwBuffer) {
 #ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
 void FreeInkDisplay::cleanupGrayscaleWithPreviousBuffer() {
   cancelGrayscalePass();
-  const uint8_t* baseline = frameBufferActive ? frameBufferActive : frameBuffer;
+  // The baseline must be the frame that is ON THE PANEL: drivers restore their diff state from it
+  // (LgfxEpdDriver seeds its canvas with fillCanvasBW(), and that canvas is what Panel_EPD diffs
+  // the next push against). Handing over a frame that was never displayed makes the next refresh
+  // drive the wrong pixels -- ghosting, arriving one page later than the cause.
+  //
+  // frameBufferActive is that frame, and it is the ONLY candidate. frameBuffer is never a
+  // substitute, in either of the two ways the secondary can be away:
+  //
+  //   LENT      -- borrowSecondaryBuffer() hands the block out without seeding anything, so
+  //                frameBuffer is the write buffer: the previously displayed frame, or a
+  //                half-rendered page.
+  //   released  -- a host that seeds frameBuffer from the displayed frame before freeing (the
+  //                CrossPoint HAL does) makes it briefly correct, but that happens upstream of
+  //                this call. Every caller of this function is the tail (or the abort point) of
+  //                a grayscale plane pass, and those passes clear frameBuffer to 0x00 and render
+  //                a plane into it -- twice. By the time we get here the "seeded" frame is an
+  //                LSB/MSB PLANE, and handing it over rebases the controller's previous-frame RAM
+  //                from the page's own glyph plane.
+  //
+  // With no baseline, say so instead of inventing one: every driver implements bw == nullptr as
+  // "drop the synced claim and take a clean/full sync on the next push" (Uc8253X3: _redRamSynced
+  // = false; Uc8179/Uc8279X4: _needFullClear; Uc8279: _forceFullSyncNext; the rest reload
+  // wholesale anyway). Returning early would leave a driver believing its RAM still mirrors the
+  // panel while it physically holds the two planes this pass just wrote.
+  //
+  // Host test: test_pro.cpp testGrayCleanupBaseline -- released and lent stream nothing into
+  // controller RAM and leave the driver needing a clean sync; it fails on the fallback above.
+  const uint8_t* baseline = frameBufferActive;
   if (!_inverted) {
     DisplayPmLock pmLock;
     _driver->cleanupGrayscaleBuffers(_bus, baseline);
   }
-  if (frameBuffer && baseline && frameBuffer != baseline) memcpy(frameBuffer, baseline, bufferSize);
+  if (!baseline) return;
+  if (frameBuffer && frameBuffer != baseline) memcpy(frameBuffer, baseline, bufferSize);
 }
 #endif
 

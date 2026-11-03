@@ -55,6 +55,7 @@ const Uc8253MurphyConfig& uc8253MurphyDefaultConfig();
 
 class Uc8253MurphyDriver : public PanelDriver {
  public:
+  const char* controllerName() const override { return "UC8253"; }
   explicit Uc8253MurphyDriver(const Uc8253MurphyConfig& cfg = uc8253MurphyDefaultConfig());
 
   uint32_t spiHz() const override;

@@ -190,7 +190,7 @@ void EpdBus::begin(const EpdPins& pins, uint32_t spiHz, BusyPolarity busy, int8_
     gpio_hold_dis(static_cast<gpio_num_t>(pins.rst));
     pinMode(pins.rst, OUTPUT);
   }
-  pinMode(pins.busy, busy == BusyPolarity::ActiveLow ? INPUT_PULLUP : INPUT);
+  pinMode(pins.busy, (busy == BusyPolarity::ActiveLow || busy == BusyPolarity::ActiveLowReady) ? INPUT_PULLUP : INPUT);
   if (_coCs >= 0) {
     pinMode(_coCs, OUTPUT);
     digitalWrite(_coCs, HIGH);
@@ -315,9 +315,13 @@ void EpdBus::waitBusy(BusyPolarity p, const char* tag) {
       }
       if (millis() - start > 30000) break;
     }
-  } else if (p == BusyPolarity::ActiveLow) {
+  } else if (p == BusyPolarity::ActiveLow || p == BusyPolarity::ActiveLowReady) {
+    // Seeed's SSD2677 driver checks ready HIGH directly (Seeed_GFX2,
+    // Driver_SSD2677::busyWait). Allow one tick for command propagation, but
+    // don't add 100 ms when a command has already finished or never asserts BUSY.
+    if (p == BusyPolarity::ActiveLowReady) delay(1);
     bool busy = digitalRead(_pins.busy) == LOW;
-    if (!busy) {
+    if (!busy && p == BusyPolarity::ActiveLow) {
       while (millis() - start < 100) {
         if (digitalRead(_pins.busy) == LOW) {
           busy = true;
@@ -393,6 +397,9 @@ void EpdBus::waitRefreshComplete(const char* tag) {
     waitBusy(_busy, tag);
     return;
   }
+  // Keep refresh assertion grace even when command waits use the faster
+  // ready-level policy. Both polling fallbacks must still catch a late BUSY.
+  const BusyPolarity refreshPolarity = _busy == BusyPolarity::ActiveLowReady ? BusyPolarity::ActiveLow : _busy;
   // A host that installed a busy-wait slice hook (e.g. CrossPoint light-sleeping
   // through the refresh) must keep the polling path: waitBusy() invokes the slice
   // hook on each idle step, while this ISR path sleeps the task on a semaphore and
@@ -417,14 +424,14 @@ void EpdBus::waitRefreshComplete(const char* tag) {
         delayMicroseconds(200);
       }
     }
-    waitBusy(tag);
+    waitBusy(refreshPolarity, tag);
     return;
   }
   // ISR-driven completion wait: sleep the task on a semaphore and wake on the
   // exact BUSY completion edge, instead of polling every 1 ms. Falls back to
   // polling if the semaphore could not be created.
   if (!s_epdRefreshDone) {
-    waitBusy(tag);
+    waitBusy(refreshPolarity, tag);
     return;
   }
   // Levels by polarity. CHANGE is armed so both the delayed BUSY assertion and

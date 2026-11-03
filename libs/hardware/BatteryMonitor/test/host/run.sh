@@ -28,3 +28,7 @@ c++ -std=c++17 -Wall -Wextra -Werror \
   -Istubs -I../../include -I../../../BoardConfig/include -I../../../XteinkDetect/test/host/stubs \
   test_adc_usb_detect.cpp ../../src/BatteryMonitor.cpp -o "$BUILD_DIR/test_adc_usb_detect"
 "$BUILD_DIR/test_adc_usb_detect"
+
+c++ -std=c++17 -Wall -Wextra -Werror -I../../include \
+  test_estimate.cpp -o "$BUILD_DIR/test_estimate"
+"$BUILD_DIR/test_estimate"

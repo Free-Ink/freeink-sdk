@@ -94,11 +94,11 @@ class InputManager {
   // Coordinate-only frames — GT911's coordsAtByte0 variant and the EEGO A4's
   // GSLX680 (hardware-validated 2026-10-29: record top nibbles are always 0)
   // — expose frame-local record slots instead, so callers must not retain
-  // those IDs across frames. `count` is capped at
-  // MAX_TOUCH_CONTACTS; `reportedCount` keeps the frame's actual on-glass
-  // contact count (on GSLX680 the raw controller count also carries home-key,
-  // past-glass and padding records, which are filtered per-contact) so callers
-  // can detect truncation and opt into only the contact counts they support.
+  // those IDs across frames. `count` is capped at MAX_TOUCH_CONTACTS;
+  // `reportedCount` keeps the frame's actual on-glass contact count (on
+  // GSLX680 the raw controller count also carries home-key, past-glass and
+  // padding records, which are filtered per-contact) so callers can detect
+  // truncation and opt into only the contact counts they support.
   static constexpr uint8_t MAX_TOUCH_CONTACTS = 4;
   struct MultiTouchPoint {
     uint8_t id;
@@ -113,12 +113,13 @@ class InputManager {
 
   // True if this board has a touch controller configured.
   bool hasTouch() const;
-  // True while a GT911 or GSLX680 controller is present. Other touch
+  // True while a GT911 or GSLX680 controller is present, or when the Picco
+  // TMA525C's GET_SYSINFO confirms multiple contacts. Other touch
   // controllers retain their existing single-contact contract.
   bool supportsMultiTouch() const;
-  // Latest multi-touch contacts (GT911, GSLX680), capped at
-  // MAX_TOUCH_CONTACTS. Gesture consumers should check reportedCount for the
-  // exact cardinality they support.
+  // Latest multi-touch contacts (GT911, GSLX680, multi-contact Picco),
+  // capped at MAX_TOUCH_CONTACTS. Gesture consumers should check reportedCount
+  // for the exact cardinality they support.
   TouchSnapshot getTouchSnapshot() const;
   // The most recent touch sampled during #update(). valid == false when idle.
   TouchPoint getTouchPoint() const;
@@ -207,6 +208,11 @@ class InputManager {
   // (~700 ms), while still down — a hold shortcut (e.g. open the reader menu).
   // Cleared each #update().
   bool wasHomeKeyLongPressed() const;
+  // Home key currently held (level, not an edge). A motionless hold produces
+  // no new-data frames, so its long-press threshold is timed by #update()
+  // against the wall clock — a host that stops polling while this is true
+  // stretches that threshold by however long it stayed away.
+  bool isHomeKeyDown() const;
 
   // --- Slide switch (inert unless BoardConfig::ACTIVE.input.toggleSwitch is set)
   bool hasToggleSwitch() const { return BoardConfig::ACTIVE.input.toggleSwitch >= 0; }
@@ -217,6 +223,24 @@ class InputManager {
   // beginAsync() the task consumes this edge; poll isToggleSwitchOn() instead.
   bool wasToggleSwitchChanged() const { return toggleSwitchChangedEvent; }
 
+  // Touch INT line usable as a light-sleep wake source, or -1. A host can only
+  // wake from light sleep on a GPIO LEVEL (the edge detector is clock-gated
+  // while asleep), so this reports the pin ONLY once the driver has put the
+  // controller in a level-hold INT mode — the line then stays asserted from the
+  // report frame until the poll clears the status register, which a level wake
+  // cannot miss. -1 whenever that cannot be guaranteed (no touch, probe failed,
+  // FREEINK_GT911_INT_WAKE not built, or the controller refused the mode);
+  // callers must keep polling in that case. Also -1 while the poll cannot
+  // read or clear the status register over I2C: a pending report would then
+  // hold the line asserted indefinitely, so arming it would pin the host
+  // awake. That state is transient (the pin comes back once a poll succeeds),
+  // so query this before each sleep rather than caching it.
+  int8_t touchWakeIrqPin() const;
+  // Asserted level of #touchWakeIrqPin (true = LOW), from the board profile's
+  // TouchConfig::irqActiveLow. The driver only ever programs a low-level hold,
+  // and refuses to report the pin at all on a profile that claims otherwise.
+  bool touchWakeIrqActiveLow() const;
+
   // Optional board hook for buttons that aren't direct GPIOs — e.g. a key
   // behind an I2C IO-expander (the LilyGo T5 S3 user button on its PCA9535). It
   // returns a (1<<BTN_*) bitmask that is OR'd into every update(); the board
@@ -224,6 +248,10 @@ class InputManager {
   // none.
   using ButtonHook = uint8_t (*)();
   static void setButtonHook(ButtonHook hook) { s_buttonHook = hook; }
+  // True once a board has installed such a hook. Lets a host tell that some of
+  // its buttons are NOT readable as GPIO levels — e.g. a GPIO-interrupt idle
+  // wait cannot see them and must keep polling instead.
+  static bool hasButtonHook() { return s_buttonHook != nullptr; }
 
   // Boards such as Sticky wire OK/confirm and power/wake to the same GPIO. By
   // default a short click emits CONFIRM and a hold emits POWER. Apps that
@@ -358,7 +386,22 @@ class InputManager {
   uint16_t mapTouchAxis(uint16_t raw, uint16_t rawMin, uint16_t rawMax, uint16_t outMax) const;
   void beginGt911();
   bool gt911ReadReg(uint16_t reg, uint8_t* buf, uint8_t len);
-  void gt911ClearStatus();
+  bool gt911ClearStatus();
+#if FREEINK_TOUCH_GT911 && FREEINK_GT911_INT_WAKE
+  bool gt911WriteReg(uint16_t reg, const uint8_t* buf, uint8_t len);
+  // Put the INT line in low-level hold mode so it can serve as a light-sleep
+  // wake source; sets touchWakeIrqUsable on success.
+  void gt911ConfigureIntWake();
+  // Status-register access for the INT-wake path: bounded retries, and a
+  // latched fault (gt911StatusFault) while 0x814E cannot be read or cleared,
+  // both only once the INT has been offered (touchWakeIrqUsable).
+  bool gt911ReadStatusForWake(uint8_t& status);
+  void gt911ClearStatusForWake();
+  void gt911SetStatusFault(bool fault);
+  uint8_t gt911StatusTries() const;
+  // 0x814E could not be read or cleared: touchWakeIrqPin() reports -1.
+  bool gt911StatusFault = false;
+#endif  // FREEINK_TOUCH_GT911 && FREEINK_GT911_INT_WAKE
   void beginFt6336u();
   void pollFt6336u(unsigned long now);
   void beginGslx680();
@@ -420,6 +463,10 @@ class InputManager {
   bool twoButtonLongPressActive;
 
   bool touchDataEnabled = false;         // I2C up, controller present
+  bool touchWakeIrqUsable = false;       // INT held in a level mode (touchWakeIrqPin)
+#if FREEINK_TOUCH_TMA525C
+  uint8_t piccoMaxContacts = 1;  // GET_SYSINFO-confirmed panel capability
+#endif
   uint8_t gt911Addr = 0;                 // resolved GT911 address (0 until probed)
   unsigned long touchIrqPulseUntil = 0;  // synthesized-confirm window after a press
   unsigned long touchReadAt = 0;         // next scheduled I2C poll

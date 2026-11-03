@@ -19,6 +19,7 @@ namespace freeink {
 
 class M5OfficialDriver : public PanelDriver {
  public:
+  const char* controllerName() const override { return "ED2208"; }
   uint32_t spiHz() const override { return 0; }  // M5GFX owns the bus
   BusyPolarity busyPolarity() const override { return BusyPolarity::ActiveLow; }
   bool usesExternalBus() const override { return true; }

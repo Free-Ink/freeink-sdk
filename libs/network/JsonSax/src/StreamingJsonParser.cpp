@@ -313,9 +313,10 @@ void StreamingJsonParser::emitToken() {
     }
     state = State::SCANNING;
   } else {
-    if (!tokenOverflow && cb.onString) {
+    const auto callback = tokenOverflow ? cb.onStringPrefix : cb.onString;
+    if (callback) {
       tokenBuf[tokenLen] = '\0';
-      cb.onString(cb.ctx, tokenBuf, tokenLen);
+      callback(cb.ctx, tokenBuf, tokenLen);
     }
     state = State::SCANNING;
     expectingValue = false;

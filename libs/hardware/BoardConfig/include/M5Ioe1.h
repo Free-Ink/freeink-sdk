@@ -102,6 +102,12 @@ inline bool begin() {
   return false;
 }
 
+// Lets the next begin() probe again after a failed one. After a PMIC restart the
+// expander can miss the first probe; papermono::ensureBooted() waits for it once.
+inline void forgetFailedProbe() {
+  if (g_addr == 0xFF) g_addr = 0;
+}
+
 inline bool present() { return begin(); }
 
 inline bool writeReg16(uint8_t regL, uint16_t value) {

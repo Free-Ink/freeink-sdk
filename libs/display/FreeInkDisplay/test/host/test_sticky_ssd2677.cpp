@@ -1,13 +1,15 @@
 // Seeed Sticky with the SSD2677 panel: CMD 0x70 probe, stock init table, OTP
 // waveform latch per mode, full refresh old == new, rows bottom-to-top, fast
 // refresh keeping the rails on.
+#include <SPI.h>  // stub: counts shared-bus restarts
+#include <esp_heap_caps.h>
+
 #include <cassert>
 #include <cstdio>
 #include <cstring>
 #include <vector>
-
-#include <SPI.h>  // stub: counts shared-bus restarts
 #define private public
+#include "FreeInkDisplay.h"
 #include "src/driver/Ssd1677Driver.h"
 #include "src/driver/Ssd2677Driver.h"
 #include "src/lut/Ssd2677Luts.h"
@@ -28,17 +30,52 @@ static int count(const EpdBus& bus, uint8_t command) {
   return n;
 }
 
-int main() {
+int main(int argc, char** argv) {
+  const bool originalPanel = argc > 1 && !strcmp(argv[1], "ssd1677");
   // An SSD2677 answers CMD 0x70 with 0x07 first; the probe restarts the shared
   // SPI bus on its existing pins (incl. the SD card's MISO) afterwards.
   static const uint8_t rev[3] = {0x07, 0x01, 0x01};
-  memcpy(fakePanelRev, rev, 3);
-  assert(stickyHasSsd2677() && fakePanelCommand == 0x70 && fakeSpiRestarts == 1);
+  if (!originalPanel) memcpy(fakePanelRev, rev, 3);
+  FreeInkDisplay display(1, 2, 3, 4, 5, 6);
+  assert(display.getControllerName() == nullptr && fakePanelCommand == -1 && fakeSpiRestarts == 0);
+  display.selectDriver();
+  const char* expected = originalPanel ? "SSD1677" : "SSD2677";
+  assert(!strcmp(display.getControllerName(), expected));
+  assert(fakePanelCommand == 0x70 && fakeSpiRestarts == 1);
+  // The board profile still says SSD1677; diagnostics must follow the selected driver.
+  assert(BoardConfig::ACTIVE.displayController == BoardConfig::DisplayController::SSD1677);
+  assert(!strcmp(display.getControllerName(), expected) && fakeSpiRestarts == 1);
+  if (originalPanel) {
+    std::puts("Sticky SSD1677: detected controller identity passed");
+    return 0;
+  }
+  assert(stickyHasSsd2677());
 
   auto& s = ssd2677Driver();
+  assert(s.busyPolarity() == BusyPolarity::ActiveLowReady);
 
   EpdBus bus;
+  fakeHeapCapsFail = argc > 1;
   s.begin(bus);
+  // Wait after reset, panel setting and the final E9 command, exactly once
+  // each. A second wait after E9 looks for a new BUSY pulse for 100 ms even
+  // though no command was sent. AA reinitializes twice per steady-state turn.
+  assert(bus.busyWaitWriteCounts == std::vector<size_t>({0, 1, 10}));
+  if (fakeHeapCapsFail) {
+    assert(static_cast<Ssd2677Driver&>(s)._old == nullptr);
+    // Both black and the following white frame must use the full waveform
+    // when there is no previous plane for a differential update.
+    for (uint8_t color : {uint8_t{0x00}, uint8_t{0xFF}}) {
+      Bytes page(48000, color);
+      bus.clear();
+      s.display(bus, page.data(), nullptr, RefreshMode::Fast, false);
+      assert(*lastData(bus, 0xE6) == Bytes({0xEE}));
+      assert(*lastData(bus, 0x10) == Bytes(96000, color));
+      assert(count(bus, 0x02) == 1 && "fallback powers off after full refresh");
+    }
+    std::puts("Sticky SSD2677: previous-plane allocation failure uses full refresh");
+    return 0;
+  }
   assert(*lastData(bus, 0x00) == Bytes({0x2F, 0x0E}));
   assert(*lastData(bus, 0x61) == Bytes({0x03, 0x20, 0x02, 0xA8}));
   assert(*lastData(bus, 0x30) == Bytes({0x08}) && *lastData(bus, 0xE9) == Bytes({0x01}));
@@ -96,19 +133,28 @@ int main() {
   s.display(bus, white.data(), nullptr, RefreshMode::Fast, false);
   assert(*lastData(bus, 0xE6) == Bytes({0xEE}) && "B/W after a gray image is a full refresh");
 
-  // AA (overlay): the base goes out as a normal B/W refresh, then the masks
+  // AA (overlay): the base re-inks black pixels using the fast OTP waveform, then the masks
   // (MSB high, LSB low, like the Picco) are nudged gray with the uploaded AA
   // waveform; the next frame re-runs init before latching its OTP waveform.
   assert(s.grayscaleCapabilities(GrayscaleMode::Overlay).supported());
   Bytes lsbMask(48000, 0x00), msbMask(48000, 0x00);
   lsbMask[0] = 0xF0;  // px 0-3 dark
   msbMask[0] = 0xCC;  // px 0,1,4,5 gray
+  // Top four pixels: B->B, B->W, W->B, W->W. Check the reversed panel row
+  // independently from the blank row at the start of the transfer.
+  page[0] = 0x3F;
+  s.display(bus, page.data(), nullptr, RefreshMode::Fast, false);
+  page[0] = 0x5F;
   bus.clear();
-  s.beginGrayscale(bus, white.data(), GrayscaleMode::Overlay, RefreshMode::Fast, false);
+  s.beginGrayscale(bus, page.data(), GrayscaleMode::Overlay, RefreshMode::Fast, false);
   assert(count(bus, 0x12) == 1 && *lastData(bus, 0xE6) == Bytes({0x19}) && "overlay base is a fast B/W refresh");
+  data = lastData(bus, 0x10);
+  assert(data && (*data)[row0] == 0x9B && (*data)[row0 + 1] == 0xFF && (*data)[0] == 0xFF);
+  assert(count(bus, 0x02) == 0 && "fast overlay base keeps the rails on");
   bus.clear();
   s.copyGrayscaleLsb(bus, lsbMask.data());
   s.copyGrayscaleMsb(bus, msbMask.data());
+  assert(bus.busyWaitWriteCounts == std::vector<size_t>({0, 1, 10}));
   assert(count(bus, 0x00) == 1 && count(bus, 0xE6) == 0 && *lastData(bus, 0xE0) == Bytes({0x10}) &&
          "masks go out after a fresh init, no OTP latch");
   data = lastData(bus, 0x10);
@@ -120,6 +166,12 @@ int main() {
   bus.clear();
   s.display(bus, white.data(), nullptr, RefreshMode::Fast, false);
   assert(count(bus, 0x00) == 1 && *lastData(bus, 0xE6) == Bytes({0x19}) && "next frame re-inits after the AA LUT");
+  data = lastData(bus, 0x10);
+  assert(data && (*data)[row0] == 0x77 && "ordinary fast erase uses the actual retained base");
+  // The next base still waits after reset/initialization, OTP latch and power
+  // on, and still performs its refresh. Only the duplicate init wait is gone.
+  assert(bus.busyWaitWriteCounts == std::vector<size_t>({0, 1, 10, 13, 15}));
+  assert(bus.waits == 6);
 
   // Deep sleep: the rails are on after a fast frame, so they go off first.
   bus.clear();

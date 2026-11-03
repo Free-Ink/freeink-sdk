@@ -16,7 +16,9 @@ with tempfile.TemporaryDirectory(prefix="freeink-pro-test-") as directory:
     for name in drivers:
         for ext in ("h", "cpp"):
             shutil.copy2(LIB / f"src/driver/{name}Driver.{ext}", root / f"src/driver/{name}Driver.{ext}")
-    shutil.copy2(LIB / "src/driver/PanelDriver.h", root / "src/driver/PanelDriver.h")
+    for header in (LIB / "src/driver").glob("*.h"):
+        shutil.copy2(header, root / "src/driver" / header.name)
+    shutil.copy2(LIB / "include/LgfxEpdConfig.h", root / "include/LgfxEpdConfig.h")
     shutil.copy2(LIB / "src/FreeInkDisplay.cpp", root / "src/FreeInkDisplay.cpp")
     shutil.copy2(LIB / "include/FreeInkDisplay.h", root / "include/FreeInkDisplay.h")
     shutil.copy2(LIB / "include/GrayscaleCapabilities.h", root / "include/GrayscaleCapabilities.h")
@@ -38,3 +40,18 @@ with tempfile.TemporaryDirectory(prefix="freeink-pro-test-") as directory:
         subprocess.run([str(exe)], check=True)
         subprocess.run([str(exe), "sticky"], check=True)
         subprocess.run([str(exe), "metalio"], check=True)
+
+    # Header-check every concrete driver against the shared identity contract.
+    # The IT8951 header only needs a declaration for its owned Arduino SPI reference.
+    spi = root / "SPI.h"
+    spi.write_text(spi.read_text() + "\nclass SPIClass;\n")
+    # Compile the production selector with all three X4-family drivers enabled.
+    exe = root / "controller-identity"
+    command = [os.environ.get("CXX", "c++"), "-std=c++17", "-DARDUINO=1",
+               "-DFREEINK_DRIVER_SSD1677=1", "-DFREEINK_DRIVER_UC8179=1", "-DFREEINK_DRIVER_UC8279_X4=1",
+               "-I" + str(root), "-I" + str(root / "include"),
+               str(HERE / "test_controller_identity.cpp"), str(root / "src/FreeInkDisplay.cpp")]
+    command += [str(root / f"src/driver/{name}Driver.cpp") for name in drivers]
+    subprocess.run(command + ["-o", str(exe)], check=True)
+    subprocess.run([str(exe)], check=True)
+    print("SSD1677/UC8179/UC8279 facade controller identity and unselected state passed")

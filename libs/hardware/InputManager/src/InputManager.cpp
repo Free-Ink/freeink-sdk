@@ -6,7 +6,11 @@
 
 #if FREEINK_CAP_TOUCH
 #include <Wire.h>
+#include <I2cBusLock.h>
 #include <driver/gpio.h>
+#if FREEINK_TOUCH_TMA525C
+#include <Logging.h>
+#endif
 #if FREEINK_DEVICE_PICCO
 #include <driver/rtc_io.h>
 #endif
@@ -18,6 +22,9 @@
 #include <Logging.h>
 
 #include "gsl/EegoA4GslFirmware.h"
+#endif
+#if FREEINK_TOUCH_GT911 && FREEINK_GT911_INT_WAKE
+#include <Logging.h>
 #endif
 #endif
 #if FREEINK_DEVICE_PAPERMONO
@@ -94,6 +101,11 @@ InputManager::InputManager()
       twoButtonPressStart(0),
       twoButtonLongPressActive(false) {}
 
+#if FREEINK_DEVICE_METALIO_EINK4
+// The vendor firmware waits up to ~2 s for the expander on slow-starting boards.
+static constexpr uint32_t METALIO_BOOT_WAIT_MS = 3000;
+#endif
+
 void InputManager::begin() {
 #if FREEINK_DEVICE_PICCO
   // pinMode preserves wake interrupt types; a held polled button must not trigger a level ISR.
@@ -102,7 +114,7 @@ void InputManager::begin() {
   }
 #endif
 #if FREEINK_DEVICE_METALIO_EINK4
-  if (BoardConfig::isMetalioEInk4()) freeink::metalio::ensureBooted();
+  if (BoardConfig::isMetalioEInk4()) freeink::metalio::ensureBooted(METALIO_BOOT_WAIT_MS);
 #endif
   if (hasToggleSwitch()) {
     pinMode(BoardConfig::ACTIVE.input.toggleSwitch, INPUT_PULLUP);
@@ -717,13 +729,36 @@ bool InputManager::hasTouch() const {
 #endif
 }
 
+int8_t InputManager::touchWakeIrqPin() const {
+#if FREEINK_TOUCH_GT911 && FREEINK_GT911_INT_WAKE
+  return touchWakeIrqUsable && !gt911StatusFault ? BoardConfig::ACTIVE.touch.irq : static_cast<int8_t>(-1);
+#else
+  return -1;
+#endif
+}
+
+bool InputManager::touchWakeIrqActiveLow() const {
+#if FREEINK_CAP_TOUCH
+  // The board profile owns the polarity. gt911ConfigureIntWake() refuses to
+  // mark the line usable unless the profile agrees with the low-level hold it
+  // programs, so a caller that armed on touchWakeIrqPin() cannot read a
+  // polarity the driver did not actually configure.
+  return BoardConfig::ACTIVE.touch.irqActiveLow;
+#else
+  return true;
+#endif
+}
+
 InputManager::TouchPoint InputManager::getTouchPoint() const { return touchPoint; }
 
 bool InputManager::supportsMultiTouch() const {
 #if FREEINK_CAP_TOUCH
+  if (!touchDataEnabled) return false;
+#if FREEINK_TOUCH_TMA525C
+  if (BoardConfig::ACTIVE.touch.controller == BoardConfig::TouchController::Tma525c) return piccoMaxContacts >= 2;
+#endif
   const auto controller = BoardConfig::ACTIVE.touch.controller;
-  return touchDataEnabled && (controller == BoardConfig::TouchController::Gt911 ||
-                              controller == BoardConfig::TouchController::Gslx680);
+  return controller == BoardConfig::TouchController::Gt911 || controller == BoardConfig::TouchController::Gslx680;
 #else
   return false;
 #endif
@@ -1313,6 +1348,8 @@ bool InputManager::wasHomeKeyTapped() const { return touchHomeKeyTapEvent; }
 
 bool InputManager::wasHomeKeyLongPressed() const { return touchHomeKeyLongEvent; }
 
+bool InputManager::isHomeKeyDown() const { return touchHomeKeyDown; }
+
 void InputManager::beginTouch() {
 #if FREEINK_CAP_TOUCH
   const auto& t = BoardConfig::ACTIVE.touch;
@@ -1565,6 +1602,7 @@ uint16_t InputManager::mapTouchAxis(uint16_t raw, const uint16_t rawMin, const u
 
 #if FREEINK_TOUCH_FT5X06 || FREEINK_TOUCH_CST816S  // the register helpers serve both
 bool InputManager::ft5x06WriteReg(const uint8_t reg, const uint8_t value) {
+  const freeink::I2cBusLock busLock;
   const uint8_t addr = BoardConfig::ACTIVE.touch.i2cAddress;
   Wire.beginTransmission(addr);
   Wire.write(reg);
@@ -1573,6 +1611,7 @@ bool InputManager::ft5x06WriteReg(const uint8_t reg, const uint8_t value) {
 }
 
 bool InputManager::ft5x06ReadReg(const uint8_t reg, uint8_t* buf, const uint8_t len) {
+  const freeink::I2cBusLock busLock;
   const uint8_t addr = BoardConfig::ACTIVE.touch.i2cAddress;
   Wire.beginTransmission(addr);
   Wire.write(reg);
@@ -1595,7 +1634,10 @@ void InputManager::beginFt5x06() {
 #if FREEINK_DEVICE_PAPERMONO
   // The FT6336's power rail and reset line live on the M5IOE1 expander, not
   // ESP GPIOs — raise/release them before the probe below.
-  freeink::papermono::enableTouch();
+  [[maybe_unused]] const bool railUp = freeink::papermono::enableTouch();
+#ifdef TOUCH_PROBE_DEBUG
+  touchDebugPrintf("[touch] Paper Mono rail and reset: %s\n", railUp ? "up" : "FAILED");
+#endif
 #endif
 
   // The bus is shared with M5PM1/M5IOE1/RX8130, whose standing profile is
@@ -1701,16 +1743,15 @@ void InputManager::pollCst816s(const unsigned long now) {
     }
     cstVirtualButtons = 0;
   };
-  // Re-reading CST816S can return the last sample after its event ends.
-  // A stale successful read must not keep a contact pressed forever either.
-  if (active && !fresh && now - cstLastSample >= 100) { release(); return; }
+  // While a contact is held, read every sample whether or not an IRQ arrived
+  // (vendor firmware polls unconditionally); a zero-finger frame ends it.
   uint8_t data[5] = {};
   if (!ft5x06ReadReg(0x02, data, sizeof(data))) {
     // The device goes silent again after release; don't latch a key/contact.
     if (active && now - cstLastSample >= 100) release();
     return;
   }
-  if (fresh) cstLastSample = now;
+  cstLastSample = now;
   if (!(data[0] & 0x0F) || (data[1] >> 6) == 1) {
     release();
     return;
@@ -2211,7 +2252,8 @@ constexpr unsigned long PICCO_TOUCH_STALE_MS = 3000;
 // One PIP report into buf (at most cap bytes); returns its length, 0 if none.
 uint16_t piccoReadReport(uint8_t addr, uint8_t* buf, uint16_t cap) {
   if (Wire.requestFrom(addr, static_cast<uint8_t>(2), static_cast<uint8_t>(true)) != 2) return 0;
-  const uint16_t len = Wire.read() | (Wire.read() << 8);
+  const uint8_t low = Wire.read();
+  const uint16_t len = low | (static_cast<uint16_t>(Wire.read()) << 8);
   if (len < 2 || len > cap) return 0;
   const uint8_t got = Wire.requestFrom(addr, static_cast<uint8_t>(len), static_cast<uint8_t>(true));
   for (uint8_t i = 0; i < got; ++i) buf[i] = Wire.read();
@@ -2239,6 +2281,7 @@ uint16_t piccoCrc(const uint8_t* p, size_t n) {
 }  // namespace
 
 void InputManager::beginTma525c() {
+  piccoMaxContacts = 1;
   const auto& t = BoardConfig::ACTIVE.touch;
   if (t.sda < 0 || t.scl < 0 || t.i2cAddress == 0) return;
 
@@ -2292,6 +2335,32 @@ void InputManager::beginTma525c() {
     mode = PICCO_MODE_APP;  // stock proceeds once the launch is acknowledged
   }
   touchDataEnabled = (mode == PICCO_MODE_APP);
+  if (touchDataEnabled) {
+    // PIP GET_SYSINFO (as documented by Linux cyttsp5): sensing data starts at
+    // byte 33; byte 50 is max_num_of_tch_per_refresh_cycle. Query the panel's
+    // configuration rather than assuming the controller family's finger limit.
+    static constexpr uint8_t sysinfo[] = {0x04, 0x00, 0x05, 0x00, 0x2F, 0x00, 0x02};
+    bool capabilityConfirmed = false;
+    Wire.beginTransmission(t.i2cAddress);
+    Wire.write(sysinfo, sizeof(sysinfo));
+    if (Wire.endTransmission() == 0) {
+      const unsigned long startedAt = millis();
+      for (uint8_t attempt = 0; attempt < 8; ++attempt) {
+        const unsigned long elapsed = millis() - startedAt;
+        if (elapsed >= 500 || !piccoWaitInt(t.irq, 500 - elapsed)) break;
+        const uint16_t len = piccoReadReport(t.i2cAddress, buf, sizeof(buf));
+        if (len >= 51 && buf[2] == 0x1F && (buf[4] & 0x7F) == 0x02 && buf[50] > 0 && buf[50] <= 31) {
+          piccoMaxContacts = buf[50];
+          capabilityConfirmed = true;
+          break;
+        }
+      }
+    }
+    if (!capabilityConfirmed)
+      LOG_ERR("INPUT", "Picco multi-touch capability query failed; keeping single touch");
+    else
+      LOG_INF("INPUT", "Picco touch reports up to %u contacts", piccoMaxContacts);
+  }
 #ifdef TOUCH_PROBE_DEBUG
   touchDebugPrintf("[touch] Picco TMA525C mode=0x%02X enabled=%d\r\n", mode, touchDataEnabled);
 #endif
@@ -2305,7 +2374,10 @@ void InputManager::pollTma525c(const unsigned long now) {
   // controller can go quiet while a finger rests still, so the hold-over is only
   // a long safety net for a missed lift-off (it must outlast a long press).
   if (t.irq >= 0 && digitalRead(t.irq) != LOW) {
-    if (touchPressed && now >= touchReleaseAt) {
+    if (touchPressed && now - touchPoint.timestamp >= PICCO_TOUCH_STALE_MS) {
+      cancelMultiTouchGesture();
+      touchSnapshot = {};
+      touchSnapshot.idsStable = true;
       touchReleasedEvent = true;
       lastTouchHeldDurationMs = now - touchDownPoint.timestamp;
       touchUpPoint = touchPoint;
@@ -2319,15 +2391,64 @@ void InputManager::pollTma525c(const unsigned long now) {
   const uint16_t len = piccoReadReport(t.i2cAddress, buf, sizeof(buf));
   if (len < 7 || buf[2] != PICCO_REPORT_TOUCH) return;
   const uint8_t count = buf[5] & 0x1F;
-  const uint8_t* rec = &buf[7];
-  const bool lifted = count == 0 || len < 17 || ((rec[1] >> 5) & 0x03) == 3;
-#ifdef TOUCH_PROBE_DEBUG
-  if (len >= 17)
-    touchDebugPrintf("[touch] Picco n=%u id=%u ev=%u x=%u y=%u\r\n", count, rec[1] & 0x1F, (rec[1] >> 5) & 0x03,
-                     rec[2] | (rec[3] << 8), rec[4] | (rec[5] << 8));
-#endif
+  constexpr uint8_t headerBytes = 7;
+  constexpr uint8_t recordBytes = 10;
+  if (count > MAX_TOUCH_CONTACTS || len < headerBytes + count * recordBytes) {
+    // Never reinterpret a truncated/malformed multi-contact frame as one finger
+    // or a release: either could turn an incomplete gesture into a UI action.
+    blockMultiTouchGesture();
+    touchSnapshot = {};
+    touchSnapshot.idsStable = true;
+    touchSnapshot.reportedCount = count;
+    LOG_ERR("INPUT", "Invalid Picco touch report: contacts=%u bytes=%u", count, len);
+    return;
+  }
 
-  if (lifted) {
+  // Bounded alongside the existing 128-byte report buffer; no heap allocation.
+  TouchSnapshot next{};
+  next.idsStable = true;
+  for (uint8_t i = 0; i < count; ++i) {
+    const uint8_t* rec = &buf[headerBytes + i * recordBytes];
+    if (((rec[1] >> 5) & 0x03) == 3) continue;  // explicit lift-off record
+    const uint8_t id = rec[1] & 0x1F;
+    const uint16_t x = static_cast<uint16_t>(rec[2]) | (static_cast<uint16_t>(rec[3]) << 8);
+    const uint16_t y = static_cast<uint16_t>(rec[4]) | (static_cast<uint16_t>(rec[5]) << 8);
+    bool duplicate = false;
+    for (uint8_t j = 0; j < next.count; ++j) duplicate |= next.points[j].id == id;
+    if (x > PICCO_TOUCH_W || y > PICCO_TOUCH_H || duplicate) {
+      blockMultiTouchGesture();
+      touchSnapshot = {};
+      touchSnapshot.idsStable = true;
+      touchSnapshot.reportedCount = count;
+      LOG_ERR("INPUT", "Invalid Picco contact: id=%u x=%u y=%u", id, x, y);
+      return;
+    }
+    const uint16_t px = PICCO_TOUCH_W - x;  // stock orientation
+    const uint16_t py = PICCO_TOUCH_H - y;
+    const uint16_t sx = t.swapXY ? py : px;
+    const uint16_t sy = t.swapXY ? px : py;
+    auto& contact = next.points[next.count++];
+    contact.id = id;
+    contact.point.valid = true;
+    contact.point.x = mapTouchAxis(sx, t.rawMinX, t.rawMaxX, t.rawMaxX - t.rawMinX);
+    contact.point.y = mapTouchAxis(sy, t.rawMinY, t.rawMaxY, t.rawMaxY - t.rawMinY);
+    if (t.flipX) contact.point.x = static_cast<uint16_t>((t.rawMaxX - t.rawMinX) - contact.point.x);
+    if (t.flipY) contact.point.y = static_cast<uint16_t>((t.rawMaxY - t.rawMinY) - contact.point.y);
+    contact.point.timestamp = now;
+  }
+  next.reportedCount = next.count;
+  // A lift and another finger's down can share a report with only one live
+  // contact. Do not let that new ID inherit the old finger's tap/swipe origin.
+  if (touchPressed && touchSnapshot.count == 1 && next.count == 1 && touchSnapshot.points[0].id != next.points[0].id) {
+    blockMultiTouchGesture();
+  }
+  touchSnapshot = next;
+  if (piccoMaxContacts >= 2)
+    updateMultiTouchGesture(touchSnapshot, now);
+  else if (next.count > 1)
+    blockMultiTouchGesture();
+
+  if (next.count == 0) {
     if (touchPressed) {
       touchReleasedEvent = true;
       lastTouchHeldDurationMs = now - touchDownPoint.timestamp;
@@ -2338,19 +2459,7 @@ void InputManager::pollTma525c(const unsigned long now) {
     return;
   }
 
-  const uint16_t x = static_cast<uint16_t>(rec[2] | (rec[3] << 8));
-  const uint16_t y = static_cast<uint16_t>(rec[4] | (rec[5] << 8));
-  if (x > PICCO_TOUCH_W || y > PICCO_TOUCH_H) return;
-  const uint16_t px = PICCO_TOUCH_W - x;  // stock orientation
-  const uint16_t py = PICCO_TOUCH_H - y;
-  const uint16_t sx = t.swapXY ? py : px;
-  const uint16_t sy = t.swapXY ? px : py;
-  touchPoint.valid = true;
-  touchPoint.x = mapTouchAxis(sx, t.rawMinX, t.rawMaxX, t.rawMaxX - t.rawMinX);
-  touchPoint.y = mapTouchAxis(sy, t.rawMinY, t.rawMaxY, t.rawMaxY - t.rawMinY);
-  if (t.flipX) touchPoint.x = static_cast<uint16_t>((t.rawMaxX - t.rawMinX) - touchPoint.x);
-  if (t.flipY) touchPoint.y = static_cast<uint16_t>((t.rawMaxY - t.rawMinY) - touchPoint.y);
-  touchPoint.timestamp = now;
+  touchPoint = next.points[0].point;
   if (!touchPressed) {
     touchPressedEvent = true;
     touchDownPoint = touchPoint;
@@ -2363,6 +2472,10 @@ void InputManager::pollTma525c(const unsigned long now) {
   if (absInt(dx) > TOUCH_TAP_SLOP_PX || absInt(dy) > TOUCH_TAP_SLOP_PX) touchMovedBeyondTapSlop = true;
   if (absInt(dx) > TOUCH_TAP_RELEASE_SLOP_PX || absInt(dy) > TOUCH_TAP_RELEASE_SLOP_PX)
     touchMovedBeyondTapReleaseSlop = true;
+  if (next.count > 1) {
+    touchMovedBeyondTapSlop = true;
+    touchMovedBeyondTapReleaseSlop = true;
+  }
   touchPressed = true;
   touchReleaseAt = now + PICCO_TOUCH_STALE_MS;
 }
@@ -2434,6 +2547,16 @@ void InputManager::beginGt911() {
   }
 
   touchDataEnabled = (gt911Addr != 0);
+#if FREEINK_GT911_INT_WAKE
+  // Earned again on every begin: the reset dance above reloads the
+  // controller's own table, so a result from an earlier begin() says nothing
+  // about the mode the controller is in now.
+  touchWakeIrqUsable = false;
+  gt911StatusFault = false;
+  if (touchDataEnabled) {
+    gt911ConfigureIntWake();
+  }
+#endif
 #ifdef TOUCH_PROBE_DEBUG
   touchDebugPrintf(
       "[touch] GT911 probe: addr=0x%02X enabled=%d (sda=%d scl=%d "
@@ -2460,13 +2583,204 @@ bool InputManager::gt911ReadReg(const uint16_t reg, uint8_t* buf, const uint8_t 
   return true;
 }
 
-void InputManager::gt911ClearStatus() {
+bool InputManager::gt911ClearStatus() {
   Wire.beginTransmission(gt911Addr);
   Wire.write(0x81);
   Wire.write(0x4E);
   Wire.write(static_cast<uint8_t>(0x00));
-  Wire.endTransmission();
+  return Wire.endTransmission() == 0;
 }
+
+#if FREEINK_GT911_INT_WAKE
+
+// GT911 configuration block: 0x8047..0x80FE, its 8-bit two's-complement
+// checksum at 0x80FF, the apply flag at 0x8100. Module_Switch1 (0x804D)
+// bits[1:0] pick the INT trigger — 0 rising edge, 1 falling edge, 2 low level,
+// 3 high level. Only the level modes hold the line from the report frame until
+// the host clears 0x814E; the edge modes emit one pulse per frame, and light
+// sleep clock-gates the edge detector, so a pulse can be missed entirely.
+namespace {
+constexpr uint16_t GT911_CONFIG_START = 0x8047;
+constexpr uint16_t GT911_CONFIG_LEN = 184;  // 0x8047..0x80FE, checksum excluded
+constexpr uint8_t GT911_CONFIG_CHUNK = 64;  // Wire's buffer is 128 bytes
+constexpr uint16_t GT911_MODULE_SWITCH1_OFF = 0x804D - GT911_CONFIG_START;
+constexpr uint8_t GT911_INT_MODE_MASK = 0x03;
+constexpr uint8_t GT911_INT_LOW_LEVEL = 0x02;
+constexpr uint16_t GT911_CONFIG_FRESH = 0x8100;
+// The controller clears Config_Fresh when it has actually re-read the table.
+// Datasheet flows allow it a few ms; give it 100 ms before calling it refused.
+constexpr uint8_t GT911_FRESH_POLL_MS = 10;
+constexpr uint8_t GT911_FRESH_POLL_TRIES = 10;
+// Status register (0x814E) access on the INT-wake path. In low-level mode a
+// pending report holds INT asserted until 0x814E is cleared, so a read or
+// clear that fails on I2C is retried a few times, briefly, before the line is
+// withdrawn as a wake source.
+constexpr uint8_t GT911_STATUS_TRIES = 3;
+constexpr uint8_t GT911_STATUS_RETRY_MS = 2;
+}  // namespace
+
+bool InputManager::gt911WriteReg(const uint16_t reg, const uint8_t* buf, const uint8_t len) {
+  Wire.beginTransmission(gt911Addr);
+  Wire.write(static_cast<uint8_t>(reg >> 8));
+  Wire.write(static_cast<uint8_t>(reg & 0xFF));
+  for (uint8_t i = 0; i < len; ++i) {
+    Wire.write(buf[i]);
+  }
+  return Wire.endTransmission() == 0;
+}
+
+void InputManager::gt911ConfigureIntWake() {
+  const auto& t = BoardConfig::ACTIVE.touch;
+  if (gt911Addr == 0 || t.irq < 0) {
+    return;
+  }
+  if (!t.irqActiveLow) {
+    // Only the low-level hold is programmed below, i.e. an INT that asserts
+    // LOW. A profile that does not declare an active-low INT (false is also
+    // the value on profiles that never needed to set it) gives no basis for
+    // that, so fail closed rather than let a caller arm a high-level wake on a
+    // line that idles high (a permanent wake trigger).
+    LOG_ERR("INPUT", "GT911 INT wake: profile does not declare an active-low INT; touch stays polled");
+    return;
+  }
+
+  uint8_t cfg[GT911_CONFIG_LEN + 1] = {};  // config block + its stored checksum
+  for (uint16_t off = 0; off < sizeof(cfg); off += GT911_CONFIG_CHUNK) {
+    const uint16_t remaining = static_cast<uint16_t>(sizeof(cfg) - off);
+    const uint8_t len = static_cast<uint8_t>(remaining < GT911_CONFIG_CHUNK ? remaining : GT911_CONFIG_CHUNK);
+    if (!gt911ReadReg(static_cast<uint16_t>(GT911_CONFIG_START + off), cfg + off, len)) {
+      LOG_ERR("INPUT", "GT911 INT wake: config read failed; not configured, touch stays polled");
+      return;
+    }
+  }
+
+  uint8_t sum = 0;
+  for (uint16_t i = 0; i < GT911_CONFIG_LEN; ++i) {
+    sum = static_cast<uint8_t>(sum + cfg[i]);
+  }
+  if (static_cast<uint8_t>(sum + cfg[GT911_CONFIG_LEN]) != 0) {
+    // Checksum mismatch: the table is not what this driver thinks it is, so
+    // rewriting any of it would be a guess. Leave the controller alone.
+    LOG_ERR("INPUT", "GT911 INT wake: config checksum mismatch; not configured, touch stays polled");
+    return;
+  }
+
+  // Read-compare-skip: the table is written ONLY when the INT-trigger bits
+  // differ from the low-level hold wanted here. A unit that already reports
+  // low level is never written at all, so the write happens at most once per
+  // begin and only on a controller that needs it.
+  const uint8_t switch1 = cfg[GT911_MODULE_SWITCH1_OFF];
+  const bool needsPatch = (switch1 & GT911_INT_MODE_MASK) != GT911_INT_LOW_LEVEL;
+  if (needsPatch) {
+    const uint8_t patched = static_cast<uint8_t>((switch1 & ~GT911_INT_MODE_MASK) | GT911_INT_LOW_LEVEL);
+    // The patch is intended as a RAM-side, per-boot change: only the INT bits
+    // of Module_Switch1 change, plus Config_Version 0x00 and the recomputed
+    // checksum, applied with Config_Fresh. Goodix's documentation is
+    // ambiguous about whether a table applied this way is also kept across a
+    // reset, so nothing here relies on either outcome: beginGt911() re-reads
+    // and, only if needed, re-applies the patch on every boot, and the mode is
+    // trusted only after the controller has consumed the table and reports
+    // it back.
+    sum = static_cast<uint8_t>(sum - cfg[0] - switch1 + patched);
+    const uint8_t version = 0x00;
+    const uint8_t tail[2] = {static_cast<uint8_t>(-sum), 0x01};  // Config_Chksum, Config_Fresh
+    if (!gt911WriteReg(GT911_CONFIG_START, &version, 1) || !gt911WriteReg(0x804D, &patched, 1) ||
+        !gt911WriteReg(0x80FF, tail, sizeof(tail))) {
+      LOG_ERR("INPUT", "GT911 INT wake: config write failed; touch stays polled");
+      return;
+    }
+
+    // Wait for the controller to CONSUME the table, not just to acknowledge
+    // the write: it clears Config_Fresh itself once it has re-read the block.
+    // The 0x804D read-back below cannot stand in for this — that register
+    // holds whatever was written to it whether or not the config was applied,
+    // so it only proves the I2C transfer landed. A fresh flag still set after
+    // the timeout means the controller did not take the table.
+    bool consumed = false;
+    for (uint8_t tries = 0; !consumed && tries < GT911_FRESH_POLL_TRIES; ++tries) {
+      delay(GT911_FRESH_POLL_MS);
+      uint8_t fresh = 1;
+      consumed = gt911ReadReg(GT911_CONFIG_FRESH, &fresh, 1) && fresh == 0;
+    }
+    if (!consumed) {
+      LOG_ERR("INPUT", "GT911 INT wake: Config_Fresh not cleared (table not consumed); touch stays polled");
+      return;
+    }
+  }
+
+  // Second guard, on top of the Config_Fresh clear above: the mode the
+  // controller now reports has to be the one asked for.
+  uint8_t readback = 0;
+  if (!gt911ReadReg(0x804D, &readback, 1)) {
+    LOG_ERR("INPUT", "GT911 INT wake: mode readback failed; touch stays polled");
+    return;
+  }
+  if ((readback & GT911_INT_MODE_MASK) != GT911_INT_LOW_LEVEL) {
+    LOG_ERR("INPUT", "GT911 INT wake: mode readback 0x%02X is not low level; touch stays polled", readback);
+    return;
+  }
+
+  // The reset dance leaves INT floating as a plain INPUT. A low-level INT is
+  // released between frames, so pull it up: an open-drain module then still
+  // reads HIGH at idle and the level wake cannot false-trigger.
+  pinMode(t.irq, INPUT_PULLUP);
+  // In low-level mode a pending report holds INT down until the status
+  // register is cleared, and re-reading the config table makes the controller
+  // latch one. Clear it so the line idles released and the app's first level
+  // wake is armed on a quiet pin instead of an already-asserted one. If the
+  // clear fails, the line is still usable in principle but withheld
+  // (gt911StatusFault) until a poll gets the register cleared.
+  touchWakeIrqUsable = true;
+  gt911ClearStatusForWake();
+  LOG_INF("INPUT", "GT911 INT wake: INT=%d low-level hold (%s)", t.irq,
+          needsPatch ? "patched this boot" : "already set");
+}
+
+// Retries only while the INT is actually offered as a wake source. Already
+// faulted, or never offered (config refused): one attempt per poll, so a dead
+// controller costs each poll a single transfer, as without the flag.
+uint8_t InputManager::gt911StatusTries() const {
+  return touchWakeIrqUsable && !gt911StatusFault ? GT911_STATUS_TRIES : 1;
+}
+
+bool InputManager::gt911ReadStatusForWake(uint8_t& status) {
+  const uint8_t tries = gt911StatusTries();
+  for (uint8_t i = 0; i < tries; ++i) {
+    if (i > 0) delay(GT911_STATUS_RETRY_MS);
+    if (gt911ReadReg(0x814E, &status, 1)) return true;
+  }
+  gt911SetStatusFault(true);
+  return false;
+}
+
+void InputManager::gt911ClearStatusForWake() {
+  const uint8_t tries = gt911StatusTries();
+  for (uint8_t i = 0; i < tries; ++i) {
+    if (i > 0) delay(GT911_STATUS_RETRY_MS);
+    if (gt911ClearStatus()) {
+      gt911SetStatusFault(false);
+      return;
+    }
+  }
+  gt911SetStatusFault(true);
+}
+
+// While set, touchWakeIrqPin() reports -1: an INT that may be held asserted by
+// an uncleared report must not be armed as a level wake, or a controller that
+// stops answering on I2C would keep the host awake. Logged once per episode.
+void InputManager::gt911SetStatusFault(const bool fault) {
+  // Nothing to withdraw on a controller that never offered the pin.
+  if (fault == gt911StatusFault || (fault && !touchWakeIrqUsable)) return;
+  gt911StatusFault = fault;
+  if (fault) {
+    LOG_ERR("INPUT", "GT911 INT wake: status register 0x814E unreachable on I2C; INT withdrawn as a wake source");
+  } else {
+    LOG_INF("INPUT", "GT911 INT wake: status register reachable again; INT usable as a wake source");
+  }
+}
+
+#endif  // FREEINK_GT911_INT_WAKE
+
 #endif  // FREEINK_TOUCH_GT911 (pollGt911 is further down)
 
 #if FREEINK_TOUCH_FT6336U
@@ -2720,7 +3034,12 @@ void InputManager::pollGt911(const unsigned long now) {
     return;
   }
   uint8_t status = 0;
-  if (!gt911ReadReg(0x814E, &status, 1)) {
+#if FREEINK_GT911_INT_WAKE
+  const bool statusRead = gt911ReadStatusForWake(status);
+#else
+  const bool statusRead = gt911ReadReg(0x814E, &status, 1);
+#endif
+  if (!statusRead) {
     // Keep the last complete frame while the single-touch state remains
     // latched. Clearing only this snapshot makes a transient I2C failure look
     // like a multi-contact release to multi-touch consumers, which can split one
@@ -2740,6 +3059,18 @@ void InputManager::pollGt911(const unsigned long now) {
   }
 
   if (!(status & 0x80)) {  // buffer not ready
+#if FREEINK_GT911_INT_WAKE
+    // A nonzero status with the buffer-ready bit clear is latched controller
+    // state (e.g. the HaveKey bit or a stale contact count) that 0x814E holds
+    // until the host clears it, and in low-level INT mode the line stays
+    // asserted along with it. Clear it here too so an armed level wake is not
+    // left firing on it. The all-zero idle pass stays a single read.
+    if (status != 0) {
+      gt911ClearStatusForWake();
+    } else {
+      gt911SetStatusFault(false);  // nothing latched: INT is released
+    }
+#endif
     return;
   }
 
@@ -2844,7 +3175,11 @@ void InputManager::pollGt911(const unsigned long now) {
     touchPoint.valid = false;
   }
 
+#if FREEINK_GT911_INT_WAKE
+  gt911ClearStatusForWake();  // GT911 requires clearing 0x814E after each read
+#else
   gt911ClearStatus();  // GT911 requires clearing 0x814E after each read
+#endif
 }
 #endif  // FREEINK_TOUCH_GT911
 

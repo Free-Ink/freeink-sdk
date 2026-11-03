@@ -27,6 +27,11 @@
 
 namespace freeink {
 
+// True when `host` (a name or an IP literal) resolves; logs a failure.
+// Arduino-ESP32 3.3.x NetworkClient::connect(host) treats a failed lookup as
+// success and waits out the connect timeout on 0.0.0.0, so check this first.
+bool hostResolves(const char* host);
+
 class SecureClient : public Client {
  public:
   SecureClient() = default;
@@ -49,14 +54,17 @@ class SecureClient : public Client {
   // the four that a failing connect() can otherwise spend.
   void setAbortCallback(AbortCallback cb) { _shouldAbort = std::move(cb); }
 
-  // For bulk downloads: allocate a buffer for a full 16KB record and lend it
-  // to wolfSSL for every record of this connection. Servers that ignore
-  // max_fragment_length send 16KB records; without the buffer each one needs a
-  // fresh ~16.4KB block, which a fragmented heap mid-download often lacks.
-  // Call once connected, after the request is written (its text is freed by
-  // then) and before the body arrives. No-op when the server accepted
-  // max_fragment_length or another connection holds the buffer.
+  // Bulk downloads: pre-grow this connection's wolfSSL input buffer after
+  // request text has been sent/freed, before reading response headers. Requires
+  // the consumer's verified FREEINK_WOLFSSL_RETAIN_INPUT_BUFFER patch; otherwise
+  // a no-op. Skips negotiated small records, pending data, and a concurrent
+  // reservation. OOM falls back to ordinary record growth. wolfSSL owns/frees
+  // the buffer, including on cancellation/error. Client calls must be serialized.
+#if defined(FREEINK_NET_WOLFSSL)
   void reserveFullRecord();
+#else
+  void reserveFullRecord() {}
+#endif
 
   // True when the last connect() returned because the abort callback fired
   // rather than because the connection failed.
@@ -90,7 +98,7 @@ class SecureClient : public Client {
   WiFiClient _transport;
   AbortCallback _shouldAbort;
   bool _aborted = false;
-  void* _recordBuf = nullptr;  // full-record buffer this connection owns, if any
+  bool _tcpConnected = false;  // the last connectWithMethod() reached the handshake
   const char* _rootCA = nullptr;
   bool _insecure = false;
   void* _ssl = nullptr;  // WOLFSSL* (opaque to keep wolfSSL headers out of here)

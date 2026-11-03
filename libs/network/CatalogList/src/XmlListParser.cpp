@@ -154,8 +154,12 @@ bool XmlListParser::parse(const ReadFn read, void* readCtx) {
   bool ok = true;
   for (;;) {
     const int n = read(readCtx, buf, sizeof(buf));
-    const bool last = n <= 0;
-    if (XML_Parse(p, buf, last ? 0 : n, last ? XML_TRUE : XML_FALSE) != XML_STATUS_OK) {
+    if (n < 0) {
+      ok = false;
+      break;
+    }
+    const bool last = n == 0;
+    if (XML_Parse(p, buf, last ? 0 : n, last ? XML_TRUE : XML_FALSE) != XML_STATUS_OK || limitExceeded) {
       ok = false;
       break;
     }
@@ -166,7 +170,11 @@ bool XmlListParser::parse(const ReadFn read, void* readCtx) {
 }
 
 void XmlListParser::onStart(const XML_Char* name, const XML_Char** atts) {
-  depth++;
+  if (limitExceeded) return;
+  if (++depth > 32) {
+    limitExceeded = true;
+    return;
+  }
   const char* local = localName(name);
   if (itemDepth < 0) {
     if (parsedItems < MAX_ITEMS && item == local) {
@@ -177,7 +185,13 @@ void XmlListParser::onStart(const XML_Char* name, const XML_Char** atts) {
         done[i] = !sel[i].isSet();
         if (sel[i].onItemTag) {
           const char* v = findAttr(atts, sel[i].attr);
-          if (v) current.field[i] = v;
+          if (v) {
+            if (strlen(v) > MAX_FIELD_CHARS) {
+              limitExceeded = true;
+              return;
+            }
+            current.field[i] = v;
+          }
           done[i] = true;
         }
       }
@@ -192,7 +206,13 @@ void XmlListParser::onStart(const XML_Char* name, const XML_Char** atts) {
     done[i] = true;  // first matching descendant wins
     if (!sel[i].attr.empty()) {
       const char* v = findAttr(atts, sel[i].attr);
-      if (v) current.field[i] = v;
+      if (v) {
+        if (strlen(v) > MAX_FIELD_CHARS) {
+          limitExceeded = true;
+          return;
+        }
+        current.field[i] = v;
+      }
     } else {
       capturingMask |= 1u << i;
     }
@@ -200,12 +220,22 @@ void XmlListParser::onStart(const XML_Char* name, const XML_Char** atts) {
 }
 
 void XmlListParser::onEnd(const XML_Char* name) {
+  if (limitExceeded) return;
   if (itemDepth >= 0) {
     capturingMask = 0;
     if (depth == itemDepth && item == localName(name)) {
       for (auto& f : current.field) trim(f);
       ++parsedItems;
-      if (acceptRow(current)) sink(sinkCtx, current);
+      if (acceptRow(current)) {
+        size_t bytes = 0;
+        for (const auto& field : current.field) bytes += field.size();
+        if (bytes > captureBudget - capturedBytes) {
+          limitExceeded = true;
+          return;
+        }
+        capturedBytes += bytes;
+        sink(sinkCtx, current);
+      }
       itemDepth = -1;
     }
   }
@@ -213,7 +243,7 @@ void XmlListParser::onEnd(const XML_Char* name) {
 }
 
 void XmlListParser::onText(const XML_Char* s, const int len) {
-  if (itemDepth < 0 || capturingMask == 0) return;
+  if (limitExceeded || itemDepth < 0 || capturingMask == 0) return;
   for (int i = 0; i < F_COUNT; i++) {
     if (!(capturingMask & (1u << i)) || current.field[i].size() >= MAX_FIELD_CHARS) continue;
     current.field[i].append(s, std::min<size_t>(len, MAX_FIELD_CHARS - current.field[i].size()));

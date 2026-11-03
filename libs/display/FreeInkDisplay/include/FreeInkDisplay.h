@@ -89,6 +89,10 @@ class FreeInkDisplay {
   // runtime-selected; a single-device build gets exactly that panel's size.
   static constexpr uint32_t MAX_BUFFER_SIZE = BoardConfig::MAX_FRAMEBUFFER_BYTES;
 
+  // Selected controller/backend identity; nullptr until a driver is selected by begin().
+  // Read-only: never probes hardware or substitutes the board profile default.
+  const char* getControllerName() const;
+
   // Runtime dimensions
   uint16_t getDisplayWidth() const { return displayWidth; }
   uint16_t getDisplayHeight() const { return displayHeight; }
@@ -151,9 +155,12 @@ class FreeInkDisplay {
   void cleanupGrayscaleBuffers(const uint8_t* bwBuffer);
 #ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
   // Restore controller RAM and frameBuffer to the BW baseline after grayscale.
-  // Uses frameBufferActive as the source (falls back to frameBuffer when the
-  // secondary buffer has been released). Call once per page-turn after
-  // displayGrayBuffer() to ensure the next BW draw targets a valid BW frame.
+  // frameBufferActive is the only valid source: the caller is always inside a
+  // grayscale plane pass, which has left frameBuffer holding a PLANE, so there is
+  // no fallback. With the secondary away (lent or released) the driver is told
+  // there is no baseline and takes a clean sync on its next push. Call once per
+  // page-turn after displayGrayBuffer() to ensure the next BW draw targets a
+  // valid BW frame.
   void cleanupGrayscaleWithPreviousBuffer();
 #endif
 
@@ -190,9 +197,16 @@ class FreeInkDisplay {
   // can skip overlap scaffolding (e.g. whole-plane grayscale buffers) when
   // there is nothing to overlap.
   bool supportsAsyncRefresh() const;
+  // End-of-frame idle power policy, currently Picco only. Call under the same
+  // bus/render lock as drawing, after ALL grayscale uploads and cleanup.
+  // Completes pending refreshes, then powers down analog circuitry, not RAM.
+  void powerOffBetweenFrames();
   // True when the selected driver can use an ordinary deferred B/W refresh as
   // the base for a following grayscale pass.
   bool supportsAsyncGrayscaleBase() const;
+  bool supportsDeferredGrayscaleBase() const;
+  // Framebuffer must remain unchanged until waitRefreshComplete().
+  bool displayGrayscaleBaseAsync(RefreshMode fallback = FAST_REFRESH);
 
   // ------------------------------------------------------------------------
   // CrossPoint EInkDisplay compatibility surface.

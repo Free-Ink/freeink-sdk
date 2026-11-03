@@ -140,7 +140,7 @@ so the SD manager itself stays device-agnostic.
 | **Metalio E-Ink 4** | ESP32-S3 | SSD1677 | 800×480 B/W | CST816S touch and cover keys, TCA9555 buttons/power, 1-bit SDMMC, BQ27220 battery gauge, PCF8563 RTC; [bring-up notes and source conflicts](docs/metalio-eink4-support.md), hardware validation pending |
 | **Waveshare ESP32-S3-ePaper-3.97** | ESP32-S3 | SSD1677 | 3.97" 800×480 B/W | reuses the SSD1677 driver with the Sticky's vendor sequences, 3 side keys + BOOT (no touch), native 4-bit SDMMC, AXP2101 PMIC as EPD rail + battery gauge + power key, PCF85063 RTC, QMI8658 IMU; orientation pending hardware validation — see docs/waveshare-epaper-397-support.md |
 | **M5Stack PaperS3** | ESP32-S3 | ED047TC1 (raw parallel) | 960×540 16-gray | same LovyanGFX EPD driver class as the LilyGo T5 S3 (plain-GPIO EPD rails, no PMIC), GT911 touch (touch-only navigation — no GPIO buttons), BM8563 RTC, GPIO3 ADC battery, LEDC buzzer, SPI MicroSD; power-off is a GPIO44 pulse to the PMS150G latch (`BoardPaperS3::powerOff()`); rotation/touch-flip pending hardware validation |
-| **Onyx Picco / BOOX Tiles** (initial) | ESP32-S3 (16MB flash, 8MB octal PSRAM) | SSD1677 / SSD2677 (auto) | 3.97" 800×480 B/W (portrait) | reuses the SSD1677 driver, native 4-bit SDMMC, GPIO2 power/wake button, PCF8563/BM8563 RTC @0x51 + QMI8658 IMU @0x6A on the shared I2C bus (SDA7/SCL8); Parade TMA525C touch (I2C 0x24), 2-channel warm/cool I2C frontlight (@0x38), slide switch (GPIO6), SGM41562 charger (@0x03) and battery ADC (GPIO1) are wired; nav-button roles are provisional |
+| **Onyx Picco / BOOX Tiles** (initial) | ESP32-S3 (16MB flash, 8MB octal PSRAM) | SSD1677 / SSD2677 (auto) | 3.97" 800×480 B/W (portrait) | reuses the SSD1677 driver, native 4-bit SDMMC, GPIO2 power/wake button, PCF8563/BM8563 RTC @0x51 + QMI8658 IMU @0x6A on the shared I2C bus (SDA7/SCL8); Parade TMA525C touch (I2C 0x24, multi-touch when panel GET_SYSINFO confirms it), 2-channel warm/cool I2C frontlight (@0x38), slide switch (GPIO6), SGM41562 charger (@0x03) and battery ADC (GPIO1) are wired; nav-button roles are provisional |
 
 X3 and X4 share the ESP32-C3 and a pinout, so **one firmware binary drives both**:
 it carries both board profiles (`XTEINK_X4` and `XTEINK_X3`) and picks one at
@@ -299,7 +299,7 @@ Sticky and X4 Pro; polled, raw register reads plus the reset/address dance, incl
 the capacitive home key), the **FT5x06 family** (Paper Mono's FT6336; polled point
 reads gated on the active-low IRQ line), **FT6336U** (Murphy M4), **GSLX680** (EEGO A4,
 firmware uploaded at boot), **CST816S** (Metalio E-Ink 4, with cover keys) and
-**Parade TMA525C** (Onyx Picco, PIP protocol). A build compiles only the drivers its
+**Parade TMA525C** (Onyx Picco, PIP protocol; stable contact IDs and multi-touch when GET_SYSINFO confirms at least two contacts). A build compiles only the drivers its
 selected devices use (`FREEINK_TOUCH_<CONTROLLER>`, each overridable with `-D`). The
 InputManager exposes `hasTouch/isTouchPressed/wasTouchPressed/wasTouchReleased/getTouchPoint`.
 It delivers coordinates in raw panel orientation, and the app owns display-orientation

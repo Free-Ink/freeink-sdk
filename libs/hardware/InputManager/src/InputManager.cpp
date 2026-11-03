@@ -1633,7 +1633,10 @@ void InputManager::beginFt5x06() {
 #if FREEINK_DEVICE_PAPERMONO
   // The FT6336's power rail and reset line live on the M5IOE1 expander, not
   // ESP GPIOs — raise/release them before the probe below.
-  freeink::papermono::enableTouch();
+  [[maybe_unused]] const bool railUp = freeink::papermono::enableTouch();
+#ifdef TOUCH_PROBE_DEBUG
+  touchDebugPrintf("[touch] Paper Mono rail and reset: %s\n", railUp ? "up" : "FAILED");
+#endif
 #endif
 
   // The bus is shared with M5PM1/M5IOE1/RX8130, whose standing profile is

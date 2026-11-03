@@ -254,6 +254,14 @@ void Ssd2677Driver::beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode
                                    bool turnOff) {
   _absoluteGray = isSticky() && mode != GrayscaleMode::Overlay;
   if (_absoluteGray) return;  // stock gray4 drives every pixel from any prior state: no base
+  if (mode == GrayscaleMode::Overlay && fallback == RefreshMode::Fast && !_needsInitialFull && _old) {
+    // Give every incoming ink pixel the stock white-to-black pulse, even if
+    // the last B/W base called it black before AA lightened it. For incoming
+    // white, keep the real prior bit so old ink clears and blank paper holds.
+    // The synchronous display below replaces this transition mask with fb.
+    const uint32_t size = geometry().bufferSize;
+    for (uint32_t i = 0; i < size; ++i) _old[i] |= static_cast<uint8_t>(~fb[i]);
+  }
   displayGrayscaleBase(bus, fb, fallback, turnOff);
 }
 

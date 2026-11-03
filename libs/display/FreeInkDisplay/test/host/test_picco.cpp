@@ -181,6 +181,23 @@ int main(int argc, char** argv) {
     // Overlay AA: LSB mask -> low bit, MSB mask -> high bit, slot-5 LUT.
     assert(s.grayscaleCapabilities(GrayscaleMode::Overlay).supported());
     assert(!s.grayscaleCapabilities(GrayscaleMode::Absolute).supported());
+    // Each group of four exercises B->B, B->W, W->B, W->W respectively.
+    // FAST AA should pulse both kinds of incoming black and still erase old ink.
+    Bytes prior(48000, 0x33), target(48000, 0x55);
+    s.display(bus, prior.data(), nullptr, RefreshMode::Full, false);
+    bus.clear();
+    s.beginGrayscale(bus, target.data(), GrayscaleMode::Overlay, RefreshMode::Fast, false);
+    unsigned baseRefreshes = 0;
+    lut = nullptr;
+    data = nullptr;
+    for (const auto& w : bus.writes) {
+      if (w.command == 0x10) data = &w.bytes;
+      if (w.command == 0x12) ++baseRefreshes;
+      if (w.command == 0x20) lut = &w.bytes;
+    }
+    assert(baseRefreshes == 1 && lut && *lut == Bytes(lut_picco_se0400_fast, lut_picco_se0400_fast + 535));
+    assert(data && *data == Bytes(96000, 0x9B));  // 10 01 10 11
+    assert(memcmp(s._old, target.data(), target.size()) == 0);
     Bytes lsb(48000, 0x00), msb(48000, 0x00);
     lsb[0] = 0xF0;  // px 0-3 LSB
     msb[0] = 0xCC;  // px 0,1,4,5 MSB

@@ -18,6 +18,7 @@
 #include <vector>
 
 #define BLE_HS_ETIMEOUT 13
+#define BLE_HS_EREJECT 16
 #define BLE_HS_IO_DISPLAY_ONLY 0
 #define BLE_SM_PAIR_KEY_DIST_ENC 0x01
 

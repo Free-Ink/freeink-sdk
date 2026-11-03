@@ -447,6 +447,45 @@ size_t attemptsAt(const char* addr) {
   return n;
 }
 
+// Pairing from the scan list after the scan ended, while the default turn over the bonds still
+// dials a remote that is away: the app's connect ends that attempt and goes ahead.
+void testConnectEndsAReconnectInFlight() {
+  bondTwoRemotesThenSwitchThemOff();
+  fakeble::failConnects(false);
+  fakeble::holdAt(fakeble::Stage::Connect);
+  for (int i = 0; i < 3 && !host().isConnecting(); ++i) {  // the default turn waits out its backoff
+    fakeble::advanceMillis(4001);
+    host().poll();
+  }
+  CHECK(fakeble::waitUntilHeld(fakeble::Stage::Connect));
+  CHECK(host().connect(kSecondRemote));
+  CHECK(waitConnected());
+  CHECK(std::strcmp(host().connectedAddr(), kSecondRemote) == 0);
+}
+
+// The attempt in flight already has its link and is pairing. Ending it leaves the client
+// disconnecting for a while, and NimBLE refuses to connect until that is over.
+void testConnectWaitsForTheClientAfterEndingAPairing() {
+  bondTwoRemotesThenSwitchThemOff();
+  fakeble::failConnects(false);
+  fakeble::holdAt(fakeble::Stage::Security);
+  for (int i = 0; i < 3 && !host().isConnecting(); ++i) {
+    fakeble::advanceMillis(4001);
+    host().poll();
+  }
+  CHECK(fakeble::waitUntilHeld(fakeble::Stage::Security));
+  fakeble::lingerOnDisconnect();
+  std::thread peer([] {
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    fakeble::finishDisconnect();
+  });
+  const bool started = host().connect(kSecondRemote);
+  peer.join();
+  CHECK(started);
+  CHECK(waitConnected());
+  CHECK(std::strcmp(host().connectedAddr(), kSecondRemote) == 0);
+}
+
 void testSelectedPeerIsTheOnlyOneRetriedSixTimes() {
   bondTwoRemotesThenSwitchThemOff();
   CHECK(host().armSelectedPeerReconnect(kSecondRemote));
@@ -833,6 +872,8 @@ int main() {
   testEndWaitsForTheClientToFinishDisconnecting();
   testSecondEndDuringTeardownReportsStillStopping();
   testTwoTasksRetryingEndNeverOverlap();
+  testConnectEndsAReconnectInFlight();
+  testConnectWaitsForTheClientAfterEndingAPairing();
   testSelectedPeerIsTheOnlyOneRetriedSixTimes();
   testSelectedPlanStartsNothingAfterItsWindow();
   testArmIsRefusedWhenItCannotApply();

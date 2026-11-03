@@ -382,6 +382,19 @@ void cancelPendingConnect() {
   if (g_client->isConnected()) g_client->disconnect();
 }
 
+// Ends the attempt the connection task is making and waits, at most kTeardownConnectWaitMs, until
+// the task is idle and NimBLE has released the client: an attempt ended after its link came up
+// leaves the client disconnecting, and NimBLE refuses to connect it until then. True when it may
+// dial again.
+bool stopConnectInFlight() {
+  const uint32_t waitStart = millis();
+  while ((g_connecting || !clientReleased()) && millis() - waitStart < kTeardownConnectWaitMs) {
+    cancelPendingConnect();
+    vTaskDelay(pdMS_TO_TICKS(20));
+  }
+  return !g_connecting && clientReleased();
+}
+
 void doConnect(const char* addrStr, uint8_t type) {
   if (!g_client) {
     self().onConnectFailed("BLE client unavailable");
@@ -840,7 +853,10 @@ bool BleKeyboardHost::armSelectedPeerReconnect(const char* addr) {
 }
 
 bool BleKeyboardHost::connectInternal(const char* addr, const bool explicitRequest) {
-  if (!begun_ || !addr || g_connecting) return false;
+  if (!begun_ || !addr) return false;
+  // The app's own request ends an automatic attempt still dialling, as a pairing scan does.
+  if (explicitRequest && g_connecting && !stopConnectInFlight()) return false;
+  if (!begun_ || !g_connTask || g_connecting) return false;  // end() may have run during the wait
   if (explicitRequest) {
     portENTER_CRITICAL(&g_mux);
     clearSelectedPlanLocked();

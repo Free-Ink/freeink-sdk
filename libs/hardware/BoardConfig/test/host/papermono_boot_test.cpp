@@ -13,6 +13,7 @@ namespace {
 namespace ioe1 = freeink::m5ioe1;
 
 constexpr uint8_t PM1 = 0x6E;
+constexpr uint8_t m5pm1Button = freeink::m5pm1::REG_BTN_STATUS;
 std::array<std::array<uint8_t, 256>, 128> regs{};
 unsigned long expanderUpAt = 0;  // the expander NACKs until hostMillis reaches this
 int failExpanderReadAfterRail = 0;  // fail the Nth expander read after TP_EN first goes high
@@ -25,6 +26,11 @@ int touchResetReleases = 0;
 int busOperations = 0;
 
 bool isExpander(uint8_t addr) { return addr == ioe1::ADDR_PRIMARY || addr == ioe1::ADDR_ALT; }
+
+uint16_t expanderMode() {
+  const auto& r = regs[ioe1::ADDR_PRIMARY];
+  return static_cast<uint16_t>(r[ioe1::REG_GPIO_MODE_L] | (r[ioe1::REG_GPIO_MODE_L + 1] << 8));
+}
 
 uint16_t expanderOut() {
   const auto& r = regs[ioe1::ADDR_PRIMARY];
@@ -67,7 +73,7 @@ int main(int argc, char** argv) {
   regs[PM1][0x05] = 0x20;  // latched wake source
 
   if (!strcmp(scenario, "healthy")) {
-    assert(freeink::papermono::ensureBooted(2000));
+    assert(freeink::papermono::ensureBooted());
     assert(hostMillis == 0);
     assert(freeink::papermono::bootWakeState().valid && freeink::papermono::bootWakeState().source == 0x20);
     assert(regs[PM1][0x05] == 0);
@@ -77,7 +83,7 @@ int main(int argc, char** argv) {
     // Seen after a PMIC restart: the expander misses the first probes. One probe used to
     // mark it absent for the session.
     expanderUpAt = 600;
-    assert(freeink::papermono::ensureBooted(2000));
+    assert(freeink::papermono::ensureBooted());
     assert(hostMillis >= 600 && hostMillis < 700);
     const uint16_t mode = regs[ioe1::ADDR_PRIMARY][ioe1::REG_GPIO_MODE_L] |
                           (regs[ioe1::ADDR_PRIMARY][ioe1::REG_GPIO_MODE_L + 1] << 8);
@@ -86,7 +92,7 @@ int main(int argc, char** argv) {
     assert(freeink::papermono::enableTouch());
   } else if (!strcmp(scenario, "missing-expander")) {
     expanderUpAt = 1000000;
-    assert(!freeink::papermono::ensureBooted(2000));
+    assert(!freeink::papermono::ensureBooted());
     assert(hostMillis >= 2000 && hostMillis < 2100);
     // Cached as before: no late configureOutputs() that would cut rails in use.
     expanderUpAt = 0;
@@ -98,21 +104,37 @@ int main(int argc, char** argv) {
     // One configureOutputs() write fails: the failure is cached, a caller raises its rail
     // anyway, and no later call may rerun the setup and drive that rail LOW again.
     failExpanderWriteAt = 3;  // inside configureOutputs(), after the probe's I2C_CFG write
-    assert(!freeink::papermono::ensureBooted(2000));
+    assert(!freeink::papermono::ensureBooted());
     freeink::papermono::setSdPower(true);
     assert(expanderOut() & ioe1::PIN_SD_POWER);
     assert(!freeink::papermono::ensureBooted());
-    freeink::papermono::pollPowerButtonClicked(10000);
+    regs[PM1][m5pm1Button] = 0x80;  // a click the PMIC latched
+    assert(freeink::papermono::pollPowerButtonClicked(10000));  // the power button still works
     assert(expanderOut() & ioe1::PIN_SD_POWER);
+  } else if (!strcmp(scenario, "sd-first-late-expander")) {
+    // Whichever manager calls first gets the boot wait, not only InputManager.
+    expanderUpAt = 600;
+    freeink::papermono::setSdPower(true);
+    assert(hostMillis >= 600 && hostMillis < 700);
+    assert(expanderOut() & ioe1::PIN_SD_POWER);
+    assert(freeink::papermono::ensureBooted() && freeink::papermono::enableTouch());
+  } else if (!strcmp(scenario, "touch-mode-repair")) {
+    // The MODE write of configureOutputs() fails: the touch pins stay inputs until
+    // enableTouch() makes them outputs, without changing the other pins' direction.
+    failExpanderWriteAt = 8;
+    assert(!freeink::papermono::ensureBooted());
+    assert(expanderMode() == 0);
+    assert(freeink::papermono::enableTouch());
+    assert(expanderMode() == touchUp && (expanderOut() & touchUp) == touchUp);
   } else if (!strcmp(scenario, "failed-read-during-touch")) {
     // Seen on the device: OUT 0x1000 (rail on, reset low) after one failed read in the
     // read-modify-write that releases the reset.
-    assert(freeink::papermono::ensureBooted(2000));
-    failExpanderReadAfterRail = 2;  // the read before the reset release
+    assert(freeink::papermono::ensureBooted());
+    failExpanderReadAfterRail = 3;  // reset-low, mode, then this one: the read before the reset release
     assert(freeink::papermono::enableTouch());
     assert((expanderOut() & touchUp) == touchUp);
   } else if (!strcmp(scenario, "touch-never-verifies")) {
-    assert(freeink::papermono::ensureBooted(2000));
+    assert(freeink::papermono::ensureBooted());
     dropTouchReset = true;
     const unsigned long start = hostMillis;
     assert(!freeink::papermono::enableTouch());

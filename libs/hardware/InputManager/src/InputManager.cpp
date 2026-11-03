@@ -105,10 +105,6 @@ InputManager::InputManager()
 // The vendor firmware waits up to ~2 s for the expander on slow-starting boards.
 static constexpr uint32_t METALIO_BOOT_WAIT_MS = 3000;
 #endif
-#if FREEINK_DEVICE_PAPERMONO
-// After a PMIC restart (sleep and wake) the IO expander can miss the first probe.
-static constexpr uint32_t PAPERMONO_BOOT_WAIT_MS = 2000;
-#endif
 
 void InputManager::begin() {
 #if FREEINK_DEVICE_PICCO
@@ -119,9 +115,6 @@ void InputManager::begin() {
 #endif
 #if FREEINK_DEVICE_METALIO_EINK4
   if (BoardConfig::isMetalioEInk4()) freeink::metalio::ensureBooted(METALIO_BOOT_WAIT_MS);
-#endif
-#if FREEINK_DEVICE_PAPERMONO
-  if (BoardConfig::isPaperMono()) freeink::papermono::ensureBooted(PAPERMONO_BOOT_WAIT_MS);
 #endif
   if (hasToggleSwitch()) {
     pinMode(BoardConfig::ACTIVE.input.toggleSwitch, INPUT_PULLUP);

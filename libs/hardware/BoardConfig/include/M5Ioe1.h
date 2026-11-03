@@ -103,7 +103,7 @@ inline bool begin() {
 }
 
 // Lets the next begin() probe again after a failed one. After a PMIC restart the
-// expander can miss the first probe; papermono::ensureBooted() waits for it at boot.
+// expander can miss the first probe; papermono::ensureBooted() waits for it once.
 inline void forgetFailedProbe() {
   if (g_addr == 0xFF) g_addr = 0;
 }

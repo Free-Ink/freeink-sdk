@@ -65,6 +65,10 @@ class Uc8253MurphyDriver : public PanelDriver {
   void begin(EpdBus& bus) override;
   void deepSleep(EpdBus& bus) override;
   void display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) override;
+  // This panel shows no gray. A host still running a gray pass arrives here with a gray PLANE in
+  // `fb`, and the default pushes that as a B/W page, which reads as a near-black screen. The B/W
+  // page before the pass is already on the panel, so the right response is to leave it there.
+  void displayGray(EpdBus&, const uint8_t*, bool, const unsigned char*, bool) override {}
 
  private:
   void initController(EpdBus& bus);

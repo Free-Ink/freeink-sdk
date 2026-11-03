@@ -22,8 +22,9 @@ python3 libs/hardware/BoardConfig/test/host/run_papermono_boot.py
 
 Runs `PaperMonoBoard.h` against a model PMIC and IO expander: an expander that
 misses its first probes after a PMIC restart must still come up within the boot
-wait, a missing one must be retried at most every 500 ms afterwards, and a failed
-expander read during `enableTouch()` must not leave the touch controller in reset.
+wait, a failed setup must stay cached so no rail in use is switched off later, and
+a failed expander read during `enableTouch()` must not leave the touch controller
+in reset.
 
 ## UI, books, credentials, and input
 

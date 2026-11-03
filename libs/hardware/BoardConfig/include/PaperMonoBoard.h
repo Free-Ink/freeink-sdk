@@ -39,50 +39,39 @@ inline WakeState& bootWakeState() {
   return state;
 }
 
-// Boot bring-up (idempotent, cheap once it has succeeded): PMIC bus up with
-// watchdog off, wake source cleared, power button taken over (the PMIC's
+// One-time boot bring-up (idempotent, cheap after the first call): PMIC bus up
+// with watchdog off, wake source cleared, power button taken over (the PMIC's
 // single-click reset is disabled so clicks reach the firmware; its hardware
 // long-hold download escape stays), and all expander-switched rails/resets
 // driven to a known LOW. Rails come up individually as each manager needs them.
 //
 // After a PMIC restart (sleep and wake) the expander can miss the first probe,
-// so a failure is not cached. waitMs bounds how long this call retries; callers
-// passing 0 retry at most every RETRY_GAP_MS, so a missing expander does not
-// stall every rail write.
+// so the first call waits up to waitMs for it to answer. The result is then
+// cached: configureOutputs() drives every rail LOW, so it must never run again
+// once a caller may have raised one.
 inline bool ensureBooted(uint32_t waitMs = 0) {
-  constexpr unsigned long RETRY_GAP_MS = 500;
   constexpr unsigned long RETRY_DELAY_MS = 25;
-  static bool ready = false;
-  static bool tried = false;
-  static unsigned long lastFailure = 0;
-  if (ready) return true;
-  if (waitMs == 0 && tried && millis() - lastFailure < RETRY_GAP_MS) return false;
+  static bool booted = false;
+  static bool ok = false;
+  if (booted) return ok;
+  booted = true;
   m5pm1::beginBus();
-  if (!tried) {
-    // The wake snapshot is taken once: the clear is destructive.
-    auto& wake = bootWakeState();
-    wake.valid = m5pm1::readWakeSource(&wake.source) && m5pm1::readReg(m5pm1::REG_GPIO_WAKE_EN, &wake.enabledPins);
-    m5pm1::clearWakeSource();
-  }
-  tried = true;
+  auto& wake = bootWakeState();
+  wake.valid = m5pm1::readWakeSource(&wake.source) && m5pm1::readReg(m5pm1::REG_GPIO_WAKE_EN, &wake.enabledPins);
+  m5pm1::clearWakeSource();
   m5pm1::configureAppPowerButton();
   // The red RGB leg lives in the PM1's PWR_CFG, which the PMIC retains across
   // reflashes — stock firmware leaves it lit. Drive it to the same known-off
   // state configureOutputs() gives the IOE1 green/blue legs.
   m5pm1::updateReg(m5pm1::REG_PWR_CFG, m5pm1::LED_R_EN, 0);
   const unsigned long start = millis();
-  for (;;) {
-    if (m5ioe1::configureOutputs()) {
-      ready = true;
-      return true;
-    }
+  while (!m5ioe1::present()) {
+    if (millis() - start >= waitMs) return ok;
     m5ioe1::forgetFailedProbe();
-    if (millis() - start >= waitMs) {
-      lastFailure = millis();
-      return false;
-    }
     delay(RETRY_DELAY_MS);
   }
+  ok = m5ioe1::configureOutputs();
+  return ok;
 }
 
 // RTC /IRQ is PM1 GPIO0, separate from the ESP's GPIO wake sources.
@@ -139,7 +128,8 @@ inline void setSdPower(bool enabled) {
 inline bool enableTouch() {
   constexpr int ATTEMPTS = 16;
   constexpr uint16_t WANTED = m5ioe1::PIN_TOUCH_POWER | m5ioe1::PIN_TOUCH_RESET;
-  if (!ensureBooted()) return false;
+  ensureBooted();
+  if (!m5ioe1::present()) return false;
   for (int attempt = 0; attempt < ATTEMPTS; ++attempt) {
     if (attempt > 0) delay(50);
     m5ioe1::write(m5ioe1::PIN_TOUCH_POWER, true);

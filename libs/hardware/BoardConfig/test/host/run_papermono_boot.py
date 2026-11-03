@@ -8,7 +8,8 @@ import tempfile
 here = Path(__file__).resolve().parent
 hardware = here.parents[2]
 stubs = hardware / "BatteryMonitor/test/host/stubs"
-SCENARIOS = ("healthy", "late-expander", "missing-expander", "failed-read-during-touch", "touch-never-verifies")
+SCENARIOS = ("healthy", "late-expander", "missing-expander", "partial-setup-failure", "failed-read-during-touch",
+             "touch-never-verifies")
 
 with tempfile.TemporaryDirectory(prefix="papermono-boot-") as temporary:
     exe = Path(temporary) / "papermono_boot"

@@ -90,10 +90,14 @@ class InputManager {
   };
 
   // Fixed-size contact snapshot for allocation-free multi-touch polling. `id`
-  // is a controller track ID when `idsStable` is true. Coordinate-only GT911
-  // frames expose frame-local record slots instead, so callers must not retain
+  // is the controller's track ID (GT911) when `idsStable` is true.
+  // Coordinate-only frames — GT911's coordsAtByte0 variant and the EEGO A4's
+  // GSLX680 (hardware-validated 2026-10-29: record top nibbles are always 0)
+  // — expose frame-local record slots instead, so callers must not retain
   // those IDs across frames. `count` is capped at MAX_TOUCH_CONTACTS;
-  // `reportedCount` keeps the controller's actual count so callers can detect
+  // `reportedCount` keeps the frame's actual on-glass contact count (on
+  // GSLX680 the raw controller count also carries home-key, past-glass and
+  // padding records, which are filtered per-contact) so callers can detect
   // truncation and opt into only the contact counts they support.
   static constexpr uint8_t MAX_TOUCH_CONTACTS = 4;
   struct MultiTouchPoint {
@@ -109,10 +113,13 @@ class InputManager {
 
   // True if this board has a touch controller configured.
   bool hasTouch() const;
-  // True for GT911, or when Picco GET_SYSINFO confirms multiple contacts.
+  // True while a GT911 or GSLX680 controller is present, or when the Picco
+  // TMA525C's GET_SYSINFO confirms multiple contacts. Other touch
+  // controllers retain their existing single-contact contract.
   bool supportsMultiTouch() const;
-  // Latest multi-touch contacts, capped at MAX_TOUCH_CONTACTS. Gesture consumers
-  // should check reportedCount for the exact cardinality they support.
+  // Latest multi-touch contacts (GT911, GSLX680, multi-contact Picco),
+  // capped at MAX_TOUCH_CONTACTS. Gesture consumers should check reportedCount
+  // for the exact cardinality they support.
   TouchSnapshot getTouchSnapshot() const;
   // The most recent touch sampled during #update(). valid == false when idle.
   TouchPoint getTouchPoint() const;

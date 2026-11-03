@@ -224,12 +224,16 @@ void Ssd2677Driver::powerOffBetweenFrames(EpdBus& bus) {
   _needsPowerOn = true;
 }
 
-void Ssd2677Driver::powerAndRefresh(EpdBus& bus, bool turnOff) {
+void Ssd2677Driver::powerOn(EpdBus& bus) {
   if (_needsPowerOn) {
     bus.cmd(CMD_POWER_ON);
     bus.waitBusy(" SSD2677 power on");
     _needsPowerOn = false;
   }
+}
+
+void Ssd2677Driver::powerAndRefresh(EpdBus& bus, bool turnOff) {
+  powerOn(bus);
   bus.cmd(CMD_REFRESH);
   bus.data(0x00);
   bus.waitRefreshComplete("refresh");
@@ -242,18 +246,27 @@ void Ssd2677Driver::refreshWith(EpdBus& bus, const unsigned char* lut, bool turn
   powerAndRefresh(bus, turnOff);
 }
 
+bool Ssd2677Driver::ensureLsb() {
+  if (!_lsb) _lsb = static_cast<uint8_t*>(heap_caps_malloc(geometry().bufferSize, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  return _lsb != nullptr;
+}
+
 void Ssd2677Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
   (void)bus;
   if (!lsb) return;
-  const uint32_t size = geometry().bufferSize;
-  if (!_lsb) _lsb = static_cast<uint8_t*>(heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-  if (_lsb) memcpy(_lsb, lsb, size);
+  if (!_absoluteGray) ensureLsb();
+  if (_lsb) memcpy(_lsb, lsb, geometry().bufferSize);
 }
 
 void Ssd2677Driver::beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode mode, RefreshMode fallback,
                                    bool turnOff) {
-  _absoluteGray = isSticky() && mode != GrayscaleMode::Overlay;
-  if (_absoluteGray) return;  // stock gray4 drives every pixel from any prior state: no base
+  _absoluteGray = mode == GrayscaleMode::Absolute;
+  if (_absoluteGray) {
+    // The caller still has the B/W base here. On allocation failure display it
+    // before the renderer reuses its framebuffer for the two image planes.
+    if ((!isSticky() && !_old) || !ensureLsb()) display(bus, fb, nullptr, RefreshMode::Full, true);
+    return;
+  }
   if (mode == GrayscaleMode::Overlay && fallback == RefreshMode::Fast && !_needsInitialFull && _old) {
     // Give every incoming ink pixel the stock white-to-black pulse, even if
     // the last B/W base called it black before AA lightened it. For incoming
@@ -268,11 +281,17 @@ void Ssd2677Driver::beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode
 void Ssd2677Driver::copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
   if (!msb || !_lsb) return;
   if (_absoluteGray) {
-    // Stock gray4 (Seeed_GFX2 Driver_SSD2677): level index on the wire, 00 black,
-    // 01 dark, 10 light, 11 white. Absolute planes: LSB = dark bit, MSB = light
-    // bit, so MSB goes high.
-    latchOtpWaveform(bus, OTP_GRAY_ROOM);
-    sendPacked(bus, msb, _lsb);
+    if (isSticky()) {
+      latchOtpWaveform(bus, OTP_GRAY_ROOM);
+      sendPacked(bus, msb, _lsb);
+    } else if (_old) {
+      // Stock powers on before the image upload. Stage it until presentation
+      // so cancellation during plane upload never leaves the rails on. The MSB
+      // approximates the new B/W state. Force a full refresh even on cancellation
+      // because the previous B/W history is no longer available.
+      memcpy(_old, msb, geometry().bufferSize);
+      _needsInitialFull = true;
+    }
     return;
   }
   // Sticky: the B/W base latched an OTP waveform (E0 12 / E6 / A5). Re-run reset
@@ -289,13 +308,16 @@ void Ssd2677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
   (void)factoryMode;
   if (_absoluteGray) {
     _absoluteGray = false;
-    if (!_lsb) {
-      display(bus, fb, nullptr, RefreshMode::Full, turnOff);
-      return;
-    }
-    // Stock powers off after gray4. The glass now holds gray a differential
+    if (!_lsb || (!isSticky() && !_old)) return;  // beginGrayscale presented the B/W fallback.
+    // Stock powers off after the image. The glass now holds gray a differential
     // refresh can't clear, so the next B/W frame is a full one.
-    powerAndRefresh(bus, true);
+    if (isSticky()) {
+      powerAndRefresh(bus, true);
+    } else {
+      powerOn(bus);
+      sendPacked(bus, _old, _lsb);
+      refreshWith(bus, lut_picco_se0400_image, true);
+    }
     _needsInitialFull = true;
     return;
   }
@@ -322,12 +344,7 @@ void Ssd2677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
 }
 
 void Ssd2677Driver::deepSleep(EpdBus& bus) {
-  // Sticky stock powers the rails off first if they are on.
-  if (isSticky() && !_needsPowerOn) {
-    bus.cmd(CMD_POWER_OFF);
-    bus.data(0x00);
-    bus.waitBusy(" SSD2677 power off");
-  }
+  powerOffBetweenFrames(bus);
   // Stock (FUN_4200b608): 0x07 with the 0xA5 check code.
   bus.cmd(CMD_DEEP_SLEEP);
   bus.data(0xA5);

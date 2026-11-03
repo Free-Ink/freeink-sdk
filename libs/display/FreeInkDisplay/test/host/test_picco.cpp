@@ -180,7 +180,29 @@ int main(int argc, char** argv) {
     assert((*data)[0] == 0x55 && (*data)[100] == 0x55 && (*data)[95999] == 0x55);
     // Overlay AA: LSB mask -> low bit, MSB mask -> high bit, slot-5 LUT.
     assert(s.grayscaleCapabilities(GrayscaleMode::Overlay).supported());
-    assert(!s.grayscaleCapabilities(GrayscaleMode::Absolute).supported());
+    assert(s.grayscaleCapabilities(GrayscaleMode::Absolute).supported());
+    // Black, dark, light, white, repeated across the complete slot-4 frame.
+    Bytes imageLsb(48000, 0x55), imageMsb(48000, 0x33);
+    bus.clear();
+    s.beginGrayscale(bus, white.data(), GrayscaleMode::Absolute, RefreshMode::Half, false);
+    s.copyGrayscaleLsb(bus, imageLsb.data());
+    s.copyGrayscaleMsb(bus, imageMsb.data());
+    assert(bus.writes.empty() && s._needsPowerOn);
+    s.requestResync(1);  // the facade cancels a staged absolute image
+    assert(!s._absoluteGray && s._needsInitialFull && bus.writes.empty());
+    s.beginGrayscale(bus, white.data(), GrayscaleMode::Absolute, RefreshMode::Half, false);
+    s.copyGrayscaleLsb(bus, imageLsb.data());
+    s.copyGrayscaleMsb(bus, imageMsb.data());
+    std::fill(imageMsb.begin(), imageMsb.end(), 0);  // caller reuses the upload buffer
+    s.displayGray(bus, imageMsb.data(), true, nullptr, true);
+    std::vector<uint8_t> imageCommands;
+    for (const auto& w : bus.writes) {
+      imageCommands.push_back(w.command);
+      if (w.command == 0x10) assert(w.bytes == Bytes(96000, 0x1B));
+      if (w.command == 0x20) assert(w.bytes == Bytes(lut_picco_se0400_image, lut_picco_se0400_image + 535));
+    }
+    assert((imageCommands == std::vector<uint8_t>{0x04, 0x10, 0x20, 0x12, 0x02}));
+    assert(s._needsInitialFull && s._needsPowerOn);
     // Each group of four exercises B->B, B->W, W->B, W->W respectively.
     // FAST AA should pulse both kinds of incoming black and still erase old ink.
     Bytes prior(48000, 0x33), target(48000, 0x55);

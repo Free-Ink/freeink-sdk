@@ -10,8 +10,8 @@
 // previous frame in the high bit, the new frame in the low bit; the LUT picks
 // the transition. Init list, LUTs and bit packing are from the stock firmware
 // (build 2912). Grayscale is the stock overlay AA mode (slot-5 LUT): the LSB
-// and MSB masks are packed as the low/high bit of each pixel. Stock's image mode
-// (slot 4) uses an unrecovered encoding, so absolute grayscale is not advertised.
+// and MSB masks are packed as the low/high bit of each pixel. Images use the panel's dedicated
+// slot-4 waveform with the two complete image planes.
 //
 // The newer Seeed Sticky carries the same controller with OTP waveforms: its
 // stock firmware (v1.2.0) uploads no LUT but latches an OTP waveform before each
@@ -44,16 +44,16 @@ class Ssd2677Driver : public PanelDriver {
   void display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) override;
 
   // Overlay AA with the Picco's uploaded gray LUT on both boards. Sticky also
-  // does absolute four-level images in one pass on its OTP gray waveform
-  // (stock gray4), so no B/W base is shown first. The Picco's controller hangs
-  // in BUSY on that latch (tried on hardware), so it stays overlay-only.
+  // uses its OTP image waveform. Picco uploads its own slot-4 waveform.
+  // Both take a complete image in one activation.
   GrayscaleCapabilities grayscaleCapabilities(GrayscaleMode mode = GrayscaleMode::Overlay) const override {
     if (mode == GrayscaleMode::Overlay)
       return {GrayscaleEncoding::OverlayMasks, GrayscaleBase::Separate, false, false, false};
-    if (mode == GrayscaleMode::Absolute && BoardConfig::ACTIVE.board == BoardConfig::Board::Sticky)
+    if (mode == GrayscaleMode::Absolute)
       return {GrayscaleEncoding::AbsolutePlanes, GrayscaleBase::Combined, false, false, false};
     return {};
   }
+  void requestResync(uint8_t) override { _absoluteGray = false; }
   void beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode mode, RefreshMode fallback, bool turnOff) override;
   void copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) override;
   void copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) override;
@@ -63,13 +63,15 @@ class Ssd2677Driver : public PanelDriver {
   void initPanel(EpdBus& bus);
   void latchOtpWaveform(EpdBus& bus, uint8_t code);
   void sendPacked(EpdBus& bus, const uint8_t* hi, const uint8_t* lo);
+  bool ensureLsb();
+  void powerOn(EpdBus& bus);
   void powerAndRefresh(EpdBus& bus, bool turnOff);
   void refreshWith(EpdBus& bus, const unsigned char* lut, bool turnOff);
 
   bool _needsPowerOn = true;
   bool _needsInitialFull = true;
   uint8_t _latchedWaveform = 0;  // Sticky: OTP waveform code currently latched (0 = none)
-  bool _absoluteGray = false;  // the current gray pass began as absolute (OTP gray4)
+  bool _absoluteGray = false;  // the current gray pass began as a complete image
   uint8_t* _lsb = nullptr;  // retained LSB mask: the renderer reuses its buffer for the MSB pass
   uint8_t* _old = nullptr;  // retained old plane (last displayed frame); host is single-buffer
                             // so `prev` is always null — mirror stock's obj+0x1020, seeded white

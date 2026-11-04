@@ -8,6 +8,14 @@
 #include <esp_log.h>
 #include <esp_timer.h>
 
+// Use the firmware serial logger when available; IDF logs may use another console.
+#if __has_include(<Logging.h>)
+#include <Logging.h>
+#else
+#define LOG_INF ESP_LOGI
+#define LOG_ERR ESP_LOGE
+#endif
+
 #include <cstring>
 
 extern "C" {
@@ -93,7 +101,7 @@ uint8_t* planeBuffer(GrayPlane plane) {
   uint8_t*& buf = plane == GrayPlane::Lsb ? g_lsb : g_msb;
   if (!buf) {
     buf = static_cast<uint8_t*>(heap_caps_calloc(epdiyDriver().geometry().bufferSize, 1, MALLOC_CAP_SPIRAM));
-    if (!buf) ESP_LOGE(TAG, "grey plane allocation failed");
+    if (!buf) LOG_ERR(TAG, "grey plane allocation failed");
   }
   return buf;
 }
@@ -136,7 +144,7 @@ void drawFront(Draw how) {
   const int64_t startUs = esp_timer_get_time();
   epd_poweron();
   if (!metalioplus::panelPowerGood()) {
-    ESP_LOGE(TAG, "panel power failed; frame not drawn");
+    LOG_ERR(TAG, "panel power failed; frame not drawn");
     epd_poweroff();
     g_glassMatchesFront = false;
     return;
@@ -168,7 +176,7 @@ void drawFront(Draw how) {
     // A line-stream fault aborts the waveform partway, leaving pixels half
     // driven. EPDiy only records a frame as drawn when it succeeds, so running
     // it again drives the same pixels from their recorded level to the target.
-    ESP_LOGW(TAG, "line stream fault; redrawing frame");
+    LOG_ERR(TAG, "line stream fault; redrawing frame");
     err = run();
     // Still failing: drive every pixel on the next frame.
     if (err != EPD_DRAW_SUCCESS) g_resyncPending = true;
@@ -177,10 +185,13 @@ void drawFront(Draw how) {
   // EPDiy advises against, so they are dropped after every frame.
   epd_poweroff();
   static const char* const kDrawNames[] = {"DU", "GC16 changed", "GC16 all", "clean"};
-  ESP_LOGI(TAG, "%s frame: %lld ms", kDrawNames[static_cast<uint8_t>(how)],
-           static_cast<long long>((esp_timer_get_time() - startUs) / 1000));
+  LOG_INF(TAG, "%s frame: %lld ms waveform=%s skipped=%d result=0x%x",
+          kDrawNames[static_cast<uint8_t>(how)],
+          static_cast<long long>((esp_timer_get_time() - startUs) / 1000),
+          how == Draw::Gc16Changed && fast ? "trimmed" : "full", epd_last_leading_skip(),
+          static_cast<unsigned>(err));
   g_glassMatchesFront = err == EPD_DRAW_SUCCESS;
-  if (err != EPD_DRAW_SUCCESS) ESP_LOGE(TAG, "EPDiy update failed: 0x%x", static_cast<unsigned>(err));
+  if (err != EPD_DRAW_SUCCESS) LOG_ERR(TAG, "EPDiy update failed: 0x%x", static_cast<unsigned>(err));
 }
 
 }  // namespace
@@ -204,8 +215,8 @@ void EpdiyDriver::begin(EpdBus& bus) {
   epd_set_rotation(EPD_ROT_LANDSCAPE);
   my_waveform_init();
   g_hl = epd_hl_init(&MY_WAVEFORM);
-  // Difference draws start at the first phase a changing pixel uses (lossless).
-  epd_set_leading_skip(true);
+  // Keep leading hold phases while checking their effect on transition residue.
+  epd_set_leading_skip(false);
   // EPDiy assumes the glass starts white. Make it so, as the vendor firmware
   // does at boot, so the first differential update has a true baseline. Not
   // epd_fullclear(): it asserts on a draw error, which would reboot every boot.
@@ -213,9 +224,9 @@ void EpdiyDriver::begin(EpdBus& bus) {
   epd_poweron();
   if (metalioplus::panelPowerGood()) {
     const enum EpdDrawError err = epd_clear_checked();
-    if (err != EPD_DRAW_SUCCESS) ESP_LOGE(TAG, "boot clear failed: 0x%x", static_cast<unsigned>(err));
+    if (err != EPD_DRAW_SUCCESS) LOG_ERR(TAG, "boot clear failed: 0x%x", static_cast<unsigned>(err));
   } else {
-    ESP_LOGE(TAG, "panel power failed; boot clear skipped");
+    LOG_ERR(TAG, "panel power failed; boot clear skipped");
   }
   epd_poweroff();
   g_firstFrameAllPixels = true;

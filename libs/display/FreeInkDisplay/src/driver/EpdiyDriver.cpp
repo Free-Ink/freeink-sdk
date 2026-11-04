@@ -6,6 +6,7 @@
 #include <MetalioPlusEpdBoard.h>
 #include <esp_heap_caps.h>
 #include <esp_log.h>
+#include <esp_timer.h>
 
 #include <cstring>
 
@@ -132,6 +133,7 @@ enum class Draw : uint8_t {
 };
 
 void drawFront(Draw how) {
+  const int64_t startUs = esp_timer_get_time();
   epd_poweron();
   if (!metalioplus::panelPowerGood()) {
     ESP_LOGE(TAG, "panel power failed; frame not drawn");
@@ -140,25 +142,43 @@ void drawFront(Draw how) {
     return;
   }
   const int temperature = static_cast<int>(epd_ambient_temperature());
-  enum EpdDrawError err = EPD_DRAW_SUCCESS;
-  switch (how) {
-    case Draw::Du:
-      err = epd_hl_update_screen(&g_hl, MODE_DU, temperature);
-      break;
-    case Draw::Gc16Changed:
-      err = epd_hl_update_screen(&g_hl, MODE_GC16, temperature);
-      break;
-    case Draw::Gc16All:
-      err = epd_hl_update_screen_full(&g_hl, MODE_GC16, temperature);
-      break;
-    case Draw::Clean:
-      err = epd_clear_checked();
-      if (err == EPD_DRAW_SUCCESS) err = epd_hl_update_screen_from_white(&g_hl, MODE_GC16, temperature);
-      break;
+  // Changed-pixel GC16 (page turns, screen changes, AA pages) uses the trimmed
+  // 36-phase GC16 from my_waveform_fast() instead of the full 48 phases. The
+  // all-pixel and clean draws keep the full waveform. NULL = trimmed table not
+  // allocated, full waveform kept.
+  const EpdWaveform* fast = my_waveform_fast();
+  epd_hl_waveform(&g_hl, how == Draw::Gc16Changed && fast ? fast : &MY_WAVEFORM);
+  const auto run = [&]() -> enum EpdDrawError {
+    switch (how) {
+      case Draw::Du:
+        return epd_hl_update_screen(&g_hl, MODE_DU, temperature);
+      case Draw::Gc16Changed:
+        return epd_hl_update_screen(&g_hl, MODE_GC16, temperature);
+      case Draw::Gc16All:
+        return epd_hl_update_screen_full(&g_hl, MODE_GC16, temperature);
+      case Draw::Clean: {
+        const enum EpdDrawError cleared = epd_clear_checked();
+        return cleared == EPD_DRAW_SUCCESS ? epd_hl_update_screen_from_white(&g_hl, MODE_GC16, temperature) : cleared;
+      }
+    }
+    return EPD_DRAW_SUCCESS;
+  };
+  enum EpdDrawError err = run();
+  if (err & EPD_DRAW_EMPTY_LINE_QUEUE) {
+    // A line-stream fault aborts the waveform partway, leaving pixels half
+    // driven. EPDiy only records a frame as drawn when it succeeds, so running
+    // it again drives the same pixels from their recorded level to the target.
+    ESP_LOGW(TAG, "line stream fault; redrawing frame");
+    err = run();
+    // Still failing: drive every pixel on the next frame.
+    if (err != EPD_DRAW_SUCCESS) g_resyncPending = true;
   }
   // Leaving the TPS65185 rails up between frames holds VCOM on the glass, which
   // EPDiy advises against, so they are dropped after every frame.
   epd_poweroff();
+  static const char* const kDrawNames[] = {"DU", "GC16 changed", "GC16 all", "clean"};
+  ESP_LOGI(TAG, "%s frame: %lld ms", kDrawNames[static_cast<uint8_t>(how)],
+           static_cast<long long>((esp_timer_get_time() - startUs) / 1000));
   g_glassMatchesFront = err == EPD_DRAW_SUCCESS;
   if (err != EPD_DRAW_SUCCESS) ESP_LOGE(TAG, "EPDiy update failed: 0x%x", static_cast<unsigned>(err));
 }

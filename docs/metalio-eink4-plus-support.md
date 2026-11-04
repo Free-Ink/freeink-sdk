@@ -219,3 +219,36 @@ off; accelerometer readings and axis orientation (CrossPoint does not use an
 accelerometer without a gyroscope); the rotate and two-finger swipe gestures.
 FreeInk's existing host suites pass with these changes; no host tests exist yet
 for this board.
+
+## Touch capture during UI stalls
+
+After `begin()`, Metalio consumers can call `beginBufferedTouch()` and keep
+calling `update()` and the existing gesture queries on their main thread.
+The SDK task polls the controller every 10 ms through the shared I2C lock;
+only the main thread decodes gestures. Capture timestamps, rather than replay
+time, determine tap/hold/swipe duration. Downstream gesture timers (such as
+HOME double-tap classification) must use `touchFrameTime()` rather than
+`millis()`. Idle reports do not count as pending touch activity. This mode is
+mutually exclusive with
+`beginAsync()`, whose task owns the whole input state and exposes gesture queues.
+
+The bounded queue holds 256 reports in PSRAM (5,120 bytes), covering at least
+2.56 seconds at the nominal sample rate. The queue control structure, task
+bookkeeping and 4,096-byte task stack stay in internal RAM. Only enabled
+Metalio consumers allocate them. Failure returns `false` and leaves synchronous
+polling available; unavailable PSRAM does not consume internal RAM as a fallback.
+Overflow cancels
+pending input and waits for release rather than delivering a partial gesture.
+
+Call `discardBufferedTouch()` when changing screen ownership: queued input and
+in-flight old reports are discarded, and a held contact must release before
+it can act on the new screen. Regular `suppressTouchContact()` still suppresses
+only the current gesture. Stop with `endBufferedTouch()` before changing the
+active board or reinitializing its bus. `prepareForDeepSleep()` and destruction
+also stop the sampler, allowing its last I2C transfer to finish before cleanup.
+
+Validate short taps during a full refresh, long presses, swipes, two-contact
+gestures where supported, HOME/page keys and screen transitions on hardware.
+Check all four orientations, free internal heap/largest block, and task stack
+headroom during repeated refreshes. Hardware bus/scheduler delays can still
+miss a contact that begins and ends between successful reads.

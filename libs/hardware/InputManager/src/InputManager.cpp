@@ -1,6 +1,9 @@
 #include "InputManager.h"
 
 #include <algorithm>
+#if FREEINK_TOUCH_CST816S && (FREEINK_DEVICE_METALIO_EINK4 || FREEINK_DEVICE_METALIO_EINK4_PLUS)
+#include <esp_heap_caps.h>
+#endif
 
 #include "MultiTouchGestureMath.h"
 
@@ -266,6 +269,7 @@ bool piccoWaitInt(int8_t irq, unsigned long timeoutMs);
 #endif
 
 bool InputManager::prepareForDeepSleep() {
+  endBufferedTouch();
 #if FREEINK_DEVICE_EEGO_A4
   if (const auto& t = BoardConfig::ACTIVE.touch; t.controller == BoardConfig::TouchController::Gslx680) {
     const uint8_t halt = 0x88;
@@ -313,7 +317,152 @@ bool InputManager::prepareForDeepSleep() {
   return true;
 }
 
+InputManager::~InputManager() { endBufferedTouch(); }
+
+bool InputManager::beginBufferedTouch() {
+#if FREEINK_TOUCH_CST816S && (FREEINK_DEVICE_METALIO_EINK4 || FREEINK_DEVICE_METALIO_EINK4_PLUS)
+  if (touchQueue) return true;
+  if (_asyncTask || !touchDataEnabled || !(BoardConfig::isMetalioEInk4() || BoardConfig::isMetalioEInk4Plus())) return false;
+  // FreeRTOS borrows these buffers; this InputManager frees them after deleting the queue.
+  touchQueueControl = static_cast<StaticQueue_t*>(
+      heap_caps_malloc(sizeof(StaticQueue_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+  touchQueueStorage = static_cast<uint8_t*>(heap_caps_malloc(TOUCH_QUEUE_LENGTH * sizeof(BufferedTouchSample),
+                                                           MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (touchQueueControl && touchQueueStorage) {
+    touchQueue = xQueueCreateStatic(TOUCH_QUEUE_LENGTH, sizeof(BufferedTouchSample), touchQueueStorage, touchQueueControl);
+  }
+  if (!touchQueue) {
+    endBufferedTouch();
+    return false;
+  }
+  touchWorkerStop = false;
+  touchQueueOverflow = false;
+  bufferedTouchWaitRelease = false;
+  bufferedTouchAt = millis();
+  lastCapturedContactAt = bufferedTouchAt;
+  touchWorkerRunning = true;
+  // SDK owns the queue and task until endBufferedTouch(); no hot-path allocations.
+  if (xTaskCreate(bufferedTouchTask, "fi_touch", 4096, this, 2, nullptr) != pdPASS) {
+    touchWorkerRunning = false;
+    endBufferedTouch();
+    return false;
+  }
+  return true;
+#else
+  return false;
+#endif
+}
+
+void InputManager::endBufferedTouch() {
+#if FREEINK_TOUCH_CST816S && (FREEINK_DEVICE_METALIO_EINK4 || FREEINK_DEVICE_METALIO_EINK4_PLUS)
+  touchWorkerStop = true;
+  // Let an in-flight I2C read release the shared bus before stopping.
+  while (touchWorkerRunning.load()) vTaskDelay(pdMS_TO_TICKS(1));
+  if (touchQueue) {
+    discardBufferedTouch();
+    vQueueDelete(touchQueue);
+    touchQueue = nullptr;
+  }
+  heap_caps_free(touchQueueStorage);
+  heap_caps_free(touchQueueControl);
+  touchQueueStorage = nullptr;
+  touchQueueControl = nullptr;
+#endif
+}
+
+void InputManager::discardBufferedTouch() {
+#if FREEINK_TOUCH_CST816S && (FREEINK_DEVICE_METALIO_EINK4 || FREEINK_DEVICE_METALIO_EINK4_PLUS)
+  if (!touchQueue) return;
+  ++touchGeneration;  // Reject a read already in flight when the screen changed.
+  xQueueReset(touchQueue);
+  bufferedTouchWaitRelease = true;
+  bufferedTouchWaitSince = millis();
+  bufferedTouchAt = bufferedTouchWaitSince;
+  touchPressed = touchPressedEvent = touchReleasedEvent = false;
+  touchPoint.valid = false;
+  touchHomeKeyDown = touchHomeKeyEvent = touchHomeKeyTapEvent = touchHomeKeyLongEvent = touchHomeKeyLongFired = false;
+  touchSuppressed = touchLongPressEvent = touchLongPressFired = false;
+  // Cancel only outstanding synthetic page-key edges, not independent physical keys.
+  currentState &= ~bufferedPageButtons;
+  lastState &= ~bufferedPageButtons;
+  pressedEvents &= ~bufferedPageButtons;
+  releasedEvents &= ~bufferedPageButtons;
+  bufferedPageButtons = cstVirtualButtons = 0;
+  touchSnapshot = {};
+  multiTouchSwipeEvent = multiTouchRotationEvent = multiTouchPinchEvent = false;
+  bufferedButtonsSettling = false;
+  resetMultiTouchGesture();
+#if FREEINK_DEVICE_METALIO_EINK4_PLUS
+  plusContactPending = false;
+#endif
+#endif
+}
+
+#if FREEINK_TOUCH_CST816S && (FREEINK_DEVICE_METALIO_EINK4 || FREEINK_DEVICE_METALIO_EINK4_PLUS)
+void InputManager::bufferedTouchTask(void* arg) {
+  auto* self = static_cast<InputManager*>(arg);
+  while (!self->touchWorkerStop.load()) {
+    self->captureTouchSample();
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+  self->touchWorkerRunning = false;
+  vTaskDelete(nullptr);
+}
+
+void InputManager::captureTouchSample() {
+  BufferedTouchSample sample{};
+  sample.generation = touchGeneration.load();
+  sample.ok = ft5x06ReadReg(0x02, sample.data, BoardConfig::isMetalioEInk4Plus() ? 11 : 5);
+  sample.atMs = millis();
+  if (sample.ok && (sample.data[0] & 0x0F)) lastCapturedContactAt = sample.atMs;
+  if (xQueueSend(touchQueue, &sample, 0) != pdTRUE) touchQueueOverflow = true;
+}
+
+uint8_t InputManager::serviceBufferedTouch() {
+  cstInterrupt = false;
+  if (touchQueueOverflow.exchange(false)) discardBufferedTouch();
+  if (!cstVirtualButtons && !((currentState | lastState) & bufferedPageButtons)) bufferedPageButtons = 0;
+  // Give the existing button debounce a stable frame before replaying a bezel-key release.
+  if (bufferedButtonsSettling) return cstVirtualButtons;
+  BufferedTouchSample sample{};
+  // Stop at semantic edges so one update never hides a press behind its release.
+  for (unsigned i = 0; i < TOUCH_QUEUE_LENGTH && xQueueReceive(touchQueue, &sample, 0) == pdTRUE; ++i) {
+    if (sample.generation != touchGeneration.load()) continue;
+    bufferedTouchAt = sample.atMs;
+    if (bufferedTouchWaitRelease) {
+      if (sample.ok) {
+        bufferedTouchWaitRelease = (sample.data[0] & 0x0F) != 0;
+        bufferedTouchWaitSince = sample.atMs;
+      } else if (sample.atMs - bufferedTouchWaitSince >= 100) {
+        // CST816S can NACK when idle; use the normal stale-contact release timeout.
+        bufferedTouchWaitRelease = false;
+      }
+      continue;
+    }
+    if (!touchPressed && !touchReleasedEvent) {
+      touchSuppressed = false;
+      touchLongPressFired = false;
+      resetMultiTouchGesture();
+    }
+    const uint8_t previousButtons = cstVirtualButtons;
+    processCst816s(sample.atMs, sample.data, sample.ok);
+    classifyTouchLongPress(sample.atMs);
+    if (cstVirtualButtons != previousButtons) {
+      bufferedPageButtons |= cstVirtualButtons;
+      bufferedButtonsSettling = true;
+    }
+    if (touchPressedEvent || touchReleasedEvent || touchLongPressEvent || touchHomeKeyEvent || touchHomeKeyTapEvent ||
+        touchHomeKeyLongEvent || multiTouchSwipeEvent || multiTouchRotationEvent || multiTouchPinchEvent ||
+        cstVirtualButtons != previousButtons) break;
+  }
+  return cstVirtualButtons;
+}
+#endif
+
 void InputManager::beginAsync(const uint8_t taskPriority, const uint32_t pollMs, const uint8_t queueLen) {
+#if FREEINK_TOUCH_CST816S && (FREEINK_DEVICE_METALIO_EINK4 || FREEINK_DEVICE_METALIO_EINK4_PLUS)
+  if (touchQueue) return;  // buffered touch leaves update() owned by the main loop
+#endif
   if (_asyncTask) return;  // already running
   _asyncPollMs = pollMs;
   _asyncQueue = xQueueCreate(queueLen, sizeof(uint8_t));
@@ -662,6 +811,9 @@ void InputManager::update() {
       applyStateChange(state, currentTime);
     }
   }
+#if FREEINK_TOUCH_CST816S && (FREEINK_DEVICE_METALIO_EINK4 || FREEINK_DEVICE_METALIO_EINK4_PLUS)
+  if (touchQueue && state == currentState) bufferedButtonsSettling = false;
+#endif
 }
 
 void InputManager::updateToggleSwitch(const unsigned long now) {
@@ -794,7 +946,18 @@ InputManager::TouchSnapshot InputManager::getTouchSnapshot() const {
 #endif
 }
 
+uint32_t InputManager::touchFrameTime() const {
+#if FREEINK_TOUCH_CST816S && (FREEINK_DEVICE_METALIO_EINK4 || FREEINK_DEVICE_METALIO_EINK4_PLUS)
+  if (touchQueue) return bufferedTouchAt;
+#endif
+  return millis();
+}
+
 bool InputManager::touchContactPending() const {
+#if FREEINK_TOUCH_CST816S && (FREEINK_DEVICE_METALIO_EINK4 || FREEINK_DEVICE_METALIO_EINK4_PLUS)
+  if (touchQueue && (touchQueueOverflow.load() ||
+                     static_cast<int32_t>(lastCapturedContactAt.load() - bufferedTouchAt) > 0)) return true;
+#endif
 #if FREEINK_TOUCH_CST816S
   if (touchDataEnabled && (BoardConfig::isMetalioEInk4() || BoardConfig::isMetalioEInk4Plus())) {
     const auto irq = BoardConfig::ACTIVE.touch.irq;
@@ -868,7 +1031,11 @@ bool InputManager::isTouchTapCandidate(float& nx, float& ny, unsigned long& held
 #if FREEINK_CAP_TOUCH
   if (!touchPressed || touchMovedBeyondTapSlop || touchSuppressed || touchMultiContactSequence) return false;
   normalizeTouchPoint(touchDownPoint.x, touchDownPoint.y, nx, ny);
+#if FREEINK_TOUCH_CST816S && (FREEINK_DEVICE_METALIO_EINK4 || FREEINK_DEVICE_METALIO_EINK4_PLUS)
+  heldMs = (touchQueue ? bufferedTouchAt : millis()) - touchDownPoint.timestamp;
+#else
   heldMs = millis() - touchDownPoint.timestamp;
+#endif
   return true;
 #else
   (void)nx;
@@ -1467,6 +1634,9 @@ uint8_t InputManager::serviceTouch() {
   if (!touchDataEnabled) {
     return 0;
   }
+#if FREEINK_TOUCH_CST816S && (FREEINK_DEVICE_METALIO_EINK4 || FREEINK_DEVICE_METALIO_EINK4_PLUS)
+  if (touchQueue) return serviceBufferedTouch();
+#endif
   const unsigned long now = millis();
   const auto& t = BoardConfig::ACTIVE.touch;
 
@@ -1528,13 +1698,7 @@ uint8_t InputManager::serviceTouch() {
       break;  // driver compiled out: beginTouch() reported it and left touch disabled
   }
 
-  // Long-press classification, beside the tap/swipe machinery it shares state
-  // with. Fires once per contact, while the finger is still down.
-  if (touchPressed && !touchMultiContactSequence && !touchMovedBeyondTapSlop && !touchLongPressFired &&
-      !touchSuppressed && now - touchDownPoint.timestamp >= TOUCH_LONG_PRESS_MS) {
-    touchLongPressFired = true;
-    touchLongPressEvent = true;
-  }
+  classifyTouchLongPress(now);
 
 #if FREEINK_TOUCH_CST816S
   if (t.controller == BoardConfig::TouchController::Cst816s) return cstVirtualButtons;
@@ -1547,6 +1711,14 @@ uint8_t InputManager::serviceTouch() {
 #else
   return 0;
 #endif
+}
+
+void InputManager::classifyTouchLongPress(const unsigned long now) {
+  if (touchPressed && !touchMultiContactSequence && !touchMovedBeyondTapSlop && !touchLongPressFired &&
+      !touchSuppressed && now - touchDownPoint.timestamp >= TOUCH_LONG_PRESS_MS) {
+    touchLongPressFired = true;
+    touchLongPressEvent = true;
+  }
 }
 
 #if FREEINK_CAP_TOUCH
@@ -1778,17 +1950,23 @@ void InputManager::beginCst816s() {
 }
 
 void InputManager::pollCst816s(const unsigned long now) {
-  const auto& t = BoardConfig::ACTIVE.touch;
   if (now < touchReadAt) return;
   touchReadAt = now + TOUCH_SAMPLE_DELAY_MS;
+  cstInterrupt = false;
+  uint8_t data[11] = {};
+  const uint8_t readLen = BoardConfig::isMetalioEInk4Plus() ? 11 : 5;
+  const bool ok = ft5x06ReadReg(0x02, data, readLen);
+  processCst816s(now, data, ok);
+}
+
+void InputManager::processCst816s(const unsigned long now, const uint8_t* data, const bool ok) {
+  const auto& t = BoardConfig::ACTIVE.touch;
 #if FREEINK_DEVICE_METALIO_EINK4_PLUS
   const bool pending = plusContactPending;
 #else
   constexpr bool pending = false;
 #endif
   const bool active = touchPressed || touchHomeKeyDown || cstVirtualButtons || pending;
-  // Poll even without an IRQ: a missed edge or failed first read must not hide a contact.
-  cstInterrupt = false;
   const auto release = [&]() {
 #if FREEINK_DEVICE_METALIO_EINK4_PLUS
     plusContactPending = false;  // a contact one sample long was a phantom
@@ -1812,12 +1990,7 @@ void InputManager::pollCst816s(const unsigned long now) {
     }
 #endif
   };
-  // While a contact is held, read every sample whether or not an IRQ arrived
-  // (vendor firmware polls unconditionally); a zero-finger frame ends it.
-  // The Plus FT6336U also reports a second contact at 0x09..0x0C.
-  uint8_t data[11] = {};
-  const uint8_t readLen = BoardConfig::isMetalioEInk4Plus() ? 11 : 5;
-  if (!ft5x06ReadReg(0x02, data, readLen)) {
+  if (!ok) {
     // The device goes silent again after release; don't latch a key/contact.
     if (active && now - cstLastSample >= 100) release();
     return;

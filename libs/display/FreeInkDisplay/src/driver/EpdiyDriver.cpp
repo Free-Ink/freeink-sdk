@@ -49,11 +49,6 @@ bool g_glassMatchesFront = false;
 bool g_basePending = false;
 RefreshMode g_baseMode = RefreshMode::Fast;
 
-// A Fast update changing more than this share of the screen (a new screen rather
-// than a menu move) runs GC16 on the changed pixels instead: DU leaves a visible
-// ghost of the previous screen on this panel.
-constexpr uint32_t kLargeChangeDivisor = 4;
-
 // One 1-bpp byte (MSB = leftmost pixel, set = white) as four 4-bpp bytes.
 // EPDiy stores the even pixel in the low nibble.
 uint32_t g_expand[256];
@@ -134,8 +129,7 @@ bool overlayGray() {
 
 // How a frame reaches the glass.
 enum class Draw : uint8_t {
-  Du,           // changed pixels to black/white: fast, ghosts
-  Gc16Changed,  // changed pixels with the grey waveform; unchanged ones keep their residue
+  Gc16Reinforced,  // trimmed transitions with gentle black/white same-color reinforcement
   Gc16All,      // every pixel, unchanged ones included: cleans residue, flashes
   Clean,        // black/white clear cycles, then every pixel from white (vendor's deep clean)
 };
@@ -150,18 +144,15 @@ void drawFront(Draw how) {
     return;
   }
   const int temperature = static_cast<int>(epd_ambient_temperature());
-  // Changed-pixel GC16 (page turns, screen changes, AA pages) uses the trimmed
-  // 36-phase GC16 from my_waveform_fast() instead of the full 48 phases. The
-  // all-pixel and clean draws keep the full waveform. NULL = trimmed table not
-  // allocated, full waveform kept.
+  // The trimmed table reinforces same-color endpoints; cleanup keeps the full erase/redraw table.
   const EpdWaveform* fast = my_waveform_fast();
-  epd_hl_waveform(&g_hl, how == Draw::Gc16Changed && fast ? fast : &MY_WAVEFORM);
+  epd_hl_waveform(&g_hl, how == Draw::Gc16Reinforced && fast ? fast : &MY_WAVEFORM);
   const auto run = [&]() -> enum EpdDrawError {
     switch (how) {
-      case Draw::Du:
-        return epd_hl_update_screen(&g_hl, MODE_DU, temperature);
-      case Draw::Gc16Changed:
-        return epd_hl_update_screen(&g_hl, MODE_GC16, temperature);
+      case Draw::Gc16Reinforced:
+        // Only the trimmed table has gentle diagonals; retain differential fallback on allocation failure.
+        return fast ? epd_hl_update_screen_full(&g_hl, MODE_GC16, temperature)
+                    : epd_hl_update_screen(&g_hl, MODE_GC16, temperature);
       case Draw::Gc16All:
         return epd_hl_update_screen_full(&g_hl, MODE_GC16, temperature);
       case Draw::Clean: {
@@ -184,11 +175,11 @@ void drawFront(Draw how) {
   // Leaving the TPS65185 rails up between frames holds VCOM on the glass, which
   // EPDiy advises against, so they are dropped after every frame.
   epd_poweroff();
-  static const char* const kDrawNames[] = {"DU", "GC16 changed", "GC16 all", "clean"};
+  static const char* const kDrawNames[] = {"GC16 reinforced", "GC16 all", "clean"};
   LOG_INF(TAG, "%s frame: %lld ms waveform=%s skipped=%d result=0x%x",
           kDrawNames[static_cast<uint8_t>(how)],
           static_cast<long long>((esp_timer_get_time() - startUs) / 1000),
-          how == Draw::Gc16Changed && fast ? "trimmed" : "full", epd_last_leading_skip(),
+          how == Draw::Gc16Reinforced && fast ? "trimmed" : "full", epd_last_leading_skip(),
           static_cast<unsigned>(err));
   g_glassMatchesFront = err == EPD_DRAW_SUCCESS;
   if (err != EPD_DRAW_SUCCESS) LOG_ERR(TAG, "EPDiy update failed: 0x%x", static_cast<unsigned>(err));
@@ -215,8 +206,8 @@ void EpdiyDriver::begin(EpdBus& bus) {
   epd_set_rotation(EPD_ROT_LANDSCAPE);
   my_waveform_init();
   g_hl = epd_hl_init(&MY_WAVEFORM);
-  // Keep leading hold phases while checking their effect on transition residue.
-  epd_set_leading_skip(false);
+  // Skip leading phases only when none of the selected transitions drive a pixel.
+  epd_set_leading_skip(true);
   // EPDiy assumes the glass starts white. Make it so, as the vendor firmware
   // does at boot, so the first differential update has a true baseline. Not
   // epd_fullclear(): it asserts on a draw error, which would reboot every boot.
@@ -255,14 +246,12 @@ void EpdiyDriver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, R
   // CrossPoint's Half is its periodic and screen-change cleanup, so it drives
   // every pixel (the vendor firmware draws its GC16 that way too); driving only
   // the changed ones left traces of earlier DU frames in areas that stayed white.
-  Draw how = mode == RefreshMode::Full ? Draw::Clean : mode == RefreshMode::Half ? Draw::Gc16All : Draw::Du;
+  Draw how = mode == RefreshMode::Full ? Draw::Clean : mode == RefreshMode::Half ? Draw::Gc16All : Draw::Gc16Reinforced;
   if (g_resyncPending || g_firstFrameAllPixels) {
     how = Draw::Gc16All;
     g_resyncPending = false;
     g_firstFrameAllPixels = false;
-  } else if (how == Draw::Du && changed > geometry().bufferSize / kLargeChangeDivisor) {
-    how = Draw::Gc16Changed;
-  } else if (how == Draw::Du && changed == 0 && g_glassMatchesFront) {
+  } else if (how == Draw::Gc16Reinforced && changed == 0 && g_glassMatchesFront) {
     return;  // nothing to drive; skip the TPS65185 power-up
   }
 
@@ -300,9 +289,8 @@ void EpdiyDriver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, cons
   if (!g_started) return;
   const bool grey = overlayGray();
   if (!grey && !g_basePending) return;
-  // One waveform for the staged base and the grey pixels: GC16 on the pixels
-  // that differ from the glass, or the base's own full refresh.
-  Draw how = Draw::Gc16Changed;
+  // One waveform for the staged base and grey pixels, using the base refresh mode.
+  Draw how = Draw::Gc16Reinforced;
   if (g_basePending) {
     if (g_baseMode == RefreshMode::Full) how = Draw::Clean;
     if (g_baseMode == RefreshMode::Half) how = Draw::Gc16All;

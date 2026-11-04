@@ -210,8 +210,8 @@ continued parsing after long strings, and rejection of oversized keys under ASan
 
 `run_buffered_touch.sh` compiles both Metalio profiles with ASan/UBSan. It
 captures controller samples independently of UI updates and checks 1.2-second
-UI stalls, ordered taps, original gesture timestamps, swipes/holds, phantom
-filtering, bezel keys, overflow cancellation, screen-transition discard,
+UI stalls, ordered taps, original gesture timestamps, swipes/holds, single-sample
+taps, bezel keys, overflow cancellation, screen-transition discard,
 internal/PSRAM allocation failure, allocation placement, cleanup, and sampler
 start/stop. The desktop task/queue adapters
 cannot prove ESP32 scheduling, I2C contention or stack headroom.

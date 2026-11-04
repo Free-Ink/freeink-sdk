@@ -392,9 +392,6 @@ void InputManager::discardBufferedTouch() {
   multiTouchSwipeEvent = multiTouchRotationEvent = multiTouchPinchEvent = false;
   bufferedButtonsSettling = false;
   resetMultiTouchGesture();
-#if FREEINK_DEVICE_METALIO_EINK4_PLUS
-  plusContactPending = false;
-#endif
 #endif
 }
 
@@ -965,11 +962,7 @@ bool InputManager::touchContactPending() const {
       return true;
   }
 #endif
-#if FREEINK_DEVICE_METALIO_EINK4_PLUS
-  return plusContactPending;
-#else
   return false;
-#endif
 }
 
 bool InputManager::isTouchPressed() const { return touchPressed; }
@@ -1961,16 +1954,8 @@ void InputManager::pollCst816s(const unsigned long now) {
 
 void InputManager::processCst816s(const unsigned long now, const uint8_t* data, const bool ok) {
   const auto& t = BoardConfig::ACTIVE.touch;
-#if FREEINK_DEVICE_METALIO_EINK4_PLUS
-  const bool pending = plusContactPending;
-#else
-  constexpr bool pending = false;
-#endif
-  const bool active = touchPressed || touchHomeKeyDown || cstVirtualButtons || pending;
+  const bool active = touchPressed || touchHomeKeyDown || cstVirtualButtons;
   const auto release = [&]() {
-#if FREEINK_DEVICE_METALIO_EINK4_PLUS
-    plusContactPending = false;  // a contact one sample long was a phantom
-#endif
     if (touchPressed) {
       touchPressed = false;
       touchPoint.valid = false;
@@ -2055,19 +2040,6 @@ void InputManager::processCst816s(const unsigned long now, const uint8_t* data, 
   if (t.flipX) touchPoint.x = t.rawMaxX - t.rawMinX - touchPoint.x;
   if (t.flipY) touchPoint.y = t.rawMaxY - t.rawMinY - touchPoint.y;
 #if FREEINK_DEVICE_METALIO_EINK4_PLUS
-  // The Plus panel reports phantom contacts when idle: bursts of taps along one
-  // sensor row (raw y ~423) that are gone by the next sample, and they open
-  // books and turn pages. A contact counts only once a second consecutive
-  // sample still sees it; touchContactPending() keeps the idle loop polling
-  // fast in between so a quick real tap gets its second sample.
-  if (BoardConfig::isMetalioEInk4Plus() && !touchPressed) {
-    if (!plusContactPending) {
-      plusContactPending = true;
-      plusContactPendingSince = now;
-      return;
-    }
-    plusContactPending = false;
-  }
   if (BoardConfig::isMetalioEInk4Plus()) {
     // Two-contact snapshot for the shared gesture tracker; IDs are in YH[7:4].
     touchSnapshot.idsStable = true;
@@ -2094,10 +2066,6 @@ void InputManager::processCst816s(const unsigned long now, const uint8_t* data, 
     touchPressed = true;
     touchPressedEvent = true;
     touchDownPoint = touchUpPoint = touchPoint;
-#if FREEINK_DEVICE_METALIO_EINK4_PLUS
-    // Hold time runs from the first sample, not the end of the wait above.
-    if (BoardConfig::isMetalioEInk4Plus()) touchDownPoint.timestamp = plusContactPendingSince;
-#endif
     touchMovedBeyondTapSlop = touchMovedBeyondTapReleaseSlop = false;
   } else {
     touchUpPoint = touchPoint;

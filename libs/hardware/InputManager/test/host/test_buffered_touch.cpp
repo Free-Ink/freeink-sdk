@@ -171,9 +171,11 @@ int main() {
   assert(input.wasReleased(key));
 
 #if FREEINK_DEVICE_METALIO_EINK4_PLUS
-  // The two-sample noise filter still rejects a one-sample contact.
+  // A buffered single-sample contact retains both edges and becomes a tap.
   capture(input,true); capture(input,false); tick(input);
-  assert(!input.wasTouchTap(x,y) && !input.isTouchPressed());
+  assert(input.wasTouchPressed() && input.isTouchPressed());
+  tick(input);
+  assert(input.wasTouchReleased() && input.wasTouchTap(x,y));
   const auto two = [&](unsigned ax, unsigned ay, unsigned bx, unsigned by) {
     Wire.touch={2,uint8_t(ax>>8),uint8_t(ax),uint8_t(ay>>8),uint8_t(ay),0,0,
                 uint8_t(bx>>8),uint8_t(bx),uint8_t(0x10|(by>>8)),uint8_t(by)};
@@ -194,7 +196,7 @@ int main() {
     if (gesture==0) assert(input.wasMultiTouchPinch(value,x,y,held) && value>1.6f);
     if (gesture==1) assert(input.wasMultiTouchRotation(value,x,y,held) && (value>80 || value< -80));
     if (gesture==2) assert(input.wasMultiTouchSwipe(count,x,y,x2,y2,held) && count==2);
-    assert(held==20);
+    assert(held==30); // Gesture tracking now starts on the first sample.
   }
 #endif
   // A queued bezel release must not turn a page after screen ownership changes.

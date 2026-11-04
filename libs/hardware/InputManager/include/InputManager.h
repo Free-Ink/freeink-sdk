@@ -420,11 +420,6 @@ class InputManager {
   void classifyTouchLongPress(unsigned long now);
   uint8_t cstVirtualButtons = 0;
   unsigned long cstLastSample = 0;
-#if FREEINK_DEVICE_METALIO_EINK4_PLUS
-  // A screen contact counts only once two consecutive samples have seen it.
-  bool plusContactPending = false;
-  unsigned long plusContactPendingSince = 0;
-#endif
   void beginFt5x06();
   void pollFt5x06(unsigned long now);
   bool ft5x06WriteReg(uint8_t reg, uint8_t value);

@@ -157,9 +157,8 @@ true and its pinch, rotate and two-finger swipe classifiers run on this board
 
 Periodic reads recover from missed interrupts and failed first reads.
 `touchContactPending()` also reports the initial IRQ and held contacts so idle
-loops can keep sampling promptly. Two samples still confirm a screen contact
-to reject observed one-sample phantom taps. This requires timely `update()`
-calls: a tap ending before its second sample is rejected. The vendor firmware
+loops can keep sampling promptly. The first valid sample accepts a screen
+contact, including taps reported in only one sample. The vendor firmware
 uses a separate touch task; synchronous consumers can still miss taps during
 long main-loop stalls, even when rendering runs on another task.
 

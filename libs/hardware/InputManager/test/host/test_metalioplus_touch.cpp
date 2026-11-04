@@ -18,7 +18,7 @@ int main() {
   assert(input.hasTouch() && input.supportsMultiTouch());
   assert(!input.touchContactPending());
 
-  // Wake idle polling on the interrupt, before the first confirming sample.
+  // Wake idle polling on the interrupt, before the first contact sample.
   touchIsr();
   assert(input.touchContactPending());
   Wire.failTouch = true;
@@ -26,8 +26,6 @@ int main() {
   assert(!input.isTouchPressed());
   Wire.failTouch = false;
   sample(input, true);  // INT is high, with no second interrupt.
-  assert(input.touchContactPending() && !input.isTouchPressed());
-  sample(input, true);
   assert(input.isTouchPressed() && input.touchContactPending());
   sample(input, false);
   float nx, ny;
@@ -35,11 +33,11 @@ int main() {
   assert(!input.touchContactPending());
   assert(nx > 0.16f && nx < 0.17f && ny > 0.82f && ny < 0.83f);
 
-  // A one-sample phantom still cannot become a tap.
+  // A valid single-sample contact must become a tap.
   sample(input, true);
-  assert(!input.isTouchPressed());
+  assert(input.isTouchPressed() && input.wasTouchPressed());
   sample(input, false);
-  assert(!input.wasTouchTap(nx, ny) && !input.touchContactPending());
+  assert(input.wasTouchTap(nx, ny) && !input.touchContactPending());
 
   // Missing the interrupt entirely must not disable an otherwise valid tap.
   sample(input, true);
@@ -51,5 +49,5 @@ int main() {
   gpioLevels[BoardConfig::ACTIVE.touch.irq] = LOW;
   assert(input.touchContactPending());
   gpioLevels[BoardConfig::ACTIVE.touch.irq] = HIGH;
-  std::puts("Metalio Plus IRQ recovery, idle wake, tap mapping and phantom rejection passed");
+  std::puts("Metalio Plus IRQ recovery, idle wake, tap mapping and single-sample taps passed");
 }

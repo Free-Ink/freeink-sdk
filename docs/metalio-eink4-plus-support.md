@@ -22,7 +22,7 @@ where [Verification](#verification) says otherwise.
 | CX25601N charger, 0x6B | Charging state and USB-input presence (read only) |
 | PCF8563, 0x51 | Rtc |
 | SC7A20H, 0x19 | [Imu](metalio-accelerometer.md): XYZ acceleration; accelerometer only, no gyroscope |
-| Warm/cool frontlight | FrontlightManager: two 12-bit LEDC channels, vendor output cap and mix |
+| Warm/cool frontlight | FrontlightManager: two 10-bit LEDC channels, vendor output cap and mix |
 | Motor on TCA9555 P0.3 | [HapticManager](haptics.md): on/off pulses and patterns |
 
 Touch, RTC, haptics, IMU, frontlight, the battery gauge and SDMMC enable
@@ -182,14 +182,15 @@ the 0x1F bit was found by logging the registers across an unplug.
 
 ## Frontlight
 
-Two LEDC channels drive the warm and cool strings at 9.7 kHz, 12-bit, from the
-40 MHz XTAL. The vendor caps the output at 10% duty (`maxPermille = 100`) and mixes the channels
-saturating: each runs at the full brightness duty scaled by min(1, 2 × its
-share), so neutral lights both strings fully. Under the cap 10-bit PWM leaves
-about 100 steps, which merged 1–7% into one duty and doubled it at 8%.
-Arduino clocks LEDC from the 40 MHz XTAL, which allows 12 bits up to about
-9.7 kHz. The 1% floor (`minHoldPermille = 10`) keeps the dimmest level visible.
-No whine was heard at any level. `FREEINK_FRONTLIGHT_LS` is not supported here
+Two LEDC channels drive the warm and cool strings at the vendor's 20 kHz,
+10-bit PWM settings. Output remains capped at 10% duty (`maxPermille = 100`),
+with the vendor's saturating mix: each channel runs at the brightness duty
+scaled by min(1, 2 × its share), so neutral lights both strings fully.
+The SDK retains its perceptual brightness curve and minimum duty
+(`minHoldPermille = 10`); these differ from the vendor's linear brightness ramp.
+The cap leaves about 100 PWM steps, so adjacent low brightness settings can
+share a duty. Colour and low-brightness behavior need hardware verification.
+`FREEINK_FRONTLIGHT_LS` is not supported here
 yet: the S31's LEDC has no RC_FAST source, and light sleep is not usable.
 
 ## Wi-Fi

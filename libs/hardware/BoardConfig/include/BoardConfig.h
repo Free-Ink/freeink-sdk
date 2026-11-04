@@ -1921,12 +1921,8 @@ constexpr BoardProfile METALIO_EINK4_PLUS = {
     // Reset is on the expander, released by metalioplus::ensureBooted().
     {TouchController::Ft6336u, 0, 1, 5, PIN_UNASSIGNED, 0x38, 0, 1215, 0, 683, false, 0, true, false,
      PIN_UNASSIGNED, true, false, true, true},
-    // Warm/cool YX6016N strings: cool GPIO6, warm GPIO7. The vendor caps output
-    // at 10% duty and mixes the channels saturating. Under that cap 10-bit PWM
-    // leaves ~100 steps, so 1-7% shared one duty and 8% doubled it: run 12-bit,
-    // which Arduino's 40 MHz XTAL LEDC clock allows up to ~9.7 kHz, and hold 1%
-    // at the old dimmest level (1/1023 of full, ~10 permille of the cap).
-    {6, 9700, 12, true, 7, false, 0, 10, 100, true},
+    // Match vendor PWM timing and resolution; retain the 10% cap and saturating mix.
+    {6, 20000, 10, true, 7, false, 0, 10, 100, true},
     NO_AUDIO,
     NO_LEDS,
     NO_FLIP,

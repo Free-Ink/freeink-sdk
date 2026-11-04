@@ -204,6 +204,8 @@ void EpdiyDriver::begin(EpdBus& bus) {
   epd_set_rotation(EPD_ROT_LANDSCAPE);
   my_waveform_init();
   g_hl = epd_hl_init(&MY_WAVEFORM);
+  // Difference draws start at the first phase a changing pixel uses (lossless).
+  epd_set_leading_skip(true);
   // EPDiy assumes the glass starts white. Make it so, as the vendor firmware
   // does at boot, so the first differential update has a true baseline. Not
   // epd_fullclear(): it asserts on a draw error, which would reboot every boot.

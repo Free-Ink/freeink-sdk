@@ -261,6 +261,28 @@ void testScanKeepsNoAdvertiserInNimble() {
   CHECK(fakeble::retainedScanResults() == 0);
 }
 
+// The host task fills the scan's result list; a stop from any other task raced it
+// and freed a device twice. Every stop goes through the host task's queue, and the
+// event it used is given back before the stack deinits (ESP-IDF 6 checks its pool).
+void testScanStopsOnTheHostTaskAndGivesItsEventBack() {
+  fakeble::resetWorld();
+  serveRemote(kKeyboardMap, sizeof kKeyboardMap);
+  CHECK(fakeble::beginHost());
+  host().startScan(5000);
+  fakeble::advertise("AA:BB:CC:00:00:01", "Remote");
+  host().stopScan();
+  CHECK(!host().isScanning());
+  CHECK(fakeble::scanStopsOnHostTask() == 1);
+  CHECK(fakeble::eventsOutstanding() == 0);
+  host().startScan(5000);
+  CHECK(fakeble::connectTo(kRemote));
+  host().startScan(5000);
+  host().end();
+  CHECK(fakeble::scanStopsOffHostTask() == 0);
+  CHECK(fakeble::scanStopsOnHostTask() >= 3);
+  CHECK(fakeble::eventsOutstandingAtLastDeinit() == 0);
+}
+
 void testConnectedAddressFollowsTheLink() {
   fakeble::resetWorld();
   serveRemote(kKeyboardMap, sizeof kKeyboardMap);
@@ -1182,6 +1204,7 @@ int main() {
   testDisconnectIsNotUndoneByAutoReconnect();
   testStreamedHeldKeyIsOnePress();
   testScanKeepsNoAdvertiserInNimble();
+  testScanStopsOnTheHostTaskAndGivesItsEventBack();
   testKeyHeldAcrossLinkDropIsPressedAgain();
   testConnectedAddressFollowsTheLink();
   testEndCancelsAPairingWaitBeforeDeletingTheTask();

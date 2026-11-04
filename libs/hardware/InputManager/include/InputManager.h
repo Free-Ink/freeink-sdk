@@ -197,6 +197,15 @@ class InputManager {
   // of wasAnyPressed/Released) for resetting idle/sleep timers and restoring
   // CPU frequency. False on non-touch boards.
   bool wasTouchActivity() const;
+  // True while a screen contact waits for the second sample that confirms it
+  // (Metalio Plus). Idle loops should keep polling while this is set.
+  bool touchContactPending() const {
+#if FREEINK_DEVICE_METALIO_EINK4_PLUS
+    return plusContactPending;
+#else
+    return false;
+#endif
+  }
   // True on the press edge of the GT911 capacitive home key (controllers
   // without one never report it). Cleared each #update().
   bool wasHomeKeyPressed() const;
@@ -377,6 +386,11 @@ class InputManager {
   void pollCst816s(unsigned long now);
   uint8_t cstVirtualButtons = 0;
   unsigned long cstLastSample = 0;
+#if FREEINK_DEVICE_METALIO_EINK4_PLUS
+  // A screen contact counts only once two consecutive samples have seen it.
+  bool plusContactPending = false;
+  unsigned long plusContactPendingSince = 0;
+#endif
   void beginFt5x06();
   void pollFt5x06(unsigned long now);
   bool ft5x06WriteReg(uint8_t reg, uint8_t value);

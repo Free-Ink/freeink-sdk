@@ -24,6 +24,12 @@ BleKeyboardHost& BleKeyboardHost::getInstance() {
 
 #include <NimBLEDevice.h>
 #include <Preferences.h>
+#include <freertos/semphr.h>
+#ifdef USING_NIMBLE_ARDUINO_HEADERS
+#include "nimble/porting/nimble/include/nimble/nimble_port.h"
+#else
+#include "nimble/nimble_port.h"
+#endif
 
 #include <atomic>
 #include <cstring>
@@ -54,10 +60,41 @@ constexpr uint32_t kTeardownConnectWaitMs = kConnectTimeoutMs + 500;
 constexpr uint32_t kMaxTeardownTimeoutMs = 2000;
 constexpr uint32_t kTeardownPollMs = 10;
 constexpr size_t kScanDebugPayloadMax = 31;
+constexpr uint32_t kStopScanWaitMs = 2000;
 
 portMUX_TYPE g_mux = portMUX_INITIALIZER_UNLOCKED;
 
 NimBLEClient* g_client = nullptr;
+
+// Scans stop on the NimBLE host task. The host task adds each queued advertising
+// report to the scan's result list without a lock, so a stop from another task,
+// which clears that list, freed a device twice while reports were still arriving
+// (Metalio Plus, ESP32-S31, a dozen advertisers nearby). Queued in order with the
+// reports, the stop runs after them. g_stopScanQueued: posted and not yet run.
+ble_npl_event g_stopScanEvent;
+SemaphoreHandle_t g_stopScanDone = nullptr;
+std::atomic<bool> g_stopScanQueued{false};
+
+void stopScanEvent(ble_npl_event*) {
+  NimBLEDevice::getScan()->stop();
+  g_stopScanQueued.store(false);
+  xSemaphoreGive(g_stopScanDone);
+}
+
+// Stops the scan on the host task and waits for it. Not for the host task itself.
+void stopScanOnHostTask() {
+  if (g_stopScanDone == nullptr) g_stopScanDone = xSemaphoreCreateBinary();
+  if (!g_stopScanQueued.exchange(true)) {
+    // A stop that outlived an earlier wait has run by now; drop its late signal.
+    xSemaphoreTake(g_stopScanDone, 0);
+    ble_npl_event_init(&g_stopScanEvent, stopScanEvent, nullptr);
+    ble_npl_eventq_put(nimble_port_get_dflt_eventq(), &g_stopScanEvent);
+  }
+  if (xSemaphoreTake(g_stopScanDone, pdMS_TO_TICKS(kStopScanWaitMs)) == pdTRUE) {
+    // ESP-IDF 6 (S31) takes events from a pool that must be whole again when the stack deinits.
+    ble_npl_event_deinit(&g_stopScanEvent);
+  }
+}
 
 // Connection task: connect() stores a target and notifies it; it runs the
 // blocking connect+pair+discover sequence off the main and NimBLE host tasks.
@@ -447,7 +484,7 @@ void doConnect(const char* addrStr, uint8_t type) {
     self().onConnectFailed("BLE client unavailable");
     return;
   }
-  NimBLEDevice::getScan()->stop();
+  stopScanOnHostTask();
   NimBLEAddress addr(std::string(addrStr), type);
   g_disconnectObserved.store(false);
   if (!g_client->connect(addr)) {
@@ -708,7 +745,7 @@ bool BleKeyboardHost::end(uint32_t timeoutMs) {
     g_teardownPending.store(true);
     begun_ = false;
     NimBLEScan* scan = NimBLEDevice::getScan();
-    if (scan && scan->isScanning()) scan->stop();
+    if (scan && scan->isScanning()) stopScanOnHostTask();
   }
 
   // If the connection task is inside a connect, pairing or GATT wait, do not
@@ -739,6 +776,10 @@ bool BleKeyboardHost::end(uint32_t timeoutMs) {
     NimBLEDevice::deleteClient(g_client);
     g_client = nullptr;
   }
+
+  // A scan stop that outlived stopScan()'s wait still holds its event: give it back
+  // before the stack checks its event pool (ESP-IDF 6 asserts on one left out).
+  if (!g_stopScanQueued.load()) ble_npl_event_deinit(&g_stopScanEvent);
 
   // Free the NimBLE host + BT controller memory back to the heap. Bonds live in
   // NVS and survive this. A deinit that did not complete is retried by the next
@@ -900,7 +941,7 @@ void BleKeyboardHost::stopScan() {
   Serial.printf("[BleHid] scan stop: wasScanning=%d devices=%u\n", NimBLEDevice::getScan()->isScanning() ? 1 : 0,
                 deviceCount_);
 #endif
-  NimBLEDevice::getScan()->stop();
+  stopScanOnHostTask();
   scanning_ = false;
 }
 

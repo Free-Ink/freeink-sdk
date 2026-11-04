@@ -69,6 +69,10 @@
 #ifndef FREEINK_DEVICE_MURPHY_M4
 #define FREEINK_DEVICE_MURPHY_M4 0
 #endif
+// Experimental four-level gray on the Murphy M3 panel. See Uc8253MurphyDriver.h.
+#ifndef FREEINK_MURPHY_GRAY
+#define FREEINK_MURPHY_GRAY 0
+#endif
 #ifndef FREEINK_DEVICE_EEGO_A4
 #define FREEINK_DEVICE_EEGO_A4 0
 #endif

@@ -591,9 +591,24 @@ const uint8_t* FreeInkDisplay::consumePrevFrameFor(RefreshMode effectiveMode) {
   return prev;
 }
 
-bool FreeInkDisplay::hasSecondaryBuffer() const { return frameBufferActive != nullptr; }
+bool FreeInkDisplay::hasSecondaryBuffer() const { return frameBufferActive != nullptr && !_arenaLent; }
+
+bool FreeInkDisplay::keepsPreviousFrame() const { return frameBufferActive != nullptr; }
+
+bool FreeInkDisplay::setLendArena(uint8_t* block, size_t size) {
+  if (_arenaLent || _secondaryLent) return false;
+  _lendArena = block;
+  _lendArenaSize = block ? size : 0;
+  return true;
+}
 
 uint8_t* FreeInkDisplay::borrowSecondaryBuffer(size_t* size) {
+  if (_lendArena) {
+    if (_arenaLent) return nullptr;
+    _arenaLent = true;
+    if (size) *size = _lendArenaSize;
+    return _lendArena;
+  }
   if (!frameBufferActive || _secondaryLent) return nullptr;
   // A deferred refresh is still reading these bytes (the last displayStart +
   // swap parked the displayed frame here; X3's post-waveform DTM1 sync reads
@@ -607,6 +622,10 @@ uint8_t* FreeInkDisplay::borrowSecondaryBuffer(size_t* size) {
 }
 
 bool FreeInkDisplay::returnSecondaryBuffer() {
+  if (_arenaLent) {
+    _arenaLent = false;  // the framebuffers never left, so there is nothing to restore
+    return true;
+  }
   if (!_secondaryLent) return false;
   frameBufferActive = _secondaryLent;
   _secondaryLent = nullptr;

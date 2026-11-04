@@ -229,6 +229,46 @@ static void testGrayCleanupBaseline() {
     free(driver._grayBase);
   }
 }
+
+// A host with memory to spare lends that instead: the display stays double-buffered, so the frame
+// FAST diffs against never moves, while borrowers see the contract they already rely on.
+static void testLendArena() {
+  const auto page = frame(51);
+  uint8_t arena[64];
+  Uc8279X4Driver driver;
+  FreeInkDisplay display(12, 11, 13, 18, 14, 6);
+  display._driver = &driver;
+  display.begin();
+  std::memcpy(display.getFrameBuffer(), page.data(), page.size());
+  display.displayBuffer(FreeInkDisplay::FAST_REFRESH);
+  const uint8_t* const displayed = display.frameBufferActive;
+
+  assert(display.setLendArena(arena, sizeof(arena)));
+  size_t size = 0;
+  assert(display.borrowSecondaryBuffer(&size) == arena && size == sizeof(arena));
+  assert(display.borrowSecondaryBuffer(nullptr) == nullptr);  // one borrower at a time
+
+  // "No secondary buffer" is how a borrower tells a lend is out, though the frame is still here.
+  assert(!display.hasSecondaryBuffer() && display.keepsPreviousFrame());
+  assert(display.frameBufferActive == displayed);
+  assert(!display.setLendArena(nullptr, 0));  // not while it is out
+
+  assert(display.returnSecondaryBuffer());
+  assert(!display.returnSecondaryBuffer());  // nothing lent now
+  assert(display.hasSecondaryBuffer() && display.frameBufferActive == displayed);
+  assert(std::equal(page.begin(), page.end(), displayed));  // nothing reseeded it
+  assert(!display._redBaselineAuthoritative);
+
+  // Back to lending the framebuffer, with the single-buffer semantics that brings.
+  assert(display.setLendArena(nullptr, 0));
+  assert(display.borrowSecondaryBuffer(&size) == displayed && size == page.size());
+  assert(!display.keepsPreviousFrame());
+  assert(!display.setLendArena(arena, sizeof(arena)));  // nor while the framebuffer is out
+  assert(display.returnSecondaryBuffer());
+
+  display.releaseBuffers();
+  free(driver._grayBase);
+}
 #endif
 
 // A driver with no grayscale implementation must never advertise support.
@@ -774,6 +814,7 @@ int main(int argc, char** argv) {
   testAsyncFrame<Uc8279X4Driver>();
 #ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
   testGrayCleanupBaseline();
+  testLendArena();
 #endif
   std::puts("Pro plane bytes, transaction counts, clean refreshes, power state and async frame ownership passed");
 }

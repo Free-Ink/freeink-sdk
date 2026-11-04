@@ -381,8 +381,13 @@ class FreeInkDisplay {
   // framebuffer. Returns true on success; false if malloc fails.
   bool reallocSecondaryBuffer();
 
-  // Returns true if the secondary buffer is currently allocated.
+  // Returns true if the secondary buffer is allocated and nothing is lent. False
+  // is how a borrower tells a lend is in progress, whichever block went out.
   bool hasSecondaryBuffer() const;
+
+  // The display still holds its previous frame. Differs from hasSecondaryBuffer()
+  // only while a setLendArena() block is out: the frame is then still here.
+  bool keepsPreviousFrame() const;
 
   // Lend the secondary buffer's memory to the host WITHOUT freeing it: the
   // display drops to single-buffer mode exactly like releaseSecondaryBuffer()
@@ -400,6 +405,16 @@ class FreeInkDisplay {
   // identical to reallocSecondaryBuffer() (the build clobbered the contents).
   // Returns false only if nothing was lent.
   bool returnSecondaryBuffer();
+
+  // Lend `block` instead of the secondary buffer from now on, for a host with
+  // memory to spare, such as PSRAM. A borrower gets `size` bytes rather than one
+  // framebuffer, and the display stays double-buffered through the lend, so
+  // nothing changes in how the panel is driven and there is nothing to reseed.
+  // The contract is otherwise the same: one borrower at a time, and
+  // hasSecondaryBuffer() is false until the block comes back. The block stays
+  // the host's. nullptr goes back to lending the framebuffer. Returns false,
+  // changing nothing, while anything is lent.
+  bool setLendArena(uint8_t* block, size_t size);
 #endif  // !EINK_DISPLAY_SINGLE_BUFFER_MODE
 
   // Save the current framebuffer to a PBM file (desktop/test builds only)
@@ -458,6 +473,10 @@ class FreeInkDisplay {
   // this points at is still owned by frameBuffer0/1; frameBufferActive is null
   // while lent so all released-mode display semantics apply unchanged.
   uint8_t* _secondaryLent = nullptr;
+  // Lent in its place when set (see setLendArena).
+  uint8_t* _lendArena = nullptr;
+  size_t _lendArenaSize = 0;
+  bool _arenaLent = false;
   // One-shot, armed by reallocSecondaryBuffer(): the controller's RED RAM still
   // holds the on-screen frame (host allocation never touches controller RAM),
   // while the fresh secondary may not — the host may have scribbled or cleared

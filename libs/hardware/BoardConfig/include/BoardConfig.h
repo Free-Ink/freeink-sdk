@@ -1934,7 +1934,7 @@ constexpr BoardProfile METALIO_EINK4_PLUS = {
     NO_MIC,
     // PCF8563 RTC (0x51) and SC7A20H accelerometer (0x19) on the shared bus.
     {0, 1, 400000, 0x51, 0, 0x19, 0, RtcType::Pcf8563, ImuType::Sc7a20h},
-    1.6f,  // uiScale: 4.7" 1216x684 is ~300 PPI; 1.6 sized on hardware
+    1.5f,  // uiScale: slightly smaller controls on the 4.7" 1216x684 panel
     {},    // power: no latch GPIO; the power switch is pulsed through the TCA9555
     0,     // displayControllerVariant: not probed
     // viewableInsets (portrait): the case covers the glass's bottom edge more than

@@ -55,14 +55,6 @@ class Uc8253X3Driver : public PanelDriver {
   void deepSleep(EpdBus& bus) override;
 
   void display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) override;
-  // Refresh split: displayStart fires the waveform and returns while the ~130-770 ms
-  // X3 waveform runs (so the render task can overlap non-SPI work); displayFinish
-  // waits BUSY out and runs the post-waveform DTM1 sync + conditioning passes.
-  // display() above is exactly displayStart()+displayFinish().
-  bool displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) override;
-  void displayFinish(EpdBus& bus, const uint8_t* fb) override;
-  bool supportsAsyncDisplay() const override { return true; }
-
   void beginGrayscale(EpdBus &bus, const uint8_t *fb, GrayscaleMode mode,
                             RefreshMode fallback, bool turnOff) override;
   void displayGrayscaleBase(EpdBus &bus, const uint8_t *fb,
@@ -119,32 +111,6 @@ private:
     bool lastBaseWasPartial = false;
     bool lsbValid = false;
   } _grayState;
-  // The glass physically holds greys that the B/W planes do not describe: an AA
-  // or cover gray pass has run since the last waveform that drove every pixel.
-  //
-  // Distinct from _redRamSynced, which is a statement about controller RAM.
-  // cleanupGrayscaleBuffers() restores DTM1/DTM2 to the B/W frame and rightly
-  // reports the RAM in sync -- but it moves no particles, so the grey at every
-  // anti-aliased glyph edge is still on the panel. A differential update that
-  // trusts the RAM then treats those pixels as white-stays-white and gives them
-  // the gentle WW cell, which is not enough to clear them. Measured 2026-09-23
-  // on an X3: a reader page -> grayscale sleep cover left the page's text
-  // outline on the cover; a reader page -> _half scrub did not.
-  //
-  // Cleared only by a waveform that drives every pixel from a known state:
-  // _full (from white), _half (WW==BW, WB==BB), grayscaleRevert (to white).
-  // NOT cleared by _fast (differential) or by a RAM restore.
-  bool _grayOnGlass = false;
-
-  // Refresh split state: what displayStart() decided, replayed by displayFinish()
-  // for the post-waveform DTM1 sync + conditioning. _pendingRefresh guards against
-  // a displayFinish() with no matching displayStart(). The just-displayed frame is
-  // NOT stashed here: the facade re-supplies it fresh to displayFinish() because
-  // the caller may release/realloc the buffer holding it in the gap.
-  bool _pendingRefresh = false;
-  bool _pendingTurnOff = false;
-  bool _pendingDoFullSync = false;
-  bool _pendingFastMode = false;
 };
 
 PanelDriver& uc8253X3Driver();

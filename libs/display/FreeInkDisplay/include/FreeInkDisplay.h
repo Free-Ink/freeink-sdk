@@ -197,9 +197,16 @@ class FreeInkDisplay {
   // can skip overlap scaffolding (e.g. whole-plane grayscale buffers) when
   // there is nothing to overlap.
   bool supportsAsyncRefresh() const;
+  // End-of-frame idle power policy, currently Picco only. Call under the same
+  // bus/render lock as drawing, after ALL grayscale uploads and cleanup.
+  // Completes pending refreshes, then powers down analog circuitry, not RAM.
+  void powerOffBetweenFrames();
   // True when the selected driver can use an ordinary deferred B/W refresh as
   // the base for a following grayscale pass.
   bool supportsAsyncGrayscaleBase() const;
+  bool supportsDeferredGrayscaleBase() const;
+  // Framebuffer must remain unchanged until waitRefreshComplete().
+  bool displayGrayscaleBaseAsync(RefreshMode fallback = FAST_REFRESH);
 
   // ------------------------------------------------------------------------
   // CrossPoint EInkDisplay compatibility surface.

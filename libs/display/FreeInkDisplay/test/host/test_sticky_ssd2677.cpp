@@ -133,16 +133,24 @@ int main(int argc, char** argv) {
   s.display(bus, white.data(), nullptr, RefreshMode::Fast, false);
   assert(*lastData(bus, 0xE6) == Bytes({0xEE}) && "B/W after a gray image is a full refresh");
 
-  // AA (overlay): the base goes out as a normal B/W refresh, then the masks
+  // AA (overlay): the base re-inks black pixels using the fast OTP waveform, then the masks
   // (MSB high, LSB low, like the Picco) are nudged gray with the uploaded AA
   // waveform; the next frame re-runs init before latching its OTP waveform.
   assert(s.grayscaleCapabilities(GrayscaleMode::Overlay).supported());
   Bytes lsbMask(48000, 0x00), msbMask(48000, 0x00);
   lsbMask[0] = 0xF0;  // px 0-3 dark
   msbMask[0] = 0xCC;  // px 0,1,4,5 gray
+  // Top four pixels: B->B, B->W, W->B, W->W. Check the reversed panel row
+  // independently from the blank row at the start of the transfer.
+  page[0] = 0x3F;
+  s.display(bus, page.data(), nullptr, RefreshMode::Fast, false);
+  page[0] = 0x5F;
   bus.clear();
-  s.beginGrayscale(bus, white.data(), GrayscaleMode::Overlay, RefreshMode::Fast, false);
+  s.beginGrayscale(bus, page.data(), GrayscaleMode::Overlay, RefreshMode::Fast, false);
   assert(count(bus, 0x12) == 1 && *lastData(bus, 0xE6) == Bytes({0x19}) && "overlay base is a fast B/W refresh");
+  data = lastData(bus, 0x10);
+  assert(data && (*data)[row0] == 0x9B && (*data)[row0 + 1] == 0xFF && (*data)[0] == 0xFF);
+  assert(count(bus, 0x02) == 0 && "fast overlay base keeps the rails on");
   bus.clear();
   s.copyGrayscaleLsb(bus, lsbMask.data());
   s.copyGrayscaleMsb(bus, msbMask.data());
@@ -158,6 +166,8 @@ int main(int argc, char** argv) {
   bus.clear();
   s.display(bus, white.data(), nullptr, RefreshMode::Fast, false);
   assert(count(bus, 0x00) == 1 && *lastData(bus, 0xE6) == Bytes({0x19}) && "next frame re-inits after the AA LUT");
+  data = lastData(bus, 0x10);
+  assert(data && (*data)[row0] == 0x77 && "ordinary fast erase uses the actual retained base");
   // The next base still waits after reset/initialization, OTP latch and power
   // on, and still performs its refresh. Only the duplicate init wait is gone.
   assert(bus.busyWaitWriteCounts == std::vector<size_t>({0, 1, 10, 13, 15}));

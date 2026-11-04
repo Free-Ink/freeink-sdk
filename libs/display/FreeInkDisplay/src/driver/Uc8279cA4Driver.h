@@ -43,6 +43,7 @@ class Uc8279cA4Driver : public PanelDriver {
   void initController(EpdBus& bus, Session session);
   void ensurePowerOn(EpdBus& bus);
   void loadFullLut(EpdBus& bus);
+  void loadHalfFullLut(EpdBus& bus);
   void loadFastLut(EpdBus& bus);
   void loadGrayLut(EpdBus& bus);
   void writeFrame(EpdBus& bus, uint8_t command, const uint8_t* fb, bool invert = false);

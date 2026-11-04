@@ -15,7 +15,13 @@ inline int digitalRead(int) {
   return hostDigitalPin;
 }
 inline uint32_t hostAdcMv = 0;  // the test's battery pin reading
-inline uint32_t analogReadMilliVolts(int) { return hostAdcMv; }
+inline unsigned hostAdcReads = 0;
+inline const uint32_t* hostAdcSequence = nullptr;
+inline unsigned hostAdcSequenceSize = 0;
+inline uint32_t analogReadMilliVolts(int) {
+  const unsigned index = hostAdcReads++;
+  return hostAdcSequence && index < hostAdcSequenceSize ? hostAdcSequence[index] : hostAdcMv;
+}
 struct SerialStub {
   explicit operator bool() const { return false; }
   template <typename... Args>

@@ -124,7 +124,8 @@ class SecureHttpClient {
   void end() { closeConnection(); }
   // Opens (or keeps) the connection for the URL given to begin(). Optional:
   // sendRequest() connects on demand. Connecting before addHeader() keeps large
-  // headers out of the heap while the TLS handshake needs its working set.
+  // headers out of the heap while the TLS handshake needs its working set. A
+  // request that fails on a connection opened here is not sent again.
   bool connect(const AbortCallback& shouldAbort = nullptr) { return ensureConnected(shouldAbort); }
 
   void addHeader(const std::string& name, const std::string& value) {
@@ -219,11 +220,13 @@ class SecureHttpClient {
     // or a missing status line on a socket that looked connected. That is a
     // property of the reused connection, not of the request, so it earns one
     // attempt on a fresh connection. A request that failed on a fresh
-    // connection is a real error and is not retried.
+    // connection is a real error and is not retried. A connection opened by
+    // connect() is fresh until a response has completed on it.
     for (int attempt = 0; attempt < 2; ++attempt) {
-      const bool reusing = connectionMatches();
       if (isAborted(shouldAbort)) return -1;
       if (!ensureConnected(shouldAbort)) return -1;
+      // Read after ensureConnected(): if it had to reconnect, it cleared the flag.
+      const bool reusing = _connKeptAlive;
 
       if (!writeRequest(method, payload, payloadLen)) {
         closeConnection();
@@ -315,7 +318,11 @@ class SecureHttpClient {
       // Reuse only a provably clean connection. An aborted/truncated body
       // leaves undrained bytes on the socket, and the next request would parse
       // leftover body data as its status line.
-      if (!_reuse || !keepAlive || !_bodyComplete || !reusableFraming) closeConnection();
+      if (!_reuse || !keepAlive || !_bodyComplete || !reusableFraming) {
+        closeConnection();
+      } else {
+        _connKeptAlive = true;
+      }
       return _status;
     }
     return -1;
@@ -484,6 +491,7 @@ class SecureHttpClient {
     _connHost.clear();
     _connPort = 0;
     _connHttps = false;
+    _connKeptAlive = false;
   }
 
   // Request line + headers (+ body). Write results are checked: a stale
@@ -630,6 +638,7 @@ class SecureHttpClient {
   std::string _connHost;
   uint16_t _connPort = 0;
   bool _connHttps = false;
+  bool _connKeptAlive = false;  // a response completed on _conn and left it open
   bool _reuse = true;
 
   std::string _scheme;

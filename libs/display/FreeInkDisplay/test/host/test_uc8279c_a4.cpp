@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cassert>
 #include <iostream>
 #include <vector>
@@ -83,7 +84,7 @@ int main() {
   }
 
   // Absolute planes go out as the stock firmware sends them: MSB -> DTM1,
-  // LSB -> DTM2, uninverted, with no B/W base refresh before the gray pass.
+  // LSB -> DTM2, uninverted, after stock's two-pass pre-clear to black.
   {
     std::vector<uint8_t> lsb(bytes), msb(bytes);
     for (size_t i = 0; i < bytes; ++i) {
@@ -95,7 +96,13 @@ int main() {
     driver.copyGrayscaleLsb(bus, lsb.data());
     driver.copyGrayscaleMsb(bus, msb.data());
     driver.displayGray(bus, bw.data(), false, nullptr, true);
-    assert(bus.refreshes == before + 1 && "absolute gray must not refresh a B/W base first");
+    assert(bus.refreshes == before + 3 && "absolute gray pre-clears twice, then paints");
+    // Stock's halved GC record 0x20 (V1.0.3 lockscreen pre-clear).
+    const std::vector<uint8_t> half20 = {0x01, 0x0c, 0x02, 0x07, 0x05, 0x01, 0x01,
+                                         0x01, 0x05, 0x00, 0x00, 0x00, 0x01, 0x01, 0x01};
+    bool sawHalf = false;
+    for (const auto& r : bus.lut20s) sawHalf |= r.size() == 49 && std::equal(half20.begin(), half20.end(), r.begin());
+    assert(sawHalf && "pre-clear must load stock's halved GC waveform");
     for (size_t i = 0; i < bytes; ++i) {
       const auto physical = (551 - i / 96) * 96 + i % 96;
       assert(bus.oldAtRefresh[physical] == msb[i] && bus.newAtRefresh[physical] == lsb[i]);

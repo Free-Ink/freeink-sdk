@@ -649,6 +649,15 @@ void FreeInkDisplay::syncPendingAsync() {
   _refreshPending = false;
 }
 
+void FreeInkDisplay::powerOffBetweenFrames() {
+#if FREEINK_DEVICE_PICCO
+  if (!_driver || !BoardConfig::isPicco()) return;
+  DisplayPmLock pmLock;
+  waitRefreshComplete();
+  _driver->powerOffBetweenFrames(_bus);
+#endif
+}
+
 bool FreeInkDisplay::supportsAsyncRefresh() const {
   return !_inverted && !_inversionDirty && _driver != nullptr && _driver->supportsAsyncDisplay();
 }
@@ -950,8 +959,8 @@ void FreeInkDisplay::cancelGrayscalePass() {
 bool FreeInkDisplay::acceptGrayscaleRows(unsigned plane, const uint8_t* data, uint16_t y, uint16_t rows) {
   if (_grayscaleMode == GrayscaleMode::Overlay) return true;
   const auto h = getDisplayHeight();
-  if (_grayPassFailed || !data || !rows || (plane == 1 && _grayRows[0] == 0) ||
-      y != _grayRows[plane] || y >= h || rows > h - y) {
+  if (_grayPassFailed || !data || !rows || (plane == 1 && _grayRows[0] == 0) || y != _grayRows[plane] || y >= h ||
+      rows > h - y) {
     _grayPassFailed = true;
     return false;
   }
@@ -986,6 +995,35 @@ void FreeInkDisplay::displayGrayscaleBase(RefreshMode fallback, bool turnOffScre
   syncPendingAsync();
   _shadowValid = false;
   _driver->beginGrayscale(_bus, frameBuffer, GrayscaleMode::Overlay, toInternal(fallback), turnOffScreen);
+}
+
+bool FreeInkDisplay::supportsDeferredGrayscaleBase() const {
+#ifdef EINK_DISPLAY_SINGLE_BUFFER_MODE
+  return !_inverted && !_inversionDirty && _driver && _driver->supportsDeferredGrayscaleBase();
+#else
+  // The deferred API borrows the current draw frame without swapping buffers.
+  // Dual-buffer consumers retain their established blocking grayscale path.
+  return false;
+#endif
+}
+
+bool FreeInkDisplay::displayGrayscaleBaseAsync(RefreshMode fallback) {
+#ifdef EINK_DISPLAY_SINGLE_BUFFER_MODE
+  if (supportsDeferredGrayscaleBase()) {
+    DisplayPmLock pmLock;
+    cancelGrayscalePass();
+    syncPendingAsync();
+    _grayPassFailed = false;
+    _shadowValid = false;
+    _grayscaleMode = GrayscaleMode::Overlay;
+    _grayRows[0] = _grayRows[1] = 0;
+    _refreshPending = _driver->displayGrayscaleBaseStart(_bus, frameBuffer, toInternal(fallback), false);
+    _pendingSingleBufferFrame = _refreshPending ? frameBuffer : nullptr;
+    return _refreshPending;
+  }
+#endif
+  displayGrayscaleBase(fallback, false);
+  return false;
 }
 
 void FreeInkDisplay::preconditionGrayscale() {
@@ -1030,9 +1068,7 @@ void FreeInkDisplay::writeGrayscalePlaneStrip(GrayPlane plane, const uint8_t* ro
                                     rows, yStart, numRows);
 }
 
-bool FreeInkDisplay::supportsBusyGrayscaleStaging() const {
-  return grayscaleCapabilities().stagingWhileBusy;
-}
+bool FreeInkDisplay::supportsBusyGrayscaleStaging() const { return grayscaleCapabilities().stagingWhileBusy; }
 
 void FreeInkDisplay::prepareGrayscaleTarget() {
   if (grayscaleCapabilities().stagingWhileBusy) {
@@ -1040,13 +1076,9 @@ void FreeInkDisplay::prepareGrayscaleTarget() {
   }
 }
 
-bool FreeInkDisplay::supportsStripGrayscale() const {
-  return grayscaleCapabilities().stripUploads;
-}
+bool FreeInkDisplay::supportsStripGrayscale() const { return grayscaleCapabilities().stripUploads; }
 
-bool FreeInkDisplay::combinesGrayscaleBase() const {
-  return grayscaleCapabilities().base == GrayscaleBase::Combined;
-}
+bool FreeInkDisplay::combinesGrayscaleBase() const { return grayscaleCapabilities().base == GrayscaleBase::Combined; }
 
 void FreeInkDisplay::cleanupGrayscaleBuffers(const uint8_t* bwBuffer) {
   cancelGrayscalePass();

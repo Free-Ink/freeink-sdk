@@ -52,6 +52,9 @@ class PanelDriver {
   // --- lifecycle ---
   virtual void begin(EpdBus& bus) = 0;
   virtual void deepSleep(EpdBus& bus) = 0;
+  // Called only after the host's complete frame (including grayscale) finishes.
+  // Retain controller RAM and the partial-refresh baseline; never reset/sleep.
+  virtual void powerOffBetweenFrames(EpdBus& bus) { (void)bus; }
 
   // --- core paint path (load RAM + refresh) ---
   virtual void display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) = 0;
@@ -134,6 +137,13 @@ class PanelDriver {
   // their previous behavior.
   virtual void displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, RefreshMode fallback, bool turnOff) {
     display(bus, fb, nullptr, fallback, turnOff);
+  }
+
+  // Starts an Overlay base without touching the framebuffer until displayFinish.
+  virtual bool supportsDeferredGrayscaleBase() const { return false; }
+  virtual bool displayGrayscaleBaseStart(EpdBus& bus, const uint8_t* fb, RefreshMode fallback, bool turnOff) {
+    beginGrayscale(bus, fb, GrayscaleMode::Overlay, fallback, turnOff);
+    return false;
   }
 
   // Mode is fixed before uploads; drivers may adapt the common host encoding.

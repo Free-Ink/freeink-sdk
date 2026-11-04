@@ -774,7 +774,8 @@ bool InputManager::supportsMultiTouch() const {
   if (BoardConfig::ACTIVE.touch.controller == BoardConfig::TouchController::Tma525c) return piccoMaxContacts >= 2;
 #endif
   if (BoardConfig::isMetalioEInk4Plus()) return true;  // FT6336U, two contacts
-  return BoardConfig::ACTIVE.touch.controller == BoardConfig::TouchController::Gt911;
+  const auto controller = BoardConfig::ACTIVE.touch.controller;
+  return controller == BoardConfig::TouchController::Gt911 || controller == BoardConfig::TouchController::Gslx680;
 #else
   return false;
 #endif
@@ -1667,7 +1668,10 @@ void InputManager::beginFt5x06() {
 #if FREEINK_DEVICE_PAPERMONO
   // The FT6336's power rail and reset line live on the M5IOE1 expander, not
   // ESP GPIOs — raise/release them before the probe below.
-  freeink::papermono::enableTouch();
+  [[maybe_unused]] const bool railUp = freeink::papermono::enableTouch();
+#ifdef TOUCH_PROBE_DEBUG
+  touchDebugPrintf("[touch] Paper Mono rail and reset: %s\n", railUp ? "up" : "FAILED");
+#endif
 #endif
 
   // The bus is shared with M5PM1/M5IOE1/RX8130, whose standing profile is
@@ -2206,22 +2210,76 @@ void InputManager::pollGslx680(const unsigned long now) {
       touchReleasedEvent = true;
       lastTouchHeldDurationMs = now - touchDownPoint.timestamp;
     }
+    // Multi-touch release mirrors the GT911 contract: the authoritative
+    // zero-contact frame clears the snapshot and ends any gesture; a failed
+    // read above keeps the last complete frame instead.
+    touchSnapshot.count = 0;
+    touchSnapshot.reportedCount = 0;
+    touchSnapshot.idsStable = false;  // coordinate-only records (see below)
+    updateMultiTouchGesture(touchSnapshot, now);
     return;
   }
 
-  const uint16_t rawYWord = static_cast<uint16_t>(frame[5]) << 8 | frame[4];
-  const uint16_t rawXWord = static_cast<uint16_t>(frame[7]) << 8 | frame[6];
-
-  // Classified as the stock firmware does (the words' top nibble is the
-  // contact's track id, so only the 12-bit coordinates count):
+  // Classify every contact the way the stock firmware classifies its single
+  // contact (the words' top nibble is the contact's track id, so only the
+  // 12-bit coordinates count):
   //  - (0x3a0, 0x20) is the capacitive home key, ignored while a screen touch
   //    is in progress;
-  //  - any other sample at X >= 920 is past the glass and dropped, leaving all
-  //    touch and key state alone (clamped, it would land on the top edge);
+  //  - any other sample at X >= 920 is past the glass and dropped;
+  //  - an all-zero record is an absent contact: the fixed 24-byte read pads a
+  //    controller reporting fewer contacts;
   //  - an on-glass touch cancels a pending key press without firing it.
-  const uint16_t sampleX = rawXWord & 0x0fff;
-  if (sampleX == 0x03a0 && (rawYWord & 0x0fff) == 0x0020) {
-    if (touchPressed) return;
+  const auto& t = BoardConfig::ACTIVE.touch;
+  bool anyKey = false;
+  bool anyOnGlass = false;
+  uint8_t stored = 0;
+  uint8_t survived = 0;  // on-glass contacts past the storage cap still count
+  for (uint8_t i = 0; i < count; ++i) {
+    const uint16_t rawYWord = static_cast<uint16_t>(frame[5 + 4 * i]) << 8 | frame[4 + 4 * i];
+    const uint16_t rawXWord = static_cast<uint16_t>(frame[7 + 4 * i]) << 8 | frame[6 + 4 * i];
+    const uint16_t sampleX = rawXWord & 0x0fff;
+    const uint16_t sampleY = rawYWord & 0x0fff;
+    if (sampleX == 0x03a0 && sampleY == 0x0020) {
+      anyKey = true;
+      continue;
+    }
+    if (sampleX >= 920) continue;
+    if (sampleX == 0 && sampleY == 0) continue;
+    // Raw x far below the glass domain is the bezel key pad's phantom
+    // co-report (hardware-validated 2026-10-29: a pad press leaks a contact
+    // at raw x 4-5 alongside the sentinel, while the stock calibration's
+    // lowest glass point is 374 — a real finger cannot report raw x < 64).
+    // Dropping it keeps the pad press a pure key event: the phantom neither
+    // cancels the key ("a touch is in progress") nor becomes a screen tap.
+    if (sampleX < 64) continue;
+    ++survived;
+    if (stored < MAX_TOUCH_CONTACTS) {
+      // Stock factory calibration to portrait screen pixels, then into the
+      // panel-native frame (x = portrait y, y = 551 - portrait x). The
+      // profile's raw range can still trim the result.
+      int16_t screenX = 0;
+      int16_t screenY = 0;
+      gslCalibrate(sampleX, sampleY, screenX, screenY);
+      TouchPoint& point = touchSnapshot.points[stored].point;
+      point.valid = true;
+      point.x = mapTouchAxis(static_cast<uint16_t>(screenY), t.rawMinX, t.rawMaxX, t.rawMaxX - t.rawMinX);
+      point.y = mapTouchAxis(static_cast<uint16_t>(551 - screenX), t.rawMinY, t.rawMaxY, t.rawMaxY - t.rawMinY);
+      point.timestamp = now;
+      // Hardware-validated on the A4 LITE (2026-10-29): the record top nibble
+      // is always 0 on real glass — records are coordinate-only (no track
+      // ids). Ids are frame-local record slots; consumers must not retain
+      // them across frames (idsStable = false), mirroring GT911's
+      // coordinate-only contract.
+      touchSnapshot.points[stored].id = stored;
+      ++stored;
+    }
+    anyOnGlass = true;
+  }
+
+  if (anyOnGlass) {
+    touchHomeKeyDown = false;
+    touchHomeKeyLongFired = false;
+  } else if (anyKey && !touchPressed) {
     if (!touchHomeKeyDown) {
       touchHomeKeyEvent = true;
       touchHomeKeyDown = true;
@@ -2231,24 +2289,25 @@ void InputManager::pollGslx680(const unsigned long now) {
       touchHomeKeyLongEvent = true;
       touchHomeKeyLongFired = true;
     }
-    return;
+    return;  // key-only frame: touch and snapshot state stay as they are
+  } else {
+    return;  // only dropped contacts: keep the last complete frame
   }
-  if (sampleX >= 920) return;
-  touchHomeKeyDown = false;
-  touchHomeKeyLongFired = false;
 
-  // Stock factory calibration to portrait screen pixels, then into the
-  // panel-native frame (x = portrait y, y = 551 - portrait x). The profile's
-  // raw range can still trim the result.
-  int16_t screenX = 0;
-  int16_t screenY = 0;
-  gslCalibrate(sampleX, rawYWord & 0x0fff, screenX, screenY);
-  const auto& t = BoardConfig::ACTIVE.touch;
-  touchPoint.valid = true;
-  touchPoint.x = mapTouchAxis(static_cast<uint16_t>(screenY), t.rawMinX, t.rawMaxX, t.rawMaxX - t.rawMinX);
-  touchPoint.y = mapTouchAxis(static_cast<uint16_t>(551 - screenX), t.rawMinY, t.rawMaxY, t.rawMaxY - t.rawMinY);
-  touchPoint.timestamp = now;
+  // On-glass contacts: publish the snapshot, run the gesture state machine,
+  // and keep the single-touch API on the first contact — mirroring the GT911
+  // path, including that a multi-contact gesture must not become a
+  // primary-contact tap. reportedCount is the frame's surviving on-glass
+  // contact count (the raw controller count also carries key, past-glass and
+  // padding records), so dropped records neither block the gesture state
+  // machine nor suppress the single-touch tap; contacts past the storage cap
+  // still count, keeping truncation detectable.
+  touchSnapshot.reportedCount = survived;
+  touchSnapshot.idsStable = false;  // A4 records are coordinate-only (no track ids)
+  touchSnapshot.count = stored;
+  updateMultiTouchGesture(touchSnapshot, now);
 
+  touchPoint = touchSnapshot.points[0].point;
   if (!touchPressed) {
     touchPressed = true;
     touchPressedEvent = true;
@@ -2263,6 +2322,10 @@ void InputManager::pollGslx680(const unsigned long now) {
     if (absInt(dx) > TOUCH_TAP_SLOP_PX || absInt(dy) > TOUCH_TAP_SLOP_PX) touchMovedBeyondTapSlop = true;
     if (absInt(dx) > TOUCH_TAP_RELEASE_SLOP_PX || absInt(dy) > TOUCH_TAP_RELEASE_SLOP_PX)
       touchMovedBeyondTapReleaseSlop = true;
+  }
+  if (touchSnapshot.reportedCount > 1) {
+    touchMovedBeyondTapSlop = true;
+    touchMovedBeyondTapReleaseSlop = true;
   }
 }
 #endif  // FREEINK_TOUCH_GSLX680

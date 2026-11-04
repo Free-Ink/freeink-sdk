@@ -23,5 +23,6 @@ inline int analogRead(int) { return 4095; }
 inline int digitalPinToInterrupt(int p) { return p; }
 inline void attachInterrupt(int,void (*f)(),int) { touchIsr=f; }
 inline void detachInterrupt(int) { touchIsr=nullptr; }
+inline void esp_restart() { std::abort(); }
 struct SerialStub { explicit operator bool() const { return false; } };
 inline SerialStub Serial;

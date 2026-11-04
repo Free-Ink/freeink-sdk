@@ -155,6 +155,14 @@ YH[7:4]) feeds the shared multi-touch tracker, so `supportsMultiTouch()` is
 true and its pinch, rotate and two-finger swipe classifiers run on this board
 (pinch was checked on the device).
 
+Periodic reads recover from missed interrupts and failed first reads.
+`touchContactPending()` also reports the initial IRQ and held contacts so idle
+loops can keep sampling promptly. Two samples still confirm a screen contact
+to reject observed one-sample phantom taps. This requires timely `update()`
+calls: a tap ending before its second sample is rejected. The vendor firmware
+uses a separate touch task; synchronous consumers can still miss taps during
+long main-loop stalls, even when rendering runs on another task.
+
 The bezel keys below the glass report at raw y ≈ 1600:
 
 - HOME (x ≈ 100) emits `wasHomeKeyPressed()`, `wasHomeKeyTapped()` and

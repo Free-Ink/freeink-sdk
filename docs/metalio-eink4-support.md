@@ -96,8 +96,11 @@ Cover keys are kept out of screen taps:
 - Physical volume +/- also emit `BTN_UP`/`BTN_DOWN`.
 
 The CST816S may NACK until touched. Initialization therefore does not require
-an ID-register response; IRQ pulses are latched and expired contacts/failed
-reads release input. See [Espressif's CST816S notes](https://github.com/espressif/esp-bsp/blob/master/components/lcd_touch/esp_lcd_touch_cst816s/README.md).
+an ID-register response. IRQ pulses wake idle polling through
+`touchContactPending()`; periodic reads recover from missed interrupts and
+failed first reads. Expired contacts/failed reads release input. Consumers must
+keep calling `update()` promptly; an IRQ alone cannot preserve a tap that ends
+before the controller is read. See [Espressif's CST816S notes](https://github.com/espressif/esp-bsp/blob/master/components/lcd_touch/esp_lcd_touch_cst816s/README.md).
 
 For hardware power-off, call `HapticManager::getInstance().end()` if using haptics,
 finish all display work, call `display.deepSleep()`,

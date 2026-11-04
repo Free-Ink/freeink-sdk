@@ -59,6 +59,11 @@ const char* InputManager::BUTTON_NAMES[] = {"Back", "Confirm", "Left", "Right", 
 namespace {
 int absInt(const int value) { return value < 0 ? -value : value; }
 
+#if FREEINK_TOUCH_CST816S
+volatile bool cstInterrupt = false;
+void IRAM_ATTR cstTouchInterrupt() { cstInterrupt = true; }
+#endif
+
 #if defined(TOUCH_PROBE_DEBUG)
 void touchDebugPrintf(const char* format, ...) {
   char buf[192];
@@ -786,6 +791,21 @@ InputManager::TouchSnapshot InputManager::getTouchSnapshot() const {
   return touchSnapshot;
 #else
   return {};
+#endif
+}
+
+bool InputManager::touchContactPending() const {
+#if FREEINK_TOUCH_CST816S
+  if (touchDataEnabled && (BoardConfig::isMetalioEInk4() || BoardConfig::isMetalioEInk4Plus())) {
+    const auto irq = BoardConfig::ACTIVE.touch.irq;
+    if (cstInterrupt || (irq >= 0 && digitalRead(irq) == LOW) || touchPressed || touchHomeKeyDown || cstVirtualButtons)
+      return true;
+  }
+#endif
+#if FREEINK_DEVICE_METALIO_EINK4_PLUS
+  return plusContactPending;
+#else
+  return false;
 #endif
 }
 
@@ -1733,11 +1753,6 @@ void InputManager::beginFt5x06() {
 // CST816S can NACK until the first touch: never gate availability on an ID
 // probe. Its 0x02..0x06 point frame uses the same packing as FT5x06, but its
 // interrupt/sleep behavior and off-screen cover keys need their own poll path.
-namespace {
-volatile bool cstInterrupt = false;
-void IRAM_ATTR cstTouchInterrupt() { cstInterrupt = true; }
-}
-
 void InputManager::beginCst816s() {
   const auto& t = BoardConfig::ACTIVE.touch;
 #if FREEINK_DEVICE_METALIO_EINK4
@@ -1772,8 +1787,7 @@ void InputManager::pollCst816s(const unsigned long now) {
   constexpr bool pending = false;
 #endif
   const bool active = touchPressed || touchHomeKeyDown || cstVirtualButtons || pending;
-  const bool fresh = cstInterrupt || t.irq < 0 || digitalRead(t.irq) == LOW;
-  if (!active && !fresh) return;
+  // Poll even without an IRQ: a missed edge or failed first read must not hide a contact.
   cstInterrupt = false;
   const auto release = [&]() {
 #if FREEINK_DEVICE_METALIO_EINK4_PLUS

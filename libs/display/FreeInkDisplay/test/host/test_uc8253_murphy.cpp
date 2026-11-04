@@ -90,6 +90,33 @@ void testFastGivesWhiteTheLongerDriveAndVcomCoversIt() {
   }
 }
 
+void testTheHostOwnsTheCadence() {
+  EpdBus bus;
+  Uc8253MurphyDriver driver;
+  driver.begin(bus);
+  Bits page = blank(0xFF);
+  for (int i = 0; i < 30; i++) {
+    bus.clear();
+    driver.display(bus, page.data(), page.data(), RefreshMode::Fast, false);
+    assert(!std::memcmp(last(bus, 0x22)->bytes.data(), MURPHY_LUT_22_FAST, sizeof(MURPHY_LUT_22_FAST)));
+  }
+}
+
+void testABoardCanStillAskTheDriverToPromote() {
+  Uc8253MurphyConfig cfg = uc8253MurphyDefaultConfig();
+  cfg.ghostClearInterval = 3;
+  EpdBus bus;
+  Uc8253MurphyDriver driver(cfg);
+  driver.begin(bus);
+  Bits page = blank(0xFF);
+  for (int i = 0; i < 8; i++) {
+    bus.clear();
+    driver.display(bus, page.data(), page.data(), RefreshMode::Fast, false);
+    const bool full = !std::memcmp(last(bus, 0x22)->bytes.data(), MURPHY_LUT_22_DEFAULT, sizeof(MURPHY_LUT_22_DEFAULT));
+    assert(full == (i % 4 == 3));
+  }
+}
+
 void testWithoutAGrayBankNothingChanges() {
   EpdBus bus;
   Uc8253MurphyDriver driver;
@@ -300,6 +327,8 @@ int main() {
   BoardConfig::ACTIVE.displayHeight = FB_H;
   assert(CTRL_W == FB_H && CTRL_H == FB_W);
   testFastGivesWhiteTheLongerDriveAndVcomCoversIt();
+  testTheHostOwnsTheCadence();
+  testABoardCanStillAskTheDriverToPromote();
   testWithoutAGrayBankNothingChanges();
   testGrayBankIsBalancedAndSelectsByPlane();
   testFastDrivesGrayAwayAndOnlyGray();

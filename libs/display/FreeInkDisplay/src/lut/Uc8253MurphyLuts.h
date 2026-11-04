@@ -16,8 +16,7 @@
 // clearing drive. FAST is the "FAST_REFRESH" (DU) set: a quick single-direction
 // drive. Both sets carry real BW/WB transition waveforms, so the driver runs a
 // differential refresh (old->DTM1, new->DTM2): unchanged pixels take WW/BB,
-// changed pixels take BW/WB. The driver still promotes a fast refresh to a full
-// one every MURPHY_GHOST_CLEAR_INTERVAL refreshes to flush residual ghosting.
+// changed pixels take BW/WB.
 
 namespace freeink {
 

@@ -14,8 +14,8 @@
 // only WW/BB fire and every pixel is fully driven to target — clean. A FAST (DU)
 // refresh is differential: previous frame -> DTM1 (old), new frame -> DTM2 (new),
 // so unchanged pixels take WW/BB and changed pixels take the quick BW/WB transition
-// kicks; the driver promotes a fast refresh to a full one every ghostClearInterval
-// refreshes since DU ghosts over time. Without a previous frame (single-buffer
+// kicks. FAST ghosts over time, and the host decides when to ask for a full refresh; a config can
+// set ghostClearInterval to have the driver promote one instead. Without a previous frame (single-buffer
 // builds) the fast path falls back to both-planes-new (WW/BB only).
 //
 // Gray, with -DFREEINK_MURPHY_GRAY: the host draws gray pixels black in the B/W
@@ -54,7 +54,7 @@ struct Uc8253MurphyConfig {
   Uc8253MurphyLutBank def;     // GC (ghost-clearing) waveforms
   Uc8253MurphyLutBank fast;    // DU (quick) waveforms
   Uc8253MurphyLutLens lens;    // per-register LUT byte counts
-  uint8_t ghostClearInterval;  // promote FAST -> full every N refreshes
+  uint8_t ghostClearInterval;  // promote FAST -> full every N refreshes, 0 for never
   Uc8253MurphyLutBank gray = {};  // overlay nudge; a board without one shows no gray
 };
 

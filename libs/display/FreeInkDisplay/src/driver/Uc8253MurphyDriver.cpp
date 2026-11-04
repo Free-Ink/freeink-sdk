@@ -72,7 +72,7 @@ const Uc8253MurphyConfig& uc8253MurphyDefaultConfig() {
       {MURPHY_LUT_20_DEFAULT, MURPHY_LUT_21_DEFAULT, MURPHY_LUT_22_DEFAULT, MURPHY_LUT_23_DEFAULT, MURPHY_LUT_24_DEFAULT},
       {MURPHY_LUT_20_FAST, MURPHY_LUT_21_FAST, MURPHY_LUT_22_FAST, MURPHY_LUT_23_FAST, MURPHY_LUT_24_FAST},
       {MURPHY_LUT_LEN_VCOM, MURPHY_LUT_LEN_WW, MURPHY_LUT_LEN_BW, MURPHY_LUT_LEN_WB, MURPHY_LUT_LEN_BB},  // 56/42/56/42/42
-      8,  // promote FAST -> full every 8 refreshes
+      0,  // the host owns the cadence: promoting here overrode its refresh setting, and hid it
 #if FREEINK_MURPHY_GRAY
       {MURPHY_LUT_20_GRAY, MURPHY_LUT_21_GRAY, MURPHY_LUT_22_GRAY, MURPHY_LUT_23_GRAY, MURPHY_LUT_24_GRAY},
 #endif
@@ -176,8 +176,8 @@ void Uc8253MurphyDriver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* 
   _isScreenOn = false;
   initController(bus);
 
-  // FAST (DU) ghosts over time, so promote to a full (GC) refresh every
-  // ghostClearInterval refreshes.
+  // FAST (DU) ghosts over time. A board with a ghostClearInterval promotes to a full (GC) refresh
+  // every that many refreshes. The default has none: the host decides when a page needs a clean one.
   bool useFast = (mode == RefreshMode::Fast);
   if (useFast) {
     if (_cfg.ghostClearInterval != 0 && _fastRefreshCount >= _cfg.ghostClearInterval) {

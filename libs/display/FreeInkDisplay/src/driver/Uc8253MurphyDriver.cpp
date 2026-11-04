@@ -163,6 +163,7 @@ void Uc8253MurphyDriver::begin(EpdBus& bus) {
   _isScreenOn = false;
   _fastRefreshCount = 0;
   _grayOnGlass = false;
+  _rolesTraded = false;
   initController(bus);
 }
 
@@ -206,6 +207,7 @@ void Uc8253MurphyDriver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* 
 
   triggerRefresh(bus, turnOff);
   _grayOnGlass = false;  // both paths above drove every gray pixel to a rail
+  _rolesTraded = !turnOff;
 }
 
 uint8_t* Uc8253MurphyDriver::grayPlane(uint8_t*& plane) {
@@ -233,12 +235,21 @@ void Uc8253MurphyDriver::displayGray(EpdBus& bus, const uint8_t*, bool turnOff, 
   _lsbStaged = _msbStaged = false;
   if (!staged || _grayOnGlass || !grayPlane(_gray)) return;
 
-  bus.reset(200);  // see display()
-  _isScreenOn = false;
-  initController(bus);
+  // The reset and init are most of the delay between the B/W page and its gray, and they can go
+  // when the controller is still up from that page. Every byte a stale controller could reuse is
+  // rewritten here anyway. But a refresh leaves DTM1 and DTM2 trading roles until the next reset,
+  // which the datasheet does not mention: without the swap below, light and dark trade places
+  // (measured on the panel: 28 and 55 where the cold path gives 52 and 35).
+  const bool warm = _rolesTraded;
+  _rolesTraded = false;
+  if (!warm) {
+    bus.reset(200);  // see display()
+    _isScreenOn = false;
+    initController(bus);
+  }
   loadLut(bus, _cfg.gray);
-  writePlane(bus, CMD_DTM1, _lsb);
-  writePlane(bus, CMD_DTM2, _msb);
+  writePlane(bus, CMD_DTM1, warm ? _msb : _lsb);
+  writePlane(bus, CMD_DTM2, warm ? _lsb : _msb);
   triggerRefresh(bus, turnOff);
 
   const size_t size = static_cast<size_t>(_fbWb) * _fbH;
@@ -247,6 +258,7 @@ void Uc8253MurphyDriver::displayGray(EpdBus& bus, const uint8_t*, bool turnOff, 
 }
 
 void Uc8253MurphyDriver::deepSleep(EpdBus& bus) {
+  _rolesTraded = false;
   if (_isScreenOn) {
     bus.cmd(CMD_POWER_OFF);
     bus.waitBusy(" M3 power-down");

@@ -191,6 +191,59 @@ void testASecondNudgeWouldLiftGrayFurtherSoItIsRefused() {
   assert(count(bus, 0x12) == 1);
 }
 
+void testANudgeRightAfterAPageSkipsTheResetAndSwapsThePlanes() {
+  const auto cfg = withGray();
+  EpdBus bus;
+  Uc8253MurphyDriver driver(cfg);
+  driver.begin(bus);
+  Bits page = blank(0xFF);
+  driver.display(bus, page.data(), page.data(), RefreshMode::Fast, false);
+  bus.clear();
+
+  Bits lsb = blank(0x00), msb = blank(0x00);
+  msb.set(5, 7, true);  // light: MSB only
+  nudge(driver, bus, lsb, msb);
+
+  assert(count(bus, 0x01) == 0 && count(bus, 0x04) == 0);  // no init, no power on
+  assert(count(bus, 0x12) == 1);
+  assert(ramBit(last(bus, 0x10)->bytes, 5, 7) && !ramBit(last(bus, 0x13)->bytes, 5, 7));
+}
+
+void testAPoweredOffControllerTakesTheFullPathWithStraightPlanes() {
+  const auto cfg = withGray();
+  EpdBus bus;
+  Uc8253MurphyDriver driver(cfg);
+  driver.begin(bus);
+  Bits page = blank(0xFF);
+  driver.display(bus, page.data(), page.data(), RefreshMode::Fast, true);  // the sunlight fix powers off
+  bus.clear();
+
+  Bits lsb = blank(0x00), msb = blank(0x00);
+  msb.set(5, 7, true);
+  nudge(driver, bus, lsb, msb);
+
+  assert(count(bus, 0x01) == 1 && count(bus, 0x04) == 1);
+  assert(!ramBit(last(bus, 0x10)->bytes, 5, 7) && ramBit(last(bus, 0x13)->bytes, 5, 7));
+}
+
+void testASleepEndsTheWarmPath() {
+  const auto cfg = withGray();
+  EpdBus bus;
+  Uc8253MurphyDriver driver(cfg);
+  driver.begin(bus);
+  // Sleep resets the controller: a nudge after it must not assume the roles are traded.
+  Bits page = blank(0xFF);
+  driver.display(bus, page.data(), page.data(), RefreshMode::Fast, false);
+  driver.deepSleep(bus);
+  driver.begin(bus);
+  bus.clear();
+  Bits lsb = blank(0x00), msb = blank(0x00);
+  msb.set(5, 7, true);
+  nudge(driver, bus, lsb, msb);
+  assert(count(bus, 0x01) == 1);
+  assert(!ramBit(last(bus, 0x10)->bytes, 5, 7));
+}
+
 void testAnAbandonedPassShowsNothing() {
   const auto cfg = withGray();
   EpdBus bus;
@@ -234,6 +287,9 @@ int main() {
   testFastDrivesGrayAwayAndOnlyGray();
   testGrayPixelsClearWithoutAPreviousFrame();
   testASecondNudgeWouldLiftGrayFurtherSoItIsRefused();
+  testANudgeRightAfterAPageSkipsTheResetAndSwapsThePlanes();
+  testAPoweredOffControllerTakesTheFullPathWithStraightPlanes();
+  testASleepEndsTheWarmPath();
   testAnAbandonedPassShowsNothing();
   testAFullRefreshClearsGrayWithoutMarks();
   std::cout << "PASS: UC8253 Murphy gray nudge and gray-aware FAST\n";

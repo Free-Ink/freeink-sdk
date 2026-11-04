@@ -110,6 +110,9 @@ class Uc8253MurphyDriver : public PanelDriver {
   // The glass holds gray that the B/W planes do not describe. A second nudge would lift it further,
   // and the next display() has to drive it away.
   bool _grayOnGlass = false;
+  // One refresh has run since the last reset and the controller is still up, so a nudge can skip
+  // the reset, and DTM1 and DTM2 have traded roles. See displayGray().
+  bool _rolesTraded = false;
 };
 
 PanelDriver& uc8253MurphyDriver();

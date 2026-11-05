@@ -237,7 +237,7 @@ uint8_t InputManager::getState() {
     state |= (1 << (button2 + 4));
   }
 
-  // Read power button (polarity per board; X4 active-LOW, de-link active-HIGH)
+  // Read power button (polarity per board; X4 active-LOW, Silkscreen active-HIGH)
   const int powerActiveLevel = BoardConfig::ACTIVE.input.powerActiveHigh ? HIGH : LOW;
   if (digitalRead(BoardConfig::ACTIVE.input.power) == powerActiveLevel) {
     state |= (1 << BTN_POWER);

@@ -13,7 +13,7 @@
 // This picks the right source at compile time from SoC capability macros, and
 // reads the wake pin + active level from BoardConfig::ACTIVE.input, so the same
 // consumer code deep-sleeps correctly on every supported board. The wake pin must
-// be RTC-capable on ext1 parts (true for the de-link power button).
+// be RTC-capable on ext1 parts (true for the Silkscreen power button).
 
 namespace freeink {
 

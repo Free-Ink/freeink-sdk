@@ -6,7 +6,7 @@
 // boards without one (e.g. Xteink X4/X3), so it is always safe to construct.
 //
 // Two topologies, selected purely by the board profile:
-//   * Single channel (de-link primary LED, LilyGo backlight, Murphy): one PWM pin
+//   * Single channel (Silkscreen primary LED, LilyGo backlight, Murphy): one PWM pin
 //     (frontlight.gpio). setColorTemperature() is a no-op.
 //   * Warm/cool pair (Xteink X4 Pro: cool=GPIO8, warm=GPIO9): two independent PWM
 //     channels. Overall brightness is the total light; color temperature splits that

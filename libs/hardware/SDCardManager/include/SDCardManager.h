@@ -4,7 +4,7 @@
 // names. Two interchangeable backends behind one FsVolume& seam, so every op
 // returns ordinary FsFile objects:
 //   * SPI / SdFat (default).
-//   * Native 4-bit SDMMC (FREEINK_SD_SDMMC, e.g. de-link) — SdFat can't drive
+//   * Native 4-bit SDMMC (FREEINK_SD_SDMMC, e.g. Silkscreen) — SdFat can't drive
 //     SDIO, so a plain FsVolume is mounted on an esp-idf SDMMC block device
 //     (src/SdmmcBlockDevice). Requires the build to set USE_BLOCK_DEVICE_INTERFACE=1.
 // Boards whose SD rail needs more than a GPIO (e.g. an I2C PMIC) register their

@@ -300,11 +300,11 @@ static const Ssd1677Config& ssd1677PiccoConfig() {
   // YRD/OPM use external mode 3 for UI and OTP mode 2 for reading.
   static const Ssd1677Config yrd = piccoStockConfig(0x01, nullptr);
   static const Ssd1677Config depg = [] {
-    Ssd1677Config c = piccoConfig(0x01, lut_picco_depg_fast, lut_picco_depg_full);
+    Ssd1677Config c = piccoConfig(0x01, lut_picco_depg_custom_fast, lut_picco_depg_full);
     c.piccoStockGrayscale = true;
-    c.grayLut = lut_picco_depg_gray;
+    c.grayLut = lut_grayscale_sticky;
     c.factoryGrayLut = lut_picco_depg_image;
-    c.readerFastLut = lut_picco_depg_fast_slot1;  // book pages: stock slot 1, 17 frames
+    c.readerFastLut = lut_picco_depg_custom_fast;  // same drive for UI and book pages
     c.fastSeqOverride = 0xDC;                      // UI: stock mode 3 keeps the rails on
     return c;
   }();
@@ -871,7 +871,21 @@ void Ssd1677Driver::displayImpl(EpdBus& bus, const uint8_t* fb, const uint8_t* p
       writeRam(bus, CMD_WRITE_RAM_RED, fb, _bufferSize);
     } else {
       writeRam(bus, CMD_WRITE_RAM_BW, fb, _bufferSize);
-      if (prev != nullptr) {
+      if (_darkBackground && _cfg.piccoWaveforms && _cfg.fastLut == lut_picco_depg_custom_fast) {
+        // Re-drive every pixel toward its target instead of idling the black background.
+        setRamArea(bus, 0, 0, _w, _h);
+        bus.cmd(CMD_WRITE_RAM_RED);
+        uint8_t chunk[128];
+        for (uint32_t offset = 0; offset < _bufferSize;) {
+          const uint16_t count = _bufferSize - offset < sizeof(chunk) ? _bufferSize - offset : sizeof(chunk);
+          for (uint16_t i = 0; i < count; ++i) chunk[i] = static_cast<uint8_t>(~fb[offset + i]);
+          bus.data(chunk, count);
+          offset += count;
+        }
+#if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
+        EPD_LOG("[SSD1677] dark FAST: 17 frames, Sticky voltages, RED=complement(target)\n");
+#endif
+      } else if (prev != nullptr) {
         // Dual-buffer: RED holds the previous frame for the differential compare.
         // Single-buffer (prev == nullptr): RED already holds it from last refresh.
         if (_cfg.piccoWaveforms) setRamArea(bus, 0, 0, _w, _h);
@@ -1071,7 +1085,7 @@ void Ssd1677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
   _piccoGrayPending = false;
   if (_cfg.piccoWaveforms && lut) _needsGrayClear = true;
 
-  if (_cfg.piccoStockGrayscale && lut == nullptr) {
+  if (_cfg.piccoStockGrayscale && lut == nullptr && (factoryMode || _cfg.grayLut != lut_grayscale_sticky)) {
     const unsigned char* waveform = factoryMode ? _cfg.factoryGrayLut : _cfg.grayLut;
     bus.cmd(CMD_DISPLAY_UPDATE_CTRL1);
     bus.data(CTRL1_NORMAL);
@@ -1130,8 +1144,8 @@ void Ssd1677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
     // on, i.e. the X4's fast path). refresh() then runs the 0xCC external-LUT
     // sequence (its enable bits are a no-op on already-up rails).
     if (_cfg.grayPowerUpFirst) powerOn(bus);
-    // Picco: an AA pass belongs to a book page, which powers off like reader pages.
-    refresh(bus, RefreshMode::Fast, turnOff || _cfg.piccoWaveforms);
+    // Sticky AA follows the caller's power policy on either board.
+    refresh(bus, RefreshMode::Fast, turnOff || (_cfg.piccoWaveforms && selectedLut != lut_grayscale_sticky));
   }
 
   setCustomLut(bus, false, nullptr);

@@ -42,7 +42,7 @@ static void expectRefresh(Ssd1677Driver& d, RefreshMode mode, uint8_t ctrl2, con
   } else {
     assert(!sent);
   }
-  if (d._cfg.fastLut == lut_picco_depg_fast) {
+  if (d._cfg.fastLut == lut_picco_depg_custom_fast) {
     bool addressed = false;
     unsigned planes = 0;
     for (const auto& w : bus.writes) {
@@ -56,6 +56,50 @@ static void expectRefresh(Ssd1677Driver& d, RefreshMode mode, uint8_t ctrl2, con
     assert(planes == 2);
   }
   assert(!d._customLutActive);
+}
+
+static void expectCustomDepg(Ssd1677Driver& d) {
+  assert(!memcmp(lut_picco_depg_custom_fast, lut_picco_depg_fast_slot1, 105));
+  assert(!memcmp(lut_picco_depg_custom_fast + 105, lut_grayscale_sticky + 105, 5));
+  EpdBus bus;
+  Bytes prior(48000, 0x33), target(48000);
+  for (size_t i = 0; i < target.size(); ++i) target[i] = static_cast<uint8_t>(i);
+  for (bool reading : {false, true}) {
+    for (bool dark : {false, true}) {
+      d.begin(bus);
+      d.setBackgroundHint(dark);
+      d.setReaderRefresh(reading);
+      d.display(bus, prior.data(), nullptr, RefreshMode::Full, false);
+      bus.clear();
+      d.display(bus, target.data(), nullptr, RefreshMode::Fast, false);
+      const auto* lut = lut_picco_depg_custom_fast;
+      assert(lastLut(bus) && *lastLut(bus) == Bytes(lut, lut + 105));
+      assert(lastRegister(bus, 0x03) == lut[105]);
+      assert(lastRegister(bus, 0x2C) == lut[109]);
+      unsigned planes = 0, activations = 0;
+      for (const auto& w : bus.writes) {
+        if (w.command == 0x04) assert(w.bytes == Bytes(lut + 106, lut + 109));
+        activations += w.command == 0x20;
+        if (w.command != 0x24 && w.command != 0x26) continue;
+        ++planes;
+        Bytes expected = w.command == 0x24 ? target : prior;
+        if (w.command == 0x26 && dark) {
+          expected = target;
+          for (auto& b : expected) b = static_cast<uint8_t>(~b);
+        }
+        assert(w.bytes == expected);
+      }
+      assert(planes == 2 && activations == 1);
+      assert(Bytes(d._piccoOld, d._piccoOld + 48000) == target);
+      bus.clear();
+      d.display(bus, target.data(), nullptr, RefreshMode::Half, false);
+      assert(lastLut(bus) && *lastLut(bus) == Bytes(lut_picco_depg_full, lut_picco_depg_full + 105));
+      for (const auto& w : bus.writes)
+        if (w.command == 0x24 || w.command == 0x26) assert(w.bytes == target);
+    }
+  }
+  d.setBackgroundHint(false);
+  d.setReaderRefresh(false);
 }
 
 static void expectRetainedGrayStrip(Ssd1677Driver& d) {
@@ -129,14 +173,23 @@ static void expectStockPiccoGray(Ssd1677Driver& d) {
     const auto* lut = absolute ? d._cfg.factoryGrayLut : d._cfg.grayLut;
     if (lut) assert(lastLut(bus) && *lastLut(bus) == Bytes(lut, lut + 105));
     else assert(!lastLut(bus));
+    const bool stickyAa = !absolute && lut == lut_grayscale_sticky;
     uint8_t sequence = lut ? 0xC7 : 0xD7;
     if (wasOn) sequence &= 0x3F;
     // Stock follows the caller: retain power for AA here, shut down for the image.
     if (!absolute) sequence &= 0xFC;
+    if (stickyAa) sequence = 0xCC;
     assert(lastRegister(bus, 0x22) == sequence);
+    if (stickyAa) {
+      assert(lastRegister(bus, 0x03) == lut[105]);
+      assert(lastRegister(bus, 0x2C) == lut[109]);
+      assert(lastRegister(bus, 0x3C) == 0x80);
+      for (const auto& w : bus.writes)
+        if (w.command == 0x04) assert(w.bytes == Bytes(lut + 106, lut + 109));
+    }
     unsigned activations = 0;
     for (const auto& w : bus.writes) {
-      assert(w.command != 0x03 && w.command != 0x04 && w.command != 0x2C);
+      if (!stickyAa) assert(w.command != 0x03 && w.command != 0x04 && w.command != 0x2C);
       activations += w.command == 0x20;
     }
     assert(activations == 1);
@@ -147,6 +200,27 @@ static void expectStockPiccoGray(Ssd1677Driver& d) {
       for (const auto& w : bus.writes)
         if (w.command == 0x26) assert(w.bytes == Bytes(48000, 0x66));
     } else assert(d._needsGrayClear && !d._isScreenOn);
+  }
+}
+
+static void expectStickyAaPower(Ssd1677Driver& d) {
+  EpdBus bus;
+  Bytes base(48000, 0x55), lsb(48000, 0x11), msb(48000, 0x33);
+  for (bool turnOff : {false, true}) {
+    d.begin(bus);
+    d.beginGrayscale(bus, base.data(), GrayscaleMode::Overlay, RefreshMode::Full, true);
+    d.copyGrayscaleLsb(bus, lsb.data());
+    d.copyGrayscaleMsb(bus, msb.data());
+    assert(!d._isScreenOn);
+    bus.clear();
+    d.displayGray(bus, msb.data(), turnOff, nullptr, false);
+    std::vector<uint8_t> sequences;
+    for (const auto& w : bus.writes) {
+      if (w.command == 0x22) sequences.push_back(w.bytes[0]);
+      assert(w.command != 0x1A);  // Sticky AA does not load a fixed temperature.
+    }
+    assert(sequences == std::vector<uint8_t>({0xC0, static_cast<uint8_t>(turnOff ? 0xCF : 0xCC)}));
+    assert(d._isScreenOn == !turnOff && !d._customLutActive);
   }
 }
 
@@ -271,7 +345,7 @@ static void expectNightGray(Ssd1677Driver& d) {
   for (const auto& w : display._bus.writes)
     if (w.command == 0x26) old = &w.bytes;
   // (0x0F & ~0x03) | (~0x00 & 0x03): gray pixels start opposite the new target.
-  assert(old && (*old)[0] == 0x0F);
+  assert(old && (*old)[0] == (d._cfg.fastLut == lut_picco_depg_custom_fast ? 0xFF : 0x0F));
   display.setInverted(false);
   d.setReaderRefresh(false);
 }
@@ -583,29 +657,30 @@ int main(int argc, char** argv) {
     expectRetainedGrayStrip(d);
   } else if (!strcmp(which, "depg")) {
     assert(variant == 2);
-    // Exact stock UI and reader durations, including the unchanged-black pulse.
-    assert(d._cfg.fastLut == lut_picco_depg_fast);
+    // UI and reader share the custom pulse timing and voltage calibration.
+    assert(d._cfg.fastLut == lut_picco_depg_custom_fast);
     assert(d._cfg.fastLut[10] == 0x80 && d._cfg.fastLut[20] == 0x40);
-    assert(d._cfg.fastLut[50] == 7 && d._cfg.fastLut[51] == 0);
+    assert(d._cfg.fastLut[50] == 17 && d._cfg.fastLut[51] == 0);
     expectRefresh(d, RefreshMode::Full, 0xE4, lut_picco_depg_full);
     expectRefresh(d, RefreshMode::Half, 0x04, lut_picco_depg_full);
-    expectRefresh(d, RefreshMode::Fast, 0x0C, lut_picco_depg_fast);
+    expectRefresh(d, RefreshMode::Fast, 0x0C, lut_picco_depg_custom_fast);
     d.setReaderRefresh(true);
-    expectRefresh(d, RefreshMode::Fast, 0x0C, lut_picco_depg_fast_slot1);
-    expectRefresh(d, RefreshMode::Fast, 0x0C, lut_picco_depg_fast_slot1);
-    expectRefresh(d, RefreshMode::Fast, 0x0F, lut_picco_depg_fast_slot1, true);
-    expectRefresh(d, RefreshMode::Fast, 0xCC, lut_picco_depg_fast_slot1);
-    expectRefresh(d, RefreshMode::Fast, 0x0C, lut_picco_depg_fast_slot1);
+    expectRefresh(d, RefreshMode::Fast, 0x0C, lut_picco_depg_custom_fast);
+    expectRefresh(d, RefreshMode::Fast, 0x0C, lut_picco_depg_custom_fast);
+    expectRefresh(d, RefreshMode::Fast, 0x0F, lut_picco_depg_custom_fast, true);
+    expectRefresh(d, RefreshMode::Fast, 0xCC, lut_picco_depg_custom_fast);
+    expectRefresh(d, RefreshMode::Fast, 0x0C, lut_picco_depg_custom_fast);
     d.setReaderRefresh(false);
-    expectRefresh(d, RefreshMode::Fast, 0x0C, lut_picco_depg_fast_slot1);
-    expectRefresh(d, RefreshMode::Fast, 0x0C, lut_picco_depg_fast);
-    expectRefresh(d, RefreshMode::Fast, 0x0C, lut_picco_depg_fast);
+    expectRefresh(d, RefreshMode::Fast, 0x0C, lut_picco_depg_custom_fast);
+    expectRefresh(d, RefreshMode::Fast, 0x0C, lut_picco_depg_custom_fast);
+    expectRefresh(d, RefreshMode::Fast, 0x0C, lut_picco_depg_custom_fast);
     expectStockPiccoGray(d);
     expectRetainedGrayStrip(d);
   } else {
     assert(variant == 0);
     assert(d._cfg.fullLut == nullptr && d._cfg.fastLut == nullptr && d._cfg.grayLut == lut_grayscale_sticky);
   }
+  if (variant == PiccoDepg0397) { expectCustomDepg(d); expectStickyAaPower(d); }
   expectNightGray(d);
   expectIdlePower(d);
   std::printf("Picco %s: probe, config and refresh sequences passed\n", which);

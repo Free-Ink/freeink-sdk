@@ -113,6 +113,7 @@ class Ssd1677Driver : public PanelDriver {
     _needsGrayClear = true;
     _absoluteInput = false;
   }
+  void setBackgroundHint(bool dark) override { _darkBackground = dark; }
   void setReaderRefresh(bool reading) override { _readerRefresh = reading; }
   // BOOX 2959 runs the reader AA overlay after inverted pages too.
   bool grayscaleWhileInverted() const override { return _cfg.piccoWaveforms; }
@@ -149,6 +150,7 @@ class Ssd1677Driver : public PanelDriver {
   bool _piccoGrayPending = false;
   bool _piccoAbsoluteRetained = false;
   bool _pendingFrameSync = false;
+  bool _darkBackground = false;
   bool _readerRefresh = false;
   bool _afterReader = false;  // last refresh presented a book page
   bool _needsGrayClear = false;

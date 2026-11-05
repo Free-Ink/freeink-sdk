@@ -538,6 +538,18 @@ int main(int argc, char** argv) {
     assert(data && data->size() == 96000);
     assert((*data)[0] == 0x55 && (*data)[100] == 0x55 && (*data)[95999] == 0x55);
     assert(s._needsPowerOn);  // a whole-screen UI change is a mode 2 redraw and powers off
+    {
+      // Light UI redraw tops up only bytes that changed; static black text is left alone.
+      Bytes half(48000, 0x00);
+      std::fill(half.begin() + 24000, half.end(), 0xFF);
+      s.display(bus, black.data(), nullptr, RefreshMode::Full, false);
+      bus.clear();
+      s.display(bus, half.data(), nullptr, RefreshMode::Fast, false);
+      const Bytes* frame = nullptr;
+      for (const auto& w : bus.writes)
+        if (w.command == 0x10) frame = &w.bytes;
+      assert(frame && (*frame)[0] == 0x00 && (*frame)[48000] == 0x55);
+    }
     // Overlay AA: LSB mask -> low bit, MSB mask -> high bit, slot-5 LUT.
     assert(s.grayscaleCapabilities(GrayscaleMode::Overlay).supported());
     assert(s.grayscaleCapabilities(GrayscaleMode::Absolute).supported());
@@ -577,7 +589,7 @@ int main(int argc, char** argv) {
       if (w.command == 0x20) lut = &w.bytes;
     }
     assert(baseRefreshes == 1 && lut && *lut == Bytes(lut_picco_se0400_fast, lut_picco_se0400_fast + 535));
-    assert(data && *data == Bytes(96000, 0x1B));  // plain old/new pairs
+    assert(data && *data == Bytes(96000, 0x9B));  // B->B top-up, B->W, W->B, W->W
     assert(memcmp(s._old, target.data(), target.size()) == 0);
     Bytes lsb(48000, 0x00), msb(48000, 0x00);
     lsb[0] = 0xF0;  // px 0-3 LSB
@@ -623,7 +635,7 @@ int main(int argc, char** argv) {
     s.display(bus, grayBase.data(), nullptr, RefreshMode::Fast, false);
     unsigned activations = 0;
     for (const auto& w : bus.writes) {
-      if (w.command == 0x10) assert(w.bytes == Bytes(96000, 0x39));
+      if (w.command == 0x10) assert(w.bytes == Bytes(96000, 0xB9));
       activations += w.command == 0x12;
     }
     assert(activations == 1 && !s._grayPending);

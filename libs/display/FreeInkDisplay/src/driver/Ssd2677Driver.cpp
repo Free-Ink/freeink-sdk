@@ -215,10 +215,14 @@ void Ssd2677Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev,
     for (uint32_t i = 0; i < size; ++i) changed += _old[i] != fb[i];
     redraw = changed > size / 8;
   }
-  if (mode == RefreshMode::Fast && _darkBackground && _old) {
-    // Undriven black background fades, so erased white text shows as deeper black.
-    // Drive every black pixel as white-to-black so old and fresh black match.
-    for (uint32_t i = 0; i < size; ++i) _old[i] |= static_cast<uint8_t>(~fb[i]);
+  // Undriven blacks fade: on a dark background erased white text shows as deeper
+  // black, and in UI dither old dots show through. Drive every black pixel as
+  // white-to-black so old and fresh black match. In light mode only on UI redraws,
+  // and only where the frame changed: re-driving static text and reader pages
+  // builds up ghosts.
+  if (mode == RefreshMode::Fast && (_darkBackground || (redraw && !reading)) && _old) {
+    for (uint32_t i = 0; i < size; ++i)
+      if (_darkBackground || _old[i] != fb[i]) _old[i] |= static_cast<uint8_t>(~fb[i]);
   }
   // Real old plane for every mode: old == new gives each pixel the no-change drive.
   sendPacked(bus, _old, fb);

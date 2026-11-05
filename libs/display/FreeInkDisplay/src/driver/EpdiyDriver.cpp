@@ -233,6 +233,8 @@ void EpdiyDriver::skipInitialResync() { g_resyncPending = false; }
 
 void EpdiyDriver::deepSleep(EpdBus& bus) {
   (void)bus;
+  // Match wake's clear and full GC16 redraw, using the completed sleep image.
+  if (g_started && g_glassMatchesFront) drawFront(Draw::Clean);
   epd_poweroff();
 }
 

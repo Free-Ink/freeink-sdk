@@ -301,14 +301,14 @@ static void expectSsd2677NightMode(Ssd2677Driver& driver) {
       display._bus.clear();
       display.displayBuffer(mode, true);
       const bool fast = mode == FreeInkDisplay::FAST_REFRESH;
-      const unsigned expectedFrames = fast ? 1 : 2;
+      const unsigned expectedFrames = 1;
       // A whole-screen change is a redraw: mode 2 in both contexts.
       const auto* lut = fast ? lut_picco_se0400_fast : lut_picco_se0400_full;
       unsigned frames = 0, activations = 0, lutLoads = 0;
       for (const auto& w : display._bus.writes) {
         if (w.command == 0x10) {
           assert(activations == frames);
-          assert(w.bytes == Bytes(96000, fast ? 0x9B : (frames == 0 ? 0x5F : 0xBB)));
+          assert(w.bytes == Bytes(96000, fast ? 0x9B : 0x1B));
           ++frames;
         }
         if (w.command == 0x20) {
@@ -452,16 +452,15 @@ int main(int argc, char** argv) {
     newFb[0] = 0x0F;  // left 4 px black, right 4 px white; old all white
     bus.clear();
     s.display(bus, newFb.data(), oldFb.data(), RefreshMode::Fast, false);
-    // First paint is forced FULL: unknown glass is cleaned as black to white,
-    // then the target is drawn from white.
+    // First paint is forced FULL, drawn from the white seed in one pass.
     const Bytes* data = nullptr;
     unsigned frames = 0;
     for (const auto& w : bus.writes)
       if (w.command == 0x10) {
-        if (frames++ == 0) assert(w.bytes == Bytes(96000, 0x55));
+        ++frames;
         data = &w.bytes;
       }
-    assert(frames == 2 && data && data->size() == 96000);
+    assert(frames == 1 && data && data->size() == 96000);
     assert((*data)[0] == 0xAA && (*data)[1] == 0xFF);  // white->black, white->white
     const Bytes* lut = nullptr;
     for (const auto& w : bus.writes)

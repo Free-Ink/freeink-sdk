@@ -273,6 +273,48 @@ static void expectIdlePower(Ssd1677Driver& d) {
   assert(!d._isScreenOn && d._needsGrayClear);
 }
 
+static void expectSsd2677NightMode(Ssd2677Driver& driver) {
+  for (bool reading : {false, true}) {
+    for (auto mode : {FreeInkDisplay::FAST_REFRESH, FreeInkDisplay::HALF_REFRESH, FreeInkDisplay::FULL_REFRESH}) {
+      FreeInkDisplay display(1, 2, 3, 4, 5, 6);
+      display._driver = &driver;
+      display.begin();
+      driver.setReaderRefresh(reading);
+      driver._afterReader = false;
+      display.setInverted(true);
+      std::memset(display.getFrameBuffer(), 0xCC, 48000);
+      display.displayBuffer(FreeInkDisplay::FULL_REFRESH, true);
+      std::memset(display.getFrameBuffer(), 0xAA, 48000);
+      display._bus.clear();
+      display.displayBuffer(mode, true);
+      const bool fast = mode == FreeInkDisplay::FAST_REFRESH;
+      const unsigned expectedFrames = fast ? 1 : 2;
+      const auto* lut = fast ? (reading ? lut_picco_se0400_fast : lut_picco_se0400_mode3)
+                             : lut_picco_se0400_full;
+      unsigned frames = 0, activations = 0, lutLoads = 0;
+      for (const auto& w : display._bus.writes) {
+        if (w.command == 0x10) {
+          assert(activations == frames);
+          // Only HALF/FULL prepend a white clean; FAST retains the physical old image.
+          const bool whiteClean = !fast && frames == 0;
+          assert(w.bytes == Bytes(96000, whiteClean ? 0xFF : fast ? 0x1B : 0x33));
+          ++frames;
+        }
+        if (w.command == 0x20) {
+          assert(w.bytes == Bytes(lut, lut + 535));
+          ++lutLoads;
+        }
+        if (w.command == 0x12) ++activations;
+      }
+      assert(frames == expectedFrames && activations == expectedFrames && lutLoads == expectedFrames);
+      assert(Bytes(driver._old, driver._old + 48000) == Bytes(48000, 0x55));
+      assert(driver._needsPowerOn == (!fast || reading));
+      display.setInverted(false);
+    }
+  }
+  driver.setReaderRefresh(false);
+}
+
 int main(int argc, char** argv) {
   const char* which = argc > 1 ? argv[1] : "yrd";
   static const uint8_t yrd[10] = {0xCA, 0xFE, 0x00, 0x16, 0x77, 0x02, 0x10, 0x01, 0x00, 0x91};
@@ -462,6 +504,7 @@ int main(int argc, char** argv) {
       assert(w.command != 0x07);  // no deep sleep
     }
     assert(poweredOn && !s._needsPowerOn);
+    expectSsd2677NightMode(s);
     Bytes grayBase(48000, 0x55), grayLsb(48000, 0x11), grayMsb(48000, 0x33);
     s.display(bus, grayBase.data(), nullptr, RefreshMode::Full, false);
     s.beginGrayscale(bus, grayBase.data(), GrayscaleMode::Overlay, RefreshMode::Fast, false);

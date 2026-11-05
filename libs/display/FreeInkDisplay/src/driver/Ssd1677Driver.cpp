@@ -235,8 +235,8 @@ bool stickyHasSsd2677() {
 // None of those -> the stock SSD2677 path, SE0400NQW47 (see Ssd2677Driver).
 // Per-panel values are the stock tables (build 2912): YRD0426 and OPM040B3 run
 // FULL/HALF on OTP (0xF7/0xD7) with a custom FAST LUT; DEPG0397 uses custom LUTs
-// for every mode (its FAST is stock's mode-2 table, which cut boot ghosting). Border at init: 0x01 (YRD0426, DEPG0397), 0x03 (OPM040B3).
-// Grayscale follows the Sticky (see piccoConfig).
+// for every mode. FAST is stock mode 3 (slot 2). Border at init: 0x01 (YRD0426,
+// DEPG0397), 0x03 (OPM040B3). Grayscale follows the Sticky (see piccoConfig).
 
 static uint8_t piccoClassify(const uint8_t id[10]) {
   static const uint8_t yrdA[10] = {0xCA, 0xFE, 0x00, 0x16, 0x77, 0x02, 0x10, 0x01, 0x00, 0x91};
@@ -291,8 +291,9 @@ uint8_t piccoProbePanel() {
 }
 
 static const Ssd1677Config& ssd1677PiccoConfig() {
+  // FAST is stock mode 3 (slot 2); DEPG0397 holds its fast phase longer.
   static const Ssd1677Config yrd = piccoConfig(0x01, lut_picco_fast, nullptr);
-  static const Ssd1677Config depg = piccoConfig(0x01, lut_picco_depg_fast, lut_picco_depg_full);
+  static const Ssd1677Config depg = piccoConfig(0x01, lut_picco_depg_fast_9, lut_picco_depg_full);
   static const Ssd1677Config opm = piccoConfig(0x03, lut_picco_fast, nullptr);
 
   switch (piccoProbePanel()) {
@@ -887,6 +888,14 @@ void Ssd1677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
                               : _cfg.grayLut;
   }
   setCustomLut(bus, true, selectedLut);
+  // The border register keeps its last value across refreshes; a follow-LUT value
+  // (Sticky's 0x01) would now track the loaded grayscale LUT and drive the border
+  // black. Park it for the gray pass; the next normal refresh restores the
+  // per-mode border via the seqOverride path. Board B/W LUTs leave it alone (stock).
+  if (_cfg.borderWaveformGray != 0) {
+    bus.cmd(CMD_BORDER_WAVEFORM);
+    bus.data(_cfg.borderWaveformGray);
+  }
 
   if (factoryMode) {
     // Keep shutdown separate from the absolute grayscale activation: combining
@@ -946,15 +955,6 @@ void Ssd1677Driver::setCustomLut(EpdBus& bus, bool enabled, const unsigned char*
 
   bus.cmd(CMD_WRITE_VCOM);  // VCOM
   bus.data(pgm_read_byte(&data[109]));
-
-  // The border register keeps its last value across refreshes; a follow-LUT value
-  // (Sticky's 0x01) would now track the loaded grayscale LUT and drive the border
-  // black. Park it while the custom LUT is active; the next normal refresh restores
-  // the per-mode border via the seqOverride path.
-  if (_cfg.borderWaveformGray != 0) {
-    bus.cmd(CMD_BORDER_WAVEFORM);
-    bus.data(_cfg.borderWaveformGray);
-  }
 
   _customLutActive = true;
 }

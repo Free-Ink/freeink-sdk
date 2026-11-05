@@ -185,9 +185,10 @@ void Ssd2677Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev,
   // reason non-full frames ghosted). _old == nullptr (alloc failed) falls back to
   // an all-white old plane in sendPacked.
   sendPacked(bus, _old, fb);
-  // Stock powers off after every refresh (PON, 0x12, POF), whatever `turnOff` says.
+  // FAST is stock mode 3 (slot 2). The stock app powers off after every refresh
+  // (PON, 0x12, POF), whatever `turnOff` says.
   (void)turnOff;
-  refreshWith(bus, mode == RefreshMode::Fast ? lut_picco_se0400_fast : lut_picco_se0400_full, true);
+  refreshWith(bus, mode == RefreshMode::Fast ? lut_picco_se0400_mode3 : lut_picco_se0400_full, true);
   if (_old) memcpy(_old, fb, geometry().bufferSize);  // new becomes old for the next frame
   _needsInitialFull = false;
 }
@@ -299,6 +300,8 @@ void Ssd2677Driver::copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
   // which never latches one. Reset leaves the glass as it is.
   if (isSticky()) initPanel(bus);
   // Stock (FUN_42286a70): MSB mask in the high bit, LSB mask in the low bit.
+  // The Picco's stock AA powers on before the upload (0x4200bad0).
+  if (!isSticky()) powerOn(bus);
   sendPacked(bus, msb, _lsb);
 }
 

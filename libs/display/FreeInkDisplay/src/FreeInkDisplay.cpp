@@ -931,6 +931,19 @@ void FreeInkDisplay::displayGrayCalibration(uint16_t customX, uint16_t customY, 
   _driver->displayGrayCalibration(_bus, frameBuffer, customX, customY, customW, customH);
 }
 
+bool FreeInkDisplay::displayRetainedGrayscaleOverlay(uint16_t x, uint16_t y, uint16_t w, uint16_t h,
+                                                    bool restore) {
+  if (!_driver || _inverted || !frameBuffer || !w || !h || x >= getDisplayWidth() || y >= getDisplayHeight() ||
+      w > getDisplayWidth() - x || h > getDisplayHeight() - y) return false;
+  DisplayPmLock pmLock;
+  syncPendingAsync();
+  cancelGrayscalePass();
+  if (!_driver->displayRetainedGrayscaleOverlay(_bus, restore ? nullptr : frameBuffer, x, y, w, h)) return false;
+  _shadowValid = false;
+  _redRamSynced = false;
+  return true;
+}
+
 void FreeInkDisplay::refreshDisplay(RefreshMode mode, bool turnOffScreen) { displayBuffer(mode, turnOffScreen); }
 
 void FreeInkDisplay::copyGrayscaleBuffers(const uint8_t* lsbBuffer, const uint8_t* msbBuffer) {
@@ -1128,6 +1141,10 @@ void FreeInkDisplay::cleanupGrayscaleWithPreviousBuffer() {
 
 void FreeInkDisplay::requestResync(uint8_t settlePasses) {
   if (_driver) _driver->requestResync(settlePasses);
+}
+
+void FreeInkDisplay::setReaderRefresh(const bool reading) {
+  if (_driver) _driver->setReaderRefresh(reading);
 }
 
 void FreeInkDisplay::skipInitialResync() {

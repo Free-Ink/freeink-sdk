@@ -14,6 +14,9 @@
 #include <SPI.h>  // hand the shared bus pins back after the Sticky panel probe
 #endif
 
+#if FREEINK_DEVICE_PICCO
+#include <esp_heap_caps.h>
+#endif
 #include <cstring>
 #include <vector>
 
@@ -233,10 +236,8 @@ bool stickyHasSsd2677() {
 //   DEPG0397  any other ID starting CA FE 00 16 77
 //   OPM040B3  "W040B3"
 // None of those -> the stock SSD2677 path, SE0400NQW47 (see Ssd2677Driver).
-// Per-panel values are the stock tables (build 2912): YRD0426 and OPM040B3 run
-// FULL/HALF on OTP (0xF7/0xD7) with a custom FAST LUT; DEPG0397 uses custom LUTs
-// for every mode. FAST is stock mode 3 (slot 2). Border at init: 0x01 (YRD0426,
-// DEPG0397), 0x03 (OPM040B3). Grayscale follows the Sticky (see piccoConfig).
+// BOOX 2959 supplies panel-specific UI, reader, and grayscale waveforms.
+// DEPG0397 retains its tuned B/W tables and Sticky AA.
 
 static uint8_t piccoClassify(const uint8_t id[10]) {
   static const uint8_t yrdA[10] = {0xCA, 0xFE, 0x00, 0x16, 0x77, 0x02, 0x10, 0x01, 0x00, 0x91};
@@ -250,19 +251,14 @@ static uint8_t piccoClassify(const uint8_t id[10]) {
 
 static Ssd1677Config piccoConfig(uint8_t border, const unsigned char* fast, const unsigned char* full) {
   Ssd1677Config c = {{0xAE, 0xC7, 0xC3, 0xC0, 0x80}, DRIVER_OUTPUT_SCAN, border, 0x5A, lut_grayscale_sticky,
-                     0xF7, 0xDC, 0xD7};
-  // AA grayscale is the Sticky's overlay path (same 3.97" glass class): its LUT
-  // and voltages, power up first, 0xCC, border held at VCOM. Stock's own slot-5
-  // waveform (CTRL2 0xC4, B/W voltages left loaded) gave poor AA on DEPG0397,
-  // while this path looked right on hardware. Absolute (images, sleep screens)
-  // uses the SDK's X4 factory LUT, also as on the Sticky.
+                     0xF7, 0xDF, 0xD7};
+  c.piccoWaveforms = true;
   c.grayPowerUpFirst = true;
   c.borderWaveformGray = 0x80;
-  c.overlayGrayscale = true;
   c.absoluteGrayscale = true;
   c.fastLut = fast;
   c.fullLut = full;
-  c.halfLut = full;  // DEPG0397 slot 0 (FULL) and slot 3 (HALF) are the same table
+  c.halfLut = full;
   return c;
 }
 
@@ -290,11 +286,24 @@ uint8_t piccoProbePanel() {
   return panel;
 }
 
+static Ssd1677Config piccoStockConfig(uint8_t border, const unsigned char* image) {
+  Ssd1677Config c = piccoConfig(border, lut_picco_fast, nullptr);
+  c.piccoStockGrayscale = true;
+  c.grayLut = lut_picco_yrd_opm_gray;
+  c.factoryGrayLut = image;
+  c.fastSeqOverride = 0xDC;
+  return c;
+}
+
 static const Ssd1677Config& ssd1677PiccoConfig() {
-  // FAST is stock mode 3 (slot 2); DEPG0397 holds its fast phase longer.
-  static const Ssd1677Config yrd = piccoConfig(0x01, lut_picco_fast, nullptr);
-  static const Ssd1677Config depg = piccoConfig(0x01, lut_picco_depg_fast_9, lut_picco_depg_full);
-  static const Ssd1677Config opm = piccoConfig(0x03, lut_picco_fast, nullptr);
+  // YRD/OPM use external mode 3 for UI and OTP mode 2 for reading.
+  static const Ssd1677Config yrd = piccoStockConfig(0x01, nullptr);
+  static const Ssd1677Config depg = [] {
+    Ssd1677Config c = piccoConfig(0x01, lut_picco_depg_fast, lut_picco_depg_full);
+    c.readerFastLut = lut_picco_depg_fast_slot1;  // book pages: stock slot 1, 17 frames
+    return c;
+  }();
+  static const Ssd1677Config opm = piccoStockConfig(0x03, lut_picco_opm_image);
 
   switch (piccoProbePanel()) {
     case PiccoYrd0426: return yrd;
@@ -377,9 +386,20 @@ PanelGeometry Ssd1677Driver::geometry() const { return {_w, _h, _wb, _bufferSize
 void Ssd1677Driver::begin(EpdBus& bus) {
   bus.reset();
   initController(bus);
+#if FREEINK_DEVICE_PICCO
+  if (_cfg.piccoWaveforms) {
+    if (!_piccoOld)
+      _piccoOld = static_cast<uint8_t*>(heap_caps_malloc(_bufferSize, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!_piccoGrayMask)
+      _piccoGrayMask = static_cast<uint8_t*>(heap_caps_malloc(_bufferSize, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (_piccoOld) memset(_piccoOld, 0xFF, _bufferSize);
+    _piccoGrayPending = false;
+  }
+#endif
 }
 
 void Ssd1677Driver::initController(EpdBus& bus) {
+  _piccoAbsoluteRetained = false;
   constexpr uint8_t TEMP_SENSOR_INTERNAL = 0x80;
 
   bus.cmd(CMD_SOFT_RESET);
@@ -401,8 +421,17 @@ void Ssd1677Driver::initController(EpdBus& bus) {
   // Driver output control: display height + scan direction. mirrorY flips the
   // gate scan order (TB bit) for an upside-down mount.
   bus.cmd(CMD_DRIVER_OUTPUT_CONTROL);
+#if FREEINK_DEVICE_PICCO
+  const bool stockGateOutput = _cfg.piccoWaveforms &&
+      (BoardConfig::ACTIVE.displayControllerVariant == PiccoDepg0397 ||
+       BoardConfig::ACTIVE.displayControllerVariant == PiccoYrd0426);
+  // BOOX 2959 sends these bytes verbatim for DEPG0397/YRD0426.
+  bus.data(stockGateOutput ? 0x01 : (_h - 1) % 256);
+  bus.data(stockGateOutput ? 0x8F : (_h - 1) / 256);
+#else
   bus.data((_h - 1) % 256);
   bus.data((_h - 1) / 256);
+#endif
   bus.data(_mirrorY ? (_cfg.driverOutputScan | SCAN_TB_FLIP) : _cfg.driverOutputScan);
 
   bus.cmd(CMD_BORDER_WAVEFORM);
@@ -468,7 +497,7 @@ void Ssd1677Driver::writeRam(EpdBus& bus, uint8_t ramCmd, const uint8_t* data, u
   bus.data(data, static_cast<uint16_t>(size));
 }
 
-void Ssd1677Driver::refresh(EpdBus& bus, RefreshMode mode, bool turnOff, bool async) {
+void Ssd1677Driver::refresh(EpdBus& bus, RefreshMode mode, bool turnOff, bool async, bool grayRecovery) {
   _pendingPowerOff = false;
 #if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
   const uint32_t dbgStart = millis();
@@ -483,7 +512,9 @@ void Ssd1677Driver::refresh(EpdBus& bus, RefreshMode mode, bool turnOff, bool as
   }
   // Board B/W LUT for this mode: load it so the custom-LUT branch below activates
   // it without the OTP reload. Not while a grayscale LUT is already loaded.
-  const unsigned char* modeLut = (mode == RefreshMode::Fast)   ? _cfg.fastLut
+  const unsigned char* fastLut = _readerRefresh && (_cfg.readerFastLut || _cfg.piccoStockGrayscale)
+                                         ? _cfg.readerFastLut : _cfg.fastLut;
+  const unsigned char* modeLut = (mode == RefreshMode::Fast)   ? fastLut
                                  : (mode == RefreshMode::Half) ? _cfg.halfLut
                                                                : _cfg.fullLut;
   const bool boardLut = modeLut != nullptr && !_customLutActive;
@@ -501,10 +532,39 @@ void Ssd1677Driver::refresh(EpdBus& bus, RefreshMode mode, bool turnOff, bool as
   // doesn't trigger some panels' DU waveform (they then run the full waveform on
   // every "fast" refresh); these values fix that. Skipped while a custom grayscale
   // LUT is active (that path needs the 0x0C sequence with the loaded LUT).
-  const uint8_t seqOverride = (mode == RefreshMode::Fast) ? _cfg.fastSeqOverride
+  const uint8_t fastSequence = _readerRefresh && _cfg.piccoStockGrayscale ? 0xDF : _cfg.fastSeqOverride;
+  const uint8_t seqOverride = (mode == RefreshMode::Fast) ? fastSequence
                               : (mode == RefreshMode::Half && _cfg.halfSeqOverride != 0)
                                   ? _cfg.halfSeqOverride
                                   : _cfg.fullSeqOverride;
+  // Keep the established absolute-image recovery sequence, including rail enable.
+  if (grayRecovery && boardLut && _cfg.borderWaveformGray != 0) {
+    bus.cmd(CMD_BORDER_WAVEFORM);
+    bus.data(_cfg.borderWaveformGray);
+  }
+  if (_cfg.piccoWaveforms && !grayRecovery && (!_customLutActive || boardLut)) {
+    bus.cmd(CMD_BORDER_WAVEFORM);
+    bus.data(_cfg.borderWaveformInit);
+    uint8_t ctrl2 = seqOverride;
+    if (boardLut) ctrl2 &= static_cast<uint8_t>(~0x10);  // external LUT, no OTP reload
+    if (mode == RefreshMode::Half) {
+      bus.cmd(CMD_WRITE_TEMP);
+      bus.data(_cfg.halfRefreshTemp);
+    }
+    // Preserve the selected sequence's power policy, including mode 3 retaining power.
+    (void)turnOff;
+    if (_isScreenOn) ctrl2 &= 0x3F;
+    bus.cmd(CMD_DISPLAY_UPDATE_CTRL2);
+    bus.data(ctrl2);
+    bus.cmd(CMD_MASTER_ACTIVATION);
+    if (!async) bus.waitRefreshComplete("refresh");
+    _isScreenOn = (ctrl2 & 0x03) == 0;
+    if (boardLut) setCustomLut(bus, false, nullptr);
+#if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
+    esp_rom_printf("[SSD1677] %s refresh %ums (ctrl2=0x%x, picco)\n", dbgMode, (unsigned)(millis() - dbgStart), ctrl2);
+#endif
+    return;
+  }
   if (seqOverride != 0 && !_customLutActive) {
     // Track the border waveform to the refresh mode (vendor parity): a partial/DU
     // (fast) refresh leaves the border driven dark if it keeps the full-refresh
@@ -648,6 +708,7 @@ bool Ssd1677Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* 
 
 void Ssd1677Driver::displayFinish(EpdBus& bus, const uint8_t* fb) {
   bus.waitRefreshComplete("refresh");
+  if (_piccoOld && fb) memcpy(_piccoOld, fb, _bufferSize);
   if (_pendingFrameSync && fb) {
     // The facade retains the displayed frame until finish (or supplies its
     // shadow). Never rewrite the differential baseline during the waveform.
@@ -664,7 +725,19 @@ void Ssd1677Driver::displayFinish(EpdBus& bus, const uint8_t* fb) {
 
 void Ssd1677Driver::displayImpl(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff,
                                 bool async) {
+  _piccoAbsoluteRetained = false;
   const bool cold = _needsInitialFull;
+  const bool grayRecovery = _cfg.piccoWaveforms && !_cfg.piccoStockGrayscale && _needsGrayClear;
+  if (_cfg.piccoWaveforms && _piccoOld) {
+    if (_piccoGrayPending && _piccoGrayMask) {
+      // BOOX 2959 renderer: drive every gray pixel toward the new B/W target.
+      for (uint32_t i = 0; i < _bufferSize; ++i)
+        _piccoOld[i] = (_piccoOld[i] & ~_piccoGrayMask[i]) | (~fb[i] & _piccoGrayMask[i]);
+      _inGrayscaleMode = false;
+    }
+    prev = _piccoOld;
+  }
+  _piccoGrayPending = false;
   _pendingFrameSync = _cfg.blackPulseClean && async;
   if (_needsGrayClear) {
     if (mode == RefreshMode::Fast) mode = _cfg.halfSeqOverride ? RefreshMode::Half : RefreshMode::Full;
@@ -745,7 +818,7 @@ void Ssd1677Driver::displayImpl(EpdBus& bus, const uint8_t* fb, const uint8_t* p
       }
     }
 
-    refresh(bus, mode, turnOff, async);
+    refresh(bus, mode, turnOff, async, grayRecovery);
   }
 
   // Stock X4 syncs both controller RAM planes after activation. Do the same in
@@ -753,11 +826,12 @@ void Ssd1677Driver::displayImpl(EpdBus& bus, const uint8_t* fb, const uint8_t* p
   // BW/RED baseline instead of assuming BW survived the refresh unchanged.
   // (Async updates always come with a facade-owned prev, so this never runs
   // while a refresh is still in flight.)
-  if ((prev == nullptr || _cfg.blackPulseClean) && !async) {
+  if ((prev == nullptr || _cfg.blackPulseClean || grayRecovery) && !async) {
     setRamArea(bus, 0, 0, _w, _h);
     writeRam(bus, CMD_WRITE_RAM_BW, fb, _bufferSize);
     writeRam(bus, CMD_WRITE_RAM_RED, fb, _bufferSize);
   }
+  if (!async && _piccoOld) memcpy(_piccoOld, fb, _bufferSize);
   if (!async && _pendingPowerOff) {
     _pendingPowerOff = false;
     powerOffController(bus);
@@ -769,6 +843,10 @@ void Ssd1677Driver::displayWindow(EpdBus& bus, const uint8_t* fb, const uint8_t*
   if (x + w > _w || y + h > _h) return;
   if (x % 8 != 0 || w % 8 != 0) return;  // window must be byte-aligned
   if (!fb) return;
+  if (_cfg.piccoWaveforms) {
+    displayImpl(bus, fb, prev, RefreshMode::Fast, turnOff, false);
+    return;
+  }
 
   // A windowed diff can't run against grayscale plane contents (RED holds the
   // gray MSB plane, not the previous frame). With no revert waveform (stock
@@ -827,13 +905,14 @@ void Ssd1677Driver::seedPreviousFrame(EpdBus& bus, const uint8_t* buf) {
 }
 
 void Ssd1677Driver::beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode mode, RefreshMode fallback, bool turnOff) {
+  _piccoAbsoluteRetained = false;
   _absoluteInput = mode == GrayscaleMode::Absolute;
   // Absolute planes supply every target pixel; activate only the final gray image.
   if (!_absoluteInput) displayGrayscaleBase(bus, fb, fallback, turnOff);
 }
 
 void Ssd1677Driver::writeGrayRam(EpdBus& bus, uint8_t command, const uint8_t* data, uint16_t len) {
-  if (!_absoluteInput) {
+  if (!_absoluteInput || _cfg.piccoStockGrayscale) {
     writeRam(bus, command, data, len);
     return;
   }
@@ -853,12 +932,15 @@ void Ssd1677Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
   if (!lsb) return;
   setRamArea(bus, 0, 0, _w, _h);
   writeGrayRam(bus, CMD_WRITE_RAM_BW, lsb, _bufferSize);
+  if (_absoluteInput && _piccoGrayMask) memcpy(_piccoGrayMask, lsb, _bufferSize);
 }
 
 void Ssd1677Driver::copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
   if (!msb) return;
   setRamArea(bus, 0, 0, _w, _h);
   writeGrayRam(bus, CMD_WRITE_RAM_RED, msb, _bufferSize);
+  if (_absoluteInput && _piccoOld) memcpy(_piccoOld, msb, _bufferSize);
+  if (!_absoluteInput && _piccoGrayMask) memcpy(_piccoGrayMask, msb, _bufferSize);
 }
 
 void Ssd1677Driver::writeGrayscalePlaneStrip(EpdBus& bus, GrayPlane plane, const uint8_t* rows, uint16_t yStart,
@@ -868,6 +950,12 @@ void Ssd1677Driver::writeGrayscalePlaneStrip(EpdBus& bus, GrayPlane plane, const
   const uint8_t ramCmd = (plane == GrayPlane::Lsb) ? CMD_WRITE_RAM_BW : CMD_WRITE_RAM_RED;
   setRamArea(bus, 0, yStart, _w, numRows);
   writeGrayRam(bus, ramCmd, rows, len);
+  if (_absoluteInput) {
+    uint8_t* retained = plane == GrayPlane::Lsb ? _piccoGrayMask : _piccoOld;
+    if (retained) memcpy(retained + static_cast<uint32_t>(yStart) * _wb, rows, len);
+  }
+  if (!_absoluteInput && plane == GrayPlane::Msb && _piccoGrayMask)
+    memcpy(_piccoGrayMask + static_cast<uint32_t>(yStart) * _wb, rows, len);
 }
 
 void Ssd1677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut,
@@ -880,7 +968,34 @@ void Ssd1677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
 
   // Differential mode marks grayscale content on the panel (the next BW update
   // must not diff against the gray planes); factory absolute mode self-cleans.
+  _piccoAbsoluteRetained = factoryMode && _absoluteInput && !lut && _piccoOld && _piccoGrayMask;
   _inGrayscaleMode = !factoryMode;
+  _piccoGrayPending = false;
+  if (_cfg.piccoWaveforms && lut) _needsGrayClear = true;
+
+  if (_cfg.piccoStockGrayscale && lut == nullptr) {
+    const unsigned char* waveform = factoryMode ? _cfg.factoryGrayLut : _cfg.grayLut;
+    bus.cmd(CMD_DISPLAY_UPDATE_CTRL1);
+    bus.data(CTRL1_NORMAL);
+    if (waveform) {
+      bus.cmd(CMD_WRITE_LUT);
+      bus.data(waveform, 105);
+    }
+    bus.cmd(CMD_WRITE_TEMP);
+    bus.data(_cfg.halfRefreshTemp);
+    uint8_t ctrl2 = waveform ? 0xC7 : 0xD7;
+    if (_isScreenOn) ctrl2 &= 0x3F;
+    if (!turnOff) ctrl2 &= 0xFC;
+    bus.cmd(CMD_DISPLAY_UPDATE_CTRL2);
+    bus.data(ctrl2);
+    bus.cmd(CMD_MASTER_ACTIVATION);
+    bus.waitRefreshComplete("picco gray");
+    _isScreenOn = !turnOff;
+    _piccoGrayPending = !factoryMode && _piccoOld && _piccoGrayMask;
+    _needsGrayClear = !_piccoGrayPending;
+    _absoluteInput = false;
+    return;
+  }
 
   const unsigned char* selectedLut = lut;
   if (selectedLut == nullptr) {
@@ -920,11 +1035,56 @@ void Ssd1677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
   }
 
   setCustomLut(bus, false, nullptr);
+  if (_cfg.piccoWaveforms && !factoryMode && lut == nullptr) {
+    _piccoGrayPending = _piccoOld && _piccoGrayMask;
+    _needsGrayClear = !_piccoGrayPending;
+  }
   _absoluteInput = false;
 }
 
+bool Ssd1677Driver::displayRetainedGrayscaleOverlay(EpdBus& bus, const uint8_t* fb, uint16_t x, uint16_t y,
+                                                    uint16_t w, uint16_t h) {
+  if (!_piccoAbsoluteRetained || !w || !h || x >= _w || y >= _h || w > _w - x || h > _h - y) return false;
+  // Reuse the two Picco history buffers as immutable absolute planes until a normal paint replaces them.
+  _absoluteInput = true;
+  for (auto plane : {GrayPlane::Lsb, GrayPlane::Msb}) {
+    const uint8_t* original = plane == GrayPlane::Lsb ? _piccoGrayMask : _piccoOld;
+    const uint8_t command = plane == GrayPlane::Lsb ? CMD_WRITE_RAM_BW : CMD_WRITE_RAM_RED;
+    setRamArea(bus, 0, 0, _w, _h);
+    bus.cmd(command);
+    auto txn = bus.beginTxn();
+    uint8_t chunk[128];
+    for (uint32_t offset = 0; offset < _bufferSize; offset += sizeof(chunk)) {
+      const uint16_t count = std::min<uint32_t>(sizeof(chunk), _bufferSize - offset);
+      for (uint16_t i = 0; i < count; ++i) {
+        const uint32_t index = offset + i;
+        uint8_t value = original[index];
+        const uint16_t row = index / _wb;
+        const uint16_t column = (index % _wb) * 8;
+        if (fb && row >= y && row < y + h) {
+          for (uint8_t bit = 0; bit < 8; ++bit) {
+            if (column + bit >= x && column + bit < x + w) {
+              const uint8_t mask = 0x80 >> bit;
+              value = (value & ~mask) | (fb[index] & mask);
+            }
+          }
+        }
+        chunk[i] = _cfg.piccoStockGrayscale ? value : static_cast<uint8_t>(~value);
+      }
+      txn.writeBytes(chunk, count);
+    }
+  }
+  displayGray(bus, fb, true, nullptr, true);
+  return true;
+}
+
 void Ssd1677Driver::cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) {
-  if (!bw) return;
+  if (!bw) {
+    if (_cfg.piccoWaveforms) _needsGrayClear = true;
+    return;
+  }
+  _piccoAbsoluteRetained = false;
+  if (_piccoOld) memcpy(_piccoOld, bw, _bufferSize);
   setRamArea(bus, 0, 0, _w, _h);
   writeRam(bus, CMD_WRITE_RAM_RED, bw, _bufferSize);
   // The restored BW frame in RED RAM *is* the clean differential baseline for the
@@ -968,7 +1128,7 @@ void Ssd1677Driver::deepSleep(EpdBus& bus) {
   // treat RAM as a valid diff baseline after wake — initController() re-arms
   // _needsInitialFull, so the first paint is an absolute clean anyway.
   bus.cmd(CMD_DEEP_SLEEP);
-  bus.data(0x03);
+  bus.data(_cfg.piccoWaveforms ? 0x01 : 0x03);
 }
 
 // Per-board waveform/LUT injection: a board supplies its own SSD1677 config

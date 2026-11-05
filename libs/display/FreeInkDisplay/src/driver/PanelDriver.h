@@ -113,6 +113,11 @@ class PanelDriver {
     (void)buf;
   }
 
+  // Paint a B/W rectangle over the last absolute gray image, or restore it (fb == nullptr).
+  // Returns false without painting when no retained image is available. May repaint the full panel.
+  virtual bool displayRetainedGrayscaleOverlay(EpdBus& bus, const uint8_t* fb, uint16_t x, uint16_t y,
+                                               uint16_t w, uint16_t h) { return false; }
+
   // --- grayscale (dual-plane LSB/MSB) ---
   virtual GrayscaleCapabilities grayscaleCapabilities(GrayscaleMode mode = GrayscaleMode::Overlay) const {
     (void)mode;
@@ -207,6 +212,8 @@ class PanelDriver {
 
   // --- optional, controller-specific hooks (no-op by default) ---
   virtual void requestResync(uint8_t settlePasses) { (void)settlePasses; }
+  // True while the host presents book pages; drivers with a reading waveform use it.
+  virtual void setReaderRefresh(bool reading) { (void)reading; }
   virtual void skipInitialResync() {}
   // Content-polarity hint: true while the facade is rendering inverted (dark
   // background) frames. Differential drivers idle unchanged pixels, so on a

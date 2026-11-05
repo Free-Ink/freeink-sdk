@@ -149,6 +149,7 @@ void Ssd2677Driver::begin(EpdBus& bus) {
   initPanel(bus);
 
   _needsInitialFull = true;
+  _grayPending = _grayMaskReady = false;
   // Retained old-plane: this panel takes old+new as one 2bpp burst, so the old
   // plane must exactly equal what is physically on the glass. The host can't
   // supply it — CrossPoint builds single-buffer (EINK_DISPLAY_SINGLE_BUFFER_MODE),
@@ -184,11 +185,18 @@ void Ssd2677Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev,
   // would see old==new on every incremental update and move nothing (the whole
   // reason non-full frames ghosted). _old == nullptr (alloc failed) falls back to
   // an all-white old plane in sendPacked.
+  if (!_old) mode = RefreshMode::Full;
+  if (_grayPending && _old && _lsb) {
+    for (uint32_t i = 0; i < geometry().bufferSize; ++i)
+      _old[i] = (_old[i] & ~_lsb[i]) | (~fb[i] & _lsb[i]);
+  }
+  _grayPending = false;
   sendPacked(bus, _old, fb);
-  // FAST is stock mode 3 (slot 2). The stock app powers off after every refresh
-  // (PON, 0x12, POF), whatever `turnOff` says.
-  (void)turnOff;
-  refreshWith(bus, mode == RefreshMode::Fast ? lut_picco_se0400_mode3 : lut_picco_se0400_full, true);
+  // Reader pages use BOOX mode 2, UI updates mode 3.
+  const auto* fastLut = _readerRefresh ? lut_picco_se0400_fast : lut_picco_se0400_mode3;
+  // Stock mode 3 keeps the rails on across UI updates.
+  const bool keepPower = mode == RefreshMode::Fast && !_readerRefresh;
+  refreshWith(bus, mode == RefreshMode::Fast ? fastLut : lut_picco_se0400_full, !keepPower);
   if (_old) memcpy(_old, fb, geometry().bufferSize);  // new becomes old for the next frame
   _needsInitialFull = false;
 }
@@ -256,6 +264,7 @@ void Ssd2677Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
   (void)bus;
   if (!lsb) return;
   if (!_absoluteGray) ensureLsb();
+  _grayMaskReady = false;
   if (_lsb) memcpy(_lsb, lsb, geometry().bufferSize);
 }
 
@@ -263,12 +272,13 @@ void Ssd2677Driver::beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode
                                    bool turnOff) {
   _absoluteGray = mode == GrayscaleMode::Absolute;
   if (_absoluteGray) {
+    _grayPending = false;
     // The caller still has the B/W base here. On allocation failure display it
     // before the renderer reuses its framebuffer for the two image planes.
     if ((!isSticky() && !_old) || !ensureLsb()) display(bus, fb, nullptr, RefreshMode::Full, true);
     return;
   }
-  if (mode == GrayscaleMode::Overlay && fallback == RefreshMode::Fast && !_needsInitialFull && _old) {
+  if (isSticky() && mode == GrayscaleMode::Overlay && fallback == RefreshMode::Fast && !_needsInitialFull && _old) {
     // Give every incoming ink pixel the stock white-to-black pulse, even if
     // the last B/W base called it black before AA lightened it. For incoming
     // white, keep the real prior bit so old ink clears and blank paper holds.
@@ -303,6 +313,11 @@ void Ssd2677Driver::copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
   // The Picco's stock AA powers on before the upload (0x4200bad0).
   if (!isSticky()) powerOn(bus);
   sendPacked(bus, msb, _lsb);
+  if (!isSticky()) {
+    // The vendor retains the MSB mask to correct the next B/W transition.
+    memcpy(_lsb, msb, geometry().bufferSize);
+    _grayMaskReady = true;
+  }
 }
 
 void Ssd2677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut,
@@ -319,7 +334,7 @@ void Ssd2677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
     } else {
       powerOn(bus);
       sendPacked(bus, _old, _lsb);
-      refreshWith(bus, lut_picco_se0400_image, true);
+      refreshWith(bus, lut_picco_se0400_image, turnOff);
     }
     _needsInitialFull = true;
     return;
@@ -338,12 +353,9 @@ void Ssd2677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
     return;
   }
   refreshWith(bus, lut_picco_se0400_gray, true);
-  // NB: do NOT force the next frame to a full refresh here. Every reader page in
-  // AA mode is a gray frame, so forcing a full on the following page flashed the
-  // whole screen black on every page turn. The retained `_old` still holds the
-  // B/W base drawn before this overlay, so the next page diffs against it
-  // correctly; CrossPoint schedules its own periodic full refreshes to clean any
-  // AA-edge residual (stock does the same — its gray present sets no full flag).
+  _grayPending = _grayMaskReady;
+  _grayMaskReady = false;
+  // Preserve the base outside the gray mask; masked pixels are driven on the next frame.
 }
 
 void Ssd2677Driver::deepSleep(EpdBus& bus) {

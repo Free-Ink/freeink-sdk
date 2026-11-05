@@ -286,6 +286,10 @@ class FreeInkDisplay {
 
   // Hint the X3 policy to run a one-shot full resync on next update.
   void requestResync(uint8_t settlePasses = 0);
+  // True while book pages are presented (see PanelDriver::setReaderRefresh).
+  void setReaderRefresh(bool reading);
+  // Physical-pixel rectangle; restore=true removes the overlay from the retained gray image.
+  bool displayRetainedGrayscaleOverlay(uint16_t x, uint16_t y, uint16_t w, uint16_t h, bool restore = false);
   void skipInitialResync();
   void beginDisplayWork();
   void abortPostRefresh();

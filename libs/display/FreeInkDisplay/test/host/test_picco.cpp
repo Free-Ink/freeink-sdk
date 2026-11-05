@@ -59,7 +59,7 @@ static void expectPiccoGray(Ssd1677Driver& d) {
   d.displayGray(bus, msb.data(), false, nullptr, false);
   assert(lastLut(bus) && *lastLut(bus) == Bytes(d._cfg.grayLut, d._cfg.grayLut + 105));
   assert(d._cfg.grayLut == lut_grayscale_sticky);
-  assert(lastRegister(bus, 0x22) == 0xCC && d._piccoGrayPending);
+  assert(lastRegister(bus, 0x22) == 0xCF && d._piccoGrayPending);
   assert(lastRegister(bus, 0x03) == lut_grayscale_sticky[105]);
   assert(lastRegister(bus, 0x2C) == lut_grayscale_sticky[109]);
   assert(lastRegister(bus, 0x3C) == 0x80);
@@ -71,8 +71,8 @@ static void expectPiccoGray(Ssd1677Driver& d) {
   std::vector<uint8_t> aaSequences;
   for (const auto& w : bus.writes)
     if (w.command == 0x22) aaSequences.push_back(w.bytes.at(0));
-  assert(aaSequences == (grayNeedsPowerOn ? std::vector<uint8_t>{0xC0, 0xCC}
-                                         : std::vector<uint8_t>{0xCC}));
+  assert(aaSequences == (grayNeedsPowerOn ? std::vector<uint8_t>{0xC0, 0xCF}
+                                         : std::vector<uint8_t>{0xCF}));
   d.cleanupGrayscaleBuffers(bus, base.data());
   bus.clear();
   // Same B/W base, but gray pixels must transition instead of being held.
@@ -214,7 +214,7 @@ static void expectStockPiccoGray(Ssd1677Driver& d) {
     else assert(!lastLut(bus));
     uint8_t sequence = lut ? 0xC7 : 0xD7;
     if (wasOn) sequence &= 0x3F;
-    if (!absolute) sequence &= 0xFC;
+    // Both reader AA and this turnOff image request power down.
     assert(lastRegister(bus, 0x22) == sequence);
     unsigned activations = 0;
     for (const auto& w : bus.writes) {
@@ -262,10 +262,9 @@ static void expectIdlePower(Ssd1677Driver& d) {
   assert(d.displayStart(bus, fb.data(), fb.data(), RefreshMode::Fast, false));
   assert(lastRegister(bus, 0x22) == startedSequence);
   d.displayFinish(bus, fb.data());
-  // Keep power through intermediate AA work. Shutdown follows the overlay and
-  // baseline cleanup, rather than being attached to every refresh completion.
+  // Reader AA powers off; RAM cleanup and repeated idle shutdown remain safe.
   d.displayGray(bus, fb.data(), false, nullptr, false);
-  assert(d._isScreenOn);
+  assert(d._isScreenOn == !d._cfg.piccoWaveforms);
   d.cleanupGrayscaleBuffers(bus, fb.data());
   frame.powerOffBetweenFrames();
   assert(!d._isScreenOn && !d._inGrayscaleMode && !d._needsInitialFull);
@@ -518,7 +517,7 @@ int main(int argc, char** argv) {
     assert(d._cfg.fastLut[50] == 7 && d._cfg.fastLut[51] == 10);
     expectRefresh(d, RefreshMode::Full, 0xE7, lut_picco_depg_full);
     expectRefresh(d, RefreshMode::Half, 0xC7, lut_picco_depg_full);
-    expectRefresh(d, RefreshMode::Fast, 0xCF, lut_picco_depg_fast);
+    expectRefresh(d, RefreshMode::Fast, 0xCC, lut_picco_depg_fast);
     expectPiccoGray(d);
     expectRetainedGrayStrip(d);
   } else {

@@ -191,7 +191,15 @@ void Ssd2677Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev,
       _old[i] = (_old[i] & ~_lsb[i]) | (~fb[i] & _lsb[i]);
   }
   _grayPending = false;
-  sendPacked(bus, _old, fb);
+  if (mode == RefreshMode::Fast && !_readerRefresh) {
+    // UI: mark every new black pixel white in the old plane so unchanged blacks get
+    // the short white-to-black drive again: stale blacks (old text inside dithered
+    // areas) match fresh ones, as the SSD1677 Picco tables' black-to-black top-up does.
+    for (uint32_t i = 0; i < geometry().bufferSize; ++i) _old[i] |= static_cast<uint8_t>(~fb[i]);
+  }
+  // HALF/FULL are cleans: old == new drives every pixel to its level (as the
+  // Sticky's stock path does), so nothing of the previous frame survives.
+  sendPacked(bus, mode == RefreshMode::Fast ? _old : fb, fb);
   // Reader pages use BOOX mode 2, UI updates mode 3.
   const auto* fastLut = _readerRefresh ? lut_picco_se0400_fast : lut_picco_se0400_mode3;
   // Stock mode 3 keeps the rails on across UI updates.

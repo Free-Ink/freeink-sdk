@@ -1,4 +1,5 @@
 #include "Ssd1677Driver.h"
+#include "../lut/X4ProTextAaLuts.h"
 #if __has_include(<esp_rom_sys.h>)
 #include <esp_rom_sys.h>  // ROM printf reaches UART0 consoles (e.g. a USB-serial bridge) when Serial is native USB
 #define EPD_LOG(...) esp_rom_printf(__VA_ARGS__)
@@ -301,6 +302,7 @@ static const Ssd1677Config& ssd1677PiccoConfig() {
   static const Ssd1677Config depg = [] {
     Ssd1677Config c = piccoConfig(0x01, lut_picco_depg_fast, lut_picco_depg_full);
     c.readerFastLut = lut_picco_depg_fast_slot1;  // book pages: stock slot 1, 17 frames
+    c.fastSeqOverride = 0xDC;                      // UI: stock mode 3 keeps the rails on
     return c;
   }();
   static const Ssd1677Config opm = piccoStockConfig(0x03, lut_picco_opm_image);
@@ -384,6 +386,7 @@ uint32_t Ssd1677Driver::spiHz() const {
 PanelGeometry Ssd1677Driver::geometry() const { return {_w, _h, _wb, _bufferSize}; }
 
 void Ssd1677Driver::begin(EpdBus& bus) {
+  _textAa.allocate(BoardConfig::ACTIVE.board == BoardConfig::Board::XteinkX4Pro && _w == 800 && _h == 480);
   bus.reset();
   initController(bus);
 #if FREEINK_DEVICE_PICCO
@@ -532,7 +535,7 @@ void Ssd1677Driver::refresh(EpdBus& bus, RefreshMode mode, bool turnOff, bool as
   // doesn't trigger some panels' DU waveform (they then run the full waveform on
   // every "fast" refresh); these values fix that. Skipped while a custom grayscale
   // LUT is active (that path needs the 0x0C sequence with the loaded LUT).
-  const uint8_t fastSequence = _readerRefresh && _cfg.piccoStockGrayscale ? 0xDF : _cfg.fastSeqOverride;
+  const uint8_t fastSequence = _readerRefresh && _cfg.piccoWaveforms ? 0xDF : _cfg.fastSeqOverride;
   const uint8_t seqOverride = (mode == RefreshMode::Fast) ? fastSequence
                               : (mode == RefreshMode::Half && _cfg.halfSeqOverride != 0)
                                   ? _cfg.halfSeqOverride
@@ -725,6 +728,7 @@ void Ssd1677Driver::displayFinish(EpdBus& bus, const uint8_t* fb) {
 
 void Ssd1677Driver::displayImpl(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff,
                                 bool async) {
+  _textAa.invalidate();
   _piccoAbsoluteRetained = false;
   const bool cold = _needsInitialFull;
   const bool grayRecovery = _cfg.piccoWaveforms && !_cfg.piccoStockGrayscale && _needsGrayClear;
@@ -905,6 +909,13 @@ void Ssd1677Driver::seedPreviousFrame(EpdBus& bus, const uint8_t* buf) {
 }
 
 void Ssd1677Driver::beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode mode, RefreshMode fallback, bool turnOff) {
+  if (mode == GrayscaleMode::Overlay && _readerRefresh && _textAa.ready()) {
+    if (fallback != RefreshMode::Fast || _needsInitialFull) display(bus, fb, nullptr, fallback, false);
+    _absoluteInput = false;
+    _textAa.begin(fb);
+    return;
+  }
+  _textAa.invalidate();
   _piccoAbsoluteRetained = false;
   _absoluteInput = mode == GrayscaleMode::Absolute;
   // Absolute planes supply every target pixel; activate only the final gray image.
@@ -929,6 +940,7 @@ void Ssd1677Driver::writeGrayRam(EpdBus& bus, uint8_t command, const uint8_t* da
 }
 
 void Ssd1677Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
+  if (_textAa.active()) { _textAa.stage(0, lsb, 0, _h); return; }
   if (!lsb) return;
   setRamArea(bus, 0, 0, _w, _h);
   writeGrayRam(bus, CMD_WRITE_RAM_BW, lsb, _bufferSize);
@@ -936,6 +948,7 @@ void Ssd1677Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
 }
 
 void Ssd1677Driver::copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
+  if (_textAa.active()) { _textAa.stage(1, msb, 0, _h); return; }
   if (!msb) return;
   setRamArea(bus, 0, 0, _w, _h);
   writeGrayRam(bus, CMD_WRITE_RAM_RED, msb, _bufferSize);
@@ -945,6 +958,7 @@ void Ssd1677Driver::copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
 
 void Ssd1677Driver::writeGrayscalePlaneStrip(EpdBus& bus, GrayPlane plane, const uint8_t* rows, uint16_t yStart,
                                              uint16_t numRows) {
+  if (_textAa.active()) { _textAa.stage(plane == GrayPlane::Msb, rows, yStart, numRows); return; }
   if (!rows || numRows == 0) return;
   const uint16_t len = static_cast<uint16_t>(static_cast<uint32_t>(numRows) * _wb);
   const uint8_t ramCmd = (plane == GrayPlane::Lsb) ? CMD_WRITE_RAM_BW : CMD_WRITE_RAM_RED;
@@ -960,6 +974,32 @@ void Ssd1677Driver::writeGrayscalePlaneStrip(EpdBus& bus, GrayPlane plane, const
 
 void Ssd1677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut,
                                 bool factoryMode) {
+  if (_textAa.active()) {
+    if (!_textAa.compose()) { _textAa.invalidate(); _needsInitialFull = true; return; }
+    powerOn(bus);
+    setRamArea(bus, 0, 0, _w, _h);
+    writeRam(bus, CMD_WRITE_RAM_BW, _textAa.high(), _bufferSize);
+    setRamArea(bus, 0, 0, _w, _h);
+    writeRam(bus, CMD_WRITE_RAM_RED, _textAa.low(), _bufferSize);
+    setCustomLut(bus, true, kX4ProTextSsd1677);
+    bus.cmd(CMD_BORDER_WAVEFORM);
+    bus.data(0xC0);
+    bus.cmd(CMD_DISPLAY_UPDATE_CTRL1);
+    bus.data(0);
+    bus.cmd(CMD_DISPLAY_UPDATE_CTRL2);
+    bus.data(0xCC);
+    bus.cmd(CMD_MASTER_ACTIVATION);
+    bus.waitRefreshComplete("SSD1677 one-pass text AA");
+    if (bus.isBusy()) { _textAa.invalidate(); _needsInitialFull = true; return; }
+    _textAa.finish(17, -2, -2, -24);
+    _isScreenOn = true;
+    _needsInitialFull = _needsGrayClear = false;
+    _inGrayscaleMode = true;
+    setCustomLut(bus, false, nullptr);
+    if (turnOff) powerOffController(bus);
+    return;
+  }
+
   if (!_cfg.overlayGrayscale && !_cfg.absoluteGrayscale && lut == nullptr) {
     // Legacy callers may bypass capability negotiation; fall back to B/W.
     display(bus, fb, nullptr, RefreshMode::Full, turnOff);
@@ -983,14 +1023,16 @@ void Ssd1677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
     }
     bus.cmd(CMD_WRITE_TEMP);
     bus.data(_cfg.halfRefreshTemp);
+    // AA belongs to a book page and powers off like reader pages; images follow turnOff.
+    const bool powerOff = turnOff || !factoryMode;
     uint8_t ctrl2 = waveform ? 0xC7 : 0xD7;
     if (_isScreenOn) ctrl2 &= 0x3F;
-    if (!turnOff) ctrl2 &= 0xFC;
+    if (!powerOff) ctrl2 &= 0xFC;
     bus.cmd(CMD_DISPLAY_UPDATE_CTRL2);
     bus.data(ctrl2);
     bus.cmd(CMD_MASTER_ACTIVATION);
     bus.waitRefreshComplete("picco gray");
-    _isScreenOn = !turnOff;
+    _isScreenOn = !powerOff;
     _piccoGrayPending = !factoryMode && _piccoOld && _piccoGrayMask;
     _needsGrayClear = !_piccoGrayPending;
     _absoluteInput = false;
@@ -1031,7 +1073,8 @@ void Ssd1677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
     // on, i.e. the X4's fast path). refresh() then runs the 0xCC external-LUT
     // sequence (its enable bits are a no-op on already-up rails).
     if (_cfg.grayPowerUpFirst) powerOn(bus);
-    refresh(bus, RefreshMode::Fast, turnOff);
+    // Picco: an AA pass belongs to a book page, which powers off like reader pages.
+    refresh(bus, RefreshMode::Fast, turnOff || _cfg.piccoWaveforms);
   }
 
   setCustomLut(bus, false, nullptr);
@@ -1079,6 +1122,18 @@ bool Ssd1677Driver::displayRetainedGrayscaleOverlay(EpdBus& bus, const uint8_t* 
 }
 
 void Ssd1677Driver::cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) {
+  if (_textAa.active()) {
+    // A skipped AA pass still owes the caller its deferred B/W page.
+    display(bus, bw ? bw : _textAa.base(), nullptr, RefreshMode::Fast, true);
+    return;
+  }
+  if (_textAa.onPanel()) {
+    setRamArea(bus, 0, 0, _w, _h);
+    writeRam(bus, CMD_WRITE_RAM_RED, _textAa.high(), _bufferSize);
+    _inGrayscaleMode = false;
+    return;
+  }
+
   if (!bw) {
     if (_cfg.piccoWaveforms) _needsGrayClear = true;
     return;
@@ -1120,6 +1175,7 @@ void Ssd1677Driver::setCustomLut(EpdBus& bus, bool enabled, const unsigned char*
 }
 
 void Ssd1677Driver::deepSleep(EpdBus& bus) {
+  _textAa.invalidate();
   // Stock parity (_powerOff): park the border at its init value so it is not left
   // driven with the full-refresh waveform through deep sleep, then power down
   // analog/clock. Stock does not touch CTRL1 here.

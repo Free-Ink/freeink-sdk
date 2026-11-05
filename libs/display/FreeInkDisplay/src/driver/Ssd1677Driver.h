@@ -1,5 +1,7 @@
 #pragma once
 
+#include "X4ProTextAa.h"
+
 // SSD1677 panel driver — Xteink X4 and the de-link ESP32-S3 board (both drive
 // an 800x480 GDEQ0426T82 over the same controller). B/W with software 2-bit
 // grayscale via a custom LUT, dual-RAM (BW 0x24 / RED 0x26) differential fast
@@ -106,6 +108,7 @@ class Ssd1677Driver : public PanelDriver {
                      uint16_t h, bool turnOff) override;
 
   void requestResync(uint8_t) override {
+    _textAa.invalidate();
     if (_absoluteInput) _piccoAbsoluteRetained = false;
     _needsGrayClear = true;
     _absoluteInput = false;
@@ -116,6 +119,8 @@ class Ssd1677Driver : public PanelDriver {
   void seedPreviousFrame(EpdBus& bus, const uint8_t* buf) override;
 
   GrayscaleCapabilities grayscaleCapabilities(GrayscaleMode mode = GrayscaleMode::Overlay) const override {
+    if (mode == GrayscaleMode::Overlay && _readerRefresh && _textAa.ready())
+      return {GrayscaleEncoding::OverlayMasks, GrayscaleBase::Combined, true, false, false};
     if (mode == GrayscaleMode::Absolute && _cfg.absoluteGrayscale)
       return {GrayscaleEncoding::AbsolutePlanes, GrayscaleBase::Combined, true, false, false};
     if (mode != GrayscaleMode::Overlay || !_cfg.overlayGrayscale) return {};
@@ -136,6 +141,7 @@ class Ssd1677Driver : public PanelDriver {
   void setCustomLut(EpdBus& bus, bool enabled, const unsigned char* data) override;
 
  private:
+  X4ProTextAa _textAa;
   uint8_t* _piccoOld = nullptr;
   uint8_t* _piccoGrayMask = nullptr;
   bool _piccoGrayPending = false;

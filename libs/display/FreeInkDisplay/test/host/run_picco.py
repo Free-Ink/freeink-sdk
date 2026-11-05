@@ -18,9 +18,10 @@ def build(board, device_macro, test_cpp, directory):
     for name in ("Ssd1677", "Ssd2677"):
         for ext in ("h", "cpp"):
             shutil.copy2(LIB / f"src/driver/{name}Driver.{ext}", root / f"src/driver/{name}Driver.{ext}")
-    shutil.copy2(LIB / "src/driver/PanelDriver.h", root / "src/driver/PanelDriver.h")
+    for name in ("PanelDriver.h", "X4ProTextAa.h"):
+        shutil.copy2(LIB / "src/driver" / name, root / "src/driver" / name)
     shutil.copy2(LIB / "include/GrayscaleCapabilities.h", root / "include/GrayscaleCapabilities.h")
-    for name in ("Ssd1677Luts.h", "Ssd2677Luts.h"):
+    for name in ("Ssd1677Luts.h", "Ssd2677Luts.h", "X4ProTextAaLuts.h"):
         shutil.copy2(LIB / f"src/lut/{name}", root / f"src/lut/{name}")
     shutil.copy2(HERE / "pro_stubs/EpdBus.h", root / "src/bus/EpdBus.h")
     for name in ("esp_heap_caps.h", "sdkconfig.h"):

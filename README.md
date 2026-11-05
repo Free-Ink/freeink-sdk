@@ -73,7 +73,7 @@ firmware  ─calls─▶  EInkDisplay  (alias of freeink::FreeInkDisplay, the fa
                     PanelDriver  (interface)
               ┌───────────┼───────────────┬───────────────┐
         Ssd1677Driver  Uc8253X3Driver  Ed2208M5Driver  Uc8253MurphyDriver
-         (X4/de-link)     (X3)            (M5)            (Murphy)
+      (X4/Silkscreen)     (X3)            (M5)            (Murphy)
                           │  native controllers share
                           ▼
                        EpdBus  (SPI/GPIO framing, BUSY polarity, reset, mirror)
@@ -128,7 +128,7 @@ so the SD manager itself stays device-agnostic.
 | **Xteink X4** | ESP32-C3 | SSD1677 | 800×480 | B/W + 4-level grayscale |
 | **Xteink X3** | ESP32-C3 | UC8253 | 792×528 | B/W + 4-level grayscale; BQ27220 I²C battery gauge; shares the C3 binary with X4 |
 | **OnePage** | ESP32-C61 | SSD1677 | 800×480 | B/W + 4-level grayscale, 4-key front resistor ADC ladder + 3 side keys, shared SPI MicroSD with power gating, Wi-Fi 6 + BLE 5.4 wireless page-turner remote host |
-| **de-link** | ESP32-S3 | SSD1677 | 800×480 | B/W + grayscale, PWM frontlight, native 4-bit SDMMC SD |
+| **[Silkscreen](https://github.com/iandchasse/silkscreen-pcb)** (formerly de-link) | ESP32-S3 | SSD1677 | 800×480 | B/W + grayscale, PWM frontlight, native 4-bit SDMMC SD |
 | **M5Stack PaperColor** | ESP32-S3 | ED2208 | 400×600 Spectra-6 color | native interrupted-refresh driver, optional M5GFX backend, built-in speaker (ES8311 codec + AW8737A amp), 2x RGB LEDs |
 | **Murphy M3** | ESP32-S3 | UC8253 | 240×416 | B/W (90°-rotated framebuffer, full/fast LUTs), CHSC6x touch, PWM frontlight |
 | **LilyGo T5 S3** | ESP32-S3 | ED047TC1 (raw parallel) | 960×540 16-gray | LovyanGFX EPD driver with 16-gray, GT911 touch, PWM backlight, BQ27220/BQ25896 I²C battery |
@@ -155,7 +155,7 @@ profile. In builds without an Xteink profile the helpers compile to no-ops that
 return false without touching any pins, so an unconditional call is safe on
 every device. Devices on a different MCU build their own binary, selected with a
 `-DFREEINK_DEVICE_*` flag. A build targets exactly one of the four MCU families — ESP32-C3 (X3/X4),
-ESP32-C61 (OnePage), ESP32-S3 (de-link/PaperColor/Murphy/LilyGo/Sticky/X4 Pro/Paper Mono/PaperS3/Waveshare 3.97), or classic ESP32 (M5Paper);
+ESP32-C61 (OnePage), ESP32-S3 (Silkscreen/PaperColor/Murphy/LilyGo/Sticky/X4 Pro/Paper Mono/PaperS3/Waveshare 3.97), or classic ESP32 (M5Paper);
 `BoardConfig` rejects mixing families at compile time.
 
 #### Per-batch panel controllers (`applyXteinkDisplayController()`)
@@ -336,7 +336,7 @@ MCU (a C3-vs-S3 mix is a compile error):
 | `-DFREEINK_DEVICE_X3 -DFREEINK_DEVICE_X4` | X3 **and** X4 in one C3 binary, runtime-selected via `setDisplayX3()` |
 | `-DFREEINK_DEVICE_METALIO_EINK4` | Metalio E-Ink 4 (S3, SSD1677, CST816S touch, TCA9555, 1-bit SDMMC) |
 | `-DFREEINK_DEVICE_ONEPAGE` | OnePage (C61, SSD1677 800×480 + 4-key ADC ladder + 3 side keys + shared SD) |
-| `-DFREEINK_DEVICE_DELINK` | de-link (S3, SSD1677 + frontlight) |
+| `-DFREEINK_DEVICE_SILKSCREEN` | Silkscreen (S3, SSD1677 + frontlight; the old `FREEINK_DEVICE_DELINK` still works) |
 | `-DFREEINK_DEVICE_M5` | M5 PaperColor (S3, ED2208 + color) |
 | `-DFREEINK_DEVICE_MURPHY` | Murphy M3 (S3, UC8253 + touch + frontlight) |
 | `-DFREEINK_DEVICE_LILYGO` | LilyGo T5 S3 (S3, ED047TC1 raw-parallel EPD via LovyanGFX) |
@@ -375,7 +375,7 @@ tight. Each defaults on when an included device needs it; force with `=0`/`=1`:
 | Flag | Effect |
 |---|---|
 | `-DFREEINK_DISPLAY_FLIPPED` (or `-DFLIPPED`) | back-compat alias for `BoardProfile.orientation = MIRROR_Y` on SSD1677 |
-| `-DFREEINK_SD_SDMMC=1` | use the native SDMMC backend — 4-bit or 1-bit per profile (needs `-DUSE_BLOCK_DEVICE_INTERFACE=1`); auto-on for de-link, X4 Pro, X4 Classic, and Paper Mono |
+| `-DFREEINK_SD_SDMMC=1` | use the native SDMMC backend — 4-bit or 1-bit per profile (needs `-DUSE_BLOCK_DEVICE_INTERFACE=1`); auto-on for Silkscreen, X4 Pro, X4 Classic, and Paper Mono |
 | `-DFREEINK_BATTERY_I2C_GAUGE=1` | compile the I²C fuel-gauge backend (BQ27220/BQ25896); auto-on for X3, LilyGo, and Sticky. Gauge-vs-ADC is then runtime per profile, so X3 (gauge) + X4 (ADC) coexist in one binary |
 | `-DEINK_DISPLAY_SINGLE_BUFFER_MODE=1` | single framebuffer (uses controller RAM as previous frame) |
 | `-DFREEINK_FB_PSRAM=1` | place the facade framebuffer(s) in PSRAM heap (`MALLOC_CAP_SPIRAM`, allocated in `begin()`) instead of static DRAM `.bss`; auto-on for M5Paper and Paper Mono, off everywhere else |
@@ -758,7 +758,7 @@ name replaces the existing sink.
 See **[`platformio.sample.ini`](platformio.sample.ini)** for a complete, ready-to-copy
 configuration — it mirrors the toolchain/flags verified against the CrossPoint
 firmware and includes per-device build envs (`xteink`, `xteink_x4`, `m5paper`,
-`delink`, `murphy`, `m5paper_v11`, `sticky`, `x4pro`, `papermono`) wired with the
+`silkscreen`, `murphy`, `m5paper_v11`, `sticky`, `x4pro`, `papermono`) wired with the
 right `FREEINK_DEVICE_*` flags.
 
 Already on CrossPoint? **[`platformio.crosspoint.sample.ini`](platformio.crosspoint.sample.ini)**
@@ -919,7 +919,8 @@ based on:
   `rename` method.
 - **[Ian Chasse](https://github.com/iandchasse)** — the ESP32-S3 port and the
   warm/cool PWM frontlight in [`community-sdk-de-link`](https://github.com/iandchasse/community-sdk-de-link),
-  which the de-link board support is based on.
+  which the [Silkscreen](https://github.com/iandchasse/silkscreen-pcb) (formerly de-link)
+  board support is based on.
 
 If your work is here and you'd like your credit corrected or a link added, open
 an issue or email hello@freeink.org.

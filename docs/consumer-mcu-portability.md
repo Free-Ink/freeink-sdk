@@ -1,6 +1,6 @@
 # MCU portability for consumers (C3 ↔ S3)
 
-Every FreeInk SDK library compiles on both ESP32-C3 (X3/X4) and ESP32-S3 (de-link,
+Every FreeInk SDK library compiles on both ESP32-C3 (X3/X4) and ESP32-S3 (Silkscreen,
 M5, Murphy, LilyGo). Pins, geometry, waveforms, SD transport, and orientation come
 from `BoardConfig::ACTIVE` or per-driver config, so the SDK hardcodes no chip.
 
@@ -178,4 +178,4 @@ Three ways to handle the coupling:
   or fixed constants, in multi-device builds.
 
 These are consumer changes, not SDK changes. With them, one CrossPoint source tree
-builds for C3 (X3/X4) and S3 (de-link/M5/Murphy/LilyGo) by device selection.
+builds for C3 (X3/X4) and S3 (Silkscreen/M5/Murphy/LilyGo) by device selection.

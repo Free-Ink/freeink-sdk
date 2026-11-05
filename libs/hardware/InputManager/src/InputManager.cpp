@@ -1511,6 +1511,11 @@ void InputManager::updateTouchFromIrq(const unsigned long now, const int irqRaw)
     touchReadAt = now + TOUCH_SAMPLE_DELAY_MS;
     TouchPoint point = {false, 0, 0, 0};
     if (readChsc6xPoint(point)) {
+      // This poll's `now`, as every other backend stamps, and never a millis() taken after the read:
+      // serviceTouch() compares against `now`, and a stamp ahead of it wraps the unsigned difference,
+      // so the long-press test passes on a contact's first sample. A 16-byte read takes about 1.7 ms
+      // at 100 kHz, so that is every contact.
+      point.timestamp = now;
       touchPoint = point;
       if (!touchPressed) {
         touchPressed = true;
@@ -1586,7 +1591,6 @@ bool InputManager::decodeChsc6xFrame(const uint8_t* data, const size_t len, Touc
   // note in the README.
   point.x = mapTouchAxis(rawX, t.rawMinX, t.rawMaxX, t.rawMaxX - t.rawMinX);
   point.y = mapTouchAxis(rawY, t.rawMinY, t.rawMaxY, t.rawMaxY - t.rawMinY);
-  point.timestamp = millis();
   return true;
 }
 #endif  // FREEINK_TOUCH_CHSC6X

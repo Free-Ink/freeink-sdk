@@ -353,6 +353,21 @@ int main(int argc, char** argv) {
     assert(data && data->size() == 96000 && (*data)[0] == 0x00 && (*data)[1] == 0xFF);
     s.setReaderRefresh(false);
     assert(lastRegister(bus, 0x02) == 0x00);
+    for (bool firstUiFrame : {true, false}) {
+      bus.clear();
+      s.display(bus, newFb.data(), nullptr, RefreshMode::Fast, true);
+      data = nullptr;
+      lut = nullptr;
+      for (const auto& w : bus.writes) {
+        if (w.command == 0x10) data = &w.bytes;
+        if (w.command == 0x20) lut = &w.bytes;
+      }
+      const auto* expected = firstUiFrame ? lut_picco_se0400_fast : lut_picco_se0400_mode3;
+      assert(lut && *lut == Bytes(expected, expected + 535));
+      assert(data && data->size() == 96000 && (*data)[1] == 0xFF);
+      assert((*data)[0] == (firstUiFrame ? 0x00 : 0xAA));
+      assert(s._needsPowerOn == firstUiFrame);
+    }
 
     // Regression (single-buffer ghosting): the host builds with
     // EINK_DISPLAY_SINGLE_BUFFER_MODE, so `prev` is ALWAYS null. The driver must
@@ -511,7 +526,10 @@ int main(int argc, char** argv) {
     d.setReaderRefresh(true);
     expectRefresh(d, RefreshMode::Fast, 0x1F, nullptr);
     d.setReaderRefresh(false);
+    // The first UI frame erases reading-depth ink; only the next frame uses UI mode.
+    expectRefresh(d, RefreshMode::Fast, 0xDF, nullptr);
     expectRefresh(d, RefreshMode::Fast, 0xCC, lut_picco_fast);
+    expectRefresh(d, RefreshMode::Fast, 0x0C, lut_picco_fast);
     expectStockPiccoGray(d);
     expectRetainedGrayStrip(d);
   } else if (!strcmp(which, "depg")) {
@@ -523,6 +541,12 @@ int main(int argc, char** argv) {
     expectRefresh(d, RefreshMode::Full, 0xE7, lut_picco_depg_full);
     expectRefresh(d, RefreshMode::Half, 0xC7, lut_picco_depg_full);
     expectRefresh(d, RefreshMode::Fast, 0xCC, lut_picco_depg_fast);
+    d.setReaderRefresh(true);
+    expectRefresh(d, RefreshMode::Fast, 0x0F, lut_picco_depg_fast_slot1);
+    d.setReaderRefresh(false);
+    expectRefresh(d, RefreshMode::Fast, 0xCF, lut_picco_depg_fast_slot1);
+    expectRefresh(d, RefreshMode::Fast, 0xCC, lut_picco_depg_fast);
+    expectRefresh(d, RefreshMode::Fast, 0x0C, lut_picco_depg_fast);
     expectPiccoGray(d);
     expectRetainedGrayStrip(d);
   } else {

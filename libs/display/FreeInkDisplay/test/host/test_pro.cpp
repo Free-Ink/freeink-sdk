@@ -787,7 +787,8 @@ static void testTextWaveforms() {
     for (unsigned group = 0; group < 7; ++group)
       for (unsigned phase = 0; phase < 4; ++phase)
         dose += polarity((kX4ProTextUc8179[row * 42 + group * 6] >> (6 - phase * 2)) & 3) *
-                kX4ProTextUc8179[group * 6 + phase + 1] * kX4ProTextUc8179[group * 6 + 5];
+                kX4ProTextUc8179[row * 42 + group * 6 + phase + 1] *
+                kX4ProTextUc8179[row * 42 + group * 6 + 5];
     assert(dose == ucDose[row - 1]);
   }
   for (const auto* bank : {kX4ProTextUc8279, kX4ProTextUc8279Zhx}) {

@@ -311,12 +311,12 @@ int main(int argc, char** argv) {
     newFb[0] = 0x0F;  // left 4 px black, right 4 px white; old all white
     bus.clear();
     s.display(bus, newFb.data(), oldFb.data(), RefreshMode::Fast, false);
-    // First paint is forced FULL; data is old(hi)/new(lo) pairs, MSB first.
+    // First paint is forced FULL; both planes contain the absolute target.
     const Bytes* data = nullptr;
     for (const auto& w : bus.writes)
       if (w.command == 0x10) data = &w.bytes;
     assert(data && data->size() == 96000);
-    assert((*data)[0] == 0xAA && (*data)[1] == 0xFF);  // (1,0)x4 then (1,1)x4
+    assert((*data)[0] == 0x00 && (*data)[1] == 0xFF);  // black (0,0)x4 then white (1,1)x4
     const Bytes* lut = nullptr;
     for (const auto& w : bus.writes)
       if (w.command == 0x20) lut = &w.bytes;
@@ -344,8 +344,13 @@ int main(int argc, char** argv) {
     s.setReaderRefresh(true);
     bus.clear();
     s.display(bus, newFb.data(), oldFb.data(), RefreshMode::Fast, true);
-    for (const auto& w : bus.writes)
+    data = nullptr;
+    for (const auto& w : bus.writes) {
       if (w.command == 0x20) assert(w.bytes == Bytes(lut_picco_se0400_fast, lut_picco_se0400_fast + 535));
+      if (w.command == 0x10) data = &w.bytes;
+    }
+    // Reader mode retains unchanged black pixels instead of applying the UI top-up.
+    assert(data && data->size() == 96000 && (*data)[0] == 0x00 && (*data)[1] == 0xFF);
     s.setReaderRefresh(false);
     assert(lastRegister(bus, 0x02) == 0x00);
 
@@ -407,7 +412,7 @@ int main(int argc, char** argv) {
       if (w.command == 0x20) lut = &w.bytes;
     }
     assert(baseRefreshes == 1 && lut && *lut == Bytes(lut_picco_se0400_mode3, lut_picco_se0400_mode3 + 535));
-    assert(data && *data == Bytes(96000, 0x1B));  // real old/new, no blanket black pulse
+    assert(data && *data == Bytes(96000, 0x9B));  // W->B top-up, B->W erase, W->B, W->W
     assert(memcmp(s._old, target.data(), target.size()) == 0);
     Bytes lsb(48000, 0x00), msb(48000, 0x00);
     lsb[0] = 0xF0;  // px 0-3 LSB
@@ -452,7 +457,7 @@ int main(int argc, char** argv) {
     s.display(bus, grayBase.data(), nullptr, RefreshMode::Fast, false);
     unsigned activations = 0;
     for (const auto& w : bus.writes) {
-      if (w.command == 0x10) assert(w.bytes == Bytes(96000, 0x39));
+      if (w.command == 0x10) assert(w.bytes == Bytes(96000, 0xB9));
       activations += w.command == 0x12;
     }
     assert(activations == 1 && !s._grayPending);

@@ -595,6 +595,26 @@ static void testUc8279X4WaveformSelection() {
     // An image pass must not leave the next sparse page on the quality bank.
     assert(render(GrayscaleMode::Overlay, 0x01, false) != quality);
   }
+  BoardConfig::ACTIVE.board = BoardConfig::Board::XteinkX4Classic;
+  for (uint8_t variant : {0x02, 0x03, 0x68, 0x69}) {
+    BoardConfig::ACTIVE.displayControllerVariant = variant;
+    const auto classic = render(GrayscaleMode::Direct, 0, false);
+    assert(classic == quality);
+    for (unsigned row = 0; row < 5; ++row)
+      assert(classic[row] == Bytes(kX4ProImage + 9 + row * 49, kX4ProImage + 9 + (row + 1) * 49));
+    assert(lastPlane(bus, 0x01) == Bytes({0x17, 0, 0x78, 0x78, 0x14}));
+    assert(lastPlane(bus, 0x2A) == Bytes({0, 0, 0}));
+    assert(lastRegister(bus, 0x82) == 0x24);
+    unsigned paints = 0;
+    for (const auto& w : bus.writes) paints += w.command == 0x12;
+    assert(paints == 1);
+    assert(render(GrayscaleMode::Absolute, 0, false) == classic);
+    assert(render(GrayscaleMode::Overlay, 0x07, false) == classic);
+    assert(render(GrayscaleMode::Overlay, 0, true) == classic);
+    assert(render(GrayscaleMode::Overlay, 0x01, false) != classic);
+  }
+  BoardConfig::ACTIVE.displayControllerVariant = 0x67;
+  assert(!driver.grayscaleCapabilities(GrayscaleMode::Direct).supported());
   BoardConfig::ACTIVE.board = BoardConfig::Board::XteinkX4;
   BoardConfig::ACTIVE.displayControllerVariant = 0x68;
   const auto legacy = render(GrayscaleMode::Direct, 0, false);

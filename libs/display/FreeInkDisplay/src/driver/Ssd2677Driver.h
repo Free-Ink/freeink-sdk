@@ -74,6 +74,7 @@ class Ssd2677Driver : public PanelDriver {
   void refreshWith(EpdBus& bus, const unsigned char* lut, bool turnOff);
 
   bool _readerRefresh = false;
+  bool _afterReader = false;  // last frame presented a book page
   bool _needsPowerOn = true;
   bool _needsInitialFull = true;
   uint8_t _latchedWaveform = 0;  // Sticky: OTP waveform code currently latched (0 = none)

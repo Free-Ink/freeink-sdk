@@ -79,14 +79,17 @@ const uint8_t kXtfPreBwMid[5][PREBW_LUT_LEN + 1] = {
 };
 
 const uint8_t* selectImagePacket() {
-  if (BoardConfig::ACTIVE.board != BoardConfig::Board::XteinkX4Pro) return nullptr;
   const uint8_t variant = BoardConfig::ACTIVE.displayControllerVariant;
+  if (BoardConfig::isX4Classic()) {
+    return variant == 0x02 || variant == 0x03 || variant == 0x68 || variant == 0x69 ? kX4ProImage : nullptr;
+  }
+  if (BoardConfig::ACTIVE.board != BoardConfig::Board::XteinkX4Pro) return nullptr;
   if (variant == 0x02 || variant == 0x03 || (variant >= 0x67 && variant <= 0x69)) return kX4ProImage;
   return nullptr;
 }
 
 const GrayLut* selectAaLuts() {
-  // Pro 0x02/0x03 use QY; Licorice 26110201 maps 0x67..0x69 to ZHX.
+  // Pro 0x02/0x03 use QY; Firmware 26110201 maps 0x67..0x69 to ZHX.
   // Keep the established ZHX fallback for other boards and unknown IDs.
   const uint8_t v = BoardConfig::ACTIVE.displayControllerVariant;
   return (v == 0x02 || v == 0x03) ? kXtfAa02 : kXtfAa68;
@@ -605,7 +608,7 @@ void Uc8279X4Driver::deepSleep(EpdBus& bus) {
 GrayscaleCapabilities Uc8279X4Driver::grayscaleCapabilities(GrayscaleMode mode) const {
   if (mode == GrayscaleMode::Overlay && _readerRefresh && _textAa.ready())
     return {GrayscaleEncoding::OverlayMasks, GrayscaleBase::Combined, true, false, false};
-  // Licorice 26110201 adds an explicit ZHX quality packet for Pro 0x67.
+  // Firmware 26110201 adds an explicit ZHX quality packet for Pro 0x67.
   if (BoardConfig::ACTIVE.displayControllerVariant == 0x67 && !selectImagePacket()) return {};
   if (mode == GrayscaleMode::Absolute || mode == GrayscaleMode::Direct)
     return {GrayscaleEncoding::AbsolutePlanes,

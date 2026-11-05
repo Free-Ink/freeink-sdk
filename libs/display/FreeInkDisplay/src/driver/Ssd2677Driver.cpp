@@ -191,7 +191,11 @@ void Ssd2677Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev,
       _old[i] = (_old[i] & ~_lsb[i]) | (~fb[i] & _lsb[i]);
   }
   _grayPending = false;
-  if (mode == RefreshMode::Fast && !_readerRefresh) {
+  // The first frame after a book page still erases reading-depth blacks, so it
+  // keeps the reading waveform (reader menu, footnotes over a page).
+  const bool reading = _readerRefresh || _afterReader;
+  _afterReader = _readerRefresh;
+  if (mode == RefreshMode::Fast && !reading) {
     // UI: mark every new black pixel white in the old plane so unchanged blacks get
     // the short white-to-black drive again: stale blacks (old text inside dithered
     // areas) match fresh ones, as the SSD1677 Picco tables' black-to-black top-up does.
@@ -201,9 +205,9 @@ void Ssd2677Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev,
   // Sticky's stock path does), so nothing of the previous frame survives.
   sendPacked(bus, mode == RefreshMode::Fast ? _old : fb, fb);
   // Reader pages use BOOX mode 2, UI updates mode 3.
-  const auto* fastLut = _readerRefresh ? lut_picco_se0400_fast : lut_picco_se0400_mode3;
+  const auto* fastLut = reading ? lut_picco_se0400_fast : lut_picco_se0400_mode3;
   // Stock mode 3 keeps the rails on across UI updates.
-  const bool keepPower = mode == RefreshMode::Fast && !_readerRefresh;
+  const bool keepPower = mode == RefreshMode::Fast && !reading;
   refreshWith(bus, mode == RefreshMode::Fast ? fastLut : lut_picco_se0400_full, !keepPower);
   if (_old) memcpy(_old, fb, geometry().bufferSize);  // new becomes old for the next frame
   _needsInitialFull = false;

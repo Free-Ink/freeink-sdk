@@ -2,7 +2,8 @@
 #include <cstdint>
 
 namespace freeink {
-// Licorice 26110201 image-quality packets: nine config bytes, then five 49-byte LUTs.
+// Firmware 26110201 image-quality packets: nine config bytes, then five 49-byte LUTs.
+// Also present in Classic 20261030 at DROM 0x3c3b36fb.
 // Identical QY/ZHX packets at DROM 0x3c3b735d and 0x3c3b78ca; loader 0x421867e8.
 inline constexpr uint8_t kX4ProImage[254] = {
     0x0E, 0x00, 0x78, 0x78, 0x14, 0x24, 0x00, 0x00, 0x00, 0x01, 0x12, 0x0C, 0x02, 0x01, 0x01, 0x01,

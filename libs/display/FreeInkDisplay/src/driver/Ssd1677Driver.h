@@ -148,6 +148,7 @@ class Ssd1677Driver : public PanelDriver {
   bool _piccoAbsoluteRetained = false;
   bool _pendingFrameSync = false;
   bool _readerRefresh = false;
+  bool _afterReader = false;  // last refresh presented a book page
   bool _needsGrayClear = false;
   bool _absoluteInput = false;
   void writeGrayRam(EpdBus& bus, uint8_t command, const uint8_t* data, uint16_t len);

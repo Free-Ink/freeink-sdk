@@ -9,7 +9,7 @@
 
 namespace freeink {
 
-// Licorice's full-target text path: black, one AA gray, and charge-aware white.
+// Full-target text path: black, one AA gray, and charge-aware white.
 class X4ProTextAa {
 public:
   static constexpr uint32_t SIZE = 48000;

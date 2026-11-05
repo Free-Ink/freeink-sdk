@@ -515,8 +515,12 @@ void Ssd1677Driver::refresh(EpdBus& bus, RefreshMode mode, bool turnOff, bool as
   }
   // Board B/W LUT for this mode: load it so the custom-LUT branch below activates
   // it without the OTP reload. Not while a grayscale LUT is already loaded.
-  const unsigned char* fastLut = _readerRefresh && (_cfg.readerFastLut || _cfg.piccoStockGrayscale)
-                                         ? _cfg.readerFastLut : _cfg.fastLut;
+  // The first refresh after a book page still erases reading-depth blacks, so it
+  // keeps the reading waveform (reader menu, footnotes over a page).
+  const bool reading = _readerRefresh || _afterReader;
+  _afterReader = _readerRefresh;
+  const unsigned char* fastLut = reading && (_cfg.readerFastLut || _cfg.piccoStockGrayscale)
+                                     ? _cfg.readerFastLut : _cfg.fastLut;
   const unsigned char* modeLut = (mode == RefreshMode::Fast)   ? fastLut
                                  : (mode == RefreshMode::Half) ? _cfg.halfLut
                                                                : _cfg.fullLut;
@@ -535,7 +539,7 @@ void Ssd1677Driver::refresh(EpdBus& bus, RefreshMode mode, bool turnOff, bool as
   // doesn't trigger some panels' DU waveform (they then run the full waveform on
   // every "fast" refresh); these values fix that. Skipped while a custom grayscale
   // LUT is active (that path needs the 0x0C sequence with the loaded LUT).
-  const uint8_t fastSequence = _readerRefresh && _cfg.piccoWaveforms ? 0xDF : _cfg.fastSeqOverride;
+  const uint8_t fastSequence = reading && _cfg.piccoWaveforms ? 0xDF : _cfg.fastSeqOverride;
   const uint8_t seqOverride = (mode == RefreshMode::Fast) ? fastSequence
                               : (mode == RefreshMode::Half && _cfg.halfSeqOverride != 0)
                                   ? _cfg.halfSeqOverride

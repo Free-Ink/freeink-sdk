@@ -165,6 +165,7 @@ void Ssd2677Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev,
   (void)prev;  // unused: single-buffer host passes null; we track our own old plane
   // First paint after init clears the panel with the full waveform (stock forces
   // mode 0 on the first frame).
+  const bool cold = _needsInitialFull;  // glass content unknown (boot, wake, after an image)
   if (_needsInitialFull) mode = RefreshMode::Full;
   if (isSticky()) {
     // OTP waveforms: a full refresh sends old == new (every pixel driven to its
@@ -202,9 +203,9 @@ void Ssd2677Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev,
     // areas) match fresh ones, as the SSD1677 Picco tables' black-to-black top-up does.
     for (uint32_t i = 0; i < geometry().bufferSize; ++i) _old[i] |= static_cast<uint8_t>(~fb[i]);
   }
-  if (mode != RefreshMode::Fast && _darkBackground && _old) {
-    // One clean straight into a mostly black frame leaves the old screen visible;
-    // clean to white first.
+  if (mode != RefreshMode::Fast && (_darkBackground || cold) && _old) {
+    // One clean into a mostly black frame, or over an unknown one (the sleep screen
+    // after boot or wake), leaves the old screen visible; clean to white first.
     memset(_old, 0xFF, geometry().bufferSize);
     sendPacked(bus, _old, _old);
     refreshWith(bus, lut_picco_se0400_full, true);
@@ -216,7 +217,7 @@ void Ssd2677Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev,
   const auto* fastLut = reading ? lut_picco_se0400_fast : lut_picco_se0400_mode3;
   // Stock mode 3 keeps the rails on across UI updates.
   const bool keepPower = mode == RefreshMode::Fast && !reading;
-  refreshWith(bus, mode == RefreshMode::Fast ? fastLut : lut_picco_se0400_full, turnOff && !keepPower);
+  refreshWith(bus, mode == RefreshMode::Fast ? fastLut : lut_picco_se0400_full, !keepPower);
   if (_old) memcpy(_old, fb, geometry().bufferSize);  // new becomes old for the next frame
   _needsInitialFull = false;
 }
@@ -373,7 +374,7 @@ void Ssd2677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
     if (!_darkBackground) display(bus, fb, nullptr, RefreshMode::Full, turnOff);
     return;
   }
-  refreshWith(bus, lut_picco_se0400_gray, turnOff);
+  refreshWith(bus, lut_picco_se0400_gray, true);
   _grayPending = _grayMaskReady;
   _grayMaskReady = false;
   // Preserve the base outside the gray mask; masked pixels are driven on the next frame.

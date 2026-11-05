@@ -59,7 +59,19 @@ static void expectRefresh(Ssd1677Driver& d, RefreshMode mode, uint8_t ctrl2, con
 }
 
 static void expectCustomDepg(Ssd1677Driver& d) {
-  assert(!memcmp(lut_picco_depg_custom_fast, lut_picco_depg_fast_slot1, 105));
+  const auto* split = lut_picco_depg_custom_fast;
+  assert(split[0] == 0x01 && split[10] == 0x88 && split[20] == 0x44);
+  assert(split[50] == 8 && split[51] == 1 && split[52] == 9 && split[53] == 1);
+  // Changing pixels retain 17 driven frames, with no drive during phase B.
+  for (unsigned row : {10u, 20u}) {
+    unsigned driven = 0;
+    for (unsigned phase = 0; phase < 4; ++phase)
+      if ((split[row] >> (6 - 2 * phase)) & 3) driven += split[50 + phase];
+    assert(driven == 17 && ((split[row] >> 4) & 3) == 0);
+  }
+  for (unsigned i = 0; i < 105; ++i)
+    if (i != 0 && i != 10 && i != 20 && (i < 50 || i > 53))
+      assert(split[i] == lut_picco_depg_fast_slot1[i]);
   assert(!memcmp(lut_picco_depg_custom_fast + 105, lut_grayscale_sticky + 105, 5));
   EpdBus bus;
   Bytes prior(48000, 0x33), target(48000);
@@ -214,6 +226,9 @@ static void expectStickyAaPower(Ssd1677Driver& d) {
     assert(!d._isScreenOn);
     bus.clear();
     d.displayGray(bus, msb.data(), turnOff, nullptr, false);
+    Bytes expected(lut_grayscale_sticky, lut_grayscale_sticky + 105);
+    assert(lastLut(bus) && *lastLut(bus) == expected);
+    assert(lastRegister(bus, 0x2C) == lut_grayscale_sticky[109]);
     std::vector<uint8_t> sequences;
     for (const auto& w : bus.writes) {
       if (w.command == 0x22) sequences.push_back(w.bytes[0]);
@@ -272,7 +287,6 @@ static void expectSsd2677NightMode(Ssd2677Driver& driver) {
       display._driver = &driver;
       display.begin();
       driver.setReaderRefresh(reading);
-      driver._afterReader = false;
       display.setInverted(true);
       std::memset(display.getFrameBuffer(), 0xCC, 48000);
       display.displayBuffer(FreeInkDisplay::FULL_REFRESH, true);
@@ -315,9 +329,19 @@ static void expectNightGray(Ssd1677Driver& d) {
   display.setInverted(true);
   std::memset(display.getFrameBuffer(), 0xFF, 48000);
   display.displayBuffer(FreeInkDisplay::HALF_REFRESH, false);  // consumes the inversion clean
-  if (!d._cfg.piccoWaveforms) {
+  if (!d._cfg.piccoWaveforms || d._cfg.fastLut == lut_picco_depg_custom_fast) {
     assert(!display.grayscaleCapabilities().supported());
+    display._bus.clear();
+    assert(!display.displayGrayscaleBase(GrayscaleMode::Overlay, FreeInkDisplay::FAST_REFRESH, false));
+    const Bytes mask(48000, 0x55);
+    display.copyGrayscaleLsbBuffers(mask.data());
+    display.copyGrayscaleMsbBuffers(mask.data());
+    display.writeGrayscalePlaneStrip(FreeInkDisplay::GRAY_PLANE_LSB, mask.data(), 0, 480);
+    display.displayGrayBuffer(false);
+    assert(display._bus.writes.empty());
     display.setInverted(false);
+    if (d._cfg.fastLut == lut_picco_depg_custom_fast)
+      assert(display.grayscaleCapabilities().supported());
     d.setReaderRefresh(false);
     return;
   }
@@ -461,9 +485,13 @@ int main(int argc, char** argv) {
     }
     // Reader mode retains unchanged pixels without the UI black top-up.
     assert(data && data->size() == 96000 && (*data)[0] == 0x00 && (*data)[1] == 0xFF);
+    // Reader refreshes power down even when the host requests retention.
+    bus.clear();
+    s.display(bus, newFb.data(), nullptr, RefreshMode::Fast, false);
+    assert(lastRegister(bus, 0x02) == 0 && s._needsPowerOn);
     s.setReaderRefresh(false);
     assert(lastRegister(bus, 0x02) == 0x00);
-    for (bool firstUiFrame : {true, false}) {
+    for (unsigned uiFrame = 0; uiFrame < 2; ++uiFrame) {
       bus.clear();
       s.display(bus, newFb.data(), nullptr, RefreshMode::Fast, true);
       data = nullptr;
@@ -472,11 +500,11 @@ int main(int argc, char** argv) {
         if (w.command == 0x10) data = &w.bytes;
         if (w.command == 0x20) lut = &w.bytes;
       }
-      const auto* expected = firstUiFrame ? lut_picco_se0400_fast : lut_picco_se0400_mode3;
+      const auto* expected = lut_picco_se0400_mode3;
       assert(lut && *lut == Bytes(expected, expected + 535));
       assert(data && data->size() == 96000 && (*data)[1] == 0xFF);
-      assert((*data)[0] == (firstUiFrame ? 0x00 : 0xAA));
-      assert(s._needsPowerOn == firstUiFrame);
+      assert((*data)[0] == 0xAA);
+      assert(!s._needsPowerOn);
     }
 
     // Regression (single-buffer ghosting): the host builds with
@@ -554,13 +582,12 @@ int main(int argc, char** argv) {
     for (const auto& w : bus.writes)
       if (w.command == 0x20) lut = &w.bytes;
     assert(*lut == Bytes(lut_picco_se0400_gray, lut_picco_se0400_gray + 535));
-    assert(!s._needsPowerOn);
-    for (const auto& w : bus.writes) assert(w.command != 0x02);
+    assert(lastRegister(bus, 0x02) == 0 && s._needsPowerOn);
     const auto old = Bytes(s._old, s._old + 48000);
     bus.clear();
     fakeDelayMs = 0;
     s.powerOffBetweenFrames(bus);
-    assert(lastRegister(bus, 0x02) == 0 && s._needsPowerOn && !s._needsInitialFull);
+    assert(bus.writes.empty() && s._needsPowerOn && !s._needsInitialFull);
     assert(fakeDelayMs == 0 && old == Bytes(s._old, s._old + 48000));
     bus.clear();
     s.powerOffBetweenFrames(bus);
@@ -659,8 +686,8 @@ int main(int argc, char** argv) {
     assert(variant == 2);
     // UI and reader share the custom pulse timing and voltage calibration.
     assert(d._cfg.fastLut == lut_picco_depg_custom_fast);
-    assert(d._cfg.fastLut[10] == 0x80 && d._cfg.fastLut[20] == 0x40);
-    assert(d._cfg.fastLut[50] == 17 && d._cfg.fastLut[51] == 0);
+    assert(d._cfg.fastLut[10] == 0x88 && d._cfg.fastLut[20] == 0x44);
+    assert(d._cfg.fastLut[50] == 8 && d._cfg.fastLut[51] == 1);
     expectRefresh(d, RefreshMode::Full, 0xE4, lut_picco_depg_full);
     expectRefresh(d, RefreshMode::Half, 0x04, lut_picco_depg_full);
     expectRefresh(d, RefreshMode::Fast, 0x0C, lut_picco_depg_custom_fast);

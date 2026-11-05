@@ -369,6 +369,11 @@ static const Ssd1677Config& ssd1677X4ProConfig() {
 }
 #endif
 
+bool Ssd1677Driver::grayscaleWhileInverted() const {
+  // DEPG's AA pass produces a visible brightness pulse on dark pages.
+  return _cfg.piccoWaveforms && _cfg.fastLut != lut_picco_depg_custom_fast;
+}
+
 Ssd1677Driver::Ssd1677Driver(const Ssd1677Config& cfg)
     : _cfg(cfg),
       _w(BoardConfig::ACTIVE.displayWidth),
@@ -883,7 +888,7 @@ void Ssd1677Driver::displayImpl(EpdBus& bus, const uint8_t* fb, const uint8_t* p
           offset += count;
         }
 #if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
-        EPD_LOG("[SSD1677] dark FAST: 17 frames, Sticky voltages, RED=complement(target)\n");
+        EPD_LOG("[SSD1677] dark FAST: 8+rest+9 frames, Sticky voltages, RED=complement(target)\n");
 #endif
       } else if (prev != nullptr) {
         // Dual-buffer: RED holds the previous frame for the differential compare.

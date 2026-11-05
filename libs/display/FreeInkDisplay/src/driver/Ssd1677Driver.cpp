@@ -1120,7 +1120,18 @@ void Ssd1677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
     selectedLut = factoryMode ? (_cfg.factoryGrayLut ? _cfg.factoryGrayLut : lut_factory_quality)
                               : _cfg.grayLut;
   }
-  setCustomLut(bus, true, selectedLut);
+  if (!factoryMode && lut == nullptr && _cfg.fastLut == lut_picco_depg_custom_fast &&
+      selectedLut == lut_grayscale_sticky) {
+    // Apply VSH1 in the final idle phase of DEPG's three gray selectors.
+    unsigned char adjustedAa[110];
+    memcpy(adjustedAa, selectedLut, sizeof(adjustedAa));
+    adjustedAa[12] |= 0x01;
+    adjustedAa[22] |= 0x01;
+    adjustedAa[32] |= 0x01;
+    setCustomLut(bus, true, adjustedAa);
+  } else {
+    setCustomLut(bus, true, selectedLut);
+  }
   // The border register keeps its last value across refreshes; a follow-LUT value
   // (Sticky's 0x01) would now track the loaded grayscale LUT and drive the border
   // black. Park it for the gray pass; the next normal refresh restores the

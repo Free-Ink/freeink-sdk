@@ -183,8 +183,12 @@ static void expectStockPiccoGray(Ssd1677Driver& d) {
     const bool wasOn = d._isScreenOn;
     d.displayGray(bus, msb.data(), absolute, nullptr, absolute);
     const auto* lut = absolute ? d._cfg.factoryGrayLut : d._cfg.grayLut;
-    if (lut) assert(lastLut(bus) && *lastLut(bus) == Bytes(lut, lut + 105));
-    else assert(!lastLut(bus));
+    if (lut) {
+      Bytes expected(lut, lut + 105);
+      if (!absolute && d._cfg.fastLut == lut_picco_depg_custom_fast)
+        for (unsigned index : {12u, 22u, 32u}) expected[index] |= 0x01;
+      assert(lastLut(bus) && *lastLut(bus) == expected);
+    } else assert(!lastLut(bus));
     const bool stickyAa = !absolute && lut == lut_grayscale_sticky;
     uint8_t sequence = lut ? 0xC7 : 0xD7;
     if (wasOn) sequence &= 0x3F;
@@ -227,6 +231,9 @@ static void expectStickyAaPower(Ssd1677Driver& d) {
     bus.clear();
     d.displayGray(bus, msb.data(), turnOff, nullptr, false);
     Bytes expected(lut_grayscale_sticky, lut_grayscale_sticky + 105);
+    expected[12] = 0x41;
+    expected[22] = 0xA9;
+    expected[32] = 0x21;
     assert(lastLut(bus) && *lastLut(bus) == expected);
     assert(lastRegister(bus, 0x2C) == lut_grayscale_sticky[109]);
     std::vector<uint8_t> sequences;

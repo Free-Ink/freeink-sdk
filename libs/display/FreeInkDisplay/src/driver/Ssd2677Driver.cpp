@@ -195,11 +195,19 @@ void Ssd2677Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev,
   // keeps the reading waveform (reader menu, footnotes over a page).
   const bool reading = _readerRefresh || _afterReader;
   _afterReader = _readerRefresh;
-  if (mode == RefreshMode::Fast && !reading) {
+  // Not on a dark background: there the top-up would re-drive the whole screen.
+  if (mode == RefreshMode::Fast && !reading && !_darkBackground) {
     // UI: mark every new black pixel white in the old plane so unchanged blacks get
     // the short white-to-black drive again: stale blacks (old text inside dithered
     // areas) match fresh ones, as the SSD1677 Picco tables' black-to-black top-up does.
     for (uint32_t i = 0; i < geometry().bufferSize; ++i) _old[i] |= static_cast<uint8_t>(~fb[i]);
+  }
+  if (mode != RefreshMode::Fast && _darkBackground && _old) {
+    // One clean straight into a mostly black frame leaves the old screen visible;
+    // clean to white first.
+    memset(_old, 0xFF, geometry().bufferSize);
+    sendPacked(bus, _old, _old);
+    refreshWith(bus, lut_picco_se0400_full, true);
   }
   // HALF/FULL are cleans: old == new drives every pixel to its level (as the
   // Sticky's stock path does), so nothing of the previous frame survives.

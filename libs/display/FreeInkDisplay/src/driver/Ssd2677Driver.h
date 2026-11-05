@@ -39,6 +39,7 @@ class Ssd2677Driver : public PanelDriver {
   PanelGeometry geometry() const override;
 
   void setReaderRefresh(bool reading) override { _readerRefresh = reading; }
+  void setBackgroundHint(bool darkBackground) override { _darkBackground = darkBackground; }
   void begin(EpdBus& bus) override;
   void deepSleep(EpdBus& bus) override;
   void powerOffBetweenFrames(EpdBus& bus) override;
@@ -75,6 +76,7 @@ class Ssd2677Driver : public PanelDriver {
 
   bool _readerRefresh = false;
   bool _afterReader = false;  // last frame presented a book page
+  bool _darkBackground = false;  // facade renders inverted frames
   bool _needsPowerOn = true;
   bool _needsInitialFull = true;
   uint8_t _latchedWaveform = 0;  // Sticky: OTP waveform code currently latched (0 = none)

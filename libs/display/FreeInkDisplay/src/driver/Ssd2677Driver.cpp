@@ -216,7 +216,7 @@ void Ssd2677Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev,
   const auto* fastLut = reading ? lut_picco_se0400_fast : lut_picco_se0400_mode3;
   // Stock mode 3 keeps the rails on across UI updates.
   const bool keepPower = mode == RefreshMode::Fast && !reading;
-  refreshWith(bus, mode == RefreshMode::Fast ? fastLut : lut_picco_se0400_full, !keepPower);
+  refreshWith(bus, mode == RefreshMode::Fast ? fastLut : lut_picco_se0400_full, turnOff && !keepPower);
   if (_old) memcpy(_old, fb, geometry().bufferSize);  // new becomes old for the next frame
   _needsInitialFull = false;
 }
@@ -369,10 +369,11 @@ void Ssd2677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
     return;
   }
   if (!_lsb) {  // planes never staged: plain B/W
-    display(bus, fb, nullptr, RefreshMode::Full, turnOff);
+    // An inverted base is already on the glass; `fb` holds the logical frame.
+    if (!_darkBackground) display(bus, fb, nullptr, RefreshMode::Full, turnOff);
     return;
   }
-  refreshWith(bus, lut_picco_se0400_gray, true);
+  refreshWith(bus, lut_picco_se0400_gray, turnOff);
   _grayPending = _grayMaskReady;
   _grayMaskReady = false;
   // Preserve the base outside the gray mask; masked pixels are driven on the next frame.

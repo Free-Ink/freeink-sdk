@@ -40,6 +40,8 @@ class Ssd2677Driver : public PanelDriver {
 
   void setReaderRefresh(bool reading) override { _readerRefresh = reading; }
   void setBackgroundHint(bool darkBackground) override { _darkBackground = darkBackground; }
+  // BOOX 2959 runs the reader AA overlay after inverted pages too.
+  bool grayscaleWhileInverted() const override { return BoardConfig::ACTIVE.board != BoardConfig::Board::Sticky; }
   void begin(EpdBus& bus) override;
   void deepSleep(EpdBus& bus) override;
   void powerOffBetweenFrames(EpdBus& bus) override;

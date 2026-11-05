@@ -490,6 +490,8 @@ class FreeInkDisplay {
   bool _singleBufferFastDiff = false;
   bool _fastGrayscaleLut = false;
   bool _inverted = false;
+  // Overlay grayscale passes are allowed in the current polarity.
+  bool grayAllowed() const;
   bool _inversionDirty = false;
 
   // Runtime display geometry (seeded from the driver at begin()).

@@ -29,10 +29,10 @@ static const Bytes* lastLut(const EpdBus& bus) {
   return nullptr;
 }
 
-static void expectRefresh(Ssd1677Driver& d, RefreshMode mode, uint8_t ctrl2, const unsigned char* lut) {
+static void expectRefresh(Ssd1677Driver& d, RefreshMode mode, uint8_t ctrl2, const unsigned char* lut, bool turnOff = false) {
   EpdBus bus;
   const Bytes fb(48000, 0xAA);
-  d.display(bus, fb.data(), fb.data(), mode, false);
+  d.display(bus, fb.data(), fb.data(), mode, turnOff);
   assert(lastRegister(bus, 0x22) == ctrl2);
   if (d._cfg.piccoWaveforms) assert(d._isScreenOn == ((ctrl2 & 0x03) == 0));
   const Bytes* sent = lastLut(bus);
@@ -42,103 +42,20 @@ static void expectRefresh(Ssd1677Driver& d, RefreshMode mode, uint8_t ctrl2, con
   } else {
     assert(!sent);
   }
+  if (d._cfg.fastLut == lut_picco_depg_fast) {
+    bool addressed = false;
+    unsigned planes = 0;
+    for (const auto& w : bus.writes) {
+      if (w.command == 0x4F) addressed = true;
+      if (w.command == 0x24 || w.command == 0x26) {
+        assert(addressed);
+        addressed = false;
+        ++planes;
+      }
+    }
+    assert(planes == 2);
+  }
   assert(!d._customLutActive);
-}
-
-// Sticky AA keeps its voltage/activation sequence and BOOX gray-aware history.
-static void expectPiccoGray(Ssd1677Driver& d) {
-  EpdBus bus;
-  const Bytes base(48000, 0x55), lsb(48000, 0x11), msb(48000, 0x33);
-  d.begin(bus);
-  d.display(bus, base.data(), nullptr, RefreshMode::Full, false);
-  d.beginGrayscale(bus, base.data(), GrayscaleMode::Overlay, RefreshMode::Fast, false);
-  d.copyGrayscaleLsb(bus, lsb.data());
-  d.writeGrayscalePlaneStrip(bus, GrayPlane::Msb, msb.data(), 0, 480);
-  bus.clear();
-  const bool grayNeedsPowerOn = !d._isScreenOn;
-  d.displayGray(bus, msb.data(), false, nullptr, false);
-  assert(lastLut(bus) && *lastLut(bus) == Bytes(d._cfg.grayLut, d._cfg.grayLut + 105));
-  assert(d._cfg.grayLut == lut_grayscale_sticky);
-  assert(lastRegister(bus, 0x22) == 0xCF && d._piccoGrayPending);
-  assert(lastRegister(bus, 0x03) == lut_grayscale_sticky[105]);
-  assert(lastRegister(bus, 0x2C) == lut_grayscale_sticky[109]);
-  assert(lastRegister(bus, 0x3C) == 0x80);
-  unsigned activations = 0;
-  for (const auto& w : bus.writes) {
-    activations += w.command == 0x20;
-  }
-  assert(activations == (grayNeedsPowerOn ? 2u : 1u));
-  std::vector<uint8_t> aaSequences;
-  for (const auto& w : bus.writes)
-    if (w.command == 0x22) aaSequences.push_back(w.bytes.at(0));
-  assert(aaSequences == (grayNeedsPowerOn ? std::vector<uint8_t>{0xC0, 0xCF}
-                                         : std::vector<uint8_t>{0xCF}));
-  d.cleanupGrayscaleBuffers(bus, base.data());
-  bus.clear();
-  // Same B/W base, but gray pixels must transition instead of being held.
-  assert(d.displayStart(bus, base.data(), base.data(), RefreshMode::Fast, false));
-  activations = 0;
-  for (const auto& w : bus.writes) {
-    if (w.command == 0x26) assert(w.bytes == Bytes(48000, 0x66));
-    activations += w.command == 0x20;
-  }
-  assert(activations == 1 && bus.waits == 0);
-  assert(lastRegister(bus, 0x3C) == d._cfg.borderWaveformInit);
-  d.displayFinish(bus, base.data());
-  assert(Bytes(d._piccoOld, d._piccoOld + 48000) == base);
-  bus.clear();
-  d.display(bus, base.data(), nullptr, RefreshMode::Fast, false);
-  for (const auto& w : bus.writes)
-    if (w.command == 0x26) assert(w.bytes == base);  // mask is consumed once
-  bus.clear();
-  d.beginGrayscale(bus, base.data(), GrayscaleMode::Absolute, RefreshMode::Half, false);
-  d.copyGrayscaleLsb(bus, lsb.data());
-  d.copyGrayscaleMsb(bus, msb.data());
-  for (const auto& w : bus.writes) {
-    if (w.command == 0x24) assert(w.bytes == Bytes(48000, 0xEE));
-    if (w.command == 0x26) assert(w.bytes == Bytes(48000, 0xCC));
-  }
-  bus.clear();
-  d.displayGray(bus, msb.data(), true, nullptr, true);
-  assert(lastLut(bus) && *lastLut(bus) == Bytes(lut_factory_quality, lut_factory_quality + 105));
-  assert(lastRegister(bus, 0x03) == lut_factory_quality[105]);
-  assert(lastRegister(bus, 0x04) == lut_factory_quality[106]);
-  assert(lastRegister(bus, 0x2C) == lut_factory_quality[109]);
-  assert(lastRegister(bus, 0x3C) == d._cfg.borderWaveformInit);
-  std::vector<uint8_t> graySequences;
-  for (const auto& w : bus.writes)
-    if (w.command == 0x22) graySequences.push_back(w.bytes.at(0));
-  assert((graySequences == std::vector<uint8_t>{0xCC, 0x03}));
-  assert(d._needsGrayClear && !d._isScreenOn);
-  // The first charge-strip paint after an absolute image retains main's recovery sequence.
-  bus.clear();
-  d.display(bus, msb.data(), nullptr, RefreshMode::Fast, false);
-  assert(lastRegister(bus, 0x22) == (d._cfg.halfLut ? 0xC4 : 0xD7));
-  if (d._cfg.halfLut) assert(lastRegister(bus, 0x3C) == 0x80);
-  unsigned recoveryActivations = 0, bwWrites = 0, oldWrites = 0;
-  for (const auto& w : bus.writes) {
-    recoveryActivations += w.command == 0x20;
-    bwWrites += w.command == 0x24;
-    oldWrites += w.command == 0x26;
-  }
-  assert(recoveryActivations == 1 && bwWrites == 2 && oldWrites == 2);
-  assert(!d._needsGrayClear);
-  // No PSRAM: retain correct output by promoting the next request, never use stale gray RAM.
-  Ssd1677Driver noHistory(d._cfg);
-  fakeHeapCapsFail = true;
-  noHistory.begin(bus);
-  fakeHeapCapsFail = false;
-  assert(!noHistory._piccoOld && !noHistory._piccoGrayMask);
-  noHistory.display(bus, base.data(), nullptr, RefreshMode::Full, false);
-  noHistory.beginGrayscale(bus, base.data(), GrayscaleMode::Overlay, RefreshMode::Fast, false);
-  noHistory.copyGrayscaleLsb(bus, lsb.data());
-  noHistory.copyGrayscaleMsb(bus, msb.data());
-  noHistory.displayGray(bus, msb.data(), false, nullptr, false);
-  noHistory.cleanupGrayscaleBuffers(bus, base.data());
-  assert(noHistory._needsGrayClear);
-  bus.clear();
-  noHistory.display(bus, base.data(), nullptr, RefreshMode::Fast, false);
-  assert(lastRegister(bus, 0x21) == 0x40);
 }
 
 static void expectRetainedGrayStrip(Ssd1677Driver& d) {
@@ -209,12 +126,13 @@ static void expectStockPiccoGray(Ssd1677Driver& d) {
     bus.clear();
     const bool wasOn = d._isScreenOn;
     d.displayGray(bus, msb.data(), absolute, nullptr, absolute);
-    const auto* lut = absolute ? d._cfg.factoryGrayLut : lut_picco_yrd_opm_gray;
+    const auto* lut = absolute ? d._cfg.factoryGrayLut : d._cfg.grayLut;
     if (lut) assert(lastLut(bus) && *lastLut(bus) == Bytes(lut, lut + 105));
     else assert(!lastLut(bus));
     uint8_t sequence = lut ? 0xC7 : 0xD7;
     if (wasOn) sequence &= 0x3F;
-    // Both reader AA and this turnOff image request power down.
+    // Stock follows the caller: retain power for AA here, shut down for the image.
+    if (!absolute) sequence &= 0xFC;
     assert(lastRegister(bus, 0x22) == sequence);
     unsigned activations = 0;
     for (const auto& w : bus.writes) {
@@ -260,11 +178,11 @@ static void expectIdlePower(Ssd1677Driver& d) {
   frame.powerOffBetweenFrames();
   assert(bus.writes.empty());
   assert(d.displayStart(bus, fb.data(), fb.data(), RefreshMode::Fast, false));
-  assert(lastRegister(bus, 0x22) == startedSequence);
+  assert(lastRegister(bus, 0x22) == (d._cfg.piccoWaveforms ? (startedSequence | 0xC0) : startedSequence));
   d.displayFinish(bus, fb.data());
   // Reader AA powers off; RAM cleanup and repeated idle shutdown remain safe.
   d.displayGray(bus, fb.data(), false, nullptr, false);
-  assert(d._isScreenOn == !d._cfg.piccoWaveforms);
+  assert(d._isScreenOn);
   d.cleanupGrayscaleBuffers(bus, fb.data());
   frame.powerOffBetweenFrames();
   assert(!d._isScreenOn && !d._inGrayscaleMode && !d._needsInitialFull);
@@ -295,9 +213,7 @@ static void expectSsd2677NightMode(Ssd2677Driver& driver) {
       for (const auto& w : display._bus.writes) {
         if (w.command == 0x10) {
           assert(activations == frames);
-          // Only HALF/FULL prepend a white clean; FAST retains the physical old image.
-          const bool whiteClean = !fast && frames == 0;
-          assert(w.bytes == Bytes(96000, whiteClean ? 0xFF : fast ? 0x1B : 0x33));
+          assert(w.bytes == Bytes(96000, fast ? 0x1B : (frames == 0 ? 0xFF : 0x33)));
           ++frames;
         }
         if (w.command == 0x20) {
@@ -313,6 +229,84 @@ static void expectSsd2677NightMode(Ssd2677Driver& driver) {
     }
   }
   driver.setReaderRefresh(false);
+}
+
+// BOOX 2959 overlays reader AA on inverted pages: masks keep their encoding,
+// the retained B/W baseline keeps wire polarity, and the next page drives gray pixels.
+static void expectNightGray(Ssd1677Driver& d) {
+  FreeInkDisplay display(1, 2, 3, 4, 5, 6);
+  display._driver = &d;
+  display.begin();
+  d.setReaderRefresh(true);
+  display.setInverted(true);
+  std::memset(display.getFrameBuffer(), 0xFF, 48000);
+  display.displayBuffer(FreeInkDisplay::HALF_REFRESH, false);  // consumes the inversion clean
+  if (!d._cfg.piccoWaveforms) {
+    assert(!display.grayscaleCapabilities().supported());
+    display.setInverted(false);
+    d.setReaderRefresh(false);
+    return;
+  }
+  assert(display.grayscaleCapabilities().supported());
+  const Bytes lsb(48000, 0x00), msb(48000, 0x03);
+  uint8_t* fb = display.getFrameBuffer();
+  std::memset(fb, 0xF0, 48000);
+  display.displayBuffer(FreeInkDisplay::FAST_REFRESH, false);
+  display._bus.clear();
+  display.writeGrayscalePlaneStrip(FreeInkDisplay::GRAY_PLANE_LSB, lsb.data(), 0, 480);
+  display.writeGrayscalePlaneStrip(FreeInkDisplay::GRAY_PLANE_MSB, msb.data(), 0, 480);
+  display.displayGrayBuffer(false);
+  bool lsbSeen = false, msbSeen = false;
+  for (const auto& w : display._bus.writes) {
+    if (w.command == 0x24 && w.bytes.size() == 48000) lsbSeen = w.bytes == lsb;
+    if (w.command == 0x26 && w.bytes.size() == 48000) msbSeen = w.bytes == msb;
+  }
+  assert(lsbSeen && msbSeen && lastRegister(display._bus, 0x22) != 0);
+  display.cleanupGrayscaleBuffers(fb);
+  assert(fb[0] == 0xF0 && d._piccoOld[0] == 0x0F);
+  std::memset(display.getFrameBuffer(), 0xFF, 48000);
+  display._bus.clear();
+  display.displayBuffer(FreeInkDisplay::FAST_REFRESH, false);
+  const Bytes* old = nullptr;
+  for (const auto& w : display._bus.writes)
+    if (w.command == 0x26) old = &w.bytes;
+  // (0x0F & ~0x03) | (~0x00 & 0x03): gray pixels start opposite the new target.
+  assert(old && (*old)[0] == 0x0F);
+  display.setInverted(false);
+  d.setReaderRefresh(false);
+}
+
+// BOOX 2959 overlays reader AA on inverted SE0400 pages. The masks are packed
+// unmodified (MSB high, LSB low); the next page starts masked pixels opposite their target.
+static void expectNightGray2677(Ssd2677Driver& s) {
+  FreeInkDisplay display(1, 2, 3, 4, 5, 6);
+  display._driver = &s;
+  display.begin();
+  s.setReaderRefresh(true);
+  display.setInverted(true);
+  std::memset(display.getFrameBuffer(), 0xFF, 48000);
+  display.displayBuffer(FreeInkDisplay::HALF_REFRESH, false);
+  assert(display.grayscaleCapabilities().supported());
+  std::memset(display.getFrameBuffer(), 0xFF, 48000);
+  display.displayGrayscaleBase(FreeInkDisplay::FAST_REFRESH, false);
+  const Bytes lsb(48000, 0x00), msb(48000, 0xFF);
+  display._bus.clear();
+  display.copyGrayscaleLsbBuffers(lsb.data());
+  display.copyGrayscaleMsbBuffers(msb.data());
+  display.displayGrayBuffer(false);
+  const Bytes* gray = nullptr;
+  for (const auto& w : display._bus.writes)
+    if (w.command == 0x10) gray = &w.bytes;
+  assert(gray && *gray == Bytes(96000, 0xAA) && s._grayPending);  // (msb 1, lsb 0) per pixel
+  std::memset(display.getFrameBuffer(), 0x00, 48000);  // logical black = wire white
+  display._bus.clear();
+  display.displayBuffer(FreeInkDisplay::FAST_REFRESH, false);
+  const Bytes* page = nullptr;
+  for (const auto& w : display._bus.writes)
+    if (w.command == 0x10) page = &w.bytes;
+  assert(page && *page == Bytes(96000, 0x55));  // old 0 (opposite), new 1
+  display.setInverted(false);
+  s.setReaderRefresh(false);
 }
 
 int main(int argc, char** argv) {
@@ -358,7 +352,7 @@ int main(int argc, char** argv) {
     for (const auto& w : bus.writes)
       if (w.command == 0x10) data = &w.bytes;
     assert(data && data->size() == 96000);
-    assert((*data)[0] == 0x00 && (*data)[1] == 0xFF);  // black (0,0)x4 then white (1,1)x4
+    assert((*data)[0] == 0x00 && (*data)[1] == 0xFF);  // absolute black/white
     const Bytes* lut = nullptr;
     for (const auto& w : bus.writes)
       if (w.command == 0x20) lut = &w.bytes;
@@ -391,7 +385,7 @@ int main(int argc, char** argv) {
       if (w.command == 0x20) assert(w.bytes == Bytes(lut_picco_se0400_fast, lut_picco_se0400_fast + 535));
       if (w.command == 0x10) data = &w.bytes;
     }
-    // Reader mode retains unchanged black pixels instead of applying the UI top-up.
+    // Reader mode retains unchanged pixels without the UI black top-up.
     assert(data && data->size() == 96000 && (*data)[0] == 0x00 && (*data)[1] == 0xFF);
     s.setReaderRefresh(false);
     assert(lastRegister(bus, 0x02) == 0x00);
@@ -455,7 +449,7 @@ int main(int argc, char** argv) {
     assert((imageCommands == std::vector<uint8_t>{0x10, 0x20, 0x12, 0x02}));
     assert(s._needsInitialFull && s._needsPowerOn);
     // Each group of four exercises B->B, B->W, W->B, W->W respectively.
-    // FAST AA should pulse both kinds of incoming black and still erase old ink.
+    // The UI base tops up unchanged black while retaining white transitions.
     Bytes prior(48000, 0x33), target(48000, 0x55);
     s.display(bus, prior.data(), nullptr, RefreshMode::Full, false);
     bus.clear();
@@ -486,12 +480,13 @@ int main(int argc, char** argv) {
     for (const auto& w : bus.writes)
       if (w.command == 0x20) lut = &w.bytes;
     assert(*lut == Bytes(lut_picco_se0400_gray, lut_picco_se0400_gray + 535));
-    assert(lastRegister(bus, 0x02) == 0 && s._needsPowerOn);
+    assert(!s._needsPowerOn);
+    for (const auto& w : bus.writes) assert(w.command != 0x02);
     const auto old = Bytes(s._old, s._old + 48000);
     bus.clear();
     fakeDelayMs = 0;
     s.powerOffBetweenFrames(bus);
-    assert(bus.writes.empty() && s._needsPowerOn && !s._needsInitialFull);
+    assert(lastRegister(bus, 0x02) == 0 && s._needsPowerOn && !s._needsInitialFull);
     assert(fakeDelayMs == 0 && old == Bytes(s._old, s._old + 48000));
     bus.clear();
     s.powerOffBetweenFrames(bus);
@@ -530,6 +525,7 @@ int main(int argc, char** argv) {
     noHistory.display(bus, black.data(), nullptr, RefreshMode::Fast, false);
     for (const auto& w : bus.writes)
       if (w.command == 0x20) assert(w.bytes == Bytes(lut_picco_se0400_full, lut_picco_se0400_full + 535));
+    expectNightGray2677(s);
     std::printf("Picco se0400: probe, init, packing and refresh passed\n");
     return 0;
   }
@@ -553,6 +549,16 @@ int main(int argc, char** argv) {
     }
   }
   assert(sawGateOutput);
+  if (variant == PiccoDepg0397) {
+    const std::vector<uint8_t> commands{0x12, 0x01, 0x11, 0x44, 0x45, 0x4E, 0x4F, 0x3C, 0x21, 0x0C, 0x18};
+    const std::vector<Bytes> data{{}, {1, 0x8F, 2}, {1}, {0, 0, 3, 0x1F}, {1, 0x8F, 0, 0},
+                                 {0, 0}, {1, 0x8F}, {1}, {0, 0}, {0xAE, 0xC7, 0xC3, 0xC0, 0x80}, {0x80}};
+    assert(bus.writes.size() == commands.size());
+    for (unsigned i = 0; i < commands.size(); ++i) {
+      assert(bus.writes[i].command == commands[i]);
+      assert(bus.writes[i].bytes == data[i]);
+    }
+  }
   if (argc > 2 && !strcmp(argv[2], "retained")) {
     expectRetainedGrayStrip(d);
     std::printf("Picco %s: retained grayscale strip passed\n", which);
@@ -561,41 +567,46 @@ int main(int argc, char** argv) {
   // First paint is the absolute FULL; then exercise each mode.
   if (!strcmp(which, "yrd") || !strcmp(which, "opm")) {
     assert(variant == (!strcmp(which, "yrd") ? 1 : 3));
-    assert(lastRegister(bus, 0x3C) == (!strcmp(which, "yrd") ? 0x01 : 0x03));
-    expectRefresh(d, RefreshMode::Full, 0xF7, nullptr);
-    expectRefresh(d, RefreshMode::Half, 0xD7, nullptr);
-    expectRefresh(d, RefreshMode::Fast, 0xCC, lut_picco_fast);
+    assert(lastRegister(bus, 0x3C) == (!strcmp(which, "yrd") ? 0x01 : 0x80));
+    expectRefresh(d, RefreshMode::Full, 0xF4, nullptr);
+    expectRefresh(d, RefreshMode::Half, 0x14, nullptr);
+    expectRefresh(d, RefreshMode::Fast, 0x0C, lut_picco_fast);
     expectRefresh(d, RefreshMode::Fast, 0x0C, lut_picco_fast);  // rails remain on between UI paints
     d.setReaderRefresh(true);
-    expectRefresh(d, RefreshMode::Fast, 0x1F, nullptr);
+    expectRefresh(d, RefreshMode::Fast, 0x1C, nullptr);
     d.setReaderRefresh(false);
-    // The first UI frame erases reading-depth ink; only the next frame uses UI mode.
-    expectRefresh(d, RefreshMode::Fast, 0xDF, nullptr);
-    expectRefresh(d, RefreshMode::Fast, 0xCC, lut_picco_fast);
+    // First UI frame retains the reader waveform to erase reading-depth ink.
+    expectRefresh(d, RefreshMode::Fast, 0x1C, nullptr);
+    expectRefresh(d, RefreshMode::Fast, 0x0C, lut_picco_fast);
     expectRefresh(d, RefreshMode::Fast, 0x0C, lut_picco_fast);
     expectStockPiccoGray(d);
     expectRetainedGrayStrip(d);
   } else if (!strcmp(which, "depg")) {
     assert(variant == 2);
-    // Retain the selected split-duration page-turn waveform.
+    // Exact stock UI and reader durations, including the unchanged-black pulse.
     assert(d._cfg.fastLut == lut_picco_depg_fast);
-    assert(d._cfg.fastLut[10] == 0x80 && d._cfg.fastLut[20] == 0x50);
-    assert(d._cfg.fastLut[50] == 7 && d._cfg.fastLut[51] == 10);
-    expectRefresh(d, RefreshMode::Full, 0xE7, lut_picco_depg_full);
-    expectRefresh(d, RefreshMode::Half, 0xC7, lut_picco_depg_full);
-    expectRefresh(d, RefreshMode::Fast, 0xCC, lut_picco_depg_fast);
-    d.setReaderRefresh(true);
-    expectRefresh(d, RefreshMode::Fast, 0x0F, lut_picco_depg_fast_slot1);
-    d.setReaderRefresh(false);
-    expectRefresh(d, RefreshMode::Fast, 0xCF, lut_picco_depg_fast_slot1);
-    expectRefresh(d, RefreshMode::Fast, 0xCC, lut_picco_depg_fast);
+    assert(d._cfg.fastLut[10] == 0x80 && d._cfg.fastLut[20] == 0x40);
+    assert(d._cfg.fastLut[50] == 7 && d._cfg.fastLut[51] == 0);
+    expectRefresh(d, RefreshMode::Full, 0xE4, lut_picco_depg_full);
+    expectRefresh(d, RefreshMode::Half, 0x04, lut_picco_depg_full);
     expectRefresh(d, RefreshMode::Fast, 0x0C, lut_picco_depg_fast);
-    expectPiccoGray(d);
+    d.setReaderRefresh(true);
+    expectRefresh(d, RefreshMode::Fast, 0x0C, lut_picco_depg_fast_slot1);
+    expectRefresh(d, RefreshMode::Fast, 0x0C, lut_picco_depg_fast_slot1);
+    expectRefresh(d, RefreshMode::Fast, 0x0F, lut_picco_depg_fast_slot1, true);
+    expectRefresh(d, RefreshMode::Fast, 0xCC, lut_picco_depg_fast_slot1);
+    expectRefresh(d, RefreshMode::Fast, 0x0C, lut_picco_depg_fast_slot1);
+    d.setReaderRefresh(false);
+    expectRefresh(d, RefreshMode::Fast, 0x0C, lut_picco_depg_fast_slot1);
+    expectRefresh(d, RefreshMode::Fast, 0x0C, lut_picco_depg_fast);
+    expectRefresh(d, RefreshMode::Fast, 0x0C, lut_picco_depg_fast);
+    expectStockPiccoGray(d);
     expectRetainedGrayStrip(d);
   } else {
     assert(variant == 0);
     assert(d._cfg.fullLut == nullptr && d._cfg.fastLut == nullptr && d._cfg.grayLut == lut_grayscale_sticky);
   }
+  expectNightGray(d);
   expectIdlePower(d);
   std::printf("Picco %s: probe, config and refresh sequences passed\n", which);
   return 0;

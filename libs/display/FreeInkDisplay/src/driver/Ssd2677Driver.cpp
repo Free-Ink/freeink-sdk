@@ -199,19 +199,33 @@ void Ssd2677Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev,
   if (mode != RefreshMode::Fast && (_darkBackground || cold) && _old) {
     // One clean into a mostly black frame, or over an unknown one (the sleep screen
     // after boot or wake), leaves the old screen visible; clean to white first.
-    memset(_old, 0xFF, geometry().bufferSize);
-    sendPacked(bus, _old, _old);
+    // Unknown glass is treated as black so every pixel gets the white drive.
+    if (cold) memset(_old, 0x00, geometry().bufferSize);
+    sendPacked(bus, _old, nullptr);
     refreshWith(bus, lut_picco_se0400_full, true);
+    memset(_old, 0xFF, geometry().bufferSize);
   }
-  // HALF/FULL are cleans: old == new drives every pixel to its level (as the
-  // Sticky's stock path does), so nothing of the previous frame survives.
-  sendPacked(bus, mode == RefreshMode::Fast ? _old : fb, fb);
-  // Reader pages use BOOX mode 2, UI updates mode 3.
-  const auto* fastLut = reading ? lut_picco_se0400_fast : lut_picco_se0400_mode3;
-  // Stock mode 3 keeps the rails on across UI updates.
-  const bool keepPower = mode == RefreshMode::Fast && !reading;
+  // BOOX presents book pages and UI screen redraws with mode 2 and powers off;
+  // only small interaction updates (highlight moves) use mode 3 with the rails on.
+  // A redraw changes over 1/8 of the frame.
+  const uint32_t size = geometry().bufferSize;
+  bool redraw = reading;
+  if (mode == RefreshMode::Fast && !redraw && _old) {
+    uint32_t changed = 0;
+    for (uint32_t i = 0; i < size; ++i) changed += _old[i] != fb[i];
+    redraw = changed > size / 8;
+  }
+  if (mode == RefreshMode::Fast && _darkBackground && _old) {
+    // Undriven black background fades, so erased white text shows as deeper black.
+    // Drive every black pixel as white-to-black so old and fresh black match.
+    for (uint32_t i = 0; i < size; ++i) _old[i] |= static_cast<uint8_t>(~fb[i]);
+  }
+  // Real old plane for every mode: old == new gives each pixel the no-change drive.
+  sendPacked(bus, _old, fb);
+  const auto* fastLut = redraw ? lut_picco_se0400_fast : lut_picco_se0400_mode3;
+  const bool keepPower = mode == RefreshMode::Fast && !redraw;
   refreshWith(bus, mode == RefreshMode::Fast ? fastLut : lut_picco_se0400_full, !keepPower);
-  if (_old) memcpy(_old, fb, geometry().bufferSize);  // new becomes old for the next frame
+  if (_old) memcpy(_old, fb, size);  // new becomes old for the next frame
   _needsInitialFull = false;
 }
 
@@ -227,8 +241,8 @@ void Ssd2677Driver::sendPacked(EpdBus& bus, const uint8_t* hi, const uint8_t* lo
   for (uint16_t r = 0; r < g.height; ++r) {
     const uint32_t row = static_cast<uint32_t>(reversed ? g.height - 1 - r : r) * g.widthBytes;
     for (uint16_t xb = 0; xb < g.widthBytes; ++xb) {
-      // hi == nullptr → an all-white (0xFF) old plane (stock's begin-time seed).
-      packPixels(hi ? hi[row + xb] : 0xFF, lo[row + xb], &chunk[n]);
+      // A null plane is all white (0xFF), stock's begin-time seed.
+      packPixels(hi ? hi[row + xb] : 0xFF, lo ? lo[row + xb] : 0xFF, &chunk[n]);
       n += 2;
       if (n == sizeof(chunk)) {
         txn.writeBytes(chunk, n);

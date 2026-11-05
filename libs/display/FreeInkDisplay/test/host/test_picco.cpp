@@ -302,13 +302,13 @@ static void expectSsd2677NightMode(Ssd2677Driver& driver) {
       display.displayBuffer(mode, true);
       const bool fast = mode == FreeInkDisplay::FAST_REFRESH;
       const unsigned expectedFrames = fast ? 1 : 2;
-      const auto* lut = fast ? (reading ? lut_picco_se0400_fast : lut_picco_se0400_mode3)
-                             : lut_picco_se0400_full;
+      // A whole-screen change is a redraw: mode 2 in both contexts.
+      const auto* lut = fast ? lut_picco_se0400_fast : lut_picco_se0400_full;
       unsigned frames = 0, activations = 0, lutLoads = 0;
       for (const auto& w : display._bus.writes) {
         if (w.command == 0x10) {
           assert(activations == frames);
-          assert(w.bytes == Bytes(96000, fast ? 0x1B : (frames == 0 ? 0xFF : 0x33)));
+          assert(w.bytes == Bytes(96000, fast ? 0x9B : (frames == 0 ? 0x5F : 0xBB)));
           ++frames;
         }
         if (w.command == 0x20) {
@@ -319,7 +319,7 @@ static void expectSsd2677NightMode(Ssd2677Driver& driver) {
       }
       assert(frames == expectedFrames && activations == expectedFrames && lutLoads == expectedFrames);
       assert(Bytes(driver._old, driver._old + 48000) == Bytes(48000, 0x55));
-      assert(driver._needsPowerOn == (!fast || reading));
+      assert(driver._needsPowerOn);
       display.setInverted(false);
     }
   }
@@ -452,12 +452,17 @@ int main(int argc, char** argv) {
     newFb[0] = 0x0F;  // left 4 px black, right 4 px white; old all white
     bus.clear();
     s.display(bus, newFb.data(), oldFb.data(), RefreshMode::Fast, false);
-    // First paint is forced FULL; both planes contain the absolute target.
+    // First paint is forced FULL: unknown glass is cleaned as black to white,
+    // then the target is drawn from white.
     const Bytes* data = nullptr;
+    unsigned frames = 0;
     for (const auto& w : bus.writes)
-      if (w.command == 0x10) data = &w.bytes;
-    assert(data && data->size() == 96000);
-    assert((*data)[0] == 0x00 && (*data)[1] == 0xFF);  // absolute black/white
+      if (w.command == 0x10) {
+        if (frames++ == 0) assert(w.bytes == Bytes(96000, 0x55));
+        data = &w.bytes;
+      }
+    assert(frames == 2 && data && data->size() == 96000);
+    assert((*data)[0] == 0xAA && (*data)[1] == 0xFF);  // white->black, white->white
     const Bytes* lut = nullptr;
     for (const auto& w : bus.writes)
       if (w.command == 0x20) lut = &w.bytes;
@@ -507,11 +512,11 @@ int main(int argc, char** argv) {
         if (w.command == 0x10) data = &w.bytes;
         if (w.command == 0x20) lut = &w.bytes;
       }
-      const auto* expected = lut_picco_se0400_mode3;
+      // The first frame after a book page still uses the reading waveform.
+      const auto* expected = uiFrame == 0 ? lut_picco_se0400_fast : lut_picco_se0400_mode3;
       assert(lut && *lut == Bytes(expected, expected + 535));
       assert(data && data->size() == 96000 && (*data)[1] == 0xFF);
-      assert((*data)[0] == 0xAA);
-      assert(!s._needsPowerOn);
+      assert(s._needsPowerOn == (uiFrame == 0));
     }
 
     // Regression (single-buffer ghosting): the host builds with
@@ -532,6 +537,7 @@ int main(int argc, char** argv) {
       if (w.command == 0x10) data = &w.bytes;
     assert(data && data->size() == 96000);
     assert((*data)[0] == 0x55 && (*data)[100] == 0x55 && (*data)[95999] == 0x55);
+    assert(s._needsPowerOn);  // a whole-screen UI change is a mode 2 redraw and powers off
     // Overlay AA: LSB mask -> low bit, MSB mask -> high bit, slot-5 LUT.
     assert(s.grayscaleCapabilities(GrayscaleMode::Overlay).supported());
     assert(s.grayscaleCapabilities(GrayscaleMode::Absolute).supported());
@@ -541,7 +547,7 @@ int main(int argc, char** argv) {
     s.beginGrayscale(bus, white.data(), GrayscaleMode::Absolute, RefreshMode::Half, false);
     s.copyGrayscaleLsb(bus, imageLsb.data());
     s.copyGrayscaleMsb(bus, imageMsb.data());
-    assert(bus.writes.empty() && !s._needsPowerOn);
+    assert(bus.writes.empty());
     s.requestResync(1);  // the facade cancels a staged absolute image
     assert(!s._absoluteGray && s._needsInitialFull && bus.writes.empty());
     s.beginGrayscale(bus, white.data(), GrayscaleMode::Absolute, RefreshMode::Half, false);
@@ -555,10 +561,9 @@ int main(int argc, char** argv) {
       if (w.command == 0x10) assert(w.bytes == Bytes(96000, 0x1B));
       if (w.command == 0x20) assert(w.bytes == Bytes(lut_picco_se0400_image, lut_picco_se0400_image + 535));
     }
-    assert((imageCommands == std::vector<uint8_t>{0x10, 0x20, 0x12, 0x02}));
+    assert((imageCommands == std::vector<uint8_t>{0x04, 0x10, 0x20, 0x12, 0x02}));
     assert(s._needsInitialFull && s._needsPowerOn);
     // Each group of four exercises B->B, B->W, W->B, W->W respectively.
-    // The UI base tops up unchanged black while retaining white transitions.
     Bytes prior(48000, 0x33), target(48000, 0x55);
     s.display(bus, prior.data(), nullptr, RefreshMode::Full, false);
     bus.clear();
@@ -571,8 +576,8 @@ int main(int argc, char** argv) {
       if (w.command == 0x12) ++baseRefreshes;
       if (w.command == 0x20) lut = &w.bytes;
     }
-    assert(baseRefreshes == 1 && lut && *lut == Bytes(lut_picco_se0400_mode3, lut_picco_se0400_mode3 + 535));
-    assert(data && *data == Bytes(96000, 0x9B));  // W->B top-up, B->W erase, W->B, W->W
+    assert(baseRefreshes == 1 && lut && *lut == Bytes(lut_picco_se0400_fast, lut_picco_se0400_fast + 535));
+    assert(data && *data == Bytes(96000, 0x1B));  // plain old/new pairs
     assert(memcmp(s._old, target.data(), target.size()) == 0);
     Bytes lsb(48000, 0x00), msb(48000, 0x00);
     lsb[0] = 0xF0;  // px 0-3 LSB
@@ -606,7 +611,7 @@ int main(int argc, char** argv) {
       if (w.command == 0x12) assert(poweredOn);
       assert(w.command != 0x07);  // no deep sleep
     }
-    assert(poweredOn && !s._needsPowerOn);
+    assert(poweredOn && s._needsPowerOn);  // whole-screen redraw powers back off
     expectSsd2677NightMode(s);
     Bytes grayBase(48000, 0x55), grayLsb(48000, 0x11), grayMsb(48000, 0x33);
     s.display(bus, grayBase.data(), nullptr, RefreshMode::Full, false);
@@ -618,7 +623,7 @@ int main(int argc, char** argv) {
     s.display(bus, grayBase.data(), nullptr, RefreshMode::Fast, false);
     unsigned activations = 0;
     for (const auto& w : bus.writes) {
-      if (w.command == 0x10) assert(w.bytes == Bytes(96000, 0xB9));
+      if (w.command == 0x10) assert(w.bytes == Bytes(96000, 0x39));
       activations += w.command == 0x12;
     }
     assert(activations == 1 && !s._grayPending);

@@ -165,7 +165,6 @@ void Ssd2677Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev,
   (void)prev;  // unused: single-buffer host passes null; we track our own old plane
   // First paint after init clears the panel with the full waveform (stock forces
   // mode 0 on the first frame).
-  const bool cold = _needsInitialFull;  // glass content unknown (boot, wake, after an image)
   if (_needsInitialFull) mode = RefreshMode::Full;
   if (isSticky()) {
     // OTP waveforms: a full refresh sends old == new (every pixel driven to its
@@ -196,15 +195,6 @@ void Ssd2677Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev,
   // keeps the reading waveform (reader menu, footnotes over a page).
   const bool reading = _readerRefresh || _afterReader;
   _afterReader = _readerRefresh;
-  if (mode != RefreshMode::Fast && (_darkBackground || cold) && _old) {
-    // One clean into a mostly black frame, or over an unknown one (the sleep screen
-    // after boot or wake), leaves the old screen visible; clean to white first.
-    // Unknown glass is treated as black so every pixel gets the white drive.
-    if (cold) memset(_old, 0x00, geometry().bufferSize);
-    sendPacked(bus, _old, nullptr);
-    refreshWith(bus, lut_picco_se0400_full, true);
-    memset(_old, 0xFF, geometry().bufferSize);
-  }
   // BOOX presents book pages and UI screen redraws with mode 2 and powers off;
   // only small interaction updates (highlight moves) use mode 3 with the rails on.
   // A redraw changes over 1/8 of the frame.

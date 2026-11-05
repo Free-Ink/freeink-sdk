@@ -80,9 +80,6 @@ const uint8_t kXtfPreBwMid[5][PREBW_LUT_LEN + 1] = {
 
 const uint8_t* selectImagePacket() {
   const uint8_t variant = BoardConfig::ACTIVE.displayControllerVariant;
-  if (BoardConfig::isX4Classic()) {
-    return variant == 0x02 || variant == 0x03 || variant == 0x68 || variant == 0x69 ? kX4ProImage : nullptr;
-  }
   if (BoardConfig::ACTIVE.board != BoardConfig::Board::XteinkX4Pro) return nullptr;
   if (variant == 0x02 || variant == 0x03 || (variant >= 0x67 && variant <= 0x69)) return kX4ProImage;
   return nullptr;
@@ -291,7 +288,8 @@ void Uc8279X4Driver::initController(EpdBus& bus) {
 }
 
 void Uc8279X4Driver::begin(EpdBus& bus) {
-  _textAa.allocate(BoardConfig::ACTIVE.board == BoardConfig::Board::XteinkX4Pro && _w == 800 && _h == 480);
+  _textAa.allocate((BoardConfig::ACTIVE.board == BoardConfig::Board::XteinkX4Pro || BoardConfig::isX4Classic()) &&
+                   _w == 800 && _h == 480);
   _directGrayOnPanel = false;
   _grayImagePass = false;
   _absoluteInput = false;
@@ -723,7 +721,7 @@ void Uc8279X4Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, c
       bus.data(0x26);
     }
     bus.cmd(CMD_PANEL_SETTING);
-    bus.data(_cfg.psr0 | 0x08);
+    bus.data(_cfg.psr0);
     bus.data(_cfg.psr1);
     bus.cmd(CMD_PFS);
     bus.data(0x20);
@@ -747,7 +745,7 @@ void Uc8279X4Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, c
     bus.cmd(0x11);
     powerOnIfNeeded(bus, "8279 text power");
     bus.cmd(CMD_PANEL_SETTING);
-    bus.data(_cfg.psr0 | 0x08);
+    bus.data(_cfg.psr0);
     bus.data(_cfg.psr1);
     bus.cmd(CMD_DISPLAY_REFRESH);
     bus.waitRefreshComplete("UC8279 one-pass text AA");
@@ -771,7 +769,7 @@ void Uc8279X4Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, c
 
   const bool image = _directGrayPass || _absoluteInput || factoryMode || _grayImagePass;
   const auto* imagePacket = image ? selectImagePacket() : nullptr;
-  const uint8_t psr = imagePacket ? (_cfg.psr0 | 0x08) : _cfg.psr0;
+  const uint8_t psr = _cfg.psr0;
 
   // Vendor AA sequence: PSR (REG=1) -> [planes already in RAM via
   // copyGrayscale*] -> 5x49 LUTs -> CDI (constant 0x97) -> PON -> PSR rewrite ->

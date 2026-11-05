@@ -212,7 +212,8 @@ void Uc8179Driver::restoreBwConfiguration(EpdBus& bus) {
 }
 
 void Uc8179Driver::begin(EpdBus& bus) {
-  _textAa.allocate(BoardConfig::ACTIVE.board == BoardConfig::Board::XteinkX4Pro && _w == 800 && _h == 480);
+  _textAa.allocate((BoardConfig::ACTIVE.board == BoardConfig::Board::XteinkX4Pro || BoardConfig::isX4Classic()) &&
+                   _w == 800 && _h == 480);
   _directGrayOnPanel = false;
   _directGrayConfigured = false;
   _directGrayPass = false;

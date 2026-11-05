@@ -515,11 +515,25 @@ static void testDirectSleep() {
   };
   assert(display.grayscaleCapabilities(GrayscaleMode::Direct).base == GrayscaleBase::Combined);
   for (auto fallback : {FreeInkDisplay::HALF_REFRESH, FreeInkDisplay::FAST_REFRESH}) {
+    driver.setReaderRefresh(true);
+    assert(display.displayGrayscaleBase(GrayscaleMode::Overlay));
+    display.copyGrayscaleBuffers(lsb.data(), msb.data());
+    display.displayGrayBuffer(false);
+    display.cleanupGrayscaleBuffers(bw.data());
     display._bus.clear();
     assert(display.displayGrayscaleBase(GrayscaleMode::Direct, fallback));
     assert(activations() == 0);
     display.copyGrayscaleBuffers(lsb.data(), msb.data());
     assert(activations() == 0);
+    if constexpr (std::is_same_v<Driver, Uc8279X4Driver>) {
+      for (unsigned p = 0; p < 2; ++p) {
+        const auto& source = p ? msb : lsb;
+        const auto uploaded = lastPlane(display._bus, p ? 0x13 : 0x10);
+        assert(uploaded.size() == 60000);
+        for (unsigned i = 0; i < source.size(); ++i)
+          assert(uploaded[12000 + i] == uint8_t(~source[i]));
+      }
+    }
     display.displayGrayBuffer(false);
     assert(activations() == 1);
     display.cleanupGrayscaleBuffers(bw.data());
@@ -555,6 +569,14 @@ static void testUc8279X4WaveformSelection() {
     driver.copyGrayscaleMsb(bus, msb.data());
     bus.clear();
     driver.displayGray(bus, bw.data(), false, nullptr, factory);
+    unsigned panelSettings = 0;
+    for (const auto& w : bus.writes) {
+      if (w.command == 0x00) {
+        assert(w.bytes == Bytes({driver._cfg.psr0, driver._cfg.psr1}));
+        ++panelSettings;
+      }
+    }
+    assert(panelSettings == 2);
     return bank();
   };
   const auto quality = render(GrayscaleMode::Direct, 0, false);
@@ -595,16 +617,17 @@ static void testUc8279X4WaveformSelection() {
     // An image pass must not leave the next sparse page on the quality bank.
     assert(render(GrayscaleMode::Overlay, 0x01, false) != quality);
   }
+  BoardConfig::ACTIVE.board = BoardConfig::Board::XteinkX4;
+  BoardConfig::ACTIVE.displayControllerVariant = 0x68;
+  const auto legacy = render(GrayscaleMode::Direct, 0, false);
+  assert(legacy != quality);
   BoardConfig::ACTIVE.board = BoardConfig::Board::XteinkX4Classic;
   for (uint8_t variant : {0x02, 0x03, 0x68, 0x69}) {
     BoardConfig::ACTIVE.displayControllerVariant = variant;
     const auto classic = render(GrayscaleMode::Direct, 0, false);
-    assert(classic == quality);
-    for (unsigned row = 0; row < 5; ++row)
-      assert(classic[row] == Bytes(kX4ProImage + 9 + row * 49, kX4ProImage + 9 + (row + 1) * 49));
-    assert(lastPlane(bus, 0x01) == Bytes({0x17, 0, 0x78, 0x78, 0x14}));
-    assert(lastPlane(bus, 0x2A) == Bytes({0, 0, 0}));
-    assert(lastRegister(bus, 0x82) == 0x24);
+    assert(classic == legacy);
+    for (const auto& w : bus.writes)
+      assert(w.command != 0x01 && w.command != 0x2A && w.command != 0x82);
     unsigned paints = 0;
     for (const auto& w : bus.writes) paints += w.command == 0x12;
     assert(paints == 1);
@@ -617,8 +640,7 @@ static void testUc8279X4WaveformSelection() {
   assert(!driver.grayscaleCapabilities(GrayscaleMode::Direct).supported());
   BoardConfig::ACTIVE.board = BoardConfig::Board::XteinkX4;
   BoardConfig::ACTIVE.displayControllerVariant = 0x68;
-  const auto legacy = render(GrayscaleMode::Direct, 0, false);
-  assert(legacy != quality);
+  assert(render(GrayscaleMode::Direct, 0, false) == legacy);
   BoardConfig::ACTIVE.displayControllerVariant = 0x67;
   assert(!driver.grayscaleCapabilities(GrayscaleMode::Direct).supported());
   BoardConfig::ACTIVE.board = BoardConfig::Board::XteinkX4Pro;
@@ -902,6 +924,7 @@ static void testOnePassText() {
   assert(caps.base == GrayscaleBase::Combined && caps.stripUploads && !caps.asyncBase);
   assert(d.grayscaleCapabilities(GrayscaleMode::Absolute).encoding == imageEncoding);
   for (bool off : {false, true}) {
+    base[1] = off ? 0x0f : 0xf0; // the next page must replace, not overlay, the previous text
     bus.clear();
     d.beginGrayscale(bus, base.data(), GrayscaleMode::Overlay, RefreshMode::Fast, off);
     for (unsigned y = 0; y < 480; y += 80) {
@@ -912,6 +935,8 @@ static void testOnePassText() {
     d.displayGray(bus, base.data(), off, nullptr, false);
     assert(d._textAa.onPanel() && !d._textAa.active());
     assert(d._textAa.high()[0] == 0x1f);
+    assert(d._textAa.high()[1] == base[1]);
+    assert((d._textAa.low()[1] & static_cast<uint8_t>(~base[1])) == 0);
     assert((d._textAa.low()[0] & 0xe0) == 0x60); // black + both gray masks
     unsigned activations = 0;
     for (const auto& w : bus.writes) {
@@ -927,12 +952,27 @@ static void testOnePassText() {
       const unsigned row = std::is_same_v<Driver, Uc8179Driver> ? 479 : 120;
       assert(lastPlane(bus, 0x10)[row * 100] == d._textAa.low()[0]);
       assert(lastPlane(bus, 0x13)[row * 100] == d._textAa.high()[0]);
-      if constexpr (std::is_same_v<Driver, Uc8279X4Driver>) assert(lastRegister(bus, 0x30) == d._cfg.pll);
+      if constexpr (std::is_same_v<Driver, Uc8279X4Driver>) {
+        assert(lastRegister(bus, 0x30) == d._cfg.pll);
+        // AA uses the same RAM row order as B/W, including after power-on.
+        unsigned panelSettings = 0;
+        for (const auto& w : bus.writes) {
+          if (w.command != 0x00) continue;
+          assert(w.bytes == Bytes({d._cfg.psr0, d._cfg.psr1}));
+          ++panelSettings;
+        }
+        assert(panelSettings == 2);
+      }
     }
     bus.clear();
     d.cleanupGrayscaleBuffers(bus, base.data());
     for (const auto& w : bus.writes) assert(w.command != 0x12 && w.command != 0x20);
   }
+  d.setReaderRefresh(false);
+  bus.clear();
+  d.display(bus, base.data(), nullptr, RefreshMode::Fast, true);
+  assert(!d._textAa.onPanel() && !bus.writes.empty());
+  d.setReaderRefresh(true);
   d.beginGrayscale(bus, base.data(), GrayscaleMode::Overlay, RefreshMode::Fast, false);
   bus.clear();
   d.cleanupGrayscaleBuffers(bus, base.data());
@@ -945,6 +985,19 @@ static void testOnePassText() {
   d.setReaderRefresh(false);
   d.display(bus, base.data(), nullptr, RefreshMode::Fast, true);
   assert(!d._textAa.onPanel());
+  if constexpr (!std::is_same_v<Driver, Ssd1677Driver>) free(d._grayBase);
+}
+
+template<class Driver>
+static void testTextAaAllocationFailure() {
+  Driver d;
+  EpdBus bus;
+  fakeHeapCapsFail = true;
+  d.begin(bus);
+  fakeHeapCapsFail = false;
+  d.setReaderRefresh(true);
+  assert(!d._textAa.ready());
+  assert(d.grayscaleCapabilities().base == GrayscaleBase::Separate);
   if constexpr (!std::is_same_v<Driver, Ssd1677Driver>) free(d._grayBase);
 }
 
@@ -963,12 +1016,19 @@ int main(int argc, char** argv) {
   testLegacyTextStrips<Uc8179Driver>();
   testLegacyTextStrips<Uc8279X4Driver>();
   testTextAaCharge();
-  testOnePassText<Ssd1677Driver>();
-  testOnePassText<Uc8179Driver>();
-  for (uint8_t variant : {0x02, 0x03, 0x67, 0x68, 0x69}) {
-    BoardConfig::ACTIVE.displayControllerVariant = variant;
-    testOnePassText<Uc8279X4Driver>();
+  for (auto board : {BoardConfig::Board::XteinkX4Pro, BoardConfig::Board::XteinkX4Classic}) {
+    BoardConfig::ACTIVE.board = board;
+    testOnePassText<Ssd1677Driver>();
+    testOnePassText<Uc8179Driver>();
+    testTextAaAllocationFailure<Ssd1677Driver>();
+    testTextAaAllocationFailure<Uc8179Driver>();
+    testTextAaAllocationFailure<Uc8279X4Driver>();
+    for (uint8_t variant : {0x02, 0x03, 0x67, 0x68, 0x69}) {
+      BoardConfig::ACTIVE.displayControllerVariant = variant;
+      testOnePassText<Uc8279X4Driver>();
+    }
   }
+  BoardConfig::ACTIVE.board = BoardConfig::Board::XteinkX4Pro;
   testDeferredGrayBase();
   testDeferredGrayFacadeUsesCurrentDrawFrame();
   testUc8179GrayShadeSplit();

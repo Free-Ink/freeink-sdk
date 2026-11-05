@@ -18,6 +18,41 @@
 #include <cmath>
 #include <cstring>
 
+#if FREEINK_USB_PRESENCE_AS_CHARGING
+#include <soc/usb_serial_jtag_reg.h>
+#endif
+
+namespace freeink {
+bool usbHostPresent() {
+#if FREEINK_USB_PRESENCE_AS_CHARGING
+  // The USB-Serial/JTAG frame counter follows the host's start-of-frame
+  // packets, one per millisecond, and stands still with no host. The first call
+  // only records a baseline; after that, presence lasts 1 s past the last
+  // counter change, which covers a detach. The counter is 11 bits wide, so two
+  // reads an exact multiple of 2.048 s apart see no change.
+  static uint32_t lastFrame = 0;
+  static unsigned long lastChangeMs = 0;
+  static bool baselineSet = false;
+  static bool changeSeen = false;
+  const uint32_t frame = REG_READ(USB_SERIAL_JTAG_FRAM_NUM_REG);
+  const unsigned long now = millis();
+  if (!baselineSet) {
+    baselineSet = true;
+    lastFrame = frame;
+    return false;
+  }
+  if (frame != lastFrame) {
+    lastFrame = frame;
+    lastChangeMs = now;
+    changeSeen = true;
+  }
+  return changeSeen && (now - lastChangeMs) < 1000;
+#else
+  return false;
+#endif
+}
+}  // namespace freeink
+
 #if FREEINK_BATTERY_I2C_GAUGE
 #include <Wire.h>
 #if FREEINK_DEVICE_WS397
@@ -877,6 +912,12 @@ BatteryMonitor::Status BatteryMonitor::readStatus() const {
       status.chargingKnown = true;
       status.charging = digitalRead(_chargeStatusPin) == chargeActiveLevel();
     }
+#if FREEINK_USB_PRESENCE_AS_CHARGING
+    else {
+      status.chargingKnown = true;
+      status.charging = freeink::usbHostPresent();
+    }
+#endif
 #if FREEINK_BATTERY_I2C_GAUGE
     if (!status.chargingKnown) status.charging = readChargerCharging(status.chargingKnown);
     status.externalPower = readChargerExternalPower(status.externalPowerKnown);
@@ -962,7 +1003,10 @@ bool BatteryMonitor::isCharging() const {
     return readM5Pm1Status(status) && status.chargingKnown && status.charging;
   }
   if (_chargeStatusPin < 0) {
-#if FREEINK_BATTERY_I2C_GAUGE
+#if FREEINK_USB_PRESENCE_AS_CHARGING
+    // No status signal on this board: report USB host presence instead.
+    return freeink::usbHostPresent();
+#elif FREEINK_BATTERY_I2C_GAUGE
     bool known = false;
     return readChargerCharging(known);
 #else

@@ -2134,6 +2134,11 @@ void InputManager::pollGslx680(const unsigned long now) {
   const auto& t = BoardConfig::ACTIVE.touch;
   bool anyKey = false;
   bool anyOnGlass = false;
+  for (uint8_t i = 0; i < count; ++i) {
+    const uint16_t x = (static_cast<uint16_t>(frame[7 + 4 * i]) << 8 | frame[6 + 4 * i]) & 0x0fff;
+    const uint16_t y = (static_cast<uint16_t>(frame[5 + 4 * i]) << 8 | frame[4 + 4 * i]) & 0x0fff;
+    if (x == 0x03a0 && y == 0x0020) anyKey = true;
+  }
   uint8_t stored = 0;
   uint8_t survived = 0;  // on-glass contacts past the storage cap still count
   for (uint8_t i = 0; i < count; ++i) {
@@ -2147,13 +2152,10 @@ void InputManager::pollGslx680(const unsigned long now) {
     }
     if (sampleX >= 920) continue;
     if (sampleX == 0 && sampleY == 0) continue;
-    // Raw x far below the glass domain is the bezel key pad's phantom
-    // co-report (hardware-validated 2026-10-29: a pad press leaks a contact
-    // at raw x 4-5 alongside the sentinel, while the stock calibration's
-    // lowest glass point is 374 — a real finger cannot report raw x < 64).
-    // Dropping it keeps the pad press a pure key event: the phantom neither
-    // cancels the key ("a touch is in progress") nor becomes a screen tap.
-    if (sampleX < 64) continue;
+    // A Home-pad report can carry a low-X phantom contact. Filter it only
+    // alongside the key sentinel: ordinary bottom-edge glass samples also
+    // have X < 64 after factory calibration (for example X=51 at y=720).
+    if (anyKey && sampleX < 64) continue;
     ++survived;
     if (stored < MAX_TOUCH_CONTACTS) {
       // Stock factory calibration to portrait screen pixels, then into the

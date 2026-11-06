@@ -536,12 +536,21 @@ bool SDCardManager::openFileForWrite(const char* moduleName, const String& path,
 uint64_t SDCardManager::sdTotalBytes() const { return cachedTotalBytes; }
 
 uint64_t SDCardManager::sdUsedBytes() {
-  if (!initialized) return 0;
+  uint64_t usedBytes = 0;
+  sdUsedBytes(usedBytes);
+  return usedBytes;
+}
+
+bool SDCardManager::sdUsedBytes(uint64_t& usedBytes) {
+  usedBytes = 0;
+  if (!initialized) return false;
   const uint32_t now = millis();
   if (!cachedUsedBytesValid || (now - cachedUsedBytesAt) >= USED_BYTES_CACHE_TTL_MS) {
     const int32_t freeClusters = vol().freeClusterCount();
     const uint64_t clusterCount = vol().clusterCount();
-    if (freeClusters < 0) {
+    cachedUsedBytesAvailable = freeClusters >= 0;
+    if (!cachedUsedBytesAvailable) {
+      if (Serial) Serial.printf("[%lu] [SD] Failed to count free clusters\n", millis());
       cachedUsedBytes = 0;
     } else {
       const uint64_t cappedFree = (static_cast<uint64_t>(freeClusters) > clusterCount)
@@ -552,7 +561,8 @@ uint64_t SDCardManager::sdUsedBytes() {
     cachedUsedBytesValid = true;
     cachedUsedBytesAt = now;
   }
-  return cachedUsedBytes;
+  usedBytes = cachedUsedBytes;
+  return cachedUsedBytesAvailable;
 }
 
 bool SDCardManager::removeDir(const char* path) {

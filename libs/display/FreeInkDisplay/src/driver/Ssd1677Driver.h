@@ -1,6 +1,6 @@
 #pragma once
 
-// SSD1677 panel driver — Xteink X4 and the de-link ESP32-S3 board (both drive
+// SSD1677 panel driver — Xteink X4 and the Silkscreen ESP32-S3 board (both drive
 // an 800x480 GDEQ0426T82 over the same controller). B/W with software 2-bit
 // grayscale via a custom LUT, dual-RAM (BW 0x24 / RED 0x26) differential fast
 // refresh. Active-HIGH BUSY.

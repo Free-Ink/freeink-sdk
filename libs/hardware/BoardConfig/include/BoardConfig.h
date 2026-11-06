@@ -48,8 +48,12 @@
 #ifndef FREEINK_DEVICE_MURPHY
 #define FREEINK_DEVICE_MURPHY 0
 #endif
-#ifndef FREEINK_DEVICE_DELINK
-#define FREEINK_DEVICE_DELINK 0
+// Silkscreen was called "de-link" before; the old flag still selects it.
+#if !defined(FREEINK_DEVICE_SILKSCREEN) && defined(FREEINK_DEVICE_DELINK) && FREEINK_DEVICE_DELINK
+#define FREEINK_DEVICE_SILKSCREEN 1
+#endif
+#ifndef FREEINK_DEVICE_SILKSCREEN
+#define FREEINK_DEVICE_SILKSCREEN 0
 #endif
 #ifndef FREEINK_DEVICE_LILYGO
 #define FREEINK_DEVICE_LILYGO 0
@@ -68,6 +72,10 @@
 #endif
 #ifndef FREEINK_DEVICE_MURPHY_M4
 #define FREEINK_DEVICE_MURPHY_M4 0
+#endif
+// Experimental four-level gray on the Murphy M3 panel. See Uc8253MurphyDriver.h.
+#ifndef FREEINK_MURPHY_GRAY
+#define FREEINK_MURPHY_GRAY 0
 #endif
 #ifndef FREEINK_DEVICE_EEGO_A4
 #define FREEINK_DEVICE_EEGO_A4 0
@@ -97,22 +105,22 @@
 
 // --- 2) Coherence: exactly one MCU family, at least one device ---------------
 #if !(FREEINK_DEVICE_X4 || FREEINK_DEVICE_X3 || FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_X4CLASSIC || FREEINK_DEVICE_M5 || \
-      FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_DELINK || FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_M5PAPER ||               \
+      FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_SILKSCREEN || FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_M5PAPER ||               \
       FREEINK_DEVICE_STICKY || FREEINK_DEVICE_PAPERMONO || FREEINK_DEVICE_PAPERS3 || FREEINK_DEVICE_MURPHY_M4 ||         \
       FREEINK_DEVICE_EEGO_A4 || FREEINK_DEVICE_ONEPAGE || FREEINK_DEVICE_WS397 || FREEINK_DEVICE_METALIO_EINK4 || \
       FREEINK_DEVICE_PICCO || FREEINK_DEVICE_METALIO_EINK4_PLUS)
 #error \
-    "FreeInk: no device selected. Pass at least one -DFREEINK_DEVICE_<NAME> (X4, X3, X4PRO, X4CLASSIC, M5, MURPHY, DELINK, LILYGO, M5PAPER, STICKY, PAPERMONO, PAPERS3, MURPHY_M4, EEGO_A4, ONEPAGE, WS397, METALIO_EINK4, PICCO, METALIO_EINK4_PLUS) in your build env — see platformio.sample.ini."
+    "FreeInk: no device selected. Pass at least one -DFREEINK_DEVICE_<NAME> (X4, X3, X4PRO, X4CLASSIC, M5, MURPHY, SILKSCREEN, LILYGO, M5PAPER, STICKY, PAPERMONO, PAPERS3, MURPHY_M4, EEGO_A4, ONEPAGE, WS397, METALIO_EINK4, PICCO, METALIO_EINK4_PLUS) in your build env — see platformio.sample.ini."
 #endif
 // Each device belongs to one MCU family; a binary targets exactly one. X3/X4 are
-// ESP32-C3; M5 PaperColor/Murphy/de-link/LilyGo are ESP32-S3; M5Paper v1.1 is the
+// ESP32-C3; M5 PaperColor/Murphy/Silkscreen/LilyGo are ESP32-S3; M5Paper v1.1 is the
 // classic ESP32 (ESP32-D0WDQ6); OnePage is ESP32-C61; Metalio E-Ink4-Plus is
 // ESP32-S31. The families differ in deep-sleep wakeup, SPI peripheral count, and
 // toolchain, so they never share a binary.
 #define FREEINK_MCU_C3 (FREEINK_DEVICE_X3 || FREEINK_DEVICE_X4)
 #define FREEINK_MCU_C61 (FREEINK_DEVICE_ONEPAGE)
 #define FREEINK_MCU_S3                                                                                    \
-  (FREEINK_DEVICE_M5 || FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_DELINK || FREEINK_DEVICE_LILYGO ||        \
+  (FREEINK_DEVICE_M5 || FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_SILKSCREEN || FREEINK_DEVICE_LILYGO ||        \
    FREEINK_DEVICE_STICKY || FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_X4CLASSIC || FREEINK_DEVICE_PAPERMONO ||  \
    FREEINK_DEVICE_PAPERS3 || FREEINK_DEVICE_MURPHY_M4 || FREEINK_DEVICE_EEGO_A4 || FREEINK_DEVICE_WS397 || FREEINK_DEVICE_METALIO_EINK4 || \
    FREEINK_DEVICE_PICCO)
@@ -120,17 +128,17 @@
 #define FREEINK_MCU_S31 (FREEINK_DEVICE_METALIO_EINK4_PLUS)
 #if (FREEINK_MCU_C3 + FREEINK_MCU_C61 + FREEINK_MCU_S3 + FREEINK_MCU_ESP32 + FREEINK_MCU_S31) != 1
 #error \
-    "FreeInk: all selected devices must share one MCU family — ESP32-C3 (X3/X4), ESP32-C61 (OnePage), ESP32-S3 (M5/Murphy/de-link/LilyGo/Sticky/X4Pro), ESP32 (M5Paper), or ESP32-S31 (Metalio E-Ink4-Plus). Build one binary per family."
+    "FreeInk: all selected devices must share one MCU family — ESP32-C3 (X3/X4), ESP32-C61 (OnePage), ESP32-S3 (M5/Murphy/Silkscreen/LilyGo/Sticky/X4Pro), ESP32 (M5Paper), or ESP32-S31 (Metalio E-Ink4-Plus). Build one binary per family."
 #endif
 
 // --- 3) Derive panel drivers from the device set -----------------------------
 // Sticky reuses SSD1677: its 800x480 panel rides a 24-pin FPC whose GDR/RESE/BS1
 // + dual VSH1/VSH2 + external VGH/VGL/VSL/VCOM charge pump is the SSD1677
-// application circuit (same controller + resolution as X4 / de-link / OnePage).
+// application circuit (same controller + resolution as X4 / Silkscreen / OnePage).
 // X4 Pro is a distinct ESP32-S3 device (NOT the C3 X4): its 800x480 panel may
 // use SSD1677, UC8179, or UC8279, recovered from OEM firmware and hardware
 // references — see docs/xteink-x4pro-support.md.
-#if FREEINK_DEVICE_X4 || FREEINK_DEVICE_DELINK || FREEINK_DEVICE_STICKY || FREEINK_DEVICE_X4PRO || \
+#if FREEINK_DEVICE_X4 || FREEINK_DEVICE_SILKSCREEN || FREEINK_DEVICE_STICKY || FREEINK_DEVICE_X4PRO || \
     FREEINK_DEVICE_X4CLASSIC || FREEINK_DEVICE_MURPHY_M4 || FREEINK_DEVICE_ONEPAGE || FREEINK_DEVICE_WS397 || FREEINK_DEVICE_METALIO_EINK4 || \
     FREEINK_DEVICE_PICCO
 #define FREEINK_DRIVER_SSD1677 1
@@ -281,14 +289,14 @@
 // EEGO A4's frontlight is an I2C LED driver (viaI2cLed), not LEDC PWM — the
 // FrontlightManager I2C backend drives it.
 #define FREEINK_CAP_FRONTLIGHT                                                                        \
-  (FREEINK_DEVICE_DELINK || FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_X4PRO || \
+  (FREEINK_DEVICE_SILKSCREEN || FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_X4PRO || \
    FREEINK_DEVICE_PAPERMONO || FREEINK_DEVICE_MURPHY_M4 || FREEINK_DEVICE_EEGO_A4 || FREEINK_DEVICE_PICCO || \
    FREEINK_DEVICE_METALIO_EINK4_PLUS)
 #endif
 // Warm/cool color-temperature frontlight: a second warm PWM channel on top of
 // the brightness one (FrontlightConfig::gpioWarm). Sub-capability of
 // FREEINK_CAP_FRONTLIGHT — gates the warmth UI/settings out of single-channel
-// builds (Paper Mono, de-link, Murphy, LilyGo). Within a multi-device build
+// builds (Paper Mono, Silkscreen, Murphy, LilyGo). Within a multi-device build
 // the profile's gpioWarm stays the runtime truth (hasColorTemperature()).
 #ifndef FREEINK_CAP_WARMLIGHT
 #define FREEINK_CAP_WARMLIGHT \
@@ -422,14 +430,14 @@
 #define FREEINK_FB_PSRAM (FREEINK_DEVICE_M5PAPER || FREEINK_DEVICE_PAPERMONO)
 #endif
 
-// SD transport. de-link (4-bit) and X4 Pro (1-bit) are wired for SDMMC; SdFat
+// SD transport. Silkscreen (4-bit) and X4 Pro (1-bit) are wired for SDMMC; SdFat
 // can't drive SDIO, so they get a native esp-idf SDMMC block device behind
 // SDCardManager. Every other board stays on SdFat-over-SPI. The consumer's build
 // must define USE_BLOCK_DEVICE_INTERFACE=1 for the SdFat FsVolume these mount on.
 // Override with -DFREEINK_SD_SDMMC=0/1.
 #ifndef FREEINK_SD_SDMMC
 #define FREEINK_SD_SDMMC                                                                            \
-  (FREEINK_DEVICE_DELINK || FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_X4CLASSIC || FREEINK_DEVICE_PAPERMONO || \
+  (FREEINK_DEVICE_SILKSCREEN || FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_X4CLASSIC || FREEINK_DEVICE_PAPERMONO || \
    FREEINK_DEVICE_MURPHY_M4 || FREEINK_DEVICE_WS397 || FREEINK_DEVICE_METALIO_EINK4 || FREEINK_DEVICE_PICCO || \
    FREEINK_DEVICE_METALIO_EINK4_PLUS)
 #endif
@@ -480,7 +488,7 @@ enum class Board : uint8_t {
   M5StackPaperColor,
   MurphyM3,
   MurphyM4,
-  DeLink,
+  Silkscreen,  // open-hardware ESP32-S3 reader mainboard, formerly "de-link"
   LilyGoT5S3,
   M5PaperV11,
   Sticky,
@@ -494,6 +502,7 @@ enum class Board : uint8_t {
                 // capacitive touch, 2-ch I2C frontlight, 4-bit SDMMC, ADC battery. RE'd from retail
                 // firmware.
   MetalioEInk4Plus,  // ESP32-S31, E0470A14-AF 1216x684 raw parallel (EPDiy), FT6336U, TCA9555
+  DeLink [[deprecated("renamed to Board::Silkscreen")]] = Silkscreen,
 };
 
 // How the board reports button presses.
@@ -577,7 +586,7 @@ struct SdPins {
   bool powerCycleOnMount = true;
 };
 
-// 4-bit SDMMC/SDIO wiring (e.g. de-link). SdFat can't drive SDIO, so a board with
+// 4-bit SDMMC/SDIO wiring (e.g. Silkscreen). SdFat can't drive SDIO, so a board with
 // busWidth != 0 gets the native esp-idf SDMMC block device instead of SPI/SdFat.
 struct SdmmcPins {
   int8_t clk;
@@ -697,7 +706,7 @@ struct FrontlightConfig {
   bool activeHigh;
   // Optional second PWM channel for a warm/cool color-temperature frontlight (e.g. the
   // Xteink X4 Pro: cool=gpio GPIO8, warm=gpioWarm GPIO9). PIN_UNASSIGNED on single-channel
-  // boards (de-link / LilyGo / Murphy), where setColorTemperature() stays a no-op. The warm
+  // boards (Silkscreen / LilyGo / Murphy), where setColorTemperature() stays a no-op. The warm
   // channel shares the primary's frequency / resolution / active level. FrontlightManager
   // treats `gpio` as cool and `gpioWarm` as warm; if a board's pair is physically reversed,
   // the color-temperature direction inverts (cosmetic, and user-flippable in firmware).
@@ -1346,7 +1355,9 @@ constexpr BoardProfile MURPHY_M4 = {
     1.0f,  // uiScale
 };
 
-// --- de-link (X4-class GDEQ0426T82 panel on ESP32-S3) — SSD1677 + frontlight ---
+// --- Silkscreen (X4-class GDEQ0426T82 panel on ESP32-S3) — SSD1677 + frontlight ---
+// Open-hardware reader mainboard, formerly "de-link":
+// https://github.com/iandchasse/silkscreen-pcb
 // Reuses the SSD1677 driver (same controller/panel as X4); differs at the board
 // level: S3 MCU, SDMMC SD, warm/cool PWM frontlight.
 //
@@ -1354,32 +1365,33 @@ constexpr BoardProfile MURPHY_M4 = {
 // the panel rotated sets `ROTATE_180` (or a mirror) here, and the SSD1677 driver
 // applies it in hardware (mirrorX via RAM addressing, mirrorY via gate scan). Any
 // board injects its own mount transform the same way.
-constexpr BoardProfile DE_LINK = {Board::DeLink,
-                                  "de_link",
-                                  InputStyle::XteinkAdcLadder,
-                                  DisplayController::SSD1677,
-                                  800,
-                                  480,
-                                  {8, 10, 21, 4, 5, 6, PIN_UNASSIGNED},
-                                  0,  // displaySpiHz: SSD1677 default (20 MHz)
-                                  // SD on de-link is 4-bit SDMMC. SdFat can't drive SDIO, so SDCardManager
-                                  // mounts an FsVolume on a native esp-idf SDMMC block device (FREEINK_SD_SDMMC);
-                                  // the wiring is in the sdmmc field below. These SPI sd pins are unused.
-                                  {39, 38, 40, 41, PIN_UNASSIGNED, true, 0},
-                                  {0, 1, 2, 3, 4, 5, 3, true},  // power button active-HIGH (INPUT_PULLDOWN) on de-link
-                                  4,                            // batteryAdc GPIO4
-                                  PIN_UNASSIGNED,
-                                  2.0f,
-                                  PIN_UNASSIGNED,
-                                  NO_TOUCH,
-                                  // Primary brightness PWM (GPIO5). Warm/cool/rail/fault pins (GPIO6/7/17/18)
-                                  // are not driven.
-                                  {5, 20000, 8, true},
-                                  NO_AUDIO,
-                                  NO_LEDS,
-                                  NO_FLIP,
-                                  {39, 40, 38, 48, 42, 41, 4},  // SDMMC 4-bit: CLK39 CMD40 D0=38 D1=48 D2=42 D3=41
-                                  NO_GAUGE};
+constexpr BoardProfile SILKSCREEN = {Board::Silkscreen,
+                                     "silkscreen",
+                                     InputStyle::XteinkAdcLadder,
+                                     DisplayController::SSD1677,
+                                     800,
+                                     480,
+                                     {8, 10, 21, 4, 5, 6, PIN_UNASSIGNED},
+                                     0,  // displaySpiHz: SSD1677 default (20 MHz)
+                                     // SD on Silkscreen is 4-bit SDMMC. SdFat can't drive SDIO, so SDCardManager
+                                     // mounts an FsVolume on a native esp-idf SDMMC block device (FREEINK_SD_SDMMC);
+                                     // the wiring is in the sdmmc field below. These SPI sd pins are unused.
+                                     {39, 38, 40, 41, PIN_UNASSIGNED, true, 0},
+                                     {0, 1, 2, 3, 4, 5, 3, true},  // power button active-HIGH (INPUT_PULLDOWN) on Silkscreen
+                                     4,                            // batteryAdc GPIO4
+                                     PIN_UNASSIGNED,
+                                     2.0f,
+                                     PIN_UNASSIGNED,
+                                     NO_TOUCH,
+                                     // Primary brightness PWM (GPIO5). Warm/cool/rail/fault pins (GPIO6/7/17/18)
+                                     // are not driven.
+                                     {5, 20000, 8, true},
+                                     NO_AUDIO,
+                                     NO_LEDS,
+                                     NO_FLIP,
+                                     {39, 40, 38, 48, 42, 41, 4},  // SDMMC 4-bit: CLK39 CMD40 D0=38 D1=48 D2=42 D3=41
+                                     NO_GAUGE};
+[[deprecated("renamed to SILKSCREEN")]] inline constexpr const BoardProfile& DE_LINK = SILKSCREEN;
 
 // --- LilyGo T5 S3 4.7" (ED047TC1 raw-parallel EPD) — ESP32-S3 -----------------
 // 960x540 16-gray raw parallel panel driven via LovyanGFX (FREEINK_DRIVER_LGFX_EPD);
@@ -1649,7 +1661,7 @@ static_assert(EEGO_A4.displayWidth / 8 * EEGO_A4.displayHeight == 52992,
 // --- Sticky (Seeed Sticky) — ESP32-S3R8, SSD1677 + GT911 touch ---------------
 // 3.97" 800x480 B/W e-paper on a 24-pin FPC, controller confirmed SSD1677 by the
 // vendor peripheral demo (pin_config.h: "E-paper SSD1677 (SPI)") — same driver,
-// controller, and resolution as X4/de-link; its GDR/RESE/BS1 + dual VSH1/VSH2 +
+// controller, and resolution as X4/Silkscreen; its GDR/RESE/BS1 + dual VSH1/VSH2 +
 // external VGH/VGL/VSL/VCOM charge pump is the SSD1677 reference circuit.
 // Capacitive GT911 touch on its own I2C bus, MicroSD over SPI (shared display
 // bus), BQ27220 fuel gauge, PDM mic + buzzer. Pins are triple-sourced (V01
@@ -2227,7 +2239,7 @@ constexpr uint32_t MAX_FRAMEBUFFER_BYTES = cmax(
     cmax(cmax(FREEINK_DEVICE_X4 ? panelBytes(XTEINK_X4) : 0u, FREEINK_DEVICE_X3 ? panelBytes(XTEINK_X3) : 0u),
          cmax(FREEINK_DEVICE_M5 ? panelBytes(M5STACK_PAPER_COLOR) : 0u,
               FREEINK_DEVICE_MURPHY ? panelBytes(MURPHY_M3) : 0u)),
-    cmax(cmax(cmax(FREEINK_DEVICE_DELINK ? panelBytes(DE_LINK) : 0u,
+    cmax(cmax(cmax(FREEINK_DEVICE_SILKSCREEN ? panelBytes(SILKSCREEN) : 0u,
                    FREEINK_DEVICE_LILYGO ? panelBytes(LILYGO_T5S3) : 0u),
               cmax(FREEINK_DEVICE_M5PAPER ? panelBytes(M5PAPER_V11) : 0u,
                    cmax(FREEINK_DEVICE_X4PRO ? panelBytes(XTEINK_X4_PRO) : 0u,
@@ -2267,8 +2279,8 @@ constexpr BoardProfile DEFAULT_DEVICE = M5STACK_PAPER_COLOR;
 constexpr BoardProfile DEFAULT_DEVICE = MURPHY_M4;
 #elif FREEINK_DEVICE_MURPHY
 constexpr BoardProfile DEFAULT_DEVICE = MURPHY_M3;
-#elif FREEINK_DEVICE_DELINK
-constexpr BoardProfile DEFAULT_DEVICE = DE_LINK;
+#elif FREEINK_DEVICE_SILKSCREEN
+constexpr BoardProfile DEFAULT_DEVICE = SILKSCREEN;
 #elif FREEINK_DEVICE_LILYGO
 constexpr BoardProfile DEFAULT_DEVICE = LILYGO_T5S3;
 #elif FREEINK_DEVICE_M5PAPER
@@ -2325,7 +2337,7 @@ FREEINK_CHECK_TOUCH_DRIVER(FREEINK_DEVICE_X3, XTEINK_X3_UC8279);
 FREEINK_CHECK_TOUCH_DRIVER(FREEINK_DEVICE_M5, M5STACK_PAPER_COLOR);
 FREEINK_CHECK_TOUCH_DRIVER(FREEINK_DEVICE_MURPHY, MURPHY_M3);
 FREEINK_CHECK_TOUCH_DRIVER(FREEINK_DEVICE_MURPHY_M4, MURPHY_M4);
-FREEINK_CHECK_TOUCH_DRIVER(FREEINK_DEVICE_DELINK, DE_LINK);
+FREEINK_CHECK_TOUCH_DRIVER(FREEINK_DEVICE_SILKSCREEN, SILKSCREEN);
 FREEINK_CHECK_TOUCH_DRIVER(FREEINK_DEVICE_LILYGO, LILYGO_T5S3);
 FREEINK_CHECK_TOUCH_DRIVER(FREEINK_DEVICE_M5PAPER, M5PAPER_V11);
 FREEINK_CHECK_TOUCH_DRIVER(FREEINK_DEVICE_STICKY, STICKY);
@@ -2384,9 +2396,9 @@ inline bool selectDevice(Board which) {
       ACTIVE = MURPHY_M4;
       break;
 #endif
-#if FREEINK_DEVICE_DELINK
-    case Board::DeLink:
-      ACTIVE = DE_LINK;
+#if FREEINK_DEVICE_SILKSCREEN
+    case Board::Silkscreen:
+      ACTIVE = SILKSCREEN;
       break;
 #endif
 #if FREEINK_DEVICE_LILYGO
@@ -2467,7 +2479,8 @@ inline bool selectDevice(Board which) {
 
 inline bool isM5StackPaperColor() { return ACTIVE.board == Board::M5StackPaperColor; }
 inline bool isMurphyM3() { return ACTIVE.board == Board::MurphyM3; }
-inline bool isDeLink() { return ACTIVE.board == Board::DeLink; }
+inline bool isSilkscreen() { return ACTIVE.board == Board::Silkscreen; }
+[[deprecated("renamed to isSilkscreen()")]] inline bool isDeLink() { return isSilkscreen(); }
 inline bool isM5PaperV11() { return ACTIVE.board == Board::M5PaperV11; }
 inline bool isM5PaperS3() { return ACTIVE.board == Board::M5PaperS3; }
 inline bool isSticky() { return ACTIVE.board == Board::Sticky; }

@@ -62,7 +62,8 @@ field testing than the upstream.
 > License note: this repository is distributed under the **MIT License** (see
 > `LICENSE`) — the same permissive, open-source terms as the upstream. Portions
 > are derived from MIT-licensed upstream code; that attribution is preserved in
-> `NOTICE`.
+> `NOTICE`. The one exception is the `libs/display/epdiy` submodule (the EPDiy core
+> used only by the Metalio E-Ink4-Plus), which is **LGPL-3.0**; see its `FREEINK.md`.
 
 ## Architecture
 
@@ -138,6 +139,7 @@ so the SD manager itself stays device-agnostic.
 | **Xteink X4 Classic** (X4C) | ESP32-S3 | SSD1677, UC8179, **or UC8279** (per unit) | 800×480 B/W | same board/glass as the X4 Pro but **no touch, no frontlight** — those pins become four extra discrete front buttons (8 buttons total); native 1-bit SDMMC, BM8563 RTC, CW2017 battery gauge; controller auto-detected at boot |
 | **M5Stack Paper Mono** | ESP32-S3 | SSD1677 | 800×480 B/W | non-flashing fast refresh + 3-level grayscale (host-authored LUTs), FT6336 touch, PMIC-PWM frontlight (AW9967), RX8130 RTC, PDM microphone, LEDC buzzer, discrete RGB LED, native 1-bit SDMMC, M5PM1 battery/charging telemetry; power/reset rails sequenced through the on-board M5PM1 PMIC + M5IOE1 expander |
 | **Metalio E-Ink 4** | ESP32-S3 | SSD1677 | 800×480 B/W | CST816S touch and cover keys, TCA9555 buttons/power, 1-bit SDMMC, BQ27220 battery gauge, PCF8563 RTC; [bring-up notes and source conflicts](docs/metalio-eink4-support.md), hardware validation pending |
+| **Metalio E-Ink4-Plus** | ESP32-S31 | E0470A14-AF (raw parallel, EPDiy core) | 4.7" 1216×684, 4 grey levels used | FT6336U touch with two-contact gestures and bezel keys, TCA9555 buttons/power/motor, warm/cool frontlight, 4-bit SDMMC, BQ27220 gauge + CX25601N charger, PCF8563 RTC, SC7A20H accelerometer; needs the ESP-IDF 6.1 platform; [support notes](docs/metalio-eink4-plus-support.md), validated on hardware (sleep current, IMU readings, rotate/two-finger swipe pending) |
 | **Waveshare ESP32-S3-ePaper-3.97** | ESP32-S3 | SSD1677 | 3.97" 800×480 B/W | reuses the SSD1677 driver with the Sticky's vendor sequences, 3 side keys + BOOT (no touch), native 4-bit SDMMC, AXP2101 PMIC as EPD rail + battery gauge + power key, PCF85063 RTC, QMI8658 IMU; orientation pending hardware validation — see docs/waveshare-epaper-397-support.md |
 | **M5Stack PaperS3** | ESP32-S3 | ED047TC1 (raw parallel) | 960×540 16-gray | same LovyanGFX EPD driver class as the LilyGo T5 S3 (plain-GPIO EPD rails, no PMIC), GT911 touch (touch-only navigation — no GPIO buttons), BM8563 RTC, GPIO3 ADC battery, LEDC buzzer, SPI MicroSD; power-off is a GPIO44 pulse to the PMS150G latch (`BoardPaperS3::powerOff()`); rotation/touch-flip pending hardware validation |
 | **Onyx Picco / BOOX Tiles** (initial) | ESP32-S3 (16MB flash, 8MB octal PSRAM) | SSD1677 / SSD2677 (auto) | 3.97" 800×480 B/W (portrait) | reuses the SSD1677 driver, native 4-bit SDMMC, GPIO2 power/wake button, PCF8563/BM8563 RTC @0x51 + QMI8658 IMU @0x6A on the shared I2C bus (SDA7/SCL8); Parade TMA525C touch (I2C 0x24, multi-touch when panel GET_SYSINFO confirms it), 2-channel warm/cool I2C frontlight (@0x38), slide switch (GPIO6), SGM41562 charger (@0x03) and battery ADC (GPIO1) are wired; nav-button roles are provisional |
@@ -154,8 +156,9 @@ found so the caller can `display.setDisplayX3()`. Call it before
 profile. In builds without an Xteink profile the helpers compile to no-ops that
 return false without touching any pins, so an unconditional call is safe on
 every device. Devices on a different MCU build their own binary, selected with a
-`-DFREEINK_DEVICE_*` flag. A build targets exactly one of the four MCU families — ESP32-C3 (X3/X4),
-ESP32-C61 (OnePage), ESP32-S3 (Silkscreen/PaperColor/Murphy/LilyGo/Sticky/X4 Pro/Paper Mono/PaperS3/Waveshare 3.97), or classic ESP32 (M5Paper);
+`-DFREEINK_DEVICE_*` flag. A build targets exactly one of the five MCU families — ESP32-C3 (X3/X4),
+ESP32-C61 (OnePage), ESP32-S3 (Silkscreen/PaperColor/Murphy/LilyGo/Sticky/X4 Pro/Paper Mono/PaperS3/Waveshare 3.97), classic ESP32 (M5Paper),
+or ESP32-S31 (Metalio E-Ink4-Plus);
 `BoardConfig` rejects mixing families at compile time.
 
 #### Per-batch panel controllers (`applyXteinkDisplayController()`)
@@ -297,7 +300,7 @@ Notable behaviors on this board:
 **CHSC6x** (Murphy M3, IRQ-driven), **GT911** (LilyGo T5 S3, M5Paper v1.1, PaperS3,
 Sticky and X4 Pro; polled, raw register reads plus the reset/address dance, including
 the capacitive home key), the **FT5x06 family** (Paper Mono's FT6336; polled point
-reads gated on the active-low IRQ line), **FT6336U** (Murphy M4), **GSLX680** (EEGO A4,
+reads gated on the active-low IRQ line), **FT6336U** (Murphy M4; Metalio E-Ink4-Plus, two contacts and bezel keys through the CST816S poll path), **GSLX680** (EEGO A4,
 firmware uploaded at boot), **CST816S** (Metalio E-Ink 4, with cover keys) and
 **Parade TMA525C** (Onyx Picco, PIP protocol; stable contact IDs and multi-touch when GET_SYSINFO confirms at least two contacts). A build compiles only the drivers its
 selected devices use (`FREEINK_TOUCH_<CONTROLLER>`, each overridable with `-D`). The
@@ -335,6 +338,7 @@ MCU (a C3-vs-S3 mix is a compile error):
 | `-DFREEINK_DEVICE_X4` | X4 only — links just SSD1677 (tightest) |
 | `-DFREEINK_DEVICE_X3 -DFREEINK_DEVICE_X4` | X3 **and** X4 in one C3 binary, runtime-selected via `setDisplayX3()` |
 | `-DFREEINK_DEVICE_METALIO_EINK4` | Metalio E-Ink 4 (S3, SSD1677, CST816S touch, TCA9555, 1-bit SDMMC) |
+| `-DFREEINK_DEVICE_METALIO_EINK4_PLUS` | Metalio E-Ink4-Plus (S31, raw-parallel EPD via EPDiy, FT6336U touch, TCA9555, 4-bit SDMMC) |
 | `-DFREEINK_DEVICE_ONEPAGE` | OnePage (C61, SSD1677 800×480 + 4-key ADC ladder + 3 side keys + shared SD) |
 | `-DFREEINK_DEVICE_SILKSCREEN` | Silkscreen (S3, SSD1677 + frontlight; the old `FREEINK_DEVICE_DELINK` still works) |
 | `-DFREEINK_DEVICE_M5` | M5 PaperColor (S3, ED2208 + color) |
@@ -365,7 +369,7 @@ tight. Each defaults on when an included device needs it; force with `=0`/`=1`:
 | `FREEINK_CAP_RTC` | real-time clock (Rtc lib: PCF8563 / DS3231 / RX8130 over I²C, per profile) | on for X3, Sticky, X4 Pro, X4 Classic, and Paper Mono |
 | `FREEINK_CAP_TEMP_HUMIDITY` | temperature + humidity (EnvironmentSensor lib: SHT40 over I²C) | on for Sticky |
 | `FREEINK_CAP_IMU` | 6-axis IMU (Imu lib: LSM6DS3TR-C over I²C) | on for Sticky |
-| `FREEINK_CAP_HAPTIC` | consumer-controlled vibration ([HapticManager](docs/haptics.md): intensity, pulses, patterns) | on for Metalio E-Ink 4 |
+| `FREEINK_CAP_HAPTIC` | consumer-controlled vibration ([HapticManager](docs/haptics.md): intensity, pulses, patterns; on/off only on the E-Ink4-Plus) | on for Metalio E-Ink 4 and E-Ink4-Plus |
 | `FREEINK_CAP_BUZZER` | LEDC PWM tone buzzer (Buzzer lib: tone/beep on `audio.buzzer`) | on for Sticky, Murphy, and Paper Mono |
 | `FREEINK_CAP_LED` | RGB LEDs (LedManager: addressable chains, or the Paper Mono's discrete PMIC/expander-driven LED) | on for M5 and Paper Mono |
 | `FREEINK_CAP_NET_TLS13` | wolfSSL TLS 1.3 (≡ `FREEINK_NET_WOLFSSL`) | off |

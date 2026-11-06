@@ -677,6 +677,29 @@ static void testMetalio() {
   driver.displayFinish(bus, bw.data());
   assert(lastPlane(bus, 0x26) == bw && lastPlane(bus, 0x24) == bw);
   assert(lastRegister(bus, 0x22) == 0xCF);
+  // FULL keeps RED's old frame (no RED write before activation) and drives
+  // with CTRL1 normal, so the OTP waveform sees each pixel's real transition.
+  const auto dark = frame(77);
+  bus.clear();
+  driver.display(bus, dark.data(), nullptr, RefreshMode::Full, false);
+  bool activated = false, redBeforeActivation = false;
+  for (const auto& w : bus.writes) {
+    if (w.command == 0x20) activated = true;
+    if (w.command == 0x26 && !activated) redBeforeActivation = true;
+    if (w.command == 0x21 && !activated) assert(w.bytes == Bytes({0x00, 0x00}));
+    if (w.command == 0x22 && !activated) assert(w.bytes == Bytes({0xF7}));
+  }
+  assert(activated && !redBeforeActivation);
+  assert(lastPlane(bus, 0x26) == dark);  // post-refresh sync for the next frame
+  // Right after grayscale RED holds the MSB plane: FULL falls back to the bypass.
+  driver.displayGray(bus, bw.data(), false, nullptr, false);
+  bus.clear();
+  driver.display(bus, dark.data(), nullptr, RefreshMode::Full, false);
+  for (const auto& w : bus.writes)
+    if (w.command == 0x21) {
+      assert(w.bytes == Bytes({0x40, 0x00}));
+      break;
+    }
   driver.deepSleep(bus);
   assert(lastRegister(bus, 0x10) == 0x03);
 }

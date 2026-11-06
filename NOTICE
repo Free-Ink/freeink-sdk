@@ -1,7 +1,9 @@
 FreeInk SDK
 Copyright (c) 2026 FreeInk
 
-This product is licensed under the MIT License (see LICENSE).
+This product is licensed under the MIT License (see LICENSE), except
+the EPDiy submodule at libs/display/epdiy, which is licensed under the GNU
+LGPL v3 (see libs/display/epdiy/LICENSE and FREEINK.md).
 
 -----------------------------------------------------------------------------
 Third-party attribution

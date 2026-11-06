@@ -34,6 +34,8 @@ sh libs/book/FreeInkBook/test/host/run.sh
 sh libs/book/ContentProtection/test/host/run.sh
 sh libs/hardware/InputManager/test/host/run.sh
 sh libs/hardware/InputManager/test/host/run_metalio.sh
+sh libs/hardware/InputManager/test/host/run_metalioplus_touch.sh
+sh libs/hardware/InputManager/test/host/run_buffered_touch.sh
 sh libs/hardware/HapticManager/test/host/run.sh
 ```
 
@@ -203,3 +205,13 @@ sh libs/network/JsonSax/test/host/run.sh
 
 Checks optional bounded string prefixes, unchanged default overflow handling,
 continued parsing after long strings, and rejection of oversized keys under ASan/UBSan.
+
+## Buffered Metalio touch
+
+`run_buffered_touch.sh` compiles both Metalio profiles with ASan/UBSan. It
+captures controller samples independently of UI updates and checks 1.2-second
+UI stalls, ordered taps, original gesture timestamps, swipes/holds, single-sample
+taps, bezel keys, overflow cancellation, screen-transition discard,
+internal/PSRAM allocation failure, allocation placement, cleanup, and sampler
+start/stop. The desktop task/queue adapters
+cannot prove ESP32 scheduling, I2C contention or stack headroom.

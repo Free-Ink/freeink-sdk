@@ -163,8 +163,12 @@ void PowerManager::powerDownRailsForSleep() {
 }
 
 void PowerManager::deepSleep() {
+  // ESP-IDF 6.1 declares this for the S31 but does not build it.
+#if !CONFIG_IDF_TARGET_ESP32S31
   esp_sleep_config_gpio_isolate();
-#if !FREEINK_MCU_C61
+#endif
+  // Chips that hold single pads through deep sleep (C61, S31) have no global switch.
+#if !SOC_GPIO_SUPPORT_HOLD_SINGLE_IO_IN_DSLP
   gpio_deep_sleep_hold_en();
 #endif
   esp_deep_sleep_start();

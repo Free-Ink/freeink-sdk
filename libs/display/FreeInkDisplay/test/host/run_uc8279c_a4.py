@@ -46,7 +46,7 @@ class EpdBus {
   uint8_t command=0;
 public:
   unsigned refreshes=0, powerOffs=0;
-  uint8_t interval=0;
+  uint8_t interval=0, vcom=0;
   size_t lutBytes=0;
   std::vector<std::vector<uint8_t>> lut20s;
   std::vector<uint8_t> oldPlane, newPlane, oldAtRefresh, newAtRefresh;
@@ -62,6 +62,7 @@ public:
     }
   }
   void cmdData(uint8_t c, const uint8_t* p, size_t n) {
+    if(c==0x82 && n==1) vcom=*p;
     if(c==0x50 && n==1) interval=*p;
     if(c==0x20) { lutBytes=n; lut20s.emplace_back(p, p+n); }
     cmd(c);

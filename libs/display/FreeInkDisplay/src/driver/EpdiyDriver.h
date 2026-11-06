@@ -30,6 +30,7 @@ class EpdiyDriver : public PanelDriver {
   uint32_t spiHz() const override { return 0; }  // EPDiy owns the bus
   BusyPolarity busyPolarity() const override { return BusyPolarity::ActiveLow; }
   bool usesExternalBus() const override { return true; }
+  const char* controllerName() const override { return "EPDiy"; }
   PanelGeometry geometry() const override;
 
   void begin(EpdBus& bus) override;

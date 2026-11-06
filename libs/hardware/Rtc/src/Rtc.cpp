@@ -49,6 +49,17 @@ constexpr uint8_t RX8130_BACKUP_ONLY = 0x01;
 constexpr uint8_t RX8130_CLEAR_VLF = 0xBD;
 constexpr uint8_t RX8130_CLEAR_TF = 0xAF;  // W0C: preserve the other flags.
 
+// RX8010SJ register map (Murphy M3). Same address, time block at 0x10 and bit positions as the
+// RX8130, so RX8130_REG_TIME, RX8130_VLF, RX8130_STOP and RX8130_TEST serve both. Only the control
+// registers moved up one, and that is enough to make the two maps incompatible: the RX8010's
+// extension register is where the RX8130 keeps its flags, its flags where the RX8130 has CONTROL0.
+constexpr uint8_t RX8010_REG_RESERVED17 = 0x17;
+constexpr uint8_t RX8010_REG_FLAG = 0x1E;
+constexpr uint8_t RX8010_REG_CONTROL = 0x1F;
+constexpr uint8_t RX8010_REG_RESERVED30 = 0x30;
+constexpr uint8_t RX8010_REG_RESERVED31 = 0x31;
+constexpr uint8_t RX8010_REG_IRQ = 0x32;
+
 bool g_wireReady[2] = {false, false};
 TwoWire& sensorWire() {
   const auto& s = BoardConfig::ACTIVE.sensors;
@@ -98,6 +109,22 @@ bool readRegs(uint8_t addr, uint8_t reg, uint8_t* dst, uint8_t len) {
   return true;
 }
 
+uint8_t epsonFlagReg(const BoardConfig::RtcType type) {
+  return type == BoardConfig::RtcType::Rx8130 ? RX8130_REG_FLAGS : RX8010_REG_FLAG;
+}
+
+uint8_t epsonControlReg(const BoardConfig::RtcType type) {
+  return type == BoardConfig::RtcType::Rx8130 ? RX8130_REG_CONTROL0 : RX8010_REG_CONTROL;
+}
+
+// VLF clears on a written 0, and a written 1 leaves a flag as it was.
+bool clearEpsonVlf(const uint8_t addr, const BoardConfig::RtcType type) {
+  if (type == BoardConfig::RtcType::Rx8130) return writeReg(addr, RX8130_REG_FLAGS, RX8130_CLEAR_VLF);
+  uint8_t flags = 0;
+  return readRegs(addr, RX8010_REG_FLAG, &flags, 1) &&
+         writeReg(addr, RX8010_REG_FLAG, static_cast<uint8_t>(flags & ~RX8130_VLF));
+}
+
 // Presence read for begin(). A single failed transaction is not proof of a
 // missing chip: on a shared bus the I2C driver can fail the first transfer after
 // another device's NACK (e.g. an IMU address probe) with ESP_ERR_INVALID_STATE.
@@ -134,6 +161,14 @@ bool Rtc::begin() {
       break;
     case BoardConfig::RtcType::Rx8130:
       if (!readRegsRetry(addr, RX8130_REG_CONTROL0, &status, 1)) return false;
+      break;
+    case BoardConfig::RtcType::Rx8010:
+      if (!readRegsRetry(addr, RX8010_REG_FLAG, &status, 1)) return false;
+      // Reserved registers the manual has the host set, to the values it gives.
+      writeReg(addr, RX8010_REG_RESERVED17, 0xD8);
+      writeReg(addr, RX8010_REG_RESERVED30, 0x00);
+      writeReg(addr, RX8010_REG_RESERVED31, 0x08);
+      writeReg(addr, RX8010_REG_IRQ, 0x00);
       break;
     case BoardConfig::RtcType::None:
       return false;
@@ -192,9 +227,10 @@ bool Rtc::now(DateTime& out) {
       out.year = static_cast<uint16_t>(2000 + bcdToDec(raw[6]));
       return true;
     }
-    case BoardConfig::RtcType::Rx8130: {
+    case BoardConfig::RtcType::Rx8130:
+    case BoardConfig::RtcType::Rx8010: {
       uint8_t flags = 0;
-      if (!readRegs(addr, RX8130_REG_FLAGS, &flags, 1) || (flags & RX8130_VLF)) return false;
+      if (!readRegs(addr, epsonFlagReg(s.rtcType), &flags, 1) || (flags & RX8130_VLF)) return false;
       if (!readRegs(addr, RX8130_REG_TIME, raw, sizeof(raw))) return false;
       out.second = bcdToDec(raw[0] & 0x7FU);
       out.minute = bcdToDec(raw[1] & 0x7FU);
@@ -226,10 +262,11 @@ bool Rtc::set(const DateTime& dt) {
   ensureWire();
   auto& wire = sensorWire();
   if (s.rtcType == BoardConfig::RtcType::None) return false;
-  if (s.rtcType == BoardConfig::RtcType::Rx8130) {
+  if (s.rtcType == BoardConfig::RtcType::Rx8130 || s.rtcType == BoardConfig::RtcType::Rx8010) {
+    const uint8_t controlReg = epsonControlReg(s.rtcType);
     uint8_t control = 0;
-    if (!readRegs(addr, RX8130_REG_CONTROL0, &control, 1) ||
-        !writeReg(addr, RX8130_REG_CONTROL0, static_cast<uint8_t>(control | RX8130_STOP))) {
+    if (!readRegs(addr, controlReg, &control, 1) ||
+        !writeReg(addr, controlReg, static_cast<uint8_t>((control & ~RX8130_TEST) | RX8130_STOP))) {
       return false;
     }
     wire.beginTransmission(addr);
@@ -242,9 +279,8 @@ bool Rtc::set(const DateTime& dt) {
     wire.write(decToBcd(dt.month));
     wire.write(decToBcd(static_cast<uint8_t>(dt.year % 100)));
     const bool written = wire.endTransmission() == 0;
-    const bool restarted = writeReg(addr, RX8130_REG_CONTROL0, static_cast<uint8_t>(control & ~RX8130_STOP));
-    return written && restarted &&
-           writeReg(addr, RX8130_REG_FLAGS, RX8130_CLEAR_VLF);  // W0C: clear VLF after setting time.
+    const bool restarted = writeReg(addr, controlReg, static_cast<uint8_t>(control & ~(RX8130_STOP | RX8130_TEST)));
+    return written && restarted && clearEpsonVlf(addr, s.rtcType);  // After setting the time.
   }
   if (s.rtcType == BoardConfig::RtcType::Pcf85063) {
     wire.beginTransmission(addr);

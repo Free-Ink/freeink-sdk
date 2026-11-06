@@ -886,7 +886,8 @@ bool InputManager::wasSwipe(float& nxStart, float& nyStart, float& nxEnd, float&
   const int dy = static_cast<int>(touchUpPoint.y) - static_cast<int>(touchDownPoint.y);
   const int adx = absInt(dx);
   const int ady = absInt(dy);
-  if (adx < TOUCH_SWIPE_MIN_PX && ady < TOUCH_SWIPE_MIN_PX) return false;
+  const int swipeMin = touchSwipeMinPx();
+  if (adx < swipeMin && ady < swipeMin) return false;
   normalizeTouchPoint(touchDownPoint.x, touchDownPoint.y, nxStart, nyStart);
   normalizeTouchPoint(touchUpPoint.x, touchUpPoint.y, nxEnd, nyEnd);
   return true;
@@ -1398,9 +1399,22 @@ void InputManager::beginTouch() {
     // CHSC6x: I2C bus only. The IRQ is left unconfigured — it's a brief pulse on
     // this controller, so detection polls I2C and gates on the frame's touch bit
     // instead (see decodeChsc6xFrame / updateTouchFromIrq).
+    //
+    // Power the touch rail first on boards that gate it (Murphy M3: GPIO45,
+    // active-low). gpio_hold_dis first: the sleep path holds this pin at its
+    // OFF level, the hold survives the deep-sleep wake reset, and the ON write
+    // does nothing until the hold is released.
+    if (t.powerEnable >= 0) {
+      gpio_hold_dis(static_cast<gpio_num_t>(t.powerEnable));
+      pinMode(t.powerEnable, OUTPUT);
+      digitalWrite(t.powerEnable, t.powerEnableActiveHigh ? HIGH : LOW);
+      delay(50);
+    }
     if (t.sda >= 0 && t.scl >= 0 && t.i2cAddress != 0) {
       Wire.begin(t.sda, t.scl, 100000);
-      Wire.setTimeOut(4);
+      // A 16-byte frame at 100 kHz is about 1.7 ms on the wire; 4 ms left no
+      // room for clock stretching.
+      Wire.setTimeOut(10);
       touchDataEnabled = true;
     }
     return;
@@ -1523,10 +1537,12 @@ void InputManager::updateTouchFromIrq(const unsigned long now, const int irqRaw)
         touchUpPoint = point;
         const int dx = static_cast<int>(touchUpPoint.x) - static_cast<int>(touchDownPoint.x);
         const int dy = static_cast<int>(touchUpPoint.y) - static_cast<int>(touchDownPoint.y);
-        if (absInt(dx) > TOUCH_TAP_SLOP_PX || absInt(dy) > TOUCH_TAP_SLOP_PX) {
+        const int tapSlop = touchTapSlopPx();
+        const int releaseSlop = touchSwipeMinPx() - 1;  // TOUCH_TAP_RELEASE_SLOP_PX, scaled
+        if (absInt(dx) > tapSlop || absInt(dy) > tapSlop) {
           touchMovedBeyondTapSlop = true;
         }
-        if (absInt(dx) > TOUCH_TAP_RELEASE_SLOP_PX || absInt(dy) > TOUCH_TAP_RELEASE_SLOP_PX) {
+        if (absInt(dx) > releaseSlop || absInt(dy) > releaseSlop) {
           touchMovedBeyondTapReleaseSlop = true;
         }
       }
@@ -1537,7 +1553,12 @@ void InputManager::updateTouchFromIrq(const unsigned long now, const int irqRaw)
   if (touchPressed && now >= touchReleaseAt) {
     touchPressed = false;
     touchReleasedEvent = true;
-    lastTouchHeldDurationMs = now - touchDownPoint.timestamp;
+    // Measure to the last real sample, not to this expiry: the
+    // TOUCH_IRQ_PULSE_MS hold-over would add about 120 ms to every contact,
+    // out of the swipe window and toward the long-press threshold.
+    lastTouchHeldDurationMs = touchUpPoint.timestamp >= touchDownPoint.timestamp
+                                  ? touchUpPoint.timestamp - touchDownPoint.timestamp
+                                  : now - touchDownPoint.timestamp;
   }
 }
 
@@ -1545,7 +1566,10 @@ bool InputManager::readChsc6xPoint(TouchPoint& point) {
   const uint8_t addr = BoardConfig::ACTIVE.touch.i2cAddress;
   Wire.beginTransmission(addr);
   Wire.write(TOUCH_READ_COMMAND);
-  if (Wire.endTransmission(false) != 0) {
+  // Full STOP between the command write and the read: on the Murphy M3 this
+  // controller NAKs a repeated-start read. It keeps its register pointer
+  // across the stop.
+  if (Wire.endTransmission(true) != 0) {
     return false;
   }
 
@@ -1581,15 +1605,37 @@ bool InputManager::decodeChsc6xFrame(const uint8_t* data, const size_t len, Touc
   }
   const auto& t = BoardConfig::ACTIVE.touch;
   point.valid = true;
-  // Panel-native coordinates (the calibrated raw range, in the touch panel's
-  // own orientation); the app maps to its display/logical frame. See the touch
-  // note in the README.
-  point.x = mapTouchAxis(rawX, t.rawMinX, t.rawMaxX, t.rawMaxX - t.rawMinX);
-  point.y = mapTouchAxis(rawY, t.rawMinY, t.rawMaxY, t.rawMaxY - t.rawMinY);
+  // Panel-native coordinates (the calibrated raw range); the app maps to its
+  // display/logical frame. See the touch note in the README. Mount correction
+  // follows the profile like the GT911 path: swap axes first, map with the
+  // post-swap ranges, then flip per axis.
+  const uint16_t sx = t.swapXY ? rawY : rawX;
+  const uint16_t sy = t.swapXY ? rawX : rawY;
+  point.x = mapTouchAxis(sx, t.rawMinX, t.rawMaxX, t.rawMaxX - t.rawMinX);
+  point.y = mapTouchAxis(sy, t.rawMinY, t.rawMaxY, t.rawMaxY - t.rawMinY);
+  if (t.flipX) point.x = static_cast<uint16_t>((t.rawMaxX - t.rawMinX) - point.x);
+  if (t.flipY) point.y = static_cast<uint16_t>((t.rawMaxY - t.rawMinY) - point.y);
   point.timestamp = millis();
   return true;
 }
 #endif  // FREEINK_TOUCH_CHSC6X
+
+// TOUCH_TAP_SLOP_PX and TOUCH_SWIPE_MIN_PX are tuned in the mapped units of the
+// 800x480-class digitizers (mean axis span 639). The Murphy M3's CHSC6x maps to
+// 374x200 (mean 287), where the same counts are more than twice the finger
+// travel and a swipe reads as a tap. For that controller only, scale by the
+// digitizer's mean span, and never above the tuned value. Every other
+// controller keeps the constants unchanged.
+int InputManager::scaledTouchPx(const int px) const {
+#if FREEINK_TOUCH_CHSC6X
+  const auto& t = BoardConfig::ACTIVE.touch;
+  if (t.controller == BoardConfig::TouchController::Chsc6x) {
+    const int span = ((t.rawMaxX - t.rawMinX) + (t.rawMaxY - t.rawMinY)) / 2;
+    return std::clamp(px * span / TOUCH_REFERENCE_SPAN, 1, px);
+  }
+#endif
+  return px;
+}
 
 uint16_t InputManager::mapTouchAxis(uint16_t raw, const uint16_t rawMin, const uint16_t rawMax,
                                     const uint16_t outMax) const {

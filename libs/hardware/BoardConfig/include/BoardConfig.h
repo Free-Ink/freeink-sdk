@@ -415,7 +415,17 @@
 #ifndef FREEINK_SD_SDMMC
 #define FREEINK_SD_SDMMC                                                                            \
   (FREEINK_DEVICE_SILKSCREEN || FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_X4CLASSIC || FREEINK_DEVICE_PAPERMONO || \
-   FREEINK_DEVICE_MURPHY_M4 || FREEINK_DEVICE_WS397 || FREEINK_DEVICE_METALIO_EINK4 || FREEINK_DEVICE_PICCO)
+   FREEINK_DEVICE_MURPHY_M4 || FREEINK_DEVICE_WS397 || FREEINK_DEVICE_METALIO_EINK4 || FREEINK_DEVICE_PICCO || \
+   FREEINK_DEVICE_MURPHY)
+#endif
+
+// Report "USB host attached" as the charging state on boards that expose no
+// charge-status signal to the SoC (Murphy M3: the TP4054's CHRG output drives
+// only its LED). BatteryMonitor uses it when batteryChargeStatus is
+// PIN_UNASSIGNED; see freeink::usbHostPresent() in BatteryMonitor.h for what it
+// can and cannot see. Override with -DFREEINK_USB_PRESENCE_AS_CHARGING=0/1.
+#ifndef FREEINK_USB_PRESENCE_AS_CHARGING
+#define FREEINK_USB_PRESENCE_AS_CHARGING (FREEINK_DEVICE_MURPHY)
 #endif
 
 // Serial log transport hint for consumer firmware. Boards can share the same MCU
@@ -1233,22 +1243,40 @@ constexpr BoardProfile MURPHY_M3 = {
     240,
     {4, 3, 5, 6, 7, 8, PIN_UNASSIGNED},
     0,  // displaySpiHz: 0 -> Murphy UC8253 driver default (4 MHz)
-    {39, 13, 40, 10, PIN_UNASSIGNED, true, 0},
+    // The card is on 4-bit SDMMC (the sdmmc field below owns the bus), so only
+    // powerEnable is set here: GPIO10 gates the card rail and is active-LOW.
+    {PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, 10, false, 0, false},
     {PIN_UNASSIGNED, 0, PIN_UNASSIGNED, PIN_UNASSIGNED, 1, 2, 0, false},
     9,               // batteryAdc: stock firmware samples analogRead(9) for battery voltage
-    PIN_UNASSIGNED,  // batteryChargeStatus: not identified
-    3.030303f,       // stock firmware scales ADC by 0.0016 / 0.33, implying a 1:0.33 divider
+    PIN_UNASSIGNED,  // batteryChargeStatus: none. The TP4054's CHRG output drives only its
+                     // LED; see FREEINK_USB_PRESENCE_AS_CHARGING.
+    2.0f,            // 680k/680k divider. Measured 2.07 V at the pin on a charging pack (4.15 V).
     PIN_UNASSIGNED,
-    {TouchController::Chsc6x, 13, 12, 44, 45, 0x2e, 24, 224, 24, 398, false, 0, true, false},
+    // CHSC6x at 0x2e. GPIO45 is not a controller reset: it is an active-LOW gate
+    // for the rail that feeds both the touch controller and the ES8388, and with
+    // it high neither answers on I2C. It is carried as powerEnable.
+    // Mount: the digitizer reports raw X over the panel's short axis (24..224)
+    // and raw Y over its long axis (24..398), while the framebuffer is landscape
+    // 416x240. swapXY puts mapped X on the long axis, so the ranges are in
+    // post-swap order; flipY is from a four-corner tap test.
+    {TouchController::Chsc6x, 13, 12, 44, PIN_UNASSIGNED, 0x2e, 24, 398, 24, 224, false, 0, true, false,
+     /*powerEnable=*/45, /*swapXY=*/true, /*flipX=*/false, /*flipY=*/true, /*hasHomeKey=*/false,
+     /*powerEnableActiveHigh=*/false},
     {48, 25000, 10, true},
-    // NOTE: the SPI SD pin guess above (39/13/40) predates the OEM firmware
-    // audio recovery and conflicts with the proven I2S pins (39/40/41/42) and
-    // shared I2C (13). Audio is the verified owner of those pins.
     MURPHY_AUDIO,
     NO_LEDS,
     NO_FLIP,
-    NO_SDMMC,
-    NO_GAUGE};
+    {16, 17, 15, 14, 21, 18, 4},  // 4-bit SDMMC: CLK=16 CMD=17 D0=15 D1=14 D2=21 D3=18
+    NO_GAUGE,
+    NO_MIC,
+    // An RX8010 RTC (0x32) and an AHT30 (0x38) answer on the touch bus. Neither
+    // has an SDK driver yet, so the sensors block stays empty.
+    NO_SENSORS,
+    1.0f,  // uiScale: the struct default
+    // GPIO43 gates the whole I2C rail (touch, ES8388, RX8010, AHT30): the bus
+    // scans empty with it low. As power.latch0, holdPowerRails() raises it
+    // before any I2C user starts.
+    {43, PIN_UNASSIGNED}};
 
 // --- Murphy M4 — ESP32-S3R8, SSD1677 (480x800 portrait), FT6336U touch, dual frontlight ---
 // Touch wiring below follows the CrossPoint-derived Murphy Reader v1.2.16

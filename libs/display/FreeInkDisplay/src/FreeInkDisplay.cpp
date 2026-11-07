@@ -1,5 +1,7 @@
 #include "FreeInkDisplay.h"
 
+#include <utility>
+
 #include <BoardConfig.h>
 #include <sdkconfig.h>
 
@@ -255,6 +257,7 @@ void FreeInkDisplay::selectDriver() {
 const char* FreeInkDisplay::getControllerName() const { return _driver ? _driver->controllerName() : nullptr; }
 
 void FreeInkDisplay::begin() {
+  _activeMatchesGlass = false;
   cancelGrayscalePass();
   DisplayPmLock pmLock;
   selectDriver();
@@ -393,6 +396,7 @@ void FreeInkDisplay::setInverted(const bool inverted) {
   syncPendingAsync();
   _inverted = inverted;
   _inversionDirty = true;
+  _activeMatchesGlass = false;
   _shadowValid = false;
   _redRamSynced = false;
   if (_driver) _driver->setBackgroundHint(inverted);
@@ -410,10 +414,14 @@ void FreeInkDisplay::swapBuffers() {
   // write. The driver already handles prev==nullptr correctly (X3 ignores it;
   // X4 re-seeds both BW and RED controller RAM after the refresh), so keeping
   // frameBuffer on the same allocation is correct here.
-  if (!frameBufferActive) return;
+  if (!frameBufferActive) {
+    _activeMatchesGlass = false;
+    return;
+  }
   uint8_t* temp = frameBuffer;
   frameBuffer = frameBufferActive;
   frameBufferActive = temp;
+  _activeMatchesGlass = !_inverted;  // called right after a display: the frame it showed
 }
 
 FreeInkDisplay::RefreshMode FreeInkDisplay::resolveReleasedMode(RefreshMode mode) const {
@@ -455,6 +463,7 @@ uint8_t* FreeInkDisplay::allocFrameBufferStorage() const {
 }
 
 void FreeInkDisplay::releaseBuffers() {
+  _activeMatchesGlass = false;
   cancelGrayscalePass();
 #ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
   // The secondary block is in the host's hands — freeing it here would be a
@@ -478,6 +487,7 @@ void FreeInkDisplay::releaseBuffers() {
 }
 
 bool FreeInkDisplay::reallocBuffers() {
+  _activeMatchesGlass = false;
 #ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
   // While lent, frameBuffer0/1 still hold the block, so the slot checks below
   // would reattach it as frameBufferActive and memset the borrower's scratch.
@@ -497,6 +507,7 @@ bool FreeInkDisplay::reallocBuffers() {
 }
 
 uint8_t* FreeInkDisplay::lendBuildStorage(uint32_t* sizeOut) {
+  _activeMatchesGlass = false;
   if (_buildLent || frameBuffer0 == nullptr) {
     if (sizeOut != nullptr) *sizeOut = 0;
     return nullptr;
@@ -510,6 +521,7 @@ uint8_t* FreeInkDisplay::lendBuildStorage(uint32_t* sizeOut) {
 }
 
 void FreeInkDisplay::returnBuildStorage() {
+  _activeMatchesGlass = false;
   if (!_buildLent) return;
   _buildLent = false;
   frameBuffer = frameBuffer0;
@@ -523,6 +535,7 @@ void FreeInkDisplay::returnBuildStorage() {
 // buffer out of internal DRAM during chapter compilation. allocFrameBufferStorage()
 // is PSRAM-first with a malloc fallback, so this is correct with or without PSRAM.
 bool FreeInkDisplay::releaseSecondaryBuffer() {
+  _activeMatchesGlass = false;
   if (!frameBufferActive) return false;
   // A deferred refresh is still reading these bytes: the last displayStart + swap parked the
   // displayed frame here, and X3's post-waveform DTM1 sync reads it in displayFinish(). Freeing
@@ -548,6 +561,7 @@ bool FreeInkDisplay::releaseSecondaryBuffer() {
 }
 
 bool FreeInkDisplay::reallocSecondaryBuffer() {
+  _activeMatchesGlass = false;
   if (frameBufferActive) return true;
   if (_secondaryLent) return false;  // lent, not freed: returnSecondaryBuffer() is the only way back
   uint8_t** slot = (frameBuffer0 == nullptr) ? &frameBuffer0 : &frameBuffer1;
@@ -594,6 +608,7 @@ const uint8_t* FreeInkDisplay::consumePrevFrameFor(RefreshMode effectiveMode) {
 bool FreeInkDisplay::hasSecondaryBuffer() const { return frameBufferActive != nullptr; }
 
 uint8_t* FreeInkDisplay::borrowSecondaryBuffer(size_t* size) {
+  _activeMatchesGlass = false;
   if (!frameBufferActive || _secondaryLent) return nullptr;
   // A deferred refresh is still reading these bytes (the last displayStart +
   // swap parked the displayed frame here; X3's post-waveform DTM1 sync reads
@@ -607,6 +622,7 @@ uint8_t* FreeInkDisplay::borrowSecondaryBuffer(size_t* size) {
 }
 
 bool FreeInkDisplay::returnSecondaryBuffer() {
+  _activeMatchesGlass = false;
   if (!_secondaryLent) return false;
   frameBufferActive = _secondaryLent;
   _secondaryLent = nullptr;
@@ -681,6 +697,7 @@ bool FreeInkDisplay::refreshBusy() {
 }
 
 void FreeInkDisplay::displayBuffer(RefreshMode mode, bool turnOffScreen) {
+  _activeMatchesGlass = false;
   cancelGrayscalePass();
   _grayPassFailed = false;
   DisplayPmLock pmLock;
@@ -722,6 +739,7 @@ void FreeInkDisplay::displayBuffer(RefreshMode mode, bool turnOffScreen) {
 void FreeInkDisplay::displayBufferAsync(RefreshMode mode) { displayAsyncImpl(mode, /*turnOffScreen=*/false); }
 
 void FreeInkDisplay::displayAsyncImpl(RefreshMode mode, bool turnOffScreen, bool noShadow) {
+  _activeMatchesGlass = false;
   cancelGrayscalePass();
   _grayPassFailed = false;
   // Keeping the host framebuffer logical is the core inversion contract.
@@ -792,6 +810,7 @@ void FreeInkDisplay::displayAsyncImpl(RefreshMode mode, bool turnOffScreen, bool
 // ============================================================================
 
 void FreeInkDisplay::triggerDisplay(RefreshMode mode, bool turnOffScreen) {
+  _activeMatchesGlass = false;
   cancelGrayscalePass();
   _grayPassFailed = false;
   if (_inverted || _inversionDirty) {
@@ -880,6 +899,7 @@ void FreeInkDisplay::displayBufferAsyncNoShadow(RefreshMode mode) {
 }
 
 void FreeInkDisplay::displayWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t h, bool turnOffScreen) {
+  _activeMatchesGlass = false;
   cancelGrayscalePass();
   DisplayPmLock pmLock;
 #if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
@@ -925,7 +945,50 @@ void FreeInkDisplay::displayGrayBuffer(bool turnOffScreen, const unsigned char* 
   _driver->displayGray(_bus, frameBuffer, turnOffScreen, lut, factoryMode);
 }
 
+bool FreeInkDisplay::composesOnePassText() const { return _driver && _driver->composesOnePassText(); }
+
+uint8_t* FreeInkDisplay::beginOnePassMask() {
+#ifdef EINK_DISPLAY_SINGLE_BUFFER_MODE
+  return nullptr;
+#else
+  if (_onePassMask || _inverted || _inversionDirty || !composesOnePassText() || !frameBuffer || !frameBufferActive)
+    return nullptr;
+  DisplayPmLock pmLock;
+  syncPendingAsync();  // a refresh in flight may still be reading the frame on screen
+  if (!_activeMatchesGlass) return nullptr;
+  for (uint32_t i = 0; i < bufferSize; i++) frameBufferActive[i] &= frameBuffer[i];  // white before and after
+  std::swap(frameBuffer, frameBufferActive);
+  _onePassMask = true;
+  _activeMatchesGlass = false;  // until displayOnePassFrame() puts the page there
+  return frameBuffer;
+#endif
+}
+
+void FreeInkDisplay::displayOnePassFrame(RefreshMode mode, bool turnOffScreen) {
+#ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
+  if (_onePassMask) {
+    std::swap(frameBuffer, frameBufferActive);  // the page is back in the write buffer, the mask beside it
+    _onePassMask = false;
+    cancelGrayscalePass();
+    _grayPassFailed = false;
+    DisplayPmLock pmLock;
+    syncPendingAsync();
+    _shadowValid = false;
+    _refreshPending =
+        _driver->displayOnePassStart(_bus, frameBufferActive, frameBuffer, toInternal(mode), turnOffScreen);
+    // Both planes went out before the waveform started, so the mask is spent: the page takes its place
+    // as the frame on screen, which the driver's displayFinish() reads (syncPendingAsync passes it).
+    memcpy(frameBufferActive, frameBuffer, bufferSize);
+    _activeMatchesGlass = true;
+    _inversionDirty = false;
+    return;
+  }
+#endif
+  displayBuffer(mode, turnOffScreen);
+}
+
 void FreeInkDisplay::displayGrayCalibration(uint16_t customX, uint16_t customY, uint16_t customW, uint16_t customH) {
+  _activeMatchesGlass = false;
   cancelGrayscalePass();
   if (_inverted) return;
   DisplayPmLock pmLock;
@@ -942,6 +1005,7 @@ bool FreeInkDisplay::displayRetainedGrayscaleOverlay(uint16_t x, uint16_t y, uin
   DisplayPmLock pmLock;
   syncPendingAsync();
   cancelGrayscalePass();
+  _activeMatchesGlass = false;  // the overlay is on the glass, not in frameBufferActive
   if (!_driver->displayRetainedGrayscaleOverlay(_bus, restore ? nullptr : frameBuffer, x, y, w, h)) return false;
   _shadowValid = false;
   _redRamSynced = false;

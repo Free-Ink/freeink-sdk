@@ -587,8 +587,24 @@ static void testUc8279X4WaveformSelection() {
     assert(driver.grayscaleCapabilities(GrayscaleMode::Direct).supported());
     const auto quality = render(GrayscaleMode::Direct, 0, false);
     const auto* packet = kX4ProImage;
-    for (unsigned row = 0; row < 5; ++row)
-      assert(quality[row] == Bytes(packet + 9 + row * 49, packet + 9 + (row + 1) * 49));
+    constexpr unsigned packetRow[5] = {0, 1, 3, 2, 4};
+    for (unsigned reg = 0; reg < 5; ++reg) {
+      const unsigned row = packetRow[reg];
+      assert(quality[reg] == Bytes(packet + 9 + row * 49, packet + 9 + (row + 1) * 49));
+    }
+    // Dark gray selects 0x22 and light gray 0x23, so 0x22 must end darker: fewer frames
+    // towards white (rail 2) after the last frame towards black (rail 1).
+    const auto whiteTail = [](const Bytes& lut) {
+      int frames = 0;
+      for (unsigned group = 0; group < 7; ++group)
+        for (unsigned phase = 1; phase <= 4; ++phase) {
+          const uint8_t cell = lut[group * 7 + phase];
+          if ((cell >> 6) == 1) frames = 0;
+          if ((cell >> 6) == 2) frames += cell & 0x3F;
+        }
+      return frames;
+    };
+    assert(whiteTail(quality[2]) < whiteTail(quality[3]));
     assert(lastPlane(bus, 0x01) == Bytes({0x17, 0, 0x78, 0x78, 0x14}));
     assert(lastPlane(bus, 0x2A) == Bytes({0, 0, 0}));
     assert(lastRegister(bus, 0x82) == 0x24);

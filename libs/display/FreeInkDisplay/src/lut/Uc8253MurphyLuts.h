@@ -100,4 +100,21 @@ constexpr uint8_t MURPHY_LUT_22_GRAY[MURPHY_LUT_LEN_BW] = {0x01, 0x44, 0x84, 0x0
 constexpr uint8_t MURPHY_LUT_23_GRAY[MURPHY_LUT_LEN_WB] = {0x01, 0x43, 0x83, 0x00, 0x00, 0x01, 0x01};  // dark
 constexpr uint8_t MURPHY_LUT_24_GRAY[MURPHY_LUT_LEN_BB] = {0x01, 0x08, 0x00, 0x00, 0x00, 0x01, 0x01};
 
+// --- TEXT: a text page and its gray in one refresh -----------------------------
+// As long as FAST, and no nudge after it. The driver picks each pixel's drive from the page and from
+// what is on the glass (Uc8253MurphyDriver::displayGrayFrame()):
+//   R21 (1,1) rests: the pixel already shows its target, white or black.
+//   R22 (0,1) to white: FAST's drive, for a pixel leaving black or gray.
+//   R23 (1,0) the one gray: VSL 5, VSH 8, VSL 3. VSH 8 takes any start to black, 1 % from white, and
+//             VSL 3 then lands about 48 %, between the nudge's two grays. Nets to zero.
+//   R24 (0,0) to black: FAST's drive, from white or gray.
+// Measured with tools/murphy-gray-lab Test 9 (2026-11-07): gray from white or gray lands within the
+// panel's own spread, about 6 points top to bottom. A pixel black the page before lands up to 10
+// points darker, once. White from ink falls 4-7 points short of white, as FAST's does.
+constexpr uint8_t MURPHY_LUT_20_TEXT[MURPHY_LUT_LEN_VCOM] = {0x01, 0x14, 0x00, 0x00, 0x00, 0x01, 0x01};
+constexpr uint8_t MURPHY_LUT_21_TEXT[MURPHY_LUT_LEN_WW] = {0x01, 0x14, 0x00, 0x00, 0x00, 0x01, 0x01};  // rests
+constexpr uint8_t MURPHY_LUT_22_TEXT[MURPHY_LUT_LEN_BW] = {0x01, 0x94, 0x00, 0x00, 0x00, 0x01, 0x01};  // to white
+constexpr uint8_t MURPHY_LUT_23_TEXT[MURPHY_LUT_LEN_WB] = {0x01, 0x85, 0x48, 0x83, 0x00, 0x01, 0x01};  // gray
+constexpr uint8_t MURPHY_LUT_24_TEXT[MURPHY_LUT_LEN_BB] = {0x01, 0x4F, 0x00, 0x00, 0x00, 0x01, 0x01};  // to black
+
 }  // namespace freeink

@@ -24,6 +24,12 @@
 // driver remembers them and marks them as changed in the old plane, which gives
 // them the full drive. That costs no extra refresh.
 //
+// One-pass text, with a text bank: while the host has setReaderRefresh() on, an Overlay pass reports a
+// combined base, and beginGrayscale() holds the page back so that displayGray() puts it up with its
+// gray. Each pixel takes one of four drives in one refresh, rest, to white, gray or to black.
+// A pixel that stays white or black rests, which is less drive than FAST gives it. The driver keeps
+// what is on the glass to choose; a clean refresh, or no record yet, takes the two-pass route.
+//
 // Selection: linked only when -DFREEINK_DRIVER_UC8253_MURPHY (Murphy board env).
 
 #include "PanelDriver.h"
@@ -56,6 +62,7 @@ struct Uc8253MurphyConfig {
   Uc8253MurphyLutLens lens;    // per-register LUT byte counts
   uint8_t ghostClearInterval;  // promote FAST -> full every N refreshes, 0 for never
   Uc8253MurphyLutBank gray = {};  // overlay nudge; a board without one shows no gray
+  Uc8253MurphyLutBank text = {};  // one-pass text; needs the gray bank too
 };
 
 const Uc8253MurphyConfig& uc8253MurphyDefaultConfig();
@@ -74,14 +81,18 @@ class Uc8253MurphyDriver : public PanelDriver {
   void display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) override;
   GrayscaleCapabilities grayscaleCapabilities(GrayscaleMode mode = GrayscaleMode::Overlay) const override {
     if (mode != GrayscaleMode::Overlay || !_cfg.gray.vcom) return {};
-    return {GrayscaleEncoding::OverlayMasks, GrayscaleBase::Separate, false, false, false};
+    const auto base = _readerRefresh && onePassText() ? GrayscaleBase::Combined : GrayscaleBase::Separate;
+    return {GrayscaleEncoding::OverlayMasks, base, false, false, false};
   }
+  void beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode mode, RefreshMode fallback, bool turnOff) override;
   void copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) override;
   void copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) override;
   // Without a gray bank this does nothing. A host still running a gray pass arrives here with a
   // gray PLANE in `fb`, and the default pushes that as a B/W page, which reads as a near-black
   // screen. The B/W page before the pass is already on the panel, so it stays there.
   void displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut, bool factoryMode) override;
+
+  void setReaderRefresh(bool reading) override { _readerRefresh = reading; }
 
  private:
   void initController(EpdBus& bus);
@@ -113,6 +124,17 @@ class Uc8253MurphyDriver : public PanelDriver {
   // One refresh has run since the last reset and the controller is still up, so a nudge can skip
   // the reset, and DTM1 and DTM2 have traded roles. See displayGray().
   bool _rolesTraded = false;
+
+  // One-pass text: the page last put on the glass, gray counted as black, and the planes built from it.
+  bool onePassText() const { return _cfg.text.vcom != nullptr && _cfg.gray.vcom != nullptr; }
+  void displayOnePass(EpdBus& bus, const uint8_t* fb, bool turnOff);
+  void noteShown(const uint8_t* fb);
+  uint8_t* _shown = nullptr;
+  uint8_t* _textOld = nullptr;
+  uint8_t* _textNew = nullptr;
+  bool _shownValid = false;
+  bool _readerRefresh = false;
+  bool _onePassPending = false;  // beginGrayscale() held the page back for displayGray()
 };
 
 PanelDriver& uc8253MurphyDriver();

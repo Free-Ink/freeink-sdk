@@ -208,8 +208,9 @@ constexpr GrayBank makeQualityBank() {
 
 constexpr GrayBank kQualityBank = makeQualityBank();
 
-// Register order for the quality bank: 0x22 and 0x23 exchanged relative to
-// table order (inx-pro's empirically found assignment for this panel).
+// Register order for four-tone image tables: 0x22 and 0x23 exchanged relative to
+// table order. The tables run VCOM, black, light, dark, white, and the inverted
+// absolute planes send dark gray as (DTM1, DTM2) = (0, 1), which selects 0x22.
 constexpr uint8_t kQualityLutReg[5] = {0x20, 0x21, 0x23, 0x22, 0x24};
 
 }  // namespace
@@ -790,7 +791,7 @@ void Uc8279X4Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, c
     bus.cmd(0x82);
     bus.data(imagePacket[5]);
     for (unsigned i = 0; i < 5; ++i) {
-      bus.cmd(0x20 + i);
+      bus.cmd(kQualityLutReg[i]);
       bus.data(imagePacket + 9 + i * GRAY_LUT_LEN, GRAY_LUT_LEN);
     }
   } else if (image) {

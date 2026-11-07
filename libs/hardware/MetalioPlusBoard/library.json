@@ -1,0 +1,9 @@
+{
+  "name": "MetalioPlusBoard",
+  "version": "0.1.0",
+  "description": "Metalio E-Ink4-Plus (ESP32-S31) board glue: TCA9555 rails and TPS65185 panel power for the EPDiy core, wired to the board's parallel EPD pins.",
+  "keywords": "metalio, tps65185, tca9555, epdiy",
+  "authors": [{"name": "FreeInk SDK Contributors"}],
+  "platforms": "espressif32",
+  "frameworks": ["arduino"]
+}

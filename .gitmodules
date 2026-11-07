@@ -1,3 +1,7 @@
 [submodule "libs/assets/Icons/lucide"]
 	path = libs/assets/Icons/lucide
 	url = https://github.com/lucide-icons/lucide
+[submodule "libs/display/epdiy"]
+	path = libs/display/epdiy
+	url = https://github.com/Free-Ink/epdiy.git
+	branch = esp32s31

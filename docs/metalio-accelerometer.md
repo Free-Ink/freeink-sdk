@@ -2,7 +2,9 @@
 
 The board owner identified the sensor as SC7A20H. Select
 `FREEINK_DEVICE_METALIO_EINK4=1` and add the `Imu` library; its capability is
-enabled automatically. Applications choose how to use readings—no page-turn,
+enabled automatically. The Metalio E-Ink4-Plus (`FREEINK_DEVICE_METALIO_EINK4_PLUS=1`)
+carries the same part at 0x19 on its shared SDA0/SCL1 bus; its readings have not
+been checked on that board yet. Applications choose how to use readings—no page-turn,
 rotation or vibration behavior is attached by the SDK.
 
 ```cpp

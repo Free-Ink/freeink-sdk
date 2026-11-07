@@ -128,7 +128,7 @@ static const Ssd1677Config& ssd1677MetalioConfig() {
   static const Ssd1677Config cfg = {
       {0xAE, 0xC7, 0xC3, 0xC0, 0x80}, 0x02, 0x01, 0x6A, lut_grayscale_metalio,
       0xF7, 0xFC, 0xD7, 0x01, 0x80, 0x01, 0xC0, false, true, true, true, true, true,
-      lut_factory_quality_metalio, lut_fast_metalio};
+      lut_factory_quality_metalio, lut_fast_metalio, nullptr, nullptr, true};
   return cfg;
 }
 #endif
@@ -474,7 +474,7 @@ void Ssd1677Driver::refresh(EpdBus& bus, RefreshMode mode, bool turnOff, bool as
   const char* dbgMode = (mode == RefreshMode::Full) ? "FULL" : (mode == RefreshMode::Half) ? "HALF" : "FAST";
 #endif
   bus.cmd(CMD_DISPLAY_UPDATE_CTRL1);
-  bus.data((mode == RefreshMode::Fast) ? CTRL1_NORMAL : CTRL1_BYPASS_RED);
+  bus.data((mode == RefreshMode::Fast || _fullFromPrevious) ? CTRL1_NORMAL : CTRL1_BYPASS_RED);
   if (_cfg.writeSecondUpdateControlByte) bus.data(0x00);
   if (_cfg.restoreInternalTemperature && mode != RefreshMode::Half) {
     bus.cmd(CMD_TEMP_SENSOR_CONTROL);
@@ -664,6 +664,7 @@ void Ssd1677Driver::displayFinish(EpdBus& bus, const uint8_t* fb) {
 void Ssd1677Driver::displayImpl(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff,
                                 bool async) {
   const bool cold = _needsInitialFull;
+  const bool redHoldsGray = _inGrayscaleMode;
   _pendingFrameSync = _cfg.blackPulseClean && async;
   if (_needsGrayClear) {
     if (mode == RefreshMode::Fast) mode = _cfg.halfSeqOverride ? RefreshMode::Half : RefreshMode::Full;
@@ -732,7 +733,12 @@ void Ssd1677Driver::displayImpl(EpdBus& bus, const uint8_t* fb, const uint8_t* p
     // Only the final phase may defer completion or power down.
     refresh(bus, RefreshMode::Fast, turnOff, async);
   } else {
-    if (mode != RefreshMode::Fast) {
+    _fullFromPrevious = _cfg.fullFromPrevious && mode == RefreshMode::Full && !cold && !redHoldsGray;
+    if (_fullFromPrevious) {
+      // Single-buffer: RED already holds the previous frame from the post-refresh sync.
+      writeRam(bus, CMD_WRITE_RAM_BW, fb, _bufferSize);
+      if (prev != nullptr) writeRam(bus, CMD_WRITE_RAM_RED, prev, _bufferSize);
+    } else if (mode != RefreshMode::Fast) {
       writeRam(bus, CMD_WRITE_RAM_BW, fb, _bufferSize);
       writeRam(bus, CMD_WRITE_RAM_RED, fb, _bufferSize);
     } else {
@@ -745,6 +751,7 @@ void Ssd1677Driver::displayImpl(EpdBus& bus, const uint8_t* fb, const uint8_t* p
     }
 
     refresh(bus, mode, turnOff, async);
+    _fullFromPrevious = false;
   }
 
   // Stock X4 syncs both controller RAM planes after activation. Do the same in

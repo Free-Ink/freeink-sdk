@@ -96,8 +96,11 @@ Cover keys are kept out of screen taps:
 - Physical volume +/- also emit `BTN_UP`/`BTN_DOWN`.
 
 The CST816S may NACK until touched. Initialization therefore does not require
-an ID-register response; IRQ pulses are latched and expired contacts/failed
-reads release input. See [Espressif's CST816S notes](https://github.com/espressif/esp-bsp/blob/master/components/lcd_touch/esp_lcd_touch_cst816s/README.md).
+an ID-register response. IRQ pulses wake idle polling through
+`touchContactPending()`; periodic reads recover from missed interrupts and
+failed first reads. Expired contacts/failed reads release input. Consumers must
+keep calling `update()` promptly; an IRQ alone cannot preserve a tap that ends
+before the controller is read. See [Espressif's CST816S notes](https://github.com/espressif/esp-bsp/blob/master/components/lcd_touch/esp_lcd_touch_cst816s/README.md).
 
 For hardware power-off, call `HapticManager::getInstance().end()` if using haptics,
 finish all display work, call `display.deepSleep()`,
@@ -175,3 +178,36 @@ managers was also compiled. Before release, validate DC/RST wiring, panel qualit
 all touch corners and held cover keys, SD access, battery values, RTC, accelerometer
 axis orientation and sleep current, and power
 off/wake on a physical unit.
+
+## Touch capture during UI stalls
+
+After `begin()`, Metalio consumers can call `beginBufferedTouch()` and keep
+calling `update()` and the existing gesture queries on their main thread.
+The SDK task polls the controller every 10 ms through the shared I2C lock;
+only the main thread decodes gestures. Capture timestamps, rather than replay
+time, determine tap/hold/swipe duration. Downstream gesture timers (such as
+HOME double-tap classification) must use `touchFrameTime()` rather than
+`millis()`. Idle reports do not count as pending touch activity. This mode is
+mutually exclusive with
+`beginAsync()`, whose task owns the whole input state and exposes gesture queues.
+
+The bounded queue holds 256 reports in PSRAM (5,120 bytes), covering at least
+2.56 seconds at the nominal sample rate. The queue control structure, task
+bookkeeping and 4,096-byte task stack stay in internal RAM. Only enabled
+Metalio consumers allocate them. Failure returns `false` and leaves synchronous
+polling available; unavailable PSRAM does not consume internal RAM as a fallback.
+Overflow cancels
+pending input and waits for release rather than delivering a partial gesture.
+
+Call `discardBufferedTouch()` when changing screen ownership: queued input and
+in-flight old reports are discarded, and a held contact must release before
+it can act on the new screen. Regular `suppressTouchContact()` still suppresses
+only the current gesture. Stop with `endBufferedTouch()` before changing the
+active board or reinitializing its bus. `prepareForDeepSleep()` and destruction
+also stop the sampler, allowing its last I2C transfer to finish before cleanup.
+
+Validate short taps during a full refresh, long presses, swipes, two-contact
+gestures where supported, HOME/page keys and screen transitions on hardware.
+Check all four orientations, free internal heap/largest block, and task stack
+headroom during repeated refreshes. Hardware bus/scheduler delays can still
+miss a contact that begins and ends between successful reads.

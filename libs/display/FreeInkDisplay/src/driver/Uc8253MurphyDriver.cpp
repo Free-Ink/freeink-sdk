@@ -75,6 +75,7 @@ const Uc8253MurphyConfig& uc8253MurphyDefaultConfig() {
       0,  // the host owns the cadence: promoting here overrode its refresh setting, and hid it
 #if FREEINK_MURPHY_GRAY
       {MURPHY_LUT_20_GRAY, MURPHY_LUT_21_GRAY, MURPHY_LUT_22_GRAY, MURPHY_LUT_23_GRAY, MURPHY_LUT_24_GRAY},
+      {MURPHY_LUT_20_TEXT, MURPHY_LUT_21_TEXT, MURPHY_LUT_22_TEXT, MURPHY_LUT_23_TEXT, MURPHY_LUT_24_TEXT},
 #endif
   };
   return cfg;
@@ -161,6 +162,7 @@ void Uc8253MurphyDriver::initController(EpdBus& bus) {
 void Uc8253MurphyDriver::begin(EpdBus& bus) {
   bus.reset(200);  // Murphy panel wants a long post-reset settle
   _isScreenOn = false;
+  _shownValid = false;  // whatever is on the glass, no refresh of ours put it there
   _fastRefreshCount = 0;
   _grayOnGlass = false;
   _rolesTraded = false;
@@ -168,6 +170,7 @@ void Uc8253MurphyDriver::begin(EpdBus& bus) {
 }
 
 void Uc8253MurphyDriver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
+  _onePassPending = false;  // a page the host abandoned does not wait for its planes
   // Manufacturer guidance: hardware-reset and re-initialise the controller before
   // every refresh. The UC8253 retains LUT/RAM state between refreshes, and reusing
   // it leaves pixels half-latched (the previous frame bleeds through / flashes
@@ -208,6 +211,64 @@ void Uc8253MurphyDriver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* 
   triggerRefresh(bus, turnOff);
   _grayOnGlass = false;  // both paths above drove every gray pixel to a rail
   _rolesTraded = !turnOff;
+  noteShown(fb);
+}
+
+void Uc8253MurphyDriver::noteShown(const uint8_t* fb) {
+  if (!onePassText() || !grayPlane(_shown)) return;
+  memcpy(_shown, fb, static_cast<size_t>(_fbWb) * _fbH);
+  _shownValid = true;
+}
+
+void Uc8253MurphyDriver::beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode mode, RefreshMode fallback,
+                                        bool turnOff) {
+  if (!_readerRefresh || !onePassText() || mode != GrayscaleMode::Overlay) {
+    PanelDriver::beginGrayscale(bus, fb, mode, fallback, turnOff);
+    return;
+  }
+  // A clean refresh keeps its two passes, and so does a page with no record of what it replaces:
+  // a FAST without the previous frame would leave that frame up. HALF then, as at a book's open.
+  if (fallback != RefreshMode::Fast || !_shownValid) {
+    display(bus, fb, _shownValid ? _shown : nullptr, _shownValid ? fallback : RefreshMode::Half, turnOff);
+    return;
+  }
+  _onePassPending = true;  // the page waits for its planes: displayGray() puts both up at once
+}
+
+void Uc8253MurphyDriver::displayOnePass(EpdBus& bus, const uint8_t* fb, bool turnOff) {
+  const bool staged = _lsbStaged && _msbStaged;
+  if (!fb || !staged || !grayPlane(_textOld) || !grayPlane(_textNew) || !grayPlane(_gray)) {
+    if (fb) display(bus, fb, _shown, RefreshMode::Fast, false);  // the page at least, then any nudge
+    displayGray(bus, fb, turnOff, nullptr, false);
+    return;
+  }
+  _lsbStaged = _msbStaged = false;
+
+  // The page is white, black, or black under a gray mask. DTM1 says rest or gray, DTM2 says the pixel
+  // ends white or rests: (1,1) rests, (0,1) to white, (1,0) gray, (0,0) to black.
+  const size_t size = static_cast<size_t>(_fbWb) * _fbH;
+  for (size_t i = 0; i < size; i++) {
+    const uint8_t gray = static_cast<uint8_t>(_lsb[i] | _msb[i]);
+    const uint8_t white = fb[i];
+    const uint8_t black = static_cast<uint8_t>(~white & ~gray);
+    const uint8_t wasBlack = static_cast<uint8_t>(~_shown[i] & ~(_grayOnGlass ? _gray[i] : 0));
+    const uint8_t rests = static_cast<uint8_t>((white & _shown[i]) | (black & wasBlack));
+    _textOld[i] = static_cast<uint8_t>(rests | gray);
+    _textNew[i] = static_cast<uint8_t>(white | (black & wasBlack));
+  }
+
+  bus.reset(200);  // see display(); a cold start also keeps DTM1 and DTM2 in their roles
+  _isScreenOn = false;
+  initController(bus);
+  loadLut(bus, _cfg.text);
+  writePlane(bus, CMD_DTM1, _textOld);
+  writePlane(bus, CMD_DTM2, _textNew);
+  triggerRefresh(bus, turnOff);
+  _rolesTraded = !turnOff;
+
+  for (size_t i = 0; i < size; i++) _gray[i] = static_cast<uint8_t>(_lsb[i] | _msb[i]);
+  _grayOnGlass = true;  // the next FAST drives it away, and no nudge may lift it
+  noteShown(fb);
 }
 
 uint8_t* Uc8253MurphyDriver::grayPlane(uint8_t*& plane) {
@@ -230,7 +291,12 @@ void Uc8253MurphyDriver::copyGrayscaleMsb(EpdBus&, const uint8_t* msb) {
   if (_msbStaged) memcpy(_msb, msb, static_cast<size_t>(_fbWb) * _fbH);
 }
 
-void Uc8253MurphyDriver::displayGray(EpdBus& bus, const uint8_t*, bool turnOff, const unsigned char*, bool) {
+void Uc8253MurphyDriver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char*, bool) {
+  if (_onePassPending) {
+    _onePassPending = false;
+    displayOnePass(bus, fb, turnOff);
+    return;
+  }
   const bool staged = _lsbStaged && _msbStaged;
   _lsbStaged = _msbStaged = false;
   if (!staged || _grayOnGlass || !grayPlane(_gray)) return;

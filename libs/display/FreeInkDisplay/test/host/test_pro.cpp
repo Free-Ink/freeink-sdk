@@ -250,6 +250,35 @@ class ComposingDriver : public Uc8279X4Driver {
   unsigned frames = 0;
 };
 
+// The X4's composed one-pass: page in BW, the old plane in RED, the exchanged X4 Pro table, one 0xCC
+// activation, then both planes become the page. A HALF keeps the B/W path.
+static void testSsdComposedOnePass() {
+  const auto board = BoardConfig::ACTIVE.board;
+  BoardConfig::ACTIVE.board = BoardConfig::Board::XteinkX4;
+  Ssd1677Driver d;
+  EpdBus bus;
+  d.begin(bus);
+  Bytes page(48000, 0xF0), mask(48000, 0x3C);
+  d.display(bus, page.data(), nullptr, RefreshMode::Full, false);
+  assert(d.composesOnePassText());
+  bus.clear();
+  assert(d.displayOnePassStart(bus, mask.data(), page.data(), RefreshMode::Fast, false));
+  assert(lastPlane(bus, 0x24) == page && lastPlane(bus, 0x26) == mask);
+  const Bytes& lut = lastPlane(bus, 0x32);
+  assert(lut.size() == 105 && lut[0] == 0x15 && lut[10] == 0x0A && lut[11] == 0xAA && lut[30] == 0x00 && lut[31] == 0x80);
+  assert(lastRegister(bus, 0x22) == 0xCC);
+  d.displayFinish(bus, page.data());
+  assert(lastPlane(bus, 0x24) == page && lastPlane(bus, 0x26) == page);
+  bus.clear();
+  d.displayOnePassStart(bus, mask.data(), page.data(), RefreshMode::Half, false);
+  d.displayFinish(bus, page.data());
+  for (const auto& w : bus.writes) assert(w.command != 0x32);  // no one-pass table on a clean refresh
+  BoardConfig::ACTIVE.board = BoardConfig::Board::XteinkX4Pro;
+  Ssd1677Driver pro;
+  assert(!pro.composesOnePassText());
+  BoardConfig::ACTIVE.board = board;
+}
+
 static void testComposedOnePass() {
   ComposingDriver driver;
   FreeInkDisplay display(12, 11, 13, 18, 14, 6);
@@ -1123,6 +1152,7 @@ int main(int argc, char** argv) {
 #ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
   testGrayCleanupBaseline();
   testComposedOnePass();
+  testSsdComposedOnePass();
 #endif
   std::puts("Pro plane bytes, transaction counts, clean refreshes, power state and async frame ownership passed");
 }

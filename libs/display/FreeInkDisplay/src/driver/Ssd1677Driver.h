@@ -103,6 +103,12 @@ class Ssd1677Driver : public PanelDriver {
   // host-frame work on X4 (RED handling is inside displayImpl's async path).
   bool displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) override;
   void displayFinish(EpdBus& bus, const uint8_t* fb) override;
+
+  // One-pass text, composed by the host (PanelDriver::composesOnePassText()). The X4 only, so far: the
+  // waveform is the X4 Pro's, and the X4 is the SSD1677 board it has been looked at on.
+  bool composesOnePassText() const override;
+  bool displayOnePassStart(EpdBus& bus, const uint8_t* oldPlane, const uint8_t* page, RefreshMode mode,
+                           bool turnOff) override;
   bool supportsAsyncDisplay() const override { return true; }
   void displayWindow(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, uint16_t x, uint16_t y, uint16_t w,
                      uint16_t h, bool turnOff) override;

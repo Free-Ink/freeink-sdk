@@ -18,6 +18,7 @@
 #if FREEINK_DEVICE_PICCO
 #include <esp_heap_caps.h>
 #endif
+#include <array>
 #include <cstring>
 #include <vector>
 
@@ -55,6 +56,22 @@ constexpr uint8_t CMD_DEEP_SLEEP = 0x10;
 
 constexpr uint8_t DRIVER_OUTPUT_SCAN = 0x02;  // SM=1 interlaced, TB=0 (base)
 constexpr uint8_t SCAN_TB_FLIP = 0x01;        // OR into the scan byte for mirrorY
+
+// One-pass text composed by the host: kX4ProTextSsd1677 (from the X4 Pro's firmware) with LUT rows 1 and 3
+// exchanged. The row is RED * 2 + BW, and here RED says rest or gray, BW the page: row 0 black (VSH1 17),
+// row 1 to white (VSL 24), row 2 gray (VSL 6, VSH1 4), row 3 white that stays white (a VSL 2 nudge, as the
+// X4 Pro's hold).
+constexpr std::array<uint8_t, sizeof(kX4ProTextSsd1677)> textOnePassLut() {
+  std::array<uint8_t, sizeof(kX4ProTextSsd1677)> lut{};
+  for (size_t i = 0; i < lut.size(); i++) lut[i] = kX4ProTextSsd1677[i];
+  constexpr size_t kRowBytes = 10;  // one voltage-select row
+  for (size_t i = 0; i < kRowBytes; i++) {
+    lut[1 * kRowBytes + i] = kX4ProTextSsd1677[3 * kRowBytes + i];
+    lut[3 * kRowBytes + i] = kX4ProTextSsd1677[1 * kRowBytes + i];
+  }
+  return lut;
+}
+constexpr auto kTextOnePass = textOnePassLut();
 
 }  // namespace
 
@@ -765,6 +782,27 @@ void Ssd1677Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev,
 bool Ssd1677Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode,
                                  bool turnOff) {
   displayImpl(bus, fb, prev, mode, turnOff, /*async=*/true);
+  return true;
+}
+
+bool Ssd1677Driver::composesOnePassText() const { return BoardConfig::ACTIVE.board == BoardConfig::Board::XteinkX4; }
+
+bool Ssd1677Driver::displayOnePassStart(EpdBus& bus, const uint8_t* oldPlane, const uint8_t* page, RefreshMode mode,
+                                        bool turnOff) {
+  // A page this driver would promote (a clean refresh, the first after boot or a wake, gray left by a
+  // pass) keeps its B/W path.
+  if (mode != RefreshMode::Fast || _needsInitialFull || _needsGrayClear || _inGrayscaleMode ||
+      (!turnOff && !_isScreenOn && _cfg.fullSeqOverride == 0)) {
+    return displayStart(bus, page, nullptr, mode, turnOff);
+  }
+  if (_cfg.grayPowerUpFirst) powerOn(bus);
+  setRamArea(bus, 0, 0, _w, _h);
+  writeRam(bus, CMD_WRITE_RAM_BW, page, _bufferSize);
+  writeRam(bus, CMD_WRITE_RAM_RED, oldPlane, _bufferSize);
+  setCustomLut(bus, true, kTextOnePass.data());
+  refresh(bus, RefreshMode::Fast, turnOff, /*async=*/true);  // the 0xCC external-LUT sequence
+  setCustomLut(bus, false, nullptr);
+  _pendingFrameSync = true;  // displayFinish() puts the page in both planes: gray counts as black
   return true;
 }
 

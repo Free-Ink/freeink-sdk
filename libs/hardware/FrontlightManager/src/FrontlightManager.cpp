@@ -353,8 +353,33 @@ void FrontlightManager::applyLm3630a() {
   if (!_i2cConfigured && !configureLm3630a()) return;
 
   const uint8_t level = static_cast<uint16_t>(_brightness) * 255 / 100;
-  uint8_t warm = static_cast<uint16_t>(level) * _warmPercent / 100;
-  uint8_t cool = static_cast<uint16_t>(level) * (100 - _warmPercent) / 100;
+  // Constant-brightness warm/cool mix. configureLm3630a() leaves both banks in
+  // the LM3630A's exponential mapping (REG_CTRL linear bits 0x10/0x08 clear),
+  // where light ~ 0.85^(44 - (code + 1) / 5.8): half the code is ~3% of the
+  // light, so splitting codes linearly made one colour vanish on each half of
+  // the slider. Split the requested *light* instead and convert each share
+  // back to a code, so total output stays at the brightness setting for any
+  // warmth and the two colours blend.
+  const auto codeToLight = [](const float code) { return powf(0.85f, 44.0f - (code + 1.0f) / 5.8f); };
+  const auto lightToCode = [](const float light) -> uint8_t {
+    if (light <= 0.0f) return 0;
+    const float code = 5.8f * (44.0f - logf(light) / logf(0.85f)) - 1.0f;
+    if (code < 4.0f) return 0;  // below the IC's lowest visible code
+    return code >= 255.0f ? 255 : static_cast<uint8_t>(code + 0.5f);
+  };
+  const float total = codeToLight(level);
+  const float warmShare = static_cast<float>(_warmPercent) / 100.0f;
+  uint8_t warm = _warmPercent == 0 ? 0 : lightToCode(total * warmShare);
+  uint8_t cool = _warmPercent == 100 ? 0 : lightToCode(total * (1.0f - warmShare));
+  // At low brightness a share can fall below the IC's lowest visible code.
+  // Give that light to the other channel so the total still matches.
+  if (warm == 0 && cool == 0) {
+    (_warmPercent >= 50 ? warm : cool) = std::max<uint8_t>(4, lightToCode(total));
+  } else if (warm == 0) {
+    cool = lightToCode(total);
+  } else if (cool == 0) {
+    warm = lightToCode(total);
+  }
   // The IC ignores brightness codes 1..3; preserve a visible nonzero request.
   if (warm != 0 && warm < 4) warm = 4;
   if (cool != 0 && cool < 4) cool = 4;

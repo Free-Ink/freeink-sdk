@@ -189,6 +189,18 @@ int main() {
            bus.newAtRefresh[physical0] == 0b00110000 && "unannounced overlay must transition from the shown base");
   }
 
+  {
+    // Gray3 page turns keep the panel powered, as stock V1.1.3 does for its
+    // reader session. The next B/W refresh powers the held panel off before it
+    // resets the controller, then powers off after its own refresh as usual.
+    const auto offs = bus.powerOffs;
+    gray3Page(page.data(), RefreshMode::Fast);
+    gray3Page(page.data(), RefreshMode::Fast);
+    assert(bus.powerOffs == offs && "Gray3 page turns must not power off between pages");
+    driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, false);
+    assert(bus.powerOffs == offs + 2 && "B/W after Gray3: power off the held panel, then after the refresh");
+  }
+
   driver.deepSleep(bus);
   driver.begin(bus);
   const auto wakeStart = bus.refreshes;
@@ -198,5 +210,5 @@ int main() {
   driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, false);
   assert(bus.interval == 0xd7 && bus.lutBytes == 49);
   std::cout << "PASS: A4 FAST cadence, post-AA pixel transitions, retained baseline, explicit cleanup, four-gray and "
-               "Gray3 wire encoding and wake\n";
+               "Gray3 wire encoding, Gray3 power hold and wake\n";
 }

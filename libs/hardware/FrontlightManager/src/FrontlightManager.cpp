@@ -7,6 +7,7 @@
 
 #if FREEINK_CAP_FRONTLIGHT
 #include <M5Pm1.h>
+#include <I2cBusLock.h>
 #include <Wire.h>
 #include <driver/gpio.h>  // gpio_hold_en/dis in prepareForDeepSleep()/begin()
 
@@ -186,6 +187,7 @@ void FrontlightManager::begin() {
   if (BoardConfig::ACTIVE.board == BoardConfig::Board::EegoA4 &&
       i2c.controller == BoardConfig::I2cFrontlightController::Lm3630a) {
     if (i2c.sda < 0 || i2c.scl < 0 || i2c.enable < 0 || i2c.address == 0) return;
+    const freeink::I2cBusLock busLock;  // the touch controller may still be booting on this bus
     Wire.begin(i2c.sda, i2c.scl, i2c.i2cHz);
     Wire.setTimeOut(256);
     pinMode(i2c.enable, OUTPUT);
@@ -288,6 +290,7 @@ void FrontlightManager::begin() {
 #if FREEINK_CAP_FRONTLIGHT
 #if FREEINK_DEVICE_EEGO_A4
 bool FrontlightManager::lm3630aWrite(const uint8_t reg, const uint8_t value) {
+  const freeink::I2cBusLock busLock;
   const auto& cfg = BoardConfig::ACTIVE.i2cFrontlight;
   Wire.beginTransmission(cfg.address);
   Wire.write(reg);
@@ -296,6 +299,7 @@ bool FrontlightManager::lm3630aWrite(const uint8_t reg, const uint8_t value) {
 }
 
 bool FrontlightManager::lm3630aRead(const uint8_t reg, uint8_t& value) {
+  const freeink::I2cBusLock busLock;
   const auto& cfg = BoardConfig::ACTIVE.i2cFrontlight;
   Wire.beginTransmission(cfg.address);
   Wire.write(reg);
@@ -315,8 +319,13 @@ bool FrontlightManager::configureLm3630a() {
   const auto& cfg = BoardConfig::ACTIVE.i2cFrontlight;
   digitalWrite(cfg.enable, HIGH);
   delay(2);
-  Wire.beginTransmission(cfg.address);
-  if (Wire.endTransmission() != 0) {
+  bool present = false;
+  {
+    const freeink::I2cBusLock busLock;
+    Wire.beginTransmission(cfg.address);
+    present = Wire.endTransmission() == 0;
+  }
+  if (!present) {
     digitalWrite(cfg.enable, LOW);
     return false;
   }

@@ -46,6 +46,12 @@ PanelGeometry Uc8279cA4Driver::geometry() const {
 }
 
 void Uc8279cA4Driver::hardwareReset(EpdBus& bus) {
+  // A Gray3 session may have left the rails up: discharge them before reset.
+  if (_screenOn) {
+    bus.cmd(CMD_POWER_OFF);
+    bus.waitBusy(" A4 power-off");
+    _screenOn = false;
+  }
   // EpdBus's generic 2-ms low pulse is too short for this panel.
   const int8_t rst = bus.pins().rst;
   digitalWrite(rst, HIGH);
@@ -174,14 +180,18 @@ void Uc8279cA4Driver::fillControllerRam(EpdBus& bus, const uint8_t command, cons
   bus.fillPlane(command, fill, CONTROLLER_HEIGHT, _widthBytes);
 }
 
-void Uc8279cA4Driver::refresh(EpdBus& bus, const uint8_t* bwBaseline) {
+void Uc8279cA4Driver::refresh(EpdBus& bus, const uint8_t* bwBaseline, const bool holdPower) {
   ensurePowerOn(bus);
   bus.cmd(CMD_DISPLAY_REFRESH);
   bus.waitBusy(" A4 refresh");
   // The next differential update diffs against this baseline.
   if (bwBaseline) writeFrame(bus, CMD_DTM1, bwBaseline);
-  // Always power off: leaving the panel powered between refreshes made later
-  // four-gray images show earlier screens as ghosts on hardware.
+  // Gray3 page turns keep the rails up, as stock V1.1.3 does for the whole
+  // reader session: powering off after each anti-aliased page let it drift and
+  // ghost while it sat. Every other refresh powers off: left powered, later
+  // four-gray images showed earlier screens as ghosts. hardwareReset() and
+  // deepSleep() power a held panel off before anything else drives it.
+  if (holdPower) return;
   bus.cmd(CMD_POWER_OFF);
   bus.waitBusy(" A4 power-off");
   _screenOn = false;
@@ -348,7 +358,7 @@ void Uc8279cA4Driver::showGray3(EpdBus& bus) {
   const uint8_t interval = 0x00;
   bus.cmdData(CMD_VCOM_DATA_INTERVAL, &interval, 1);
   loadGray3Lut(bus, anyBlack, anyWhiteClear);
-  refresh(bus);
+  refresh(bus, nullptr, /*holdPower=*/true);
   const size_t n = static_cast<size_t>(_widthBytes) * _height;
   memcpy(_gray3White, _grayLsb, n);
   memcpy(_gray3Middle, _grayMsb, n);

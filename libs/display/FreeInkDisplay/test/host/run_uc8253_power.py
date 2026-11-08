@@ -39,14 +39,21 @@ inline struct { unsigned short displayWidth=792, displayHeight=528; unsigned dis
 #include <cstdint>
 #include <cstddef>
 #include <vector>
+#include <cstring>
 namespace freeink {
 enum class BusyPolarity { X3TwoPhase };
 class EpdBus {
   uint8_t command=0;
 public:
   std::vector<uint8_t> oldPlane, newPlane, lastBank, rawRegisters;
-  unsigned powerOns=0, refreshes=0;
-  void cmd(uint8_t c) { command=c; if(c == 4) ++powerOns; if(c == 0x12) ++refreshes; }
+  unsigned powerOns=0, refreshes=0, pollingRefreshWaits=0, interruptWaits=0;
+  // Per refresh: bit 0 set when DTM2 (new) was all white, bit 1 when DTM1 (old) was.
+  std::vector<uint8_t> planesAtRefresh;
+  static bool white(const std::vector<uint8_t>& p) { for (uint8_t b : p) if (b != 0xFF) return false; return !p.empty(); }
+  void cmd(uint8_t c) {
+    command=c; if(c == 4) ++powerOns;
+    if(c == 0x12) { ++refreshes; planesAtRefresh.push_back(uint8_t((white(newPlane) ? 1 : 0) | (white(oldPlane) ? 2 : 0))); }
+  }
   void cmdData2(uint8_t c, uint8_t a, uint8_t b) { cmd(c); data(a); data(b); }
   void data(uint8_t) {}
   void data(const uint8_t* p, size_t n) {
@@ -64,13 +71,12 @@ public:
     (c == 0x10 ? oldPlane : newPlane).assign(size_t(h)*wb,v);
   }
   void reset(int) {}
-  void waitBusy(const char*) {}
-  void waitRefreshComplete(const char*) {}
+  void waitBusy(const char* tag) { if (!std::strcmp(tag, " X3_DRF")) ++pollingRefreshWaits; }
+  void waitRefreshComplete(const char*) { ++interruptWaits; }
   struct Pins { int8_t busy=0; };
   Pins pins() const { return {}; }
-  void beginTxn() {}
-  void endTxn() {}
-  void rawWriteBytes(const uint8_t*, size_t) {}
+  struct Transaction { void writeBytes(const uint8_t*, size_t) {} void end() {} };
+  Transaction beginTxn() { return {}; }
 };
 }
 ''')
@@ -85,7 +91,17 @@ int main() {
  assert(caps.supported() && caps.stripUploads && !caps.asyncBase && !caps.stagingWhileBusy);
  assert(d.grayscaleCapabilities(freeink::GrayscaleMode::Direct).base == freeink::GrayscaleBase::Combined);
  std::vector<uint8_t> fb(792/8*528, 0xAA); d.begin(bus);
- d.display(bus,fb.data(),nullptr,freeink::RefreshMode::Full,false);
+ // Rollback: both splash and first real screen clean; only the third paint is fast.
+ assert(!d.supportsAsyncDisplay());
+ assert(!d.displayStart(bus,fb.data(),nullptr,freeink::RefreshMode::Fast,false));
+ assert(bus.refreshes == 2 && bus.pollingRefreshWaits == 2);
+ assert(bus.oldPlane == fb && bus.newPlane == fb);
+ d.displayFinish(bus,fb.data());
+ assert(bus.refreshes == 2);
+ d.display(bus,fb.data(),nullptr,freeink::RefreshMode::Fast,false);
+ assert(bus.refreshes == 5 && bus.pollingRefreshWaits == 5);
+ d.display(bus,fb.data(),nullptr,freeink::RefreshMode::Fast,false);
+ assert(bus.refreshes == 6 && bus.pollingRefreshWaits == 6 && bus.interruptWaits == 0);
  assert(bus.powerOns == 1);
  d.display(bus,fb.data(),nullptr,freeink::RefreshMode::Full,false);
  assert(bus.powerOns == 1);
@@ -106,22 +122,30 @@ int main() {
    d.display(bus,fb.data(),nullptr,freeink::RefreshMode::Full,false);
    assert(bus.newPlane == fb && bus.oldPlane == fb);
  }
- // A grayscale base after an AA page must not run as a differential. The reader's AA pass
- // leaves greys on the glass that cleanupGrayscaleBuffers() restores the RAM around but does
- // not remove; the differential base then gives those pixels the gentle WW settle and the
+ // A grayscale base after an AA page must not run as a plain differential. The reader's AA
+ // pass leaves greys on the glass that cleanupGrayscaleBuffers() restores the RAM around but
+ // does not remove; the differential base then gives those pixels the gentle WW settle and the
  // absolute gray pass idles the endpoints, so the page's text outline survives onto the next
- // grayscale image (X3, 2026-09-23). The clean branch costs one extra refresh: display(Half)
- // plus the settle, versus the differential's single settle -- which is how the two are told
- // apart here.
+ // grayscale image (X3, 2026-09-23). Nor may it go straight to the new base: a _half gives
+ // the page's black text the same 24 frames of black as the white around it, and the text
+ // shows through a cover's light gray (X3, 2026-11-08). The base scrubs the panel to white
+ // first, then runs the differential from that white: two refreshes, the first with both
+ // planes white, the second with the new frame against a white DTM1.
  const auto absolute = freeink::GrayscaleMode::Absolute;
- d.display(bus,fb.data(),nullptr,freeink::RefreshMode::Fast,false);          // B/W base, as the reader pushes it
- d.copyGrayscaleLsb(bus, fb.data());
- d.copyGrayscaleMsb(bus, fb.data());
- d.displayGray(bus, fb.data(), false, nullptr, false);                        // overlay gc nudge: greys now on glass
- d.cleanupGrayscaleBuffers(bus, fb.data());                                   // RAM restored; glass untouched
+ const auto aaPage = [&] {
+   d.display(bus,fb.data(),nullptr,freeink::RefreshMode::Fast,false);        // B/W base, as the reader pushes it
+   d.copyGrayscaleLsb(bus, fb.data());
+   d.copyGrayscaleMsb(bus, fb.data());
+   d.displayGray(bus, fb.data(), false, nullptr, false);                      // overlay gc nudge: greys now on glass
+   d.cleanupGrayscaleBuffers(bus, fb.data());                                 // RAM restored; glass untouched
+ };
+ aaPage();
  auto before = bus.refreshes;
  d.beginGrayscale(bus, fb.data(), absolute, freeink::RefreshMode::Half, false);
- assert(bus.refreshes == before + 2);                                         // clean base, not differential
+ assert(bus.refreshes == before + 2);
+ assert(bus.planesAtRefresh[before] == 3);                                    // the scrub: both planes white
+ assert(bus.planesAtRefresh[before + 1] == 2);                                // the base, from a white DTM1
+ assert(bus.oldPlane == fb);                                                  // DTM1 mirrors the base again
  d.copyGrayscaleLsb(bus, fb.data());
  d.copyGrayscaleMsb(bus, fb.data());
  d.displayGray(bus, fb.data(), false, nullptr, true);                         // absolute pass: greys on glass again
@@ -132,7 +156,17 @@ int main() {
  before = bus.refreshes;
  d.beginGrayscale(bus, fb.data(), absolute, freeink::RefreshMode::Half, false);
  assert(bus.refreshes == before + 1);                                         // differential base
- std::cout << "PASS: UC8253 cold power-on, warm Full, power-off/wake, and clean gray base after AA\\n";
+ assert(bus.planesAtRefresh[before] == 0);                                    // no scrub
+ d.copyGrayscaleLsb(bus, fb.data());
+ d.copyGrayscaleMsb(bus, fb.data());
+ d.displayGray(bus, fb.data(), false, nullptr, true);
+ d.cleanupGrayscaleBuffers(bus, fb.data());
+ // A caller that asks for Full keeps the full path: its first refresh writes the new frame.
+ aaPage();
+ before = bus.refreshes;
+ d.beginGrayscale(bus, fb.data(), absolute, freeink::RefreshMode::Full, false);
+ assert(bus.refreshes > before + 1 && (bus.planesAtRefresh[before] & 1) == 0);
+ std::cout << "PASS: UC8253 cold power-on, warm Full, power-off/wake, gray base scrubs after AA\\n";
 }
 """)
     exe = root / "test_uc8253_power"

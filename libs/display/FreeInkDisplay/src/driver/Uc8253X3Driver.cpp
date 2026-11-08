@@ -333,19 +333,30 @@ void Uc8253X3Driver::displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, Refres
   // since the last display — the controller RAM no longer holds the displayed
   // BW frame even though _redRamSynced may still read true, so the
   // differential would mis-drive; take the clean fallback path instead.
-  // _grayOnGlass: the RAM may be in sync and still not describe the panel (see the header).
-  // The differential branch below hands an AA-edge pixel -- grey on the glass, white in
-  // DTM1, white in the new frame -- the gentle WW settle of _aa_pre_bw_mid, and the
-  // absolute gray pass that follows idles WW and BB, so nothing after this point can
-  // recover it. Take the clean base instead; a _half drives it to the rail.
-  const bool cleanBaseNeeded = !_redRamSynced || _grayState.lsbValid || _forceFullSyncNext ||
-                               _initialFullSyncsRemaining > 0 || _grayOnGlass;
-  if (cleanBaseNeeded) {
+  const bool ramStale = !_redRamSynced || _grayState.lsbValid;
+  const bool fullSyncOwed = _forceFullSyncNext || _initialFullSyncsRemaining > 0;
+  if (ramStale || fullSyncOwed || (_grayOnGlass && fallback == RefreshMode::Full)) {
     display(bus, fb, nullptr, fallback, /*turnOff=*/false);
     loadBankCdi(bus, 0xA9, 0x07, _cfg.preBwMid);
     triggerRefresh(bus, turnOff);
     return;
   }
+  // _grayOnGlass: the RAM is in sync but does not describe the panel (see the header).
+  // The differential below would hand an AA-edge pixel -- grey on the glass, white in
+  // DTM1, white in the new frame -- the gentle WW settle, and the absolute gray pass
+  // idles WW and BB, so nothing after this point could recover it.
+  //
+  // A _half straight to the new base is not enough either. The base draws both grays
+  // black and the gray pass then lifts them only 2-3 frames toward white, so a gray
+  // pixel shows what its black arrived from: a _half gives every pixel the same 24
+  // frames whatever it held, the page's black text is pushed deeper than the white
+  // around it, and the text shows through the light gray of a sleep cover (X3,
+  // 2026-11-08, reader -> sleep in both AA modes; Home -> sleep was clean, with no
+  // gray on the glass and so the plain differential below). Scrub to white first,
+  // as the revert does, then run the differential from that white: every black
+  // pixel of the base now arrives from white. Same cost as the _half + settle it
+  // replaces: one _half and one _aa_pre_bw_mid.
+  if (_grayOnGlass) scrubToWhite(bus, " X3_GRAYBASE_scrub");
   bus.sendPlaneFlipped(CMD_DTM2, fb, _h, _wb);
   loadBankCdi(bus, 0xA9, 0x07, _cfg.preBwMid);
   triggerRefresh(bus, turnOff);
@@ -545,15 +556,20 @@ void Uc8253X3Driver::grayscaleRevert(EpdBus& bus, const uint8_t* fb) {
   (void)fb;
   if (!_inGrayscaleMode) return;
   _inGrayscaleMode = false;
-  // Scrub to clean white: both planes white + the _half scrub bank (CDI 0xA9).
+  scrubToWhite(bus, " X3_DRF");
+}
+
+void Uc8253X3Driver::scrubToWhite(EpdBus& bus, const char* label) {
+  // Both planes white + the _half scrub bank (CDI 0xA9): every pixel driven to white,
+  // whatever DTM1 held.
   bus.fillPlane(CMD_DTM1, 0xFF, _h, _wb);
   bus.cmd(CMD_DATA_STOP);
   bus.fillPlane(CMD_DTM2, 0xFF, _h, _wb);
   bus.cmd(CMD_DATA_STOP);
   loadBankCdi(bus, 0xA9, 0x07, _cfg.half);
-  triggerRefresh(bus, false);
+  triggerRefresh(bus, false, label);
   // Both planes are now all-white (BW-coded), not grayscale planes — clear
-  // lsbValid to match, or it stays true forever and forces the cleanBaseNeeded
+  // lsbValid to match, or it stays true forever and forces the clean base
   // path every page.
   _grayState.lsbValid = false;
   _redRamSynced = true;

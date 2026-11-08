@@ -89,6 +89,7 @@ private:
   void loadBankCdi(EpdBus &bus, uint8_t cdi0, uint8_t cdi1,
                    const Uc8253LutBank &bank);
   void triggerRefresh(EpdBus &bus, bool turnOff, const char *label = " X3_DRF");
+  void scrubToWhite(EpdBus &bus, const char *label);
   void grayWindowIn(EpdBus &bus);
 
   const Uc8253X3Config& _cfg;
@@ -124,8 +125,8 @@ private:
   // outline on the cover; a reader page -> _half scrub did not.
   //
   // Cleared only by a waveform that drives every pixel from a known state:
-  // _full (from white), _half (WW==BW, WB==BB), grayscaleRevert (to white).
-  // NOT cleared by _fast (differential) or by a RAM restore.
+  // _full (from white), _half (WW==BW, WB==BB), scrubToWhite() (the revert's
+  // and the gray base's). NOT cleared by _fast (differential) or by a RAM restore.
   bool _grayOnGlass = false;
 };
 

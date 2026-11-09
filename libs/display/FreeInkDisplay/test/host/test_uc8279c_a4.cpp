@@ -150,6 +150,24 @@ int main() {
     assert(bus.oldAtRefresh[physical0 + 1] == 0x00 && bus.newAtRefresh[physical0 + 1] == 0x00);
   }
   {
+    // Text weight. The panel shows white, black, middle (dark), middle (light).
+    // Crisp: light gray becomes white (cleared), dark gray stays middle.
+    freeink::overlayTextWeight = 0;
+    gray3Page(page.data(), RefreshMode::Fast);
+    assert(bus.oldAtRefresh[physical0] == 0b01010000 && bus.newAtRefresh[physical0] == 0b00010000 &&
+           "crisp: light gray -> white");
+    // Dark: dark gray becomes black, light gray is middle (nudged from white).
+    freeink::overlayTextWeight = 2;
+    gray3Page(page.data(), RefreshMode::Fast);
+    assert(bus.oldAtRefresh[physical0] == 0b01100000 && bus.newAtRefresh[physical0] == 0b00010000 &&
+           "dark: dark gray -> black, light gray -> middle");
+    // Medium (the default): both grays are middle again.
+    freeink::overlayTextWeight = 1;
+    gray3Page(page.data(), RefreshMode::Fast);
+    assert(bus.oldAtRefresh[physical0] == 0b01000000 && bus.newAtRefresh[physical0] == 0b00100000 &&
+           "medium: both grays -> middle");
+  }
+  {
     // A page where those pixels change: middle -> white is cleared, white ->
     // middle is nudged gray, black -> white is cleared.
     std::vector<uint8_t> next(bytes, 0xff);

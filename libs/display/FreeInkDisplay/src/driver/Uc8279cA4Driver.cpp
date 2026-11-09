@@ -396,10 +396,23 @@ void Uc8279cA4Driver::displayGray(EpdBus& bus, const uint8_t* fb, const bool tur
     }
     // Masks (LSB = dark, MSB = dark | light) onto the base: any gray pixel is
     // middle, the rest keep the base's white/black.
+    // Text weight: medium makes any gray pixel middle; crisp drops light gray
+    // to white and keeps dark gray middle; dark keeps light gray middle and
+    // drives dark gray black.
+    const uint8_t weight = overlayTextWeight;
     for (size_t i = 0; i < n; ++i) {
       const uint8_t gray = _grayMsb[i];
-      _grayLsb[i] = static_cast<uint8_t>(_grayBase[i] & ~gray);
-      _grayMsb[i] = gray;
+      const uint8_t dark = _grayLsb[i];
+      auto white = static_cast<uint8_t>(_grayBase[i] & ~gray);
+      uint8_t middle = gray;
+      if (weight == 0) {
+        white = static_cast<uint8_t>(white | (gray & ~dark));
+        middle = dark;
+      } else if (weight >= 2) {
+        middle = static_cast<uint8_t>(gray & ~dark);
+      }
+      _grayLsb[i] = white;
+      _grayMsb[i] = middle;
     }
     if (_cleanupPage) {
       // Stock's periodic cleanup: the page with black and white swapped

@@ -65,6 +65,11 @@ Gray3 history: the next page shows its base with a normal B/W refresh, which
 fully clears the previous screen, and its grays follow as a Gray3 transition
 from that base.
 
+Gray3 has one gray level, so the two anti-aliasing grays must be folded.
+`FREEINK_A4_TEXT_WEIGHT` (or `freeink::overlayTextWeight` at run time) picks
+how: 1, the default, sends both to middle gray; 0 (crisp) sends light gray to
+white; 2 (dark) sends dark gray to black.
+
 Full images (absolute/direct planes) follow the stock V1.0.3 lockscreen
 sequence. First a pre-clear in the B/W session: black to DTM2, no DTM1 write,
 and two refreshes with the GC waveform at half its frame counts. Then the

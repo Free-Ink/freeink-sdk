@@ -50,6 +50,9 @@ struct SliderRowProps {
   int16_t incrementValue = 1;
   const char *decrementLabel = "-";
   const char *incrementLabel = "+";
+  // Optional icons for the step buttons; when set they replace the labels.
+  BitmapRef decrementIcon{};
+  BitmapRef incrementIcon{};
   // Optional trailing icon button (drawn only when toggleAction is set).
   ActionId toggleAction = NO_ACTION;
   int16_t toggleValue = 0;
@@ -122,13 +125,15 @@ void sliderRow(Frame<MaxInteractions> &frame, Rect rect, const SliderRowProps &p
     bandRight = static_cast<int16_t>(bandRight - stepW - props.gap);
   }
 
-  step.label = props.decrementLabel;
+  step.label = props.decrementIcon ? nullptr : props.decrementLabel;
+  step.icon = props.decrementIcon;
   step.action = props.decrement;
   step.value = props.decrementValue;
   button(frame, Rect{band.x, band.y, stepW, band.height}, step);
 
   const int16_t plusX = static_cast<int16_t>(bandRight - stepW);
-  step.label = props.incrementLabel;
+  step.label = props.incrementIcon ? nullptr : props.incrementLabel;
+  step.icon = props.incrementIcon;
   step.action = props.increment;
   step.value = props.incrementValue;
   button(frame, Rect{plusX, band.y, stepW, band.height}, step);

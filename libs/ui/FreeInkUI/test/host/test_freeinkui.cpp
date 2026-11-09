@@ -5400,6 +5400,29 @@ void testCapsuleSlider() {
   CHECK_EQ(draw.opCount, opsBefore);
 }
 
+// Step icons replace the "-"/"+" labels: two bitmaps drawn, no glyph text.
+void testSliderRowStepIcons() {
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice();
+  InputSnapshot input;
+  InteractionBuffer<8> interactions;
+  Frame<8> frame(draw, device, input, interactions);
+
+  static const uint8_t pixels[4] = {0xFF, 0xFF, 0xFF, 0xFF};
+  SliderRowProps props;
+  props.sliderValue = 50;
+  props.sliderAction = 1;
+  props.decrement = 2;
+  props.increment = 2;
+  props.decrementIcon = BitmapRef{pixels, 8, 4};
+  props.incrementIcon = BitmapRef{pixels, 8, 4};
+  sliderRow(frame, Rect{0, 0, 300, 76}, props);
+
+  CHECK_EQ(draw.countKind(FakeDrawTarget::Op::Text), 0u);
+  CHECK_EQ(draw.countKind(FakeDrawTarget::Op::Bitmap), 2u);
+  CHECK_EQ(interactions.count(), 3u);
+}
+
 // Caption + [-][capsule][+][toggle]: caption texts drawn, all four hits
 // registered, and the capsule spanning the gap between the step buttons.
 void testSliderRow() {
@@ -6163,6 +6186,7 @@ int main() {
   testTextArea();
   testCapsuleSlider();
   testSliderRow();
+  testSliderRowStepIcons();
   testPublicationPage();
   testPublicationPageDescriptionPainter();
   testCatalogShelves();

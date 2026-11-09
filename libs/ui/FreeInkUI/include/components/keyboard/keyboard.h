@@ -209,11 +209,12 @@ const KeyboardLayout& buildKeyboardLayout(KeyboardLayoutBuffer& buffer, Keyboard
 const char* keyboardOutputFor(const KeyboardLayout& layout, int16_t value);
 
 // The UTF-8 alternate a key id inserts on long-press. Explicit KeyboardKey::alt
-// wins; letter keys without one fall back to the opposite case (the
-// phone-keyboard hold-for-capital convention) — ASCII a-z/A-Z and Cyrillic
-// U+0410..U+044F plus Ё/ё. Returns nullptr when the key has no alternate. The
-// case-flip result lives in a static buffer — call from one task (the UI loop),
-// and consume before the next call.
+// wins; letter keys without one fall back to the opposite case of the letter
+// they type (the phone-keyboard hold-for-capital convention) — ASCII, Latin-1
+// (but not ß), Greek Α-Ω/α-ω (but not ς) and Cyrillic U+0400..U+045F. Returns
+// nullptr when the key has no alternate. The case-flip result lives in a
+// static buffer — call from one task (the UI loop), and consume before the
+// next call.
 const char* keyboardAltOutputFor(const KeyboardLayout& layout, int16_t value);
 
 enum class KeyboardActivationKind : uint8_t {

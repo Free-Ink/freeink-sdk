@@ -65,6 +65,11 @@ Gray3 history: the next page shows its base with a normal B/W refresh, which
 fully clears the previous screen, and its grays follow as a Gray3 transition
 from that base.
 
+One Gray3 value is not stock. Stock drives black for 18 frames per page, which
+leaves text lighter than the panel can show. The driver drives it for 24 and
+shortens the idle tail of the same record by 6 frames, so the refresh takes
+as long as before.
+
 Full images (absolute/direct planes) follow the stock V1.0.3 lockscreen
 sequence. First a pre-clear in the B/W session: black to DTM2, no DTM1 write,
 and two refreshes with the GC waveform at half its frame counts. Then the

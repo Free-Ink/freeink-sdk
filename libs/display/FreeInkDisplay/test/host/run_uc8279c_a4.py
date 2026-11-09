@@ -49,6 +49,7 @@ public:
   uint8_t interval=0, vcom=0;
   size_t lutBytes=0;
   std::vector<std::vector<uint8_t>> lut20s;
+  std::vector<uint8_t> lut22;
   std::vector<uint8_t> oldPlane, newPlane, oldAtRefresh, newAtRefresh;
   void cmd(uint8_t c) {
     command=c;
@@ -65,6 +66,7 @@ public:
     if(c==0x82 && n==1) vcom=*p;
     if(c==0x50 && n==1) interval=*p;
     if(c==0x20) { lutBytes=n; lut20s.emplace_back(p, p+n); }
+    if(c==0x22) lut22.assign(p, p+n);
     cmd(c);
   }
   void fillPlane(uint8_t c, uint8_t value, uint16_t height, uint16_t widthBytes) {

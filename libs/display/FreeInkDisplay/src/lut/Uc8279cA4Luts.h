@@ -78,5 +78,11 @@ constexpr uint8_t A4_UC8279C_GRAY3_TRANSITION_LUT[5][A4_UC8279C_GRAY3_RECORD_LEN
 constexpr uint8_t A4_UC8279C_GRAY3_NO_WHITE_CLEAR = 0x90;
 constexpr uint8_t A4_UC8279C_GRAY3_NO_BLACK_DRIVE = 0x4e;
 constexpr uint8_t A4_UC8279C_GRAY3_NO_BLACK_GRAY = 0x09;
+// Not stock: pages with black pixels drive black (0x22) for 24 frames instead
+// of stock's 18 (0x52), which left text lighter than the panel can show. The 6
+// frames come out of the record's idle tail (0x10 -> 0x0a), so the refresh
+// takes no longer.
+constexpr uint8_t A4_UC8279C_GRAY3_BLACK_DRIVE = 0x40 | 24;
+constexpr uint8_t A4_UC8279C_GRAY3_BLACK_DRIVE_TAIL = 0x0a;
 
 }  // namespace freeink

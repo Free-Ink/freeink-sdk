@@ -148,6 +148,11 @@ int main() {
     assert(bus.oldAtRefresh[physical0] == 0b01000000 && bus.newAtRefresh[physical0] == 0x00 &&
            "unchanged white/middle must hold, black re-driven");
     assert(bus.oldAtRefresh[physical0 + 1] == 0x00 && bus.newAtRefresh[physical0 + 1] == 0x00);
+    // Black is driven for 24 frames, not stock's 18, with the 6 frames taken
+    // from the idle tail so the record's total length is unchanged.
+    assert(bus.lut22.size() == 49 && bus.lut22[1] == (0x40 | 24) && bus.lut22[9] == 0x0a &&
+           "Gray3 pages with black must use the longer black drive");
+    assert((bus.lut22[1] & 0x3f) + bus.lut22[9] == 18 + 16 && "the longer black drive must not lengthen the refresh");
   }
   {
     // A page where those pixels change: middle -> white is cleared, white ->

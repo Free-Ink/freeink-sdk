@@ -339,6 +339,10 @@ void Uc8279cA4Driver::loadGray3Lut(EpdBus& bus, const bool anyBlack, const bool 
     memcpy(record, A4_UC8279C_GRAY3_TRANSITION_LUT[r], A4_UC8279C_GRAY3_RECORD_LENGTH);
     if (r == 4 && !anyWhiteClear) record[2] = A4_UC8279C_GRAY3_NO_WHITE_CLEAR;
     if (r == 2 && !anyBlack) record[1] = A4_UC8279C_GRAY3_NO_BLACK_DRIVE;
+    if (r == 2 && anyBlack) {
+      record[1] = A4_UC8279C_GRAY3_BLACK_DRIVE;
+      record[9] = A4_UC8279C_GRAY3_BLACK_DRIVE_TAIL;
+    }
     if (r == 3 && !anyBlack) record[2] = A4_UC8279C_GRAY3_NO_BLACK_GRAY;
     bus.cmdData(static_cast<uint8_t>(CMD_LUT_VCOM + r), record, A4_UC8279C_LUT_LENGTH);
   }

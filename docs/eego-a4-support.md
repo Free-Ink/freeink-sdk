@@ -73,20 +73,21 @@ LSB to DTM2, so black/dark/light/white are 00/01/10/11. The white record
 (0x21) has its last two white pulses lengthened to 6 frames (stock 0x81,
 0x82 become 0x86, 0x86). DTM1 is seeded white again before power-off.
 
-Gray3 page turns keep the panel powered, as stock V1.1.3 does for its whole
-reader session; powering off after every anti-aliased page let it drift and
-ghost while it sat. Every other refresh powers the panel off afterwards, and
-a B/W refresh, four-gray image or deep sleep powers a held panel off first.
-Leaving it powered between those refreshes made later four-gray images show
-earlier screens as ghosts.
+B/W and Gray3 refreshes leave the panel powered, as stock V1.0.3 does: it
+boots with panel power hold on, skips POWER_OFF after every refresh while the
+hold is set, and clears the hold only around its lockscreen paint. The panel is
+powered off before a controller reset (switching between B/W and gray
+sessions), after a four-gray image, and before deep sleep. Builds that powered
+off after every refresh showed static screens fuzzing while idle; leaving the
+panel powered into a four-gray paint, without that reset, showed earlier
+screens as ghosts.
 
-Gray3 pages and four-gray images use the stock V1.0.3 gray session
-(PWR 03 00 72 72, VCOM_DC 0x32). B/W uses stronger rails
-(PWR 43 00 78 78 17) because UI screens change with fast refreshes, with the
-stock VCOM_DC 0x32 restored for idle stability. The earlier 0x24 setting caused
-idle fuzzing, and a unit using the later 0x26 setting was reported to gray on
-Home while idle. This restoration needs physical idle validation and a check
-for the previously observed B/W-to-gray cut-outs and ghosting at 0x32.
+Every session uses the stock V1.0.3 power and VCOM settings
+(PWR 03 00 72 72, VCOM_DC 0x32). B/W previously used stronger rails
+(PWR 43 00 78 78 17); with those, static screens fuzzed while idle at every B/W
+VCOM_DC tried (0x24, 0x26, 0x32) on different units. The stock rails need
+physical idle validation, plus a check that fast refreshes still clear and for
+the B/W-to-gray cut-outs and ghosting previously seen at 0x32.
 Every session uses gate/source 00 00 00 00 and seeds
 DTM1 white before power-on.
 Full refresh uses the stock GC waveform (0x50 = 0x97); fast refresh

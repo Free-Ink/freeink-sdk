@@ -79,7 +79,8 @@ int main() {
     const auto refreshes = bus.refreshes;
     const auto powerOffs = bus.powerOffs;
     driver.display(bus, bw.data(), nullptr, mode, false);
-    assert(bus.powerOffs - powerOffs == bus.refreshes - refreshes && "every refresh must power the panel off");
+    assert(bus.refreshes > refreshes && bus.powerOffs == powerOffs &&
+           "B/W refreshes keep the panel powered, as stock's power hold does");
     assert(bus.interval == 0x97 && bus.lutBytes == 49);
     driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, false);
     assert(bus.interval == 0xd7 && bus.lutBytes == 49);
@@ -190,18 +191,23 @@ int main() {
   }
 
   {
-    // Gray3 page turns keep the panel powered, as stock V1.1.3 does for its
-    // reader session. The next B/W refresh powers the held panel off before it
-    // resets the controller, then powers off after its own refresh as usual.
+    // Gray3 page turns keep the panel powered, as stock's power hold does. The
+    // next B/W refresh powers the held panel off only to reset the controller.
     const auto offs = bus.powerOffs;
     gray3Page(page.data(), RefreshMode::Fast);
     gray3Page(page.data(), RefreshMode::Fast);
     assert(bus.powerOffs == offs && "Gray3 page turns must not power off between pages");
     driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, false);
-    assert(bus.powerOffs == offs + 2 && "B/W after Gray3: power off the held panel, then after the refresh");
+    assert(bus.powerOffs == offs + 1 && "B/W after Gray3: power off the held panel for the reset only");
   }
 
-  driver.deepSleep(bus);
+  {
+    // Deep sleep powers a held panel off.
+    const auto offs = bus.powerOffs;
+    driver.deepSleep(bus);
+    assert(bus.powerOffs == offs + 1 && "deep sleep must power the held panel off");
+  }
+  driver.begin(bus);
   driver.begin(bus);
   const auto wakeStart = bus.refreshes;
   driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, false);
@@ -210,5 +216,5 @@ int main() {
   driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, false);
   assert(bus.interval == 0xd7 && bus.lutBytes == 49);
   std::cout << "PASS: A4 FAST cadence, post-AA pixel transitions, retained baseline, explicit cleanup, four-gray and "
-               "Gray3 wire encoding, Gray3 power hold and wake\n";
+               "Gray3 wire encoding, stock power hold and wake\n";
 }

@@ -231,8 +231,7 @@ int main() {
          "key contact must not enter the snapshot");
 
   // A bezel key-pad press leaks a phantom contact at raw x far below the
-  // glass domain (observed on glass: raw x 4-5 while the stock calibration's
-  // lowest glass point is 374) alongside the sentinel. The phantom must
+  // glass domain (observed raw x 4-5) alongside the sentinel. The phantom must
   // drop: it is not a glass touch — it must neither cancel the key press
   // nor decode as a screen tap.
   clearTouchState();
@@ -242,6 +241,23 @@ int main() {
   assert(input.touchSnapshot.count == 0 && "the phantom must not enter the snapshot");
   feedMulti({}, 2420);
   assert(input.touchHomeKeyTapEvent && "a clean pad press taps on release");
+
+  // The bottom edge extrapolates below the calibration's lowest anchor.
+  // Low raw X without a Home sentinel is a real touch, not a pad phantom.
+  clearTouchState();
+  feedMulti({{51, 308}}, 2500);
+  assert(input.touchPressed && input.touchPressedEvent);
+  assert(input.touchSnapshot.count == 1 && input.touchSnapshot.reportedCount == 1);
+  assert(input.touchPoint.x >= 719 && input.touchPoint.x <= 721);
+  feedMulti({}, 2520);
+  assert(input.touchReleasedEvent && !input.touchHomeKeyTapEvent);
+
+  // Key/phantom classification must not depend on record order.
+  clearTouchState();
+  feedMulti({{5, 330}, {0x03a0, 0x0020}}, 2540);
+  assert(input.touchHomeKeyEvent && !input.touchPressed);
+  feedMulti({}, 2560);
+  assert(input.touchHomeKeyTapEvent);
 
   // An all-zero record is an absent contact (padded frame), never on-glass and
   // never counted in reportedCount.

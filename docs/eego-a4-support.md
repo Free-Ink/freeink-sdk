@@ -73,14 +73,21 @@ LSB to DTM2, so black/dark/light/white are 00/01/10/11. The white record
 (0x21) has its last two white pulses lengthened to 6 frames (stock 0x81,
 0x82 become 0x86, 0x86). DTM1 is seeded white again before power-off.
 
-Every refresh powers the panel off afterwards. Leaving it powered between
-refreshes made later four-gray images show earlier screens as ghosts.
+Gray3 page turns keep the panel powered, as stock V1.1.3 does for its whole
+reader session; powering off after every anti-aliased page let it drift and
+ghost while it sat. Every other refresh powers the panel off afterwards, and
+a B/W refresh, four-gray image or deep sleep powers a held panel off first.
+Leaving it powered between those refreshes made later four-gray images show
+earlier screens as ghosts.
 
 Gray3 pages and four-gray images use the stock V1.0.3 gray session
 (PWR 03 00 72 72, VCOM_DC 0x32). B/W uses stronger rails
-(PWR 43 00 78 78 17) because UI screens change with fast refreshes, and
-VCOM_DC 0x26: at stock 0x32, gray content showed white cut-outs of earlier
-black; at 0x24 the image fuzzed while the panel sat idle. Every session uses gate/source 00 00 00 00 and seeds
+(PWR 43 00 78 78 17) because UI screens change with fast refreshes, with the
+stock VCOM_DC 0x32 restored for idle stability. The earlier 0x24 setting caused
+idle fuzzing, and a unit using the later 0x26 setting was reported to gray on
+Home while idle. This restoration needs physical idle validation and a check
+for the previously observed B/W-to-gray cut-outs and ghosting at 0x32.
+Every session uses gate/source 00 00 00 00 and seeds
 DTM1 white before power-on.
 Full refresh uses the stock GC waveform (0x50 = 0x97); fast refresh
 uses the stock production "DU-factory-previous" waveform (0x50 = 0xd7), both

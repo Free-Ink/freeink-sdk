@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 #define FREEINK_SD_SDMMC 0
 #define FREEINK_DEVICE_PAPERMONO 0
 #define FREEINK_MCU_S3 0

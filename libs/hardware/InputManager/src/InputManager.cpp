@@ -237,7 +237,7 @@ uint8_t InputManager::getState() {
     state |= (1 << (button2 + 4));
   }
 
-  // Read power button (polarity per board; X4 active-LOW, de-link active-HIGH)
+  // Read power button (polarity per board; X4 active-LOW, Silkscreen active-HIGH)
   const int powerActiveLevel = BoardConfig::ACTIVE.input.powerActiveHigh ? HIGH : LOW;
   if (digitalRead(BoardConfig::ACTIVE.input.power) == powerActiveLevel) {
     state |= (1 << BTN_POWER);
@@ -260,10 +260,14 @@ bool piccoWaitInt(int8_t irq, unsigned long timeoutMs);
 bool InputManager::prepareForDeepSleep() {
 #if FREEINK_DEVICE_EEGO_A4
   if (const auto& t = BoardConfig::ACTIVE.touch; t.controller == BoardConfig::TouchController::Gslx680) {
+    waitForTouchInit();  // a charger-only boot can sleep while the controller still boots
     const uint8_t halt = 0x88;
     const bool ok = gslWrite(0xE0, &halt, 1);
     delay(5);
-    Wire.end();
+    {
+      const freeink::I2cBusLock busLock;
+      Wire.end();
+    }
     if (t.sda >= 0) pinMode(t.sda, INPUT);
     if (t.scl >= 0) pinMode(t.scl, INPUT);
     if (t.reset >= 0) {
@@ -1898,6 +1902,7 @@ void InputManager::pollFt5x06(const unsigned long now) {
 
 #if FREEINK_TOUCH_GSLX680
 bool InputManager::gslWrite(const uint8_t reg, const uint8_t* data, const uint8_t len) {
+  const freeink::I2cBusLock busLock;
   const uint8_t addr = BoardConfig::ACTIVE.touch.i2cAddress;
   Wire.beginTransmission(addr);
   Wire.write(reg);
@@ -1906,6 +1911,7 @@ bool InputManager::gslWrite(const uint8_t reg, const uint8_t* data, const uint8_
 }
 
 bool InputManager::gslRead(const uint8_t reg, uint8_t* buf, const uint8_t len) {
+  const freeink::I2cBusLock busLock;
   const uint8_t addr = BoardConfig::ACTIVE.touch.i2cAddress;
   Wire.beginTransmission(addr);
   Wire.write(reg);
@@ -1948,11 +1954,45 @@ bool InputManager::gslUploadFirmware() {
 #endif
 }
 
+// The upload and the stock settle delays take ~0.85 s, which used to hold up
+// every boot and wake before anything reached the panel. The bus and its lock
+// come up here; the controller boots in a background task while setup carries
+// on, and touch reports nothing until it finishes. Every Wire user on this
+// shared bus takes freeink::I2cBusLock per transfer.
 void InputManager::beginGslx680() {
 #if FREEINK_DEVICE_EEGO_A4
   touchDataEnabled = false;
   const auto& t = BoardConfig::ACTIVE.touch;
   if (t.sda < 0 || t.scl < 0 || t.i2cAddress == 0) return;
+  freeink::enableI2cBusLock();
+  {
+    const freeink::I2cBusLock busLock;
+    Wire.begin(t.sda, t.scl, 400000);
+    Wire.setTimeOut(10);
+  }
+  gslInitRunning = true;
+  if (xTaskCreatePinnedToCore(&InputManager::gslInitTask, "gsl_init", 4096, this, 1, nullptr, 0) != pdPASS) {
+    gslInitBody();  // no task: boot it inline as before
+    gslInitRunning = false;
+  }
+#endif
+}
+
+void InputManager::gslInitTask(void* arg) {
+  auto* self = static_cast<InputManager*>(arg);
+  self->gslInitBody();
+  __atomic_store_n(&self->gslInitRunning, false, __ATOMIC_RELEASE);
+  vTaskDelete(nullptr);
+}
+
+void InputManager::waitForTouchInit() const {
+  // Bounded: the full sequence takes under a second.
+  for (int waited = 0; waited < 3000 && __atomic_load_n(&gslInitRunning, __ATOMIC_ACQUIRE); waited += 5) delay(5);
+}
+
+void InputManager::gslInitBody() {
+#if FREEINK_DEVICE_EEGO_A4
+  const auto& t = BoardConfig::ACTIVE.touch;
 
   // The GSLX680 has no reset self-timing: pulse RST low then high before I2C.
   if (t.reset >= 0) {
@@ -1964,8 +2004,6 @@ void InputManager::beginGslx680() {
     delay(50);
   }
 
-  Wire.begin(t.sda, t.scl, 400000);
-  Wire.setTimeOut(10);
 
   const uint8_t z4[4] = {0, 0, 0, 0};
   auto wr1 = [&](uint8_t reg, uint8_t v) { gslWrite(reg, &v, 1); };
@@ -2026,7 +2064,7 @@ void InputManager::beginGslx680() {
     startup();
     loaded = gslRead(0xB0, chk, 4) && chk[0] == 0x5A && chk[1] == 0x5A && chk[2] == 0x5A && chk[3] == 0x5A;
   }
-  touchDataEnabled = loaded;
+  __atomic_store_n(&touchDataEnabled, loaded, __ATOMIC_RELEASE);
   if (!loaded) LOG_ERR("INPUT", "GSLX680 firmware status check failed");
 #ifdef TOUCH_PROBE_DEBUG
   touchDebugPrintf("[touch] GSLX680 probe present=%d loaded=%d chk=%02X%02X%02X%02X\n", present, loaded, chk[0], chk[1],
@@ -2134,6 +2172,11 @@ void InputManager::pollGslx680(const unsigned long now) {
   const auto& t = BoardConfig::ACTIVE.touch;
   bool anyKey = false;
   bool anyOnGlass = false;
+  for (uint8_t i = 0; i < count; ++i) {
+    const uint16_t x = (static_cast<uint16_t>(frame[7 + 4 * i]) << 8 | frame[6 + 4 * i]) & 0x0fff;
+    const uint16_t y = (static_cast<uint16_t>(frame[5 + 4 * i]) << 8 | frame[4 + 4 * i]) & 0x0fff;
+    if (x == 0x03a0 && y == 0x0020) anyKey = true;
+  }
   uint8_t stored = 0;
   uint8_t survived = 0;  // on-glass contacts past the storage cap still count
   for (uint8_t i = 0; i < count; ++i) {
@@ -2147,13 +2190,10 @@ void InputManager::pollGslx680(const unsigned long now) {
     }
     if (sampleX >= 920) continue;
     if (sampleX == 0 && sampleY == 0) continue;
-    // Raw x far below the glass domain is the bezel key pad's phantom
-    // co-report (hardware-validated 2026-10-29: a pad press leaks a contact
-    // at raw x 4-5 alongside the sentinel, while the stock calibration's
-    // lowest glass point is 374 — a real finger cannot report raw x < 64).
-    // Dropping it keeps the pad press a pure key event: the phantom neither
-    // cancels the key ("a touch is in progress") nor becomes a screen tap.
-    if (sampleX < 64) continue;
+    // A Home-pad report can carry a low-X phantom contact. Filter it only
+    // alongside the key sentinel: ordinary bottom-edge glass samples also
+    // have X < 64 after factory calibration (for example X=51 at y=720).
+    if (anyKey && sampleX < 64) continue;
     ++survived;
     if (stored < MAX_TOUCH_CONTACTS) {
       // Stock factory calibration to portrait screen pixels, then into the

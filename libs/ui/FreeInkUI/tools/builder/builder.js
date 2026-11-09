@@ -5,7 +5,7 @@ const devices = [
   { id: "x3", label: "X3 792x528", width: 792, height: 528 },
   { id: "papercolor", label: "PaperColor 400x600", width: 400, height: 600 },
   { id: "murphy", label: "Murphy 240x416", width: 240, height: 416 },
-  { id: "delink", label: "de-link 800x480", width: 800, height: 480 },
+  { id: "silkscreen", label: "Silkscreen 800x480", width: 800, height: 480 },
   { id: "sticky", label: "Sticky 800x480", width: 800, height: 480 },
   { id: "m5paper", label: "M5Paper 540x960", width: 540, height: 960 },
   { id: "lilygo", label: "LilyGo 960x540", width: 960, height: 540 },

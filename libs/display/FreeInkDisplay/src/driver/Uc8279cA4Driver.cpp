@@ -46,6 +46,12 @@ PanelGeometry Uc8279cA4Driver::geometry() const {
 }
 
 void Uc8279cA4Driver::hardwareReset(EpdBus& bus) {
+  // A Gray3 session may have left the rails up: discharge them before reset.
+  if (_screenOn) {
+    bus.cmd(CMD_POWER_OFF);
+    bus.waitBusy(" A4 power-off");
+    _screenOn = false;
+  }
   // EpdBus's generic 2-ms low pulse is too short for this panel.
   const int8_t rst = bus.pins().rst;
   digitalWrite(rst, HIGH);
@@ -59,9 +65,9 @@ void Uc8279cA4Driver::hardwareReset(EpdBus& bus) {
 void Uc8279cA4Driver::initController(EpdBus& bus, const Session session) {
   // Gray3 and four-gray use stock V1.0.3's gray session (its lockscreen paint).
   // B/W keeps stronger rails because this driver changes UI screens with fast
-  // refreshes. B/W VCOM_DC is tuned on hardware: 0x24 fuzzed at idle, stock
-  // 0x32 left charge that gray paints showed as white cut-outs and ghosts.
-  // Gray sessions keep stock's 0x32.
+  // refreshes. Keep stock VCOM_DC for every session: reduced B/W settings
+  // caused the image to deteriorate while idle, even after panel power-off.
+  // Check B/W-to-gray ghosting on hardware when changing this setting.
   const uint8_t panel[] = {0x3f, 0x4a};
   const uint8_t grayPower[] = {0x03, 0x00, 0x72, 0x72};
   const uint8_t bwPower[] = {0x43, 0x00, 0x78, 0x78, 0x17};
@@ -69,7 +75,7 @@ void Uc8279cA4Driver::initController(EpdBus& bus, const Session session) {
   const uint8_t resolution[] = {0x03, 0x00, 0x02, 0x58};  // 768x600
   const uint8_t interval[] = {0x00, 0x00, 0x00, 0x00};
   const uint8_t powerOffSequence = 0x20;
-  const uint8_t vcom = session == Session::Bw ? 0x26 : 0x32;
+  const uint8_t vcom = 0x32;
   const uint8_t pll = 0x0f;
   const uint8_t tcon = 0x02;
 
@@ -174,14 +180,18 @@ void Uc8279cA4Driver::fillControllerRam(EpdBus& bus, const uint8_t command, cons
   bus.fillPlane(command, fill, CONTROLLER_HEIGHT, _widthBytes);
 }
 
-void Uc8279cA4Driver::refresh(EpdBus& bus, const uint8_t* bwBaseline) {
+void Uc8279cA4Driver::refresh(EpdBus& bus, const uint8_t* bwBaseline, const bool holdPower) {
   ensurePowerOn(bus);
   bus.cmd(CMD_DISPLAY_REFRESH);
   bus.waitBusy(" A4 refresh");
   // The next differential update diffs against this baseline.
   if (bwBaseline) writeFrame(bus, CMD_DTM1, bwBaseline);
-  // Always power off: leaving the panel powered between refreshes made later
-  // four-gray images show earlier screens as ghosts on hardware.
+  // Gray3 page turns keep the rails up, as stock V1.1.3 does for the whole
+  // reader session: powering off after each anti-aliased page let it drift and
+  // ghost while it sat. Every other refresh powers off: left powered, later
+  // four-gray images showed earlier screens as ghosts. hardwareReset() and
+  // deepSleep() power a held panel off before anything else drives it.
+  if (holdPower) return;
   bus.cmd(CMD_POWER_OFF);
   bus.waitBusy(" A4 power-off");
   _screenOn = false;
@@ -271,7 +281,8 @@ void Uc8279cA4Driver::writeGrayscalePlaneStrip(EpdBus& bus, const GrayPlane plan
   if (!rows || numRows == 0 || yStart + numRows > _height) return;
   uint8_t*& target = plane == GrayPlane::Lsb ? _grayLsb : _grayMsb;
   if (!target) target = allocateGrayBuffer();
-  if (target) memcpy(target + static_cast<size_t>(yStart) * _widthBytes, rows, static_cast<size_t>(numRows) * _widthBytes);
+  if (target)
+    memcpy(target + static_cast<size_t>(yStart) * _widthBytes, rows, static_cast<size_t>(numRows) * _widthBytes);
 }
 
 void Uc8279cA4Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
@@ -347,7 +358,7 @@ void Uc8279cA4Driver::showGray3(EpdBus& bus) {
   const uint8_t interval = 0x00;
   bus.cmdData(CMD_VCOM_DATA_INTERVAL, &interval, 1);
   loadGray3Lut(bus, anyBlack, anyWhiteClear);
-  refresh(bus);
+  refresh(bus, nullptr, /*holdPower=*/true);
   const size_t n = static_cast<size_t>(_widthBytes) * _height;
   memcpy(_gray3White, _grayLsb, n);
   memcpy(_gray3Middle, _grayMsb, n);
@@ -447,7 +458,8 @@ void Uc8279cA4Driver::cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) {
   // A stashed base whose gray pass never ran (out of memory, canceled) still has
   // to reach the panel. After a gray pass there is nothing to restore: the next
   // B/W refresh re-initializes the controller and re-drives every pixel.
-  if (_basePending && _grayBase) display(bus, _grayBase, nullptr, _cleanupPage ? RefreshMode::Half : RefreshMode::Fast, false);
+  if (_basePending && _grayBase)
+    display(bus, _grayBase, nullptr, _cleanupPage ? RefreshMode::Half : RefreshMode::Fast, false);
   _basePending = false;
 }
 

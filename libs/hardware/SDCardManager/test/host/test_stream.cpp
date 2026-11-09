@@ -38,6 +38,34 @@ static void reset(size_t size) {
 }
 
 int main() {
+  {
+    SDCardManager card;
+    uint64_t used = 99;
+    assert(!card.sdUsedBytes(used) && used == 0);
+    nowMs = 0;
+    fakeSd::clusters = 64;
+    fakeSd::freeClusters = 64;
+    fakeSd::clusterScans = 0;
+    assert(card.begin());
+    assert(card.sdUsedBytes(used) && used == 0);  // a genuinely empty card
+    fakeSd::freeClusters = -1;
+    assert(card.sdUsedBytes(used) && used == 0);  // cached valid zero
+    nowMs += 20001;
+    assert(!card.sdUsedBytes(used) && used == 0);
+    const auto scansAfterFailure = fakeSd::clusterScans;
+    assert(card.sdUsedBytes() == 0);  // preserve the legacy API
+    assert(!card.sdUsedBytes(used));
+    assert(fakeSd::clusterScans == scansAfterFailure);  // cache failure, too
+    fakeSd::freeClusters = 16;
+    nowMs += 20001;
+    assert(card.sdUsedBytes(used) && used == 48 * 512);
+    fakeSd::freeClusters = 100;
+    nowMs += 20001;
+    assert(card.sdUsedBytes(used) && used == 0);  // retain the existing clamp
+    fakeSd::clusters = 1;
+    fakeSd::freeClusters = 1;
+  }
+
   SDCardManager manager;
   reset(8);
   Sink unopened;

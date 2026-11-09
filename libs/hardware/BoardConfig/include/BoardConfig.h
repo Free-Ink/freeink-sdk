@@ -1609,7 +1609,7 @@ constexpr BoardProfile EEGO_A4 = {
     {},  // haptic: none
     6,    // headerOffsetY: header band top edge 6px lower
     24,   // cornerRadius
-    18,   // tabBarOffsetY
+    8,    // tabBarOffsetY
     80,   // tabBarHeightPct
     80,   // tabBarWidthPct
     60,    // wifiMaxTxPower: 15 dBm, the cap stock V1.0.3 applies

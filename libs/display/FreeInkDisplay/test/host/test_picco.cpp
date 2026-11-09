@@ -148,12 +148,11 @@ static void expectRetainedGrayStrip(Ssd1677Driver& d) {
             }
           }
         }
-        if (!d._cfg.piccoStockGrayscale) expected = ~expected;
-        assert(w.bytes[i] == expected);
+        assert(w.bytes[i] == static_cast<uint8_t>(~expected));
       }
     }
     // Factory gray powers down separately after its single image activation.
-    assert(planes == 2 && activations == (d._cfg.piccoStockGrayscale ? 1u : 2u));
+    assert(planes == 2 && activations == 2u);
   }
   bus.clear();
   assert(!d.displayRetainedGrayscaleOverlay(bus, bw.data(), 799, 0, 2, 1));
@@ -175,14 +174,28 @@ static void expectStockPiccoGray(Ssd1677Driver& d) {
     bus.clear();
     d.copyGrayscaleLsb(bus, lsb.data());
     d.writeGrayscalePlaneStrip(bus, GrayPlane::Msb, msb.data(), 0, 480);
+    // Absolute planes use the X4 factory encoding (black=11), so they are complemented.
     for (const auto& w : bus.writes) {
-      if (w.command == 0x24) assert(w.bytes == lsb);
-      if (w.command == 0x26) assert(w.bytes == msb);
+      Bytes expected = w.command == 0x24 ? lsb : msb;
+      if (absolute) for (auto& b : expected) b = static_cast<uint8_t>(~b);
+      if (w.command == 0x24 || w.command == 0x26) assert(w.bytes == expected);
     }
     bus.clear();
     const bool wasOn = d._isScreenOn;
     d.displayGray(bus, msb.data(), absolute, nullptr, absolute);
-    const auto* lut = absolute ? d._cfg.factoryGrayLut : d._cfg.grayLut;
+    if (absolute) {
+      // Images carry their own voltages: the X4 factory LUT, not a stock 105-byte
+      // table that would inherit the last B/W LUT's VCOM/VSH2.
+      assert(lastLut(bus) && *lastLut(bus) == Bytes(lut_factory_quality, lut_factory_quality + 105));
+      assert(lastRegister(bus, 0x2C) == lut_factory_quality[109]);
+      for (const auto& w : bus.writes)
+        if (w.command == 0x04) assert(w.bytes == Bytes(lut_factory_quality + 106, lut_factory_quality + 109));
+      // 0xCC paint, then a separate 0x03 shutdown.
+      assert(lastRegister(bus, 0x22) == 0x03);
+      assert(d._needsGrayClear && !d._isScreenOn);
+      continue;
+    }
+    const auto* lut = d._cfg.grayLut;
     if (lut) {
       Bytes expected(lut, lut + 105);
       if (!absolute && d._cfg.fastLut == lut_picco_depg_custom_fast)

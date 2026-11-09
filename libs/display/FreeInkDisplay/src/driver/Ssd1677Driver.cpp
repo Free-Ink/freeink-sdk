@@ -1000,7 +1000,7 @@ void Ssd1677Driver::beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode
 }
 
 void Ssd1677Driver::writeGrayRam(EpdBus& bus, uint8_t command, const uint8_t* data, uint16_t len) {
-  if (!_absoluteInput || _cfg.piccoStockGrayscale) {
+  if (!_absoluteInput) {
     writeRam(bus, command, data, len);
     return;
   }
@@ -1090,8 +1090,12 @@ void Ssd1677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
   _piccoGrayPending = false;
   if (_cfg.piccoWaveforms && lut) _needsGrayClear = true;
 
-  if (_cfg.piccoStockGrayscale && lut == nullptr && (factoryMode || _cfg.grayLut != lut_grayscale_sticky)) {
-    const unsigned char* waveform = factoryMode ? _cfg.factoryGrayLut : _cfg.grayLut;
+  // Absolute images take the X4 factory LUT below on every Picco SSD1677 panel. The
+  // stock 105-byte image waveforms carry no voltages, so they inherited whatever the
+  // last B/W LUT loaded (DEPG's custom FAST VCOM/VSH2), and YRD has no image table
+  // at all (OTP B/W at the HALF temperature): both lost the gray levels.
+  if (_cfg.piccoStockGrayscale && lut == nullptr && !factoryMode && _cfg.grayLut != lut_grayscale_sticky) {
+    const unsigned char* waveform = _cfg.grayLut;
     bus.cmd(CMD_DISPLAY_UPDATE_CTRL1);
     bus.data(CTRL1_NORMAL);
     if (waveform) {
@@ -1117,7 +1121,9 @@ void Ssd1677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
 
   const unsigned char* selectedLut = lut;
   if (selectedLut == nullptr) {
-    selectedLut = factoryMode ? (_cfg.factoryGrayLut ? _cfg.factoryGrayLut : lut_factory_quality)
+    // Picco factoryGrayLut is a 105-byte stock table without voltages; don't load it here.
+    const bool fullFactoryLut = _cfg.factoryGrayLut && !_cfg.piccoStockGrayscale;
+    selectedLut = factoryMode ? (fullFactoryLut ? _cfg.factoryGrayLut : lut_factory_quality)
                               : _cfg.grayLut;
   }
   if (!factoryMode && lut == nullptr && _cfg.fastLut == lut_picco_depg_custom_fast &&
@@ -1199,7 +1205,7 @@ bool Ssd1677Driver::displayRetainedGrayscaleOverlay(EpdBus& bus, const uint8_t* 
             }
           }
         }
-        chunk[i] = _cfg.piccoStockGrayscale ? value : static_cast<uint8_t>(~value);
+        chunk[i] = static_cast<uint8_t>(~value);
       }
       txn.writeBytes(chunk, count);
     }

@@ -87,7 +87,7 @@ int main() {
   }
 
   // Absolute planes go out as the stock firmware sends them: MSB -> DTM1,
-  // LSB -> DTM2, uninverted, after stock's two-pass pre-clear to black.
+  // LSB -> DTM2, uninverted, after stock V1.0.13's enhanced DU black pre-clear.
   {
     std::vector<uint8_t> lsb(bytes), msb(bytes);
     for (size_t i = 0; i < bytes; ++i) {
@@ -95,17 +95,16 @@ int main() {
       msb[i] = static_cast<uint8_t>(i * 29 + 7);
     }
     const auto before = bus.refreshes;
+    const auto offs = bus.powerOffs;
     driver.beginGrayscale(bus, bw.data(), GrayscaleMode::Direct, RefreshMode::Half, false);
     driver.copyGrayscaleLsb(bus, lsb.data());
     driver.copyGrayscaleMsb(bus, msb.data());
     driver.displayGray(bus, bw.data(), false, nullptr, true);
-    assert(bus.refreshes == before + 3 && "absolute gray pre-clears twice, then paints");
-    // Stock's halved GC record 0x20 (V1.0.3 lockscreen pre-clear).
-    const std::vector<uint8_t> half20 = {0x01, 0x0c, 0x02, 0x07, 0x05, 0x01, 0x01, 0x01,
-                                         0x05, 0x00, 0x00, 0x00, 0x01, 0x01, 0x01};
-    bool sawHalf = false;
-    for (const auto& r : bus.lut20s) sawHalf |= r.size() == 49 && std::equal(half20.begin(), half20.end(), r.begin());
-    assert(sawHalf && "pre-clear must load stock's halved GC waveform");
+    assert(bus.refreshes == before + 2 && "absolute gray pre-clears once, then paints");
+    const auto& clear = bus.shots[bus.shots.size() - 2];
+    assert(clear.interval == 0xd7 && clear.lut23 == 0x7f && clear.lut24 == 0x7f && clear.newBlack &&
+           "pre-clear must be the 63-frame DU black waveform on a black frame");
+    assert(bus.powerOffs == offs + 2 && "power off after the pre-clear and after the gray paint");
     for (size_t i = 0; i < bytes; ++i) {
       const auto physical = (551 - i / 96) * 96 + i % 96;
       assert(bus.oldAtRefresh[physical] == msb[i] && bus.newAtRefresh[physical] == lsb[i]);

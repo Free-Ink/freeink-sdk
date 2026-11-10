@@ -109,20 +109,16 @@ void Uc8279cA4Driver::loadFullLut(EpdBus& bus) {
   }
 }
 
-// Stock's lockscreen pre-clear: the GC waveform with every phase's frame count
-// halved, (b & 0xc0) | (((b & 0x3f) + 1) >> 1) on bytes 1-4 of each 7-byte group.
-void Uc8279cA4Driver::loadHalfFullLut(EpdBus& bus) {
-  const uint8_t* const lut[] = {A4_UC8279C_LUT_20, A4_UC8279C_LUT_21, A4_UC8279C_LUT_22, A4_UC8279C_LUT_23,
-                                A4_UC8279C_LUT_24};
+// Stock V1.0.13's lockscreen pre-clear ("DU black 175%", vendor export): the DU
+// waveform with the black-drive records 0x23 and 0x24 lengthened from 36 to 63
+// frames, byte 1 0x64 -> 0x7f (drive bits 0x40 kept).
+void Uc8279cA4Driver::loadBlackPreClearLut(EpdBus& bus) {
+  const uint8_t* const lut[] = {A4_UC8279C_FAST_LUT_20, A4_UC8279C_FAST_LUT_21, A4_UC8279C_FAST_LUT_22,
+                                A4_UC8279C_FAST_LUT_23, A4_UC8279C_FAST_LUT_24};
   for (uint8_t i = 0; i < 5; ++i) {
     uint8_t record[A4_UC8279C_LUT_LENGTH];
     memcpy(record, lut[i], sizeof(record));
-    for (uint8_t g = 0; g + 7 <= sizeof(record); g += 7) {
-      for (uint8_t k = 1; k <= 4; ++k) {
-        const uint8_t b = record[g + k];
-        record[g + k] = static_cast<uint8_t>((b & 0xc0) | (((b & 0x3f) + 1) >> 1));
-      }
-    }
+    if (i >= 3) record[1] = 0x7f;
     bus.cmdData(static_cast<uint8_t>(CMD_LUT_VCOM + i), record, sizeof(record));
   }
 }
@@ -405,20 +401,18 @@ void Uc8279cA4Driver::displayGray(EpdBus& bus, const uint8_t* fb, const bool tur
   _gray3HistoryValid = false;
   _gray3Session = false;
 
-  // Stock V1.0.3's lockscreen sequence. Pre-clear ("GC-black-2x-half") in the
-  // B/W session: black to DTM2, no DTM1 write, two refreshes with the halved
-  // GC waveform.
+  // Stock V1.0.13's lockscreen sequence. Pre-clear in the B/W session: the
+  // enhanced DU black waveform at 0x50 = D7, black to DTM2, no DTM1 write, one
+  // refresh; then power off, reset and the gray init (hardwareReset() powers
+  // the held panel off).
   if (_grayControllerMode) {
     hardwareReset(bus);
     initController(bus, Session::Bw);
   }
-  ensurePowerOn(bus);
-  const uint8_t clearInterval = 0x97;
+  const uint8_t clearInterval = 0xd7;
   bus.cmdData(CMD_VCOM_DATA_INTERVAL, &clearInterval, 1);
-  loadHalfFullLut(bus);
+  loadBlackPreClearLut(bus);
   fillControllerRam(bus, CMD_DTM2, 0x00);
-  bus.cmd(CMD_DISPLAY_REFRESH);
-  bus.waitBusy(" A4 refresh");
   refresh(bus);
 
   hardwareReset(bus);

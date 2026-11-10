@@ -65,10 +65,11 @@ Gray3 history: the next page shows its base with a normal B/W refresh, which
 fully clears the previous screen, and its grays follow as a Gray3 transition
 from that base.
 
-Full images (absolute/direct planes) follow the stock V1.0.3 lockscreen
-sequence. First a pre-clear in the B/W session: black to DTM2, no DTM1 write,
-and two refreshes with the GC waveform at half its frame counts. Then the
-stock four-gray waveform (five 42-byte records) with planes MSB to DTM1 and
+Full images (absolute/direct planes) follow the stock lockscreen sequence.
+First the V1.0.13 pre-clear in the B/W session: the DU waveform with its
+black-drive records 0x23 and 0x24 lengthened from 36 to 63 frames (byte 1
+0x64 becomes 0x7F), 0x50 = D7, black to DTM2, no DTM1 write, one refresh, then
+power-off, reset and the gray init. Then the stock four-gray waveform (five 42-byte records) with planes MSB to DTM1 and
 LSB to DTM2, so black/dark/light/white are 00/01/10/11. The white record
 (0x21) has its last two white pulses lengthened to 6 frames (stock 0x81,
 0x82 become 0x86, 0x86). DTM1 is seeded white again before power-off.

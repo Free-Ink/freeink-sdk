@@ -369,6 +369,81 @@ void testEnsureMinTouchRect() {
   CHECK_EQ(corner.width, 44);
 }
 
+void testKeyGridReadoutLayout() {
+  // Picco-sized landscape drawer, including calibration insets and UI scales.
+  for (const int16_t rowHeight : {48, 60, 72}) {
+    const Rect body{24, 180, 752, 260};
+    const auto stacked = keyGridReadoutLayout(body, rowHeight, 220, 16, 16, false);
+    const auto beside = keyGridReadoutLayout(body, rowHeight, 220, 16, 16, true);
+    CHECK_EQ(beside.grid.y, body.y);
+    CHECK(beside.grid.height > stacked.grid.height);
+    CHECK(beside.readout.right() < beside.grid.x);
+    CHECK(beside.backspace.right() < beside.grid.x);
+    CHECK_EQ(beside.backspace.y, beside.readout.y);
+    CHECK_EQ(beside.backspace.height, beside.readout.height);
+    CHECK_EQ(beside.backspace.x, beside.readout.right() + 16);
+    const int16_t sideWidth = beside.grid.x - body.x - 16;
+    CHECK_EQ(beside.readout.x, body.x + (sideWidth - (220 + 16 + rowHeight)) / 2);
+    CHECK_EQ(beside.readout.y, body.y + (beside.grid.height - rowHeight) / 2);
+    CHECK(beside.grid.right() <= body.right());
+    CHECK(beside.grid.bottom() <= body.bottom());
+
+    FakeDrawTarget draw;
+    DeviceContext device;
+    device.width = 800;
+    device.height = 480;
+    InputSnapshot input;
+    InteractionBuffer<16> interactions;
+    Frame<16> frame(draw, device, input, interactions);
+    KeyGridKey keys[12]{};
+    for (int i = 0; i < 12; ++i) {
+      keys[i].label = "1";
+      keys[i].value = static_cast<int16_t>(i);
+    }
+    KeyGridProps props;
+    props.keys = keys;
+    props.rows = 4;
+    props.cols = 3;
+    props.action = 12;
+    props.inputMask = InputTouch;
+    props.gap = 8;
+    props.minTouchSize = 28;
+    ButtonProps backspace;
+    backspace.action = 13;
+    backspace.inputMask = InputTouch;
+    button(frame, beside.backspace, backspace);
+    keyGrid(frame, beside.grid, props);
+    InputSnapshot erase;
+    erase.touchReleased = true;
+    erase.touchX = beside.backspace.x + beside.backspace.width / 2;
+    erase.touchY = beside.backspace.y + beside.backspace.height / 2;
+    CHECK_EQ(interactions.route(erase).action, 13);
+    const int16_t cellW = (beside.grid.width - 16) / 3;
+    const int16_t cellH = (beside.grid.height - 24) / 4;
+    for (int i = 0; i < 12; ++i) {
+      // Both cell edges and its center must resolve to that key, never a neighbor.
+      for (const int16_t dx : {int16_t{0}, static_cast<int16_t>(cellW / 2), static_cast<int16_t>(cellW - 1)}) {
+        for (const int16_t dy : {int16_t{0}, static_cast<int16_t>(cellH / 2), static_cast<int16_t>(cellH - 1)}) {
+          InputSnapshot tap;
+          tap.touchReleased = true;
+          tap.touchX = beside.grid.x + (i % 3) * (cellW + 8) + dx;
+          tap.touchY = beside.grid.y + (i / 3) * (cellH + 8) + dy;
+          const auto event = interactions.route(tap);
+          CHECK_EQ(event.action, 12);
+          CHECK_EQ(event.value, i);
+        }
+      }
+    }
+  }
+  const Rect portrait{16, 200, 448, 500};
+  const auto unchanged = keyGridReadoutLayout(portrait, 60, 220, 16, 16, true);
+  CHECK_EQ(unchanged.readout.y, portrait.y);
+  CHECK_EQ(unchanged.grid.y, portrait.y + 76);
+  // A long readout must not squeeze the keypad into unreadable columns.
+  const auto longValue = keyGridReadoutLayout(Rect{0, 0, 752, 260}, 72, 600, 16, 16, true);
+  CHECK_EQ(longValue.grid.y, 88);
+}
+
 void testTouchRouting() {
   InteractionBuffer<8> buffer;
   buffer.addInteraction(Interaction{Rect{0, 0, 100, 100}, 1, 0, InputTouch, StateNormal, 0});
@@ -6080,6 +6155,7 @@ int main() {
   testStackFlexRemainderWithTrailingFixed();
   testStackGaps();
   testEnsureMinTouchRect();
+  testKeyGridReadoutLayout();
   testTouchRouting();
   testDisabledSkipsTouch();
   testLongPressRouting();

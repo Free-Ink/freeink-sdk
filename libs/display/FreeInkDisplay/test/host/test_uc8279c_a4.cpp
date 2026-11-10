@@ -82,7 +82,8 @@ int main() {
     const auto refreshes = bus.refreshes;
     const auto powerOffs = bus.powerOffs;
     driver.display(bus, bw.data(), nullptr, mode, false);
-    assert(bus.powerOffs - powerOffs == bus.refreshes - refreshes && "every refresh must power the panel off");
+    assert(bus.refreshes == refreshes + 1 && bus.powerOffs == powerOffs &&
+           "a B/W refresh must leave the panel powered");
     assert(bus.interval == 0x97 && bus.lutBytes == 49);
     driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, false);
     assert(bus.interval == 0xd7 && bus.lutBytes == 49);
@@ -97,11 +98,15 @@ int main() {
       msb[i] = static_cast<uint8_t>(i * 29 + 7);
     }
     const auto before = bus.refreshes;
+    const auto offs = bus.powerOffs;
     driver.beginGrayscale(bus, bw.data(), GrayscaleMode::Direct, RefreshMode::Half, false);
     driver.copyGrayscaleLsb(bus, lsb.data());
     driver.copyGrayscaleMsb(bus, msb.data());
     driver.displayGray(bus, bw.data(), false, nullptr, true);
     assert(bus.refreshes == before + 3 && "absolute gray pre-clears twice, then paints");
+    // Held by the B/W screen before it: off before the pre-clear, off after
+    // the pre-clear, off after the paint.
+    assert(bus.powerOffs == offs + 3 && "four-gray must power a held panel off before it drives it");
     // Stock's halved GC record 0x20 (V1.0.3 lockscreen pre-clear).
     const std::vector<uint8_t> half20 = {0x01, 0x0c, 0x02, 0x07, 0x05, 0x01, 0x01, 0x01,
                                          0x05, 0x00, 0x00, 0x00, 0x01, 0x01, 0x01};
@@ -195,13 +200,13 @@ int main() {
   {
     // Gray3 page turns keep the panel powered, as stock V1.1.3 does for its
     // reader session. The next B/W refresh powers the held panel off before it
-    // resets the controller, then powers off after its own refresh as usual.
+    // resets the controller, then holds the rails after its own refresh.
     const auto offs = bus.powerOffs;
     gray3Page(page.data(), RefreshMode::Fast);
     gray3Page(page.data(), RefreshMode::Fast);
     assert(bus.powerOffs == offs && "Gray3 page turns must not power off between pages");
     driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, false);
-    assert(bus.powerOffs == offs + 2 && "B/W after Gray3: power off the held panel, then after the refresh");
+    assert(bus.powerOffs == offs + 1 && "B/W after Gray3: power off the held panel once, to reset the controller");
   }
 
   driver.deepSleep(bus);

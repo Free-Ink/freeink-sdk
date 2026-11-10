@@ -75,10 +75,11 @@ LSB to DTM2, so black/dark/light/white are 00/01/10/11. The white record
 
 Gray3 page turns keep the panel powered, as stock V1.1.3 does for its whole
 reader session; powering off after every anti-aliased page let it drift and
-ghost while it sat. Every other refresh powers the panel off afterwards, and
-a B/W refresh, four-gray image or deep sleep powers a held panel off first.
-Leaving it powered between those refreshes made later four-gray images show
-earlier screens as ghosts.
+ghost while it sat. B/W screens keep it powered for the same reason: powered
+off, a fast-refreshed menu looked dirty after a few idle minutes. A four-gray
+image powers the panel off when it is done, and a four-gray image, a session
+change or deep sleep powers a held panel off first. Left powered into a
+four-gray image, earlier screens showed as ghosts.
 
 Every session uses the stock V1.0.3 power and VCOM settings
 (PWR 03 00 72 72, VCOM_DC 0x32). B/W used stronger rails (PWR 43 00 78 78 17)

@@ -182,9 +182,9 @@ void Uc8279cA4Driver::refresh(EpdBus& bus, const uint8_t* bwBaseline, const bool
   if (bwBaseline) writeFrame(bus, CMD_DTM1, bwBaseline);
   // Gray3 page turns keep the rails up, as stock V1.1.3 does for the whole
   // reader session: powering off after each anti-aliased page let it drift and
-  // ghost while it sat. Every other refresh powers off: left powered, later
-  // four-gray images showed earlier screens as ghosts. hardwareReset() and
-  // deepSleep() power a held panel off before anything else drives it.
+  // ghost while it sat. B/W screens hold them for the same reason. Left
+  // powered into a four-gray image, earlier screens showed as ghosts, so that
+  // path, hardwareReset() and deepSleep() power a held panel off first.
   if (holdPower) return;
   bus.cmd(CMD_POWER_OFF);
   bus.waitBusy(" A4 power-off");
@@ -204,7 +204,7 @@ void Uc8279cA4Driver::begin(EpdBus& bus) {
 void Uc8279cA4Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, const RefreshMode mode,
                               const bool turnOff) {
   (void)prev;
-  (void)turnOff;  // refresh() always powers off
+  (void)turnOff;  // the rails stay up, see refresh()
   // Any B/W refresh replaces what a Gray3 transition would start from.
   _gray3HistoryValid = false;
   _gray3Session = false;
@@ -240,7 +240,10 @@ void Uc8279cA4Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* pre
     _firstRefreshPending = false;
   }
   writeFrame(bus, CMD_DTM2, fb);
-  refresh(bus, fb);
+  // Menus hold the rails too: powered off, a fast-refreshed menu drifted and
+  // looked dirty after a few idle minutes, the same drift Gray3 pages showed.
+  // The four-gray path discharges and resets before it drives the panel.
+  refresh(bus, fb, /*holdPower=*/true);
   // The displayed B/W frame is the base any following overlay gray pass folds
   // onto, however the caller started that pass.
   if (!_grayBase) _grayBase = allocateGrayBuffer();
@@ -414,7 +417,7 @@ void Uc8279cA4Driver::displayGray(EpdBus& bus, const uint8_t* fb, const bool tur
   // Stock V1.0.3's lockscreen sequence. Pre-clear ("GC-black-2x-half") in the
   // B/W session: black to DTM2, no DTM1 write, two refreshes with the halved
   // GC waveform.
-  if (_grayControllerMode) {
+  if (_grayControllerMode || _screenOn) {
     hardwareReset(bus);
     initController(bus, Session::Bw);
   }

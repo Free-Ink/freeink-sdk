@@ -52,6 +52,9 @@ namespace freeink {
 class SecureHttpClient {
  public:
   using DataCallback = std::function<bool(const uint8_t* data, size_t len)>;
+  // Offset-based source: return exactly the requested bytes, or zero on failure.
+  // Retries restart at offset zero, so a file source can safely rewind.
+  using BodyReader = size_t (*)(void* context, size_t offset, uint8_t* data, size_t length);
   using AbortCallback = std::function<bool()>;
   // (bytes so far, total from Content-Length or 0 when unknown).
   // Return false to abort the transfer.
@@ -200,20 +203,25 @@ class SecureHttpClient {
     }
   }
 
+  // Streams a known-length request body without retaining it in RAM. Never
+  // follows redirects; callers must explicitly decide whether to replay credentials.
+  int sendRequestStream(const char* method, size_t length, BodyReader reader, void* context, const DataCallback& onData,
+                        const AbortCallback& shouldAbort = nullptr) {
+    if (!reader) {
+      resetResponse();
+      return -1;
+    }
+    return sendRequestOnce(method, nullptr, length, onData, shouldAbort, reader, context);
+  }
+
   // One request/response transaction against the URL state — never follows
   // redirects. When following is enabled and the response is a 3xx, its body
   // is drained but NOT delivered to onData (only the final response's body
-  // reaches the caller's sink).
+  // reaches the caller's sink). Streamed uploads always deliver their response.
   int sendRequestOnce(const char* method, const uint8_t* payload, size_t payloadLen, const DataCallback& onData,
-                      const AbortCallback& shouldAbort = nullptr) {
-    _status = 0;
-    _body.clear();
-    _responseHeaders.clear();
-    _contentLength = 0;
-    _haveContentLength = false;
-    _bodyComplete = false;
-    _callbackAborted = false;
-    _aborted = false;
+                      const AbortCallback& shouldAbort = nullptr, BodyReader reader = nullptr,
+                      void* context = nullptr) {
+    resetResponse();
 
     // One transparent retry: a keep-alive server may close the connection
     // between requests at any time, and the race surfaces as a write failure
@@ -228,9 +236,9 @@ class SecureHttpClient {
       // Read after ensureConnected(): if it had to reconnect, it cleared the flag.
       const bool reusing = _connKeptAlive;
 
-      if (!writeRequest(method, payload, payloadLen)) {
+      if (!writeRequest(method, payload, payloadLen, reader, context, shouldAbort)) {
         closeConnection();
-        if (reusing && attempt == 0) continue;
+        if (reusing && attempt == 0 && !_aborted) continue;
         return -1;
       }
       if (_reserveFullRecord && _connHttps) _secure.reserveFullRecord();
@@ -297,8 +305,8 @@ class SecureHttpClient {
       // never leave a reusable socket behind.
       // A 3xx body that is about to be followed is protocol plumbing, not
       // payload: drain it (keeping the connection reusable for the next hop)
-      // without touching the caller's sink.
-      const bool discardBody = _followRedirects > 0 && isRedirectStatus(_status);
+      // without touching the caller's sink. Streamed uploads never follow redirects.
+      const bool discardBody = !reader && _followRedirects > 0 && isRedirectStatus(_status);
       const DataCallback discard = [](const uint8_t*, size_t) { return true; };
       const DataCallback& bodySink = discardBody ? discard : onData;
       _downloaded = 0;
@@ -400,6 +408,17 @@ class SecureHttpClient {
   static bool tls13Available() { return SecureClient::tls13Available(); }
 
  private:
+  void resetResponse() {
+    _status = 0;
+    _body.clear();
+    _responseHeaders.clear();
+    _contentLength = 0;
+    _haveContentLength = false;
+    _bodyComplete = false;
+    _callbackAborted = false;
+    _aborted = false;
+  }
+
   struct Header {
     std::string name;
     std::string value;
@@ -499,7 +518,8 @@ class SecureHttpClient {
 
   // Request line + headers (+ body). Write results are checked: a stale
   // keep-alive socket often surfaces first as a failed write.
-  bool writeRequest(const char* method, const uint8_t* payload, size_t payloadLen) {
+  bool writeRequest(const char* method, const uint8_t* payload, size_t payloadLen, BodyReader reader, void* context,
+                    const AbortCallback& shouldAbort) {
     // Reserved up front so a few-KB cookie isn't doubled by append growth.
     size_t size = 256 + _path.size() + _host.size() + _userAgent.size() + 2 * (_authUser.size() + _authPass.size());
     for (const std::string& h : _headers) size += h.size();
@@ -513,10 +533,22 @@ class SecureHttpClient {
       req += "Authorization: Basic " + std::string(base64::encode(creds.c_str()).c_str()) + "\r\n";
     }
     for (const std::string& h : _headers) req += h;
-    if (payload && payloadLen) req += "Content-Length: " + std::to_string(payloadLen) + "\r\n";
+    if ((payload && payloadLen) || reader) req += "Content-Length: " + std::to_string(payloadLen) + "\r\n";
     req += "\r\n";
     if (_conn->write(reinterpret_cast<const uint8_t*>(req.data()), req.size()) != req.size()) return false;
-    if (payload && payloadLen && _conn->write(payload, payloadLen) != payloadLen) return false;
+    // Request headers are no longer needed while the upload source is read.
+    std::string().swap(req);
+    if (reader) {
+      uint8_t chunk[256];  // fixed small transfer window, independent of file size
+      for (size_t offset = 0; offset < payloadLen;) {
+        const size_t count = std::min(sizeof(chunk), payloadLen - offset);
+        if (isAborted(shouldAbort) || reader(context, offset, chunk, count) != count ||
+            _conn->write(chunk, count) != count)
+          return false;
+        offset += count;
+      }
+    } else if (payload && payloadLen && _conn->write(payload, payloadLen) != payloadLen)
+      return false;
     return true;
   }
 

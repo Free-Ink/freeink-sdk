@@ -80,13 +80,10 @@ a B/W refresh, four-gray image or deep sleep powers a held panel off first.
 Leaving it powered between those refreshes made later four-gray images show
 earlier screens as ghosts.
 
-Gray3 pages and four-gray images use the stock V1.0.3 gray session
-(PWR 03 00 72 72, VCOM_DC 0x32). B/W uses stronger rails
-(PWR 43 00 78 78 17) because UI screens change with fast refreshes, with the
-stock VCOM_DC 0x32 restored for idle stability. The earlier 0x24 setting caused
-idle fuzzing, and a unit using the later 0x26 setting was reported to gray on
-Home while idle. This restoration needs physical idle validation and a check
-for the previously observed B/W-to-gray cut-outs and ghosting at 0x32.
+Every session uses the stock V1.0.3 power and VCOM settings
+(PWR 03 00 72 72, VCOM_DC 0x32). B/W used stronger rails (PWR 43 00 78 78 17)
+before; with them, static screens fuzzed while idle at every B/W VCOM_DC tried
+(0x24, 0x26 and 0x32).
 Every session uses gate/source 00 00 00 00 and seeds
 DTM1 white before power-on.
 Full refresh uses the stock GC waveform (0x50 = 0x97); fast refresh

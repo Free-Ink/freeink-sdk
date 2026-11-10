@@ -63,14 +63,11 @@ void Uc8279cA4Driver::hardwareReset(EpdBus& bus) {
 }
 
 void Uc8279cA4Driver::initController(EpdBus& bus, const Session session) {
-  // Gray3 and four-gray use stock V1.0.3's gray session (its lockscreen paint).
-  // B/W keeps stronger rails because this driver changes UI screens with fast
-  // refreshes. Keep stock VCOM_DC for every session: reduced B/W settings
-  // caused the image to deteriorate while idle, even after panel power-off.
-  // Check B/W-to-gray ghosting on hardware when changing this setting.
+  // Every session uses stock V1.0.3's power and VCOM_DC settings. With the
+  // earlier B/W rails (PWR 43 00 78 78 17), static screens fuzzed while idle on
+  // hardware at every B/W VCOM_DC tried (0x24, 0x26, 0x32).
   const uint8_t panel[] = {0x3f, 0x4a};
-  const uint8_t grayPower[] = {0x03, 0x00, 0x72, 0x72};
-  const uint8_t bwPower[] = {0x43, 0x00, 0x78, 0x78, 0x17};
+  const uint8_t power[] = {0x03, 0x00, 0x72, 0x72};
   const uint8_t booster[] = {0x25, 0x25, 0x3c};
   const uint8_t resolution[] = {0x03, 0x00, 0x02, 0x58};  // 768x600
   const uint8_t interval[] = {0x00, 0x00, 0x00, 0x00};
@@ -81,10 +78,7 @@ void Uc8279cA4Driver::initController(EpdBus& bus, const Session session) {
 
   bus.cmdData(CMD_PANEL_SETTING, panel, sizeof(panel));
   bus.cmdData(CMD_POWER_OFF_SEQUENCE, &powerOffSequence, 1);
-  if (session == Session::Bw)
-    bus.cmdData(CMD_POWER_SETTING, bwPower, sizeof(bwPower));
-  else
-    bus.cmdData(CMD_POWER_SETTING, grayPower, sizeof(grayPower));
+  bus.cmdData(CMD_POWER_SETTING, power, sizeof(power));
   bus.cmdData(CMD_BOOSTER_SOFT_START, booster, sizeof(booster));
   bus.cmdData(CMD_VCOM_DC, &vcom, 1);
   bus.cmdData(CMD_PLL_CONTROL, &pll, 1);

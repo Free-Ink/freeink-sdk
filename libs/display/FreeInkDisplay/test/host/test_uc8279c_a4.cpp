@@ -13,6 +13,8 @@ int main() {
   auto& driver = uc8279cA4Driver();
   driver.begin(bus);
   assert(bus.vcom == 0x32 && "B/W initialization must retain stock VCOM for idle stability");
+  const std::vector<uint8_t> stockPower = {0x03, 0x00, 0x72, 0x72};
+  assert(bus.power == stockPower && "B/W initialization must use stock's power setting");
 
   // A real reader AA turn: base -> gray masks -> restore base -> different page.
   // The target differs from both the old base and the gray selector planes.
@@ -64,6 +66,7 @@ int main() {
       for (auto& b : bw) b = static_cast<uint8_t>(b ^ 0x33);
       driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, page == 2);
       assert(bus.vcom == 0x32 && "returning from grayscale must retain stock B/W VCOM");
+      assert(bus.power == stockPower && "returning from grayscale must keep stock's power setting");
       assert(bus.interval == 0xd7 && bus.lutBytes == 49 && "post-AA FAST request was promoted to FULL");
       for (size_t i = 0; i < bytes; ++i) {
         const auto physical = (551 - i / 96) * 96 + i % 96;

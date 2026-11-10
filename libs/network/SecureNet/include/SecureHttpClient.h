@@ -250,17 +250,20 @@ class SecureHttpClient {
 
       bool headersComplete = false;
       size_t headerBytes = 0;
+      size_t lineBytes = 0;
+      bool skipped = false;
       std::string transferEncoding;
-      while (readLine(*_conn, line, headerDeadline, shouldAbort)) {
+      while (readHeaderLine(*_conn, line, headerDeadline, lineBytes, skipped, shouldAbort)) {
+        headerBytes += lineBytes;
+        if (headerBytes > MAX_HEADER_BYTES || _responseHeaders.size() >= 64) {
+          closeConnection();
+          return -1;
+        }
+        if (skipped) continue;
         if (line.empty()) {
           headersComplete = true;
           break;
         }  // end of headers
-        headerBytes += line.size();
-        if (headerBytes > 8192 || _responseHeaders.size() >= 64) {
-          closeConnection();
-          return -1;
-        }
         const size_t colon = line.find(':');
         if (colon == std::string::npos) continue;
         std::string name = line.substr(0, colon);
@@ -560,6 +563,44 @@ class SecureHttpClient {
     return false;
   }
 
+  // GitHub release responses can include a Content-Security-Policy header longer
+  // than MAX_LINE. Drain only that nonessential header without buffering it;
+  // keep size limits and reject oversized headers that might affect framing,
+  // redirects, authentication, or other callers.
+  bool readHeaderLine(Client& c, std::string& line, unsigned long deadline, size_t& bytes, bool& skipped,
+                      const AbortCallback& shouldAbort = nullptr) {
+    line.clear();
+    bytes = 0;
+    skipped = false;
+    static constexpr char CSP_PREFIX[] = "content-security-policy:";
+    while (static_cast<int32_t>(millis() - deadline) < 0) {
+      if (isAborted(shouldAbort)) return false;
+      while (c.available() > 0) {
+        const int ch = c.read();
+        if (ch < 0) break;
+        if (ch == '\n') {
+          if (!skipped && !line.empty() && line.back() == '\r') line.pop_back();
+          return true;
+        }
+        if (++bytes > MAX_HEADER_BYTES) return false;
+        if (skipped) continue;
+        if (line.size() >= MAX_LINE) {
+          if (!std::equal(CSP_PREFIX, CSP_PREFIX + sizeof(CSP_PREFIX) - 1, line.begin(),
+                          [](unsigned char a, unsigned char b) { return tolower(a) == tolower(b); })) {
+            return false;
+          }
+          skipped = true;
+          line.clear();
+          continue;
+        }
+        line += static_cast<char>(ch);
+      }
+      if (!c.connected() && c.available() == 0) return false;
+      delay(1);
+    }
+    return false;
+  }
+
   // Streams exactly `count` body bytes.
   bool readFixed(Client& c, size_t count, const DataCallback& onData, const AbortCallback& shouldAbort = nullptr) {
     uint8_t buf[READ_CHUNK];
@@ -627,7 +668,8 @@ class SecureHttpClient {
   // connection mid-stream; 2 KB removed the stall. Stack-allocated in the
   // body readers, so kept modest.
   static constexpr size_t READ_CHUNK = 2048;
-  static constexpr size_t MAX_LINE = 4096;  // header / chunk-size line cap
+  static constexpr size_t MAX_LINE = 4096;          // buffered header / chunk-size line cap
+  static constexpr size_t MAX_HEADER_BYTES = 8192;  // total response header budget
 
   // Kept-alive connection state. _conn points at _secure or _plain while a
   // connection is held open, and null otherwise.

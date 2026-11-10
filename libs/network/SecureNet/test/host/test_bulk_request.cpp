@@ -156,5 +156,48 @@ int main() {
                             [](const uint8_t*, size_t) { return true; }, closeBeforeRequest) < 0);
     assert(FakeNet::hosts().size() == 2 && FakeNet::replies().size() == 1);
   }
+  // GitHub release assets redirect with a >4KB Content-Security-Policy header.
+  // Discard that header without losing the Location (including signed query).
+  const std::string cspPrefix = "CoNtEnT-SeCuRiTy-PoLiCy: ";
+  const std::string longCsp = cspPrefix + std::string(4173 - cspPrefix.size(), 'x');
+  assert(longCsp.size() == 4173);
+  const std::string location = "https://cdn.example/asset?" + std::string(900, 'q');
+  const std::string redirect = "HTTP/1.1 302 Found\r\n" + longCsp + "\r\nLocation: " + location +
+                               "\r\nContent-Length: 0\r\n\r\n";
+  reset({redirect.c_str(), "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"});
+  {
+    freeink::FetchSink fontSink;
+    std::string downloaded;
+    fontSink.write = [&](const uint8_t* data, size_t size) {
+      downloaded.append(reinterpret_cast<const char*>(data), size);
+      return true;
+    };
+    auto font = freeink::fetchResumable("https://github.com/fonts.json", {}, nullptr, fontSink);
+    assert(font.complete && font.status == 200 && downloaded == "ok");
+    assert(FakeNet::hosts().size() == 2 && FakeNet::hosts()[1] == "cdn.example");
+    assert(FakeNet::requests()[1].find("GET /asset?") == 0);
+    assert(liveReservations == 0);
+  }
+
+  // Oversized framing/redirect headers still fail rather than being discarded.
+  for (const char* name : {"Location", "Content-Length", "Transfer-Encoding"}) {
+    const std::string malformed = std::string("HTTP/1.1 200 OK\r\n") + name + ": " +
+                                  std::string(4200, 'x') + "\r\nContent-Length: 2\r\n\r\nok";
+    reset({malformed.c_str()});
+    freeink::SecureHttpClient http;
+    assert(http.begin("https://a/font"));
+    assert(http.GET() == -1);
+    assert(liveReservations == 0);
+  }
+  // Even discardable headers must fit within the total header budget.
+  const std::string tooLongCsp = "HTTP/1.1 200 OK\r\n" + cspPrefix + std::string(8200, 'x') +
+                                 "\r\nContent-Length: 2\r\n\r\nok";
+  reset({tooLongCsp.c_str()});
+  {
+    freeink::SecureHttpClient http;
+    assert(http.begin("https://a/font"));
+    assert(http.GET() == -1);
+    assert(liveReservations == 0);
+  }
   puts("bulk request timing, failure, cancellation and retry ok");
 }

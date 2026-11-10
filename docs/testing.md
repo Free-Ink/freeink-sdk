@@ -35,6 +35,7 @@ sh libs/book/ContentProtection/test/host/run.sh
 sh libs/hardware/InputManager/test/host/run.sh
 sh libs/hardware/InputManager/test/host/run_metalio.sh
 sh libs/hardware/InputManager/test/host/run_murphy_m4.sh
+sh libs/hardware/InputManager/test/host/run_murphy_m4_native.sh
 sh libs/hardware/HapticManager/test/host/run.sh
 ```
 
@@ -46,7 +47,9 @@ temporary directory.
 
 The Murphy M4 suite checks batch-specific FT6336U short-axis calibration and
 the allocation-free touch polling state machine in both batch-1 and batch-2
-configurations.
+configurations. Its native-I2C suite compiles the production InputManager and
+RTC sources against an I2C1 model, covering shared touch/RTC bus setup, touch
+mapping and sleep/reinitialization, and RX8010 time validity and writes.
 
 ## Progressive JPEG
 
@@ -152,6 +155,7 @@ python3 libs/display/FreeInkDisplay/test/host/run_uc8279.py
 python3 libs/display/FreeInkDisplay/test/host/run_uc8279c_a4.py
 python3 libs/display/FreeInkDisplay/test/host/run_uc8253_power.py
 python3 libs/display/FreeInkDisplay/test/host/run_picco.py
+python3 libs/display/FreeInkDisplay/test/host/run_murphy_m4.py
 ```
 
 These compile production drivers against recording buses. The Pro suite also
@@ -162,6 +166,8 @@ SSD1677/SSD2677 drivers as a Picco and as a Sticky, including each board's
 bit-banged panel probe. The checks cover transfer
 sequences, grayscale uploads, refresh lifecycle, and power-state behavior for
 the drivers included in each harness.
+The Murphy M4 suite checks the production SSD1677 driver's batch-specific
+temperature writes and HALF/window refresh sequences.
 
 For the board-profile and display-probe regression test, follow the
 [XteinkDetect host instructions](../libs/hardware/XteinkDetect/test/host/README.md).

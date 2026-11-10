@@ -1257,7 +1257,7 @@ constexpr BoardProfile MURPHY_M3 = {
 // implementation recovered from its ESP-IDF image. GPIO10 is the independent
 // SD power gate and GPIO4 is the display clock; neither is part of touch I2C.
 // Confirmed pins: display MOSI=3 SCK=4 CS=5 DC=6 RST=7 BUSY=8, SD CLK=16 CMD=15
-// D0=17 D1=18 D2=11 D3=14 power=10(active LOW), touch SDA=10 SCL=4 INT=44 power=45(active LOW).
+// D0=17 D1=18 D2=11 D3=14 power=10(active LOW), touch SDA=13 SCL=12 IRQ=46 power=45(active LOW).
 constexpr BoardProfile MURPHY_M4 = {
     Board::MurphyM4,
     "murphy_m4",

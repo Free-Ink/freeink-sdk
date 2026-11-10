@@ -245,7 +245,9 @@ class SecureHttpClient {
 
       const unsigned long headerDeadline = millis() + _timeoutMs;
       std::string line;
-      if (!readLine(*_conn, line, headerDeadline, shouldAbort)) {
+      size_t headerBytes = 0;
+      bool skipped = false;
+      if (!readHeaderLine(*_conn, line, headerDeadline, headerBytes, skipped, false, shouldAbort)) {
         closeConnection();
         if (reusing && attempt == 0 && !_aborted) continue;
         return -1;
@@ -257,21 +259,16 @@ class SecureHttpClient {
       bool keepAlive = line.compare(0, 9, "HTTP/1.0 ") != 0;
 
       bool headersComplete = false;
-      size_t headerBytes = 0;
-      size_t lineBytes = 0;
-      bool skipped = false;
+      size_t headerCount = 0;
       std::string transferEncoding;
-      while (readHeaderLine(*_conn, line, headerDeadline, lineBytes, skipped, shouldAbort)) {
-        headerBytes += lineBytes;
-        if (headerBytes > MAX_HEADER_BYTES || _responseHeaders.size() >= 64) {
-          closeConnection();
-          return -1;
-        }
-        if (skipped) continue;
-        if (line.empty()) {
+      while (readHeaderLine(*_conn, line, headerDeadline, headerBytes, skipped, true, shouldAbort)) {
+        if (!skipped && line.empty()) {
           headersComplete = true;
           break;
-        }  // end of headers
+        }
+        // Count discarded and malformed lines too, not only stored headers.
+        if (++headerCount > MAX_HEADER_COUNT) break;
+        if (skipped) continue;
         const size_t colon = line.find(':');
         if (colon == std::string::npos) continue;
         std::string name = line.substr(0, colon);
@@ -595,30 +592,31 @@ class SecureHttpClient {
     return false;
   }
 
-  // GitHub release responses can include a Content-Security-Policy header longer
-  // than MAX_LINE. Drain only that nonessential header without buffering it;
-  // keep size limits and reject oversized headers that might affect framing,
-  // redirects, authentication, or other callers.
-  bool readHeaderLine(Client& c, std::string& line, unsigned long deadline, size_t& bytes, bool& skipped,
-                      const AbortCallback& shouldAbort = nullptr) {
+  // Only an exact, case-insensitive CSP field may overflow the buffered-line cap.
+  // Reuse the line allocation, then drain without retaining its contents.
+  // The shared wire budget includes status, CR/LF and discarded bytes, and
+  // the absolute deadline also applies when the transport is always readable.
+  bool readHeaderLine(Client& c, std::string& line, unsigned long deadline, size_t& headerBytes, bool& skipped,
+                      bool allowCsp, const AbortCallback& shouldAbort = nullptr) {
     line.clear();
-    bytes = 0;
     skipped = false;
     static constexpr char CSP_PREFIX[] = "content-security-policy:";
     while (static_cast<int32_t>(millis() - deadline) < 0) {
       if (isAborted(shouldAbort)) return false;
       while (c.available() > 0) {
+        if (static_cast<int32_t>(millis() - deadline) >= 0 || isAborted(shouldAbort)) return false;
+        if (headerBytes >= MAX_HEADER_BYTES) return false;
         const int ch = c.read();
         if (ch < 0) break;
+        ++headerBytes;
         if (ch == '\n') {
           if (!skipped && !line.empty() && line.back() == '\r') line.pop_back();
           return true;
         }
-        if (++bytes > MAX_HEADER_BYTES) return false;
         if (skipped) continue;
         if (line.size() >= MAX_LINE) {
-          if (!std::equal(CSP_PREFIX, CSP_PREFIX + sizeof(CSP_PREFIX) - 1, line.begin(),
-                          [](unsigned char a, unsigned char b) { return tolower(a) == tolower(b); })) {
+          if (!allowCsp || !std::equal(CSP_PREFIX, CSP_PREFIX + sizeof(CSP_PREFIX) - 1, line.begin(),
+                                       [](unsigned char a, unsigned char b) { return a == tolower(b); })) {
             return false;
           }
           skipped = true;
@@ -700,8 +698,9 @@ class SecureHttpClient {
   // connection mid-stream; 2 KB removed the stall. Stack-allocated in the
   // body readers, so kept modest.
   static constexpr size_t READ_CHUNK = 2048;
-  static constexpr size_t MAX_LINE = 4096;          // buffered header / chunk-size line cap
-  static constexpr size_t MAX_HEADER_BYTES = 8192;  // total response header budget
+  static constexpr size_t MAX_LINE = 4096;          // buffered line cap, including CR but excluding LF
+  static constexpr size_t MAX_HEADER_BYTES = 8192;  // status + headers, including all wire delimiters
+  static constexpr size_t MAX_HEADER_COUNT = 64;
 
   // Kept-alive connection state. _conn points at _secure or _plain while a
   // connection is held open, and null otherwise.

@@ -34,6 +34,7 @@ sh libs/book/FreeInkBook/test/host/run.sh
 sh libs/book/ContentProtection/test/host/run.sh
 sh libs/hardware/InputManager/test/host/run.sh
 sh libs/hardware/InputManager/test/host/run_metalio.sh
+sh libs/hardware/InputManager/test/host/run_murphy_m4.sh
 sh libs/hardware/HapticManager/test/host/run.sh
 ```
 
@@ -42,6 +43,10 @@ JPEG fixtures and optionally Pillow for progressive JPEG fixtures; the related
 checks skip when those converters are unavailable. It builds layout tests for
 the default, SMALL, and LARGE memory profiles. Build outputs go under the system
 temporary directory.
+
+The Murphy M4 suite checks batch-specific FT6336U short-axis calibration and
+the allocation-free touch polling state machine in both batch-1 and batch-2
+configurations.
 
 ## Progressive JPEG
 

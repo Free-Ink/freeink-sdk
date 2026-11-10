@@ -1,5 +1,7 @@
 #pragma once
 
+#include "MurphyM4Batch.h"
+
 // FreeInk SDK — board hardware profiles + build composition.
 //
 // A BoardProfile describes a device's pinout, screen, and capabilities. The
@@ -364,7 +366,7 @@
 #define FREEINK_CAP_RTC                                                                             \
   (FREEINK_DEVICE_X3 || FREEINK_DEVICE_STICKY || FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_X4CLASSIC || \
    FREEINK_DEVICE_PAPERMONO || FREEINK_DEVICE_PAPERS3 || FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_EEGO_A4 || \
-   FREEINK_DEVICE_WS397 || FREEINK_DEVICE_METALIO_EINK4 || FREEINK_DEVICE_PICCO)
+  FREEINK_DEVICE_WS397 || FREEINK_DEVICE_METALIO_EINK4 || FREEINK_DEVICE_PICCO || FREEINK_DEVICE_MURPHY_M4)
 #endif
 #ifndef FREEINK_CAP_TEMP_HUMIDITY
 #define FREEINK_CAP_TEMP_HUMIDITY (FREEINK_DEVICE_STICKY)
@@ -766,7 +768,7 @@ struct MicConfig {
   bool enableActiveHigh;
 };
 
-enum class RtcType : uint8_t { None, Pcf8563, Ds3231, Rx8130, Pcf85063 };
+enum class RtcType : uint8_t { None, Pcf8563, Ds3231, Rx8130, Pcf85063, Rx8010 };
 enum class ImuType : uint8_t { None, Lsm6ds3, Qmi8658, Sc7a20h, Bmi270 };
 
 // On-board I2C sensors sharing one bus (e.g. the Sticky's RTC + temp/humidity +
@@ -1259,7 +1261,7 @@ constexpr BoardProfile MURPHY_M3 = {
 constexpr BoardProfile MURPHY_M4 = {
     Board::MurphyM4,
     "murphy_m4",
-    InputStyle::DigitalFiveKey,
+    InputStyle::DigitalButtons,
     DisplayController::SSD1677,
     // The GDEQ0426T82 panel has 800 source lines and 480 gate lines — landscape
     // regardless of physical housing orientation. SSD1677 gate count = height-1 =
@@ -1273,21 +1275,23 @@ constexpr BoardProfile MURPHY_M4 = {
     // SD power via GPIO10 active-LOW. SPI pins unused; SDMMC wiring below.
     {PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, 10, false, 0, false},
     // {back, confirm, left, right, up, down, power, powerActiveHigh}
-    // top=GPIO1(up/prev), middle=GPIO2(down/next), bottom=GPIO0(confirm+power shared, same as M3)
-    {PIN_UNASSIGNED, 0, PIN_UNASSIGNED, PIN_UNASSIGNED, 1, 2, 0, false},
+    // GPIO1/GPIO2 are up/down. GPIO0 is an independent power button, never confirm;
+    // its short-press action stays a consumer setting.
+    {PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, 1, 2, 0, false},
     9,               // battery ADC, measured with a 2:1 divider on hardware
-    PIN_UNASSIGNED,  // batteryChargeStatus
+    43,              // batteryChargeStatus: active-low charger STAT
     2.0f,
     PIN_UNASSIGNED,  // usbDetect: native USB, no dedicated detect GPIO
     // Murphy Reader v1.2.16: SDA=GPIO13, SCL=GPIO12, address=0x2E.
-    // INT=44 (active LOW), touch power=GPIO45 (active LOW, PMOS)
+    // IRQ is GPIO46 but unusable, so the touch task polls without it. GPIO7 reset is
+    // shared with the display and GPIO45 powers the controller while LOW.
     // Physical sensor is portrait (X:0-479, Y:0-799), landscape panel: swapXY=true.
     // {ctrl,sda,scl,irq,rst,addr,minX,maxX,minY,maxY,synthConfirm,altAddr,irqActiveLow,gt911Byte0,
     //  powerEnable,swapXY,flipX,flipY,hasHomeKey,powerEnableActiveHigh}
     {TouchController::Ft6336u,
      13,
      12,
-     44,
+     46,
      7,
      0x2E,
      0,
@@ -1313,9 +1317,33 @@ constexpr BoardProfile MURPHY_M4 = {
     {16, 15, 17, 18, 11, 14, 4},
     NO_GAUGE,
     NO_MIC,
-    NO_SENSORS,
+    // RX8010SJ on the touch bus pins; Rtc.cpp reaches it through MurphyM4I2c.h, not Wire.
+    {13, 12, 400000, 0x32, 0, 0, 1, RtcType::Rx8010, ImuType::None},
     1.2f,  // uiScale: touch device
 };
+
+static_assert(MURPHY_M4.displayWidth / 8 * MURPHY_M4.displayHeight == 48000,
+              "Murphy M4 must use one 48,000-byte framebuffer");
+static_assert(MURPHY_M4.inputStyle == InputStyle::DigitalButtons && MURPHY_M4.input.confirm == PIN_UNASSIGNED &&
+                  MURPHY_M4.input.power == 0 && MURPHY_M4.input.up == 1 && MURPHY_M4.input.down == 2,
+              "Murphy M4 GPIO0 must be an independent power button");
+static_assert(MURPHY_M4.touch.controller == TouchController::Ft6336u && MURPHY_M4.touch.irq == 46 &&
+                  MURPHY_M4.touch.reset == 7 && MURPHY_M4.touch.sda == 13 && MURPHY_M4.touch.scl == 12 &&
+                  MURPHY_M4.touch.i2cAddress == 0x2E && MURPHY_M4.touch.powerEnable == 45 &&
+                  MURPHY_M4.touch.irqActiveLow && MURPHY_M4.touch.swapXY && !MURPHY_M4.touch.powerEnableActiveHigh,
+              "Murphy M4 FT6336U profile must use official IRQ/reset/power wiring");
+static_assert(MURPHY_M4.sensors.i2cSda == 13 && MURPHY_M4.sensors.i2cScl == 12 && MURPHY_M4.sensors.rtcAddr == 0x32 &&
+                  MURPHY_M4.sensors.rtcType == RtcType::Rx8010 && MURPHY_M4.sensors.i2cBus == 1 &&
+                  MURPHY_M4.sensors.i2cHz == 400000,
+              "Murphy M4 RX8010 must use the shared native I2C1 bus at 400 kHz");
+static_assert(MURPHY_M4.frontlight.gpio == 47 && MURPHY_M4.frontlight.gpioWarm == 48 &&
+                  MURPHY_M4.frontlight.pwmFrequency == 25000 && MURPHY_M4.frontlight.pwmResolutionBits == 10 &&
+                  MURPHY_M4.frontlight.activeHigh,
+              "Murphy M4 frontlight must use official GPIO47/48 25 kHz 10-bit PWM");
+static_assert(MURPHY_M4.sdmmc.clk == 16 && MURPHY_M4.sdmmc.cmd == 15 && MURPHY_M4.sdmmc.d0 == 17 &&
+                  MURPHY_M4.sdmmc.d1 == 18 && MURPHY_M4.sdmmc.d2 == 11 && MURPHY_M4.sdmmc.d3 == 14 &&
+                  MURPHY_M4.sdmmc.busWidth == 4 && MURPHY_M4.sd.powerEnable == 10 && !MURPHY_M4.sd.powerActiveHigh,
+              "Murphy M4 SD must use 4-bit SDMMC with active-low rail power");
 
 // --- Silkscreen (X4-class GDEQ0426T82 panel on ESP32-S3) — SSD1677 + frontlight ---
 // Open-hardware reader mainboard, formerly "de-link":

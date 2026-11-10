@@ -36,6 +36,9 @@ class FreeInkDisplay {
   // Select panel geometry/controller before begin().
   void setDisplayX3();
   void setDisplayM5PaperColor();
+#if FREEINK_DEVICE_MURPHY_M4
+  void setMurphyM4Batch(MurphyM4Batch batch);
+#endif
 
   // M5 PaperColor: run the next refresh's OTP waveform to completion (one-shot).
   void requestCompleteWaveformNextRefresh();
@@ -478,6 +481,9 @@ class FreeInkDisplay {
 
   enum class PanelSel : uint8_t { X4, X3, M5 };
   PanelSel _panelSel = PanelSel::X4;
+#if FREEINK_DEVICE_MURPHY_M4
+  MurphyM4Batch _murphyM4Batch = defaultMurphyM4Batch();
+#endif
 
   // CrossPoint compatibility state (see the compatibility surface above).
   // _redRamSynced mirrors whether the X4 RED-RAM baseline is current (advisory);

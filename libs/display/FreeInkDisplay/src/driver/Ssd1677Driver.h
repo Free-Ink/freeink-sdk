@@ -11,6 +11,10 @@
 // Ssd1677Config. A board reuses the generic driver by passing its own config;
 // the firmware just calls the generic EInkDisplay API and gets device behavior.
 
+#if FREEINK_DEVICE_MURPHY_M4
+#include <MurphyM4Batch.h>
+#endif
+
 #include "PanelDriver.h"
 
 namespace freeink {
@@ -53,6 +57,8 @@ struct Ssd1677Config {
   // collapsing toward B/W). The X4 keeps the panel powered between fast
   // refreshes, so it never needs this and keeps stock behavior.
   bool grayPowerUpFirst = false;
+  // Murphy M4: the half-refresh temperature is also written before a window refresh.
+  bool windowRefreshUsesHalfTemp = false;
   // Configurations supporting the factory four-tone LUT advertise it.
   bool absoluteGrayscale = false;
   // Boards without characterized grayscale waveforms must not advertise AA.
@@ -168,7 +174,11 @@ class Ssd1677Driver : public PanelDriver {
 };
 
 // Singleton accessor (Meyers, zero-heap). Selects the config for the active board.
+#if FREEINK_DEVICE_MURPHY_M4
+PanelDriver& ssd1677Driver(MurphyM4Batch batch);
+#else
 PanelDriver& ssd1677Driver();
+#endif
 
 #if FREEINK_DEVICE_PICCO
 // Onyx Picco panel probe (cached): reads the panel ID over the display pins

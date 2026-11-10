@@ -159,6 +159,10 @@ void FreeInkDisplay::setDisplayM5PaperColor() {
   bufferSize = static_cast<uint32_t>(displayWidthBytes) * displayHeight;
 }
 
+#if FREEINK_DEVICE_MURPHY_M4
+void FreeInkDisplay::setMurphyM4Batch(const MurphyM4Batch batch) { _murphyM4Batch = batch; }
+#endif
+
 void FreeInkDisplay::selectDriver() {
   // Selection is purely _panelSel + the linked FREEINK_DRIVER_* set — no device
   // names. Multi-driver C3 builds pick X3 vs X4 via setDisplayX3(); single-driver
@@ -229,7 +233,11 @@ void FreeInkDisplay::selectDriver() {
 #if FREEINK_DRIVER_UC8279C
       _driver = &uc8279cA4Driver();
 #elif FREEINK_DRIVER_SSD1677
+#if FREEINK_DEVICE_MURPHY_M4
+      _driver = &ssd1677Driver(_murphyM4Batch);
+#else
       _driver = &ssd1677Driver();
+#endif
 #elif FREEINK_DRIVER_PAPER_MONO
       _driver = &paperMonoDriver();
 #elif FREEINK_DRIVER_UC8253_MURPHY

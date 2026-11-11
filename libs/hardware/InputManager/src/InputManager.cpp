@@ -727,7 +727,10 @@ bool InputManager::isPowerButtonPressed() const { return isPressed(BTN_POWER); }
 
 bool InputManager::hasTouch() const {
 #if FREEINK_CAP_TOUCH
-  return touchDataEnabled;
+  // The EEGO A4's controller boots in a background task. The board still has
+  // touch while that runs, so a screen laid out during boot must not be told
+  // otherwise; points only start arriving once the boot finishes.
+  return touchDataEnabled || __atomic_load_n(&gslInitRunning, __ATOMIC_ACQUIRE);
 #else
   return false;  // touch code not compiled in (FREEINK_CAP_TOUCH=0)
 #endif

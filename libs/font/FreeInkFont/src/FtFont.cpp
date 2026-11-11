@@ -68,6 +68,7 @@ constexpr uint32_t kTagItal = FT_MAKE_TAG('i', 't', 'a', 'l');
 constexpr uint32_t kTagSlnt = FT_MAKE_TAG('s', 'l', 'n', 't');
 constexpr uint32_t kTagGsub = FT_MAKE_TAG('G', 'S', 'U', 'B');
 constexpr uint32_t kTagGpos = FT_MAKE_TAG('G', 'P', 'O', 'S');
+constexpr uint32_t kTagGdef = FT_MAKE_TAG('G', 'D', 'E', 'F');
 constexpr uint32_t kTagTtcf = FT_MAKE_TAG('t', 't', 'c', 'f');
 
 uint16_t readBe16(const uint8_t* data) { return uint16_t(data[0]) * 256u + data[1]; }
@@ -346,12 +347,14 @@ void FtFont::freeGposTable() {
   if (gposTableOwned_) fontFree(const_cast<uint8_t*>(gposTable_));
   gposTable_ = nullptr;
   gposTableSize_ = 0;
+  gdefTable_ = nullptr;
+  gdefTableSize_ = 0;
   gposTableOwned_ = false;
 }
 
 void FtFont::setGposByteBudget(const size_t maxBytes) {
   gposByteBudget_ = maxBytes;
-  if (gposTableOwned_ && gposTableSize_ > gposByteBudget_) releaseKerningTable();
+  if (gposTableOwned_ && gposTableSize_ + gdefTableSize_ > gposByteBudget_) releaseKerningTable();
 }
 
 void FtFont::releaseKerningTable() {
@@ -700,7 +703,7 @@ int32_t FtFont::kerningGlyphs26_6(const GlyphId left, const GlyphId right, const
   // The parser returns font units; x_scale converts to 26.6 at this size.
   ensureGposLoaded();
   if (!gposTable_) return 0;
-  const int32_t funits = gpos::PairKernAdjustment(gposTable_, gposTableSize_, left, right);
+  const int32_t funits = gpos::PairKernAdjustment(gposTable_, gposTableSize_, left, right, gdefTable_, gdefTableSize_);
   if (funits == 0) return 0;
   return int32_t(std::clamp<FT_Long>(FT_MulFix(funits, face->size->metrics.x_scale), INT32_MIN, INT32_MAX));
 }
@@ -796,6 +799,7 @@ void FtFont::ensureGposLoaded() {
     if (findSfntTable(fontData_, fontDataSize_, kTagGpos, &table, &tableSize) && tableSize <= kMaxGsubBytes) {
       gposTable_ = table;
       gposTableSize_ = tableSize;
+      findSfntTable(fontData_, fontDataSize_, kTagGdef, &gdefTable_, &gdefTableSize_);
     }
     return;
   }
@@ -806,17 +810,28 @@ void FtFont::ensureGposLoaded() {
       length > gposByteBudget_) {
     return;
   }
+  FT_ULong gdefLength = 0;
+  const FT_Error gdefError = FT_Load_Sfnt_Table(face, kTagGdef, 0, nullptr, &gdefLength);
+  if (gdefError != 0 && gdefError != FT_Err_Table_Missing) return;
+  if (gdefError != 0) gdefLength = 0;
+  if (gdefLength > kMaxGsubBytes - length || gdefLength > gposByteBudget_ - length) return;
   // Fallible allocation, same policy as the GSUB copy: a missing GPOS table
   // just means no pair kerning, not a crash.
-  auto* buffer = static_cast<uint8_t*>(fontAlloc(length));
+  auto* buffer = static_cast<uint8_t*>(fontAlloc(length + gdefLength));
   if (!buffer) return;
   if (FT_Load_Sfnt_Table(face, kTagGpos, 0, buffer, &length) != 0) {
+    fontFree(buffer);
+    return;
+  }
+  if (gdefLength && FT_Load_Sfnt_Table(face, kTagGdef, 0, buffer + length, &gdefLength) != 0) {
     fontFree(buffer);
     return;
   }
   gposTable_ = buffer;
   gposTableSize_ = length;
   gposTableOwned_ = true;
+  gdefTable_ = gdefLength ? buffer + length : nullptr;
+  gdefTableSize_ = gdefLength;
 }
 
 uint32_t FtFont::ligatureGlyphId(const uint32_t* codepoints, const unsigned length) {

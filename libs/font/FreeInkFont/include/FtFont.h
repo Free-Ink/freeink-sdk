@@ -206,7 +206,8 @@ class FtFont : public RasterFont {
   void releaseLigatureTable();
 
   // GPOS analogues of the GSUB pair above, governing the kerning fallback's
-  // table cache. The stream budget matters more here than for GSUB: GPOS
+  // table cache, including GDEF data used for LookupFlag filtering. The stream
+  // budget covers GPOS + GDEF together. It matters more here than for GSUB: GPOS
   // cannot be resolved once and released (kern pairs are queried throughout
   // rendering), so a streamed face's owned copy stays resident — a rejected
   // or failed load simply disables GPOS kerning (legacy 'kern' still works).
@@ -285,6 +286,8 @@ class FtFont : public RasterFont {
   // for streamed ones, reset in deinit() because glyph IDs are face-local).
   const uint8_t* gposTable_ = nullptr;
   size_t gposTableSize_ = 0;
+  const uint8_t* gdefTable_ = nullptr;  // borrowed, or inside the owned GPOS allocation
+  size_t gdefTableSize_ = 0;
   bool gposTableOwned_ = false;
   bool gposLoadAttempted_ = false;
   size_t gposByteBudget_ = kMaxGsubBytes;

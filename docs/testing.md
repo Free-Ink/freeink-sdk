@@ -100,6 +100,7 @@ the configuration file, so the sensor's data path still needs a device.
 ```sh
 sh libs/font/FreeInkFont/test/host/run.sh
 sh libs/font/FreeInkFont/test/host/run_ligature.sh
+sh libs/font/FreeInkFont/test/host/run_gpos.sh
 ```
 
 Covers `FtFont::RenderOptions` (every `HintingMode` plus monochrome) against a
@@ -111,6 +112,11 @@ Covers `FtFont::ligature()`/`ligatureGlyphId()` (GSUB-based) against a real
 bundled font: exact-value assertions for the five standard Latin ligatures,
 the codepoint-vs-glyph-ID contract boundary, deinit()/re-init cache
 invalidation, and a null-pointer safety check on `Gsub::LigatureGlyphId`.
+
+The GPOS suite covers pair formats and extension lookups, GDEF-based LookupFlag
+filtering (glyph classes, mark attachment classes, and mark filtering sets), and
+truncated/corrupt tables under ASan/UBSan. It checks resident and streamed kerning,
+the combined GPOS/GDEF stream budget, and cache release/reinitialization.
 
 ## BLE HID host
 

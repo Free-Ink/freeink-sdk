@@ -3845,6 +3845,7 @@ void testGreekLayout() {
   CHECK(std::strcmp(keyboardAltOutputFor(lower, 0x3CA), "ΐ") == 0);
   CHECK(keyboardAltOutputFor(lower, 0x3C2) == nullptr);                // ς has no capital
   CHECK(std::strcmp(keyboardOutputFor(upper, ';'), ";") == 0);
+  CHECK(std::strcmp(keyboardAltOutputFor(upper, ';'), ":") == 0);     // held, ";" gives ":"
 }
 
 void testCompactLayoutsMatchBuiltin() {

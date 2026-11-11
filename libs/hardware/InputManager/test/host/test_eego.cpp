@@ -46,6 +46,14 @@ int main() {
   Wire = {};
   input.beginGslx680();
   assert(input.hasTouch());
+  // While the controller is still booting the board already reports touch, so
+  // a screen drawn in that window is not laid out for buttons.
+  input.touchDataEnabled = false;
+  input.gslInitRunning = true;
+  assert(input.hasTouch());
+  input.gslInitRunning = false;
+  assert(!input.hasTouch());
+  input.touchDataEnabled = true;
   // A successful ACK cannot hide a later failed upload or invalid firmware magic.
   Wire = {};
   Wire.failAt = 25;

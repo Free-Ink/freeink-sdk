@@ -1,9 +1,9 @@
 #include <BoardT5S3.h>
 
+#include <I2cBusLock.h>
 #include <InputManager.h>
 #include <SPI.h>
 #include <Wire.h>
-#include <cassert>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 
@@ -12,16 +12,6 @@ namespace {
 constexpr uint8_t PCA_REG_INPUT0 = 0x00;
 constexpr uint8_t PCA_REG_OUTPUT0 = 0x02;
 constexpr uint8_t PCA_REG_CONFIG0 = 0x06;
-
-SemaphoreHandle_t i2cMutex = nullptr;
-
-SemaphoreHandle_t ensureI2CMutex() {
-  if (i2cMutex == nullptr) {
-    i2cMutex = xSemaphoreCreateRecursiveMutex();
-    assert(i2cMutex != nullptr && "Failed to create I2C mutex");
-  }
-  return i2cMutex;
-}
 
 bool i2cWriteReg(uint8_t addr, uint8_t reg, const uint8_t* data, size_t len) {
   ScopedI2CLock lock;
@@ -71,20 +61,27 @@ bool updatePca9535Bit(uint8_t baseReg, uint8_t pin, bool high) {
 uint8_t inputButtonHook() { return readButton() ? static_cast<uint8_t>(1U << InputManager::BTN_DOWN) : 0; }
 }  // namespace
 
+// The SDK's shared I2C lock, not one of this layer's own: the GT911, the battery gauge and the
+// RTC are on this bus too, driven from other tasks, and LovyanGFX's panel task reaches the
+// PCA9535 and TPS65185 through the EPD power hooks on every refresh. Taken whether or not the
+// SDK helpers have been switched on yet, so this layer is serialised from its first transfer.
 ScopedI2CLock::ScopedI2CLock() {
-  xSemaphoreTakeRecursive(ensureI2CMutex(), portMAX_DELAY);
+  xSemaphoreTakeRecursive(freeink::i2cBusMutex(), portMAX_DELAY);
   locked_ = true;
 }
 
 ScopedI2CLock::~ScopedI2CLock() {
   if (locked_) {
-    xSemaphoreGiveRecursive(ensureI2CMutex());
+    xSemaphoreGiveRecursive(freeink::i2cBusMutex());
     locked_ = false;
   }
 }
 
 void beginI2C() {
-  ensureI2CMutex();
+  // From here on the SDK's I2C helpers (touch, battery gauge, RTC) take the same lock. As for
+  // every enableI2cBusLock() caller, this has to run before a second task uses the bus.
+  freeink::enableI2cBusLock();
+  ScopedI2CLock lock;
   Wire.begin(T5S3_SDA, T5S3_SCL);
   Wire.setClock(T5S3_I2C_FREQ);
   Wire.setTimeOut(50);

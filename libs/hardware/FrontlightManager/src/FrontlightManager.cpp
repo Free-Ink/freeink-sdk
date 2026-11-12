@@ -6,8 +6,8 @@
 #endif
 
 #if FREEINK_CAP_FRONTLIGHT
-#include <M5Pm1.h>
 #include <I2cBusLock.h>
+#include <M5Pm1.h>
 #include <Wire.h>
 #include <driver/gpio.h>  // gpio_hold_en/dis in prepareForDeepSleep()/begin()
 
@@ -28,7 +28,7 @@
 // to the firmware Serial and the crash-report ring buffer.
 #include <Logging.h>
 #if FREEINK_DEVICE_EEGO_A4
-#include <esp_mac.h>
+#include <EegoDeviceId.h>
 
 #include "EegoUnlitUnits.h"
 #endif
@@ -204,9 +204,8 @@ void FrontlightManager::begin() {
     digitalWrite(i2c.enable, LOW);
     if (!detected) return;
     // The controller is fitted on some unlit units too; stock lists those.
-    uint8_t mac[6] = {};
-    if (esp_efuse_mac_get_default(mac) == ESP_OK &&
-        freeink::eegoA4UidHasNoFrontlight(static_cast<uint32_t>(mac[3]) << 16 | mac[4] << 8 | mac[5])) {
+    uint32_t uid = 0;
+    if (freeink::readEegoA4Uid(uid) && freeink::eegoA4UidHasNoFrontlight(uid)) {
       return;
     }
 

@@ -214,12 +214,18 @@ class PanelDriver {
   virtual void requestResync(uint8_t settlePasses) { (void)settlePasses; }
   // True while the host presents book pages; drivers with a reading waveform use it.
   virtual void setReaderRefresh(bool reading) { (void)reading; }
-  // One-shot host work to run while the next page-turn waveform drives the
-  // panel, when the CPU would otherwise only poll BUSY. A driver that takes it
-  // calls it at most once, on the calling thread, after the waveform has
-  // started; it must not touch the display or the bus. The host clears it with
-  // nullptr after the display call, since not every refresh runs it. Default:
-  // ignored, the hook never runs.
+  // One-shot host work to run while a page-turn waveform drives the panel,
+  // when the CPU would otherwise only poll BUSY. The hook lasts for exactly one
+  // display call: set it right before display() or displayGray(); a driver
+  // that takes it calls it at most once during that call, on the calling
+  // thread, after the waveform has started, and clears it before the call
+  // returns whether or not it ran. Not every refresh runs it.
+  // The hook must not touch the bus or the display, and must not write the
+  // display's frame buffer: it draws only into buffers of its own. It runs
+  // inside the display call, so with FreeInkDisplay's power-management lock
+  // held and with whatever the host holds around its display calls (in
+  // CrossPoint, the render lock); a hook that takes one of those, or waits on
+  // something that does, deadlocks. Default: ignored, the hook never runs.
   virtual void setRefreshIdleHook(void (*hook)(void* ctx), void* ctx) {
     (void)hook;
     (void)ctx;

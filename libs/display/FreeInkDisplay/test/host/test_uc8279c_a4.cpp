@@ -243,13 +243,44 @@ int main() {
     gray3Page(page.data(), RefreshMode::Fast);
     assert(calls.count == 2 && bus.busyWaits == waits + 2 && "a hook whose waveform never started must not run");
 
-    // A B/W refresh never runs it, and clearing it keeps it from running later.
+    // The hook lasts for one display call. A B/W refresh never runs it and
+    // still ends it, so it cannot fire on a later page turn.
     driver.setRefreshIdleHook(hook, &calls);
     driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, false);
     assert(calls.count == 2 && "the hook must not run during a B/W refresh");
+    gray3Page(page.data(), RefreshMode::Fast);
+    assert(calls.count == 2 && "a hook set before a B/W refresh must not survive it");
+
+    // Nor does a four-gray image.
+    {
+      std::vector<uint8_t> planes(bytes, 0x5a);
+      driver.beginGrayscale(bus, bw.data(), GrayscaleMode::Direct, RefreshMode::Half, false);
+      driver.copyGrayscaleLsb(bus, planes.data());
+      driver.copyGrayscaleMsb(bus, planes.data());
+      driver.setRefreshIdleHook(hook, &calls);
+      driver.displayGray(bus, bw.data(), false, nullptr, true);
+      assert(calls.count == 2 && "the hook must not run during a four-gray refresh");
+      gray3Page(page.data(), RefreshMode::Fast);
+      assert(calls.count == 2 && "a hook set before a four-gray refresh must not survive it");
+    }
+
+    // First text page after a B/W screen: the base goes out as a B/W refresh
+    // inside the same call, and the hook still runs during the Gray3 refresh.
+    driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, false);
+    before = bus.refreshes;
+    driver.beginGrayscale(bus, page.data(), GrayscaleMode::Overlay, RefreshMode::Fast, false);
+    driver.writeGrayscalePlaneStrip(bus, GrayPlane::Lsb, lsbMask.data(), 0, 552);
+    driver.writeGrayscalePlaneStrip(bus, GrayPlane::Msb, msbMask.data(), 0, 552);
+    driver.setRefreshIdleHook(hook, &calls);
+    driver.displayGray(bus, page.data(), false, nullptr, false);
+    assert(bus.refreshes == before + 2 && calls.count == 3 && calls.refreshesAtCall == before + 2 &&
+           "the hook runs during the Gray3 refresh, not the B/W base before it");
+
+    // A hook cleared by the host does not run.
+    driver.setRefreshIdleHook(hook, &calls);
     driver.setRefreshIdleHook(nullptr, nullptr);
     gray3Page(page.data(), RefreshMode::Fast);
-    assert(calls.count == 2 && "a cleared hook must not run");
+    assert(calls.count == 3 && "a cleared hook must not run");
     bus.busyPollsPerRefresh = 0;
   }
 

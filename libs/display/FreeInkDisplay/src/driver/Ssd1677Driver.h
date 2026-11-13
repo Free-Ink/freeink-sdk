@@ -74,6 +74,10 @@ struct Ssd1677Config {
   const unsigned char* fullLut = nullptr;
   const unsigned char* halfLut = nullptr;
   const unsigned char* readerFastLut = nullptr;  // FAST while reading; nullptr uses fastLut (stock YRD/OPM use OTP)
+  // 110-byte one-pass reader text waveform (LUT0 black, LUT1 held white, LUT2
+  // gray, LUT3 white), activated with 0xCC. Supplying one enables the combined
+  // text pass on an 800x480 PSRAM board; nullptr leaves it to the board default.
+  const unsigned char* textAaLut = nullptr;
   bool piccoStockGrayscale = false;  // YRD/OPM: 105-byte gray tables and OTP reader waveform.
   bool piccoWaveforms = false;  // BOOX panel-specific power sequences.
 };
@@ -144,6 +148,7 @@ class Ssd1677Driver : public PanelDriver {
 
  private:
   X4ProTextAa _textAa;
+  const unsigned char* _textLut = nullptr;
   uint8_t* _piccoOld = nullptr;
   uint8_t* _piccoGrayMask = nullptr;
   bool _piccoGrayPending = false;

@@ -427,6 +427,46 @@ static void expectNightGray2677(Ssd2677Driver& s) {
   s.setReaderRefresh(false);
 }
 
+// DEPG0397 reader pages: one combined activation, no separate B/W base. Other
+// SSD1677 panels keep the two-pass overlay.
+static void expectOnePassTextAa(Ssd1677Driver& d, bool expected) {
+  EpdBus bus;
+  Bytes base(48000, 0xFF), lsb(48000, 0), msb(48000, 0), next(48000, 0xFF);
+  base[0] = 0x1F;  // 3 px black
+  lsb[0] = 0x18;   // then 2 px gray, in the base as white
+  msb[0] = 0x08;
+  d.display(bus, base.data(), nullptr, RefreshMode::Full, false);
+  d.setReaderRefresh(true);
+  const auto caps = d.grayscaleCapabilities(GrayscaleMode::Overlay);
+  assert((caps.base == GrayscaleBase::Combined) == expected);
+  if (!expected) {
+    d.setReaderRefresh(false);
+    return;
+  }
+  bus.clear();
+  d.beginGrayscale(bus, base.data(), GrayscaleMode::Overlay, RefreshMode::Fast, false);
+  d.copyGrayscaleLsb(bus, lsb.data());
+  d.copyGrayscaleMsb(bus, msb.data());
+  assert(bus.writes.empty());  // nothing presented before the combined pass
+  d.displayGray(bus, base.data(), false, nullptr, false);
+  unsigned activations = 0;
+  for (const auto& w : bus.writes) activations += w.command == 0x20;
+  assert(activations == 1 && lastRegister(bus, 0x22) == 0xCC && d._textAa.onPanel());
+  // The panel's own table, with its voltage tail, not the X4 Pro one.
+  assert(*lastLut(bus) == Bytes(lut_picco_depg_text, lut_picco_depg_text + 105));
+  assert(lastRegister(bus, 0x2C) == lut_picco_depg_text[109]);
+  d.cleanupGrayscaleBuffers(bus, base.data());
+  // Leaving the reader: gray pixels are driven to the new page, black/white are differential.
+  d.setReaderRefresh(false);
+  bus.clear();
+  d.display(bus, next.data(), nullptr, RefreshMode::Fast, false);
+  const Bytes* red = nullptr;
+  for (const auto& w : bus.writes)
+    if (w.command == 0x26) red = &w.bytes;
+  assert(red && (*red)[0] == 0x07 && (*red)[1] == 0xFF);
+  assert(lastRegister(bus, 0x22) == 0x0C);  // stays a fast refresh
+}
+
 int main(int argc, char** argv) {
   const char* which = argc > 1 ? argv[1] : "yrd";
   static const uint8_t yrd[10] = {0xCA, 0xFE, 0x00, 0x16, 0x77, 0x02, 0x10, 0x01, 0x00, 0x91};
@@ -695,6 +735,11 @@ int main(int argc, char** argv) {
       assert(bus.writes[i].command == commands[i]);
       assert(bus.writes[i].bytes == data[i]);
     }
+  }
+  if (argc > 2 && !strcmp(argv[2], "textaa")) {
+    expectOnePassTextAa(d, variant == PiccoDepg0397);
+    std::printf("Picco %s: one-pass text AA passed\n", which);
+    return 0;
   }
   if (argc > 2 && !strcmp(argv[2], "retained")) {
     expectRetainedGrayStrip(d);

@@ -77,13 +77,15 @@ class OpdsClient {
   const std::string& refreshUrl() const { return tokenRefreshUrl; }
   bool useBasicAuth() const { return basicAuthLatched; }
   bool credentialsMissing() const { return credentialsMissingFlag; }
-  // True when the last fetchFeed() drove a 401 auth handshake, so the token
-  // state may have changed (or been cleared) and should be persisted. Lets the
-  // caller skip an SD write on the common already-authorized path.
+  // True when fetchFeed() or authenticateDownload() changed or cleared token
+  // state during a 401 handshake; persist it before the next operation.
   bool tokensDirty() const { return authDirty; }
   // Auth block for an app-side request (e.g. the file download) that must carry
   // the same credentials the client negotiated.
   HttpAuth downloadAuth() const;
+  // After a same-origin download 401, renew/login once. The caller must check
+  // the URL belongs to its configured server and bound retries to one.
+  bool authenticateDownload(const std::string& url);
 
  private:
   OpdsTransport& http;
@@ -104,6 +106,7 @@ class OpdsClient {
   void* statusCtx = nullptr;
 
   HttpAuth currentAuth() const;
+  bool handleUnauthorized(const std::string& url, int attempt);
   void notify(ClientPhase phase) const {
     if (statusFn) statusFn(statusCtx, phase);
   }

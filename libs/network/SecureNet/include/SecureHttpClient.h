@@ -354,6 +354,30 @@ class SecureHttpClient {
     return found == _responseHeaders.end() ? "" : found->value;
   }
 
+  // Join a list-valued field (e.g. WWW-Authenticate) without copying unrelated
+  // headers. Pass a lowercased name; do not use for Set-Cookie.
+  std::string getCombinedHeader(const char* lowercaseName) const {
+    size_t bytes = 0;
+    size_t count = 0;
+    for (const auto& header : _responseHeaders) {
+      if (header.name == lowercaseName) {
+        bytes += header.value.size();
+        ++count;
+      }
+    }
+    std::string value;
+    if (count == 0) return value;
+    value.reserve(bytes + 2 * (count - 1));
+    bool first = true;
+    for (const auto& header : _responseHeaders) {
+      if (header.name != lowercaseName) continue;
+      if (!first) value += ", ";
+      value += header.value;
+      first = false;
+    }
+    return value;
+  }
+
   // Borrow one unambiguous response header without copying the header collection
   // or its values. Pass a lowercased name. Null means absent or duplicated;
   // the pointer stays valid only until begin(), another request, or destruction.

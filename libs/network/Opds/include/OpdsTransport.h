@@ -34,6 +34,8 @@ struct HttpAuth {
 struct HttpResult {
   bool ok = false;
   int status = 0;
+  std::string wwwAuthenticate;  // capture for authentication probes
+  bool redirected = false;    // final response is from another origin
 };
 
 // Body-chunk sink for a streaming GET; return false to abort the transfer.

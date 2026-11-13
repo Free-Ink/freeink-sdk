@@ -886,7 +886,7 @@ static void testLegacyTextStrips() {
 
 static void testTextAaCharge() {
   X4ProTextAa aa;
-  aa.allocate(true);
+  aa.allocate(true, 100, 480);
   assert(aa.ready());
   Bytes base(48000, 0xff), zero(48000, 0);
   base[0] = 0x7f;
@@ -919,9 +919,22 @@ static void testTextAaCharge() {
   assert(!aa.onPanel() && !aa._chargeValid);
   fakeHeapCapsFail = true;
   X4ProTextAa failed;
-  failed.allocate(true);
+  failed.allocate(true, 100, 480);
   assert(!failed.ready());
   fakeHeapCapsFail = false;
+  // Sized to the panel: a 768x552 page stages in strips and composes whole.
+  X4ProTextAa other;
+  other.allocate(true, 96, 552);
+  Bytes page(96 * 552, 0xff), mask(96 * 552, 0);
+  page.back() = 0xfe;
+  mask.back() = 0x02;
+  other.begin(page.data());
+  for (unsigned y = 0; y < 552; y += 184)
+    for (unsigned plane = 0; plane < 2; ++plane) other.stage(plane, mask.data() + y * 96, y, 184);
+  assert(other.planeComplete(0) && other.planeComplete(1) && other.compose());
+  assert(other.high()[96 * 552 - 1] == 0xfc && other.low()[96 * 552 - 1] == 0xfe);
+  other.stage(0, mask.data(), 552, 1);  // past the last row
+  assert(!other.planeComplete(0));
 }
 
 template<class Driver>

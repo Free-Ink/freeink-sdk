@@ -119,6 +119,17 @@ static const Ssd1677Config& ssd1677StickyConfig() {
   return cfg;
 }
 
+// The Sticky itself adds the one-pass reader text table. Boards that borrow the
+// config above (Waveshare 3.97, unrecognized Picco panels) keep the overlay.
+static const Ssd1677Config& ssd1677StickyTextConfig() {
+  static const Ssd1677Config cfg = [] {
+    Ssd1677Config c = ssd1677StickyConfig();
+    c.textAaLut = lut_sticky_text;
+    return c;
+  }();
+  return cfg;
+}
+
 #if FREEINK_DEVICE_METALIO_EINK4
 // GDEM0397T81 settings from metalio-hw-test. B/W refreshes use its OTP waveforms
 // via the vendor 0x22 sequence values; the vendor's separately supplied partial
@@ -398,7 +409,7 @@ void Ssd1677Driver::begin(EpdBus& bus) {
   _textLut = _cfg.textAaLut;
   if (!_textLut && (BoardConfig::ACTIVE.board == BoardConfig::Board::XteinkX4Pro || BoardConfig::isX4Classic()))
     _textLut = kX4ProTextSsd1677;
-  _textAa.allocate(_textLut && _w == 800 && _h == 480);
+  _textAa.allocate(_textLut != nullptr, _wb, _h);
   bus.reset();
   initController(bus);
 #if FREEINK_DEVICE_PICCO
@@ -1327,7 +1338,7 @@ static const Ssd1677Config& ssd1677ActiveConfig() {
 #if FREEINK_DEVICE_METALIO_EINK4
     case BoardConfig::Board::MetalioEInk4: return ssd1677MetalioConfig();
 #endif
-    case BoardConfig::Board::Sticky: return ssd1677StickyConfig();
+    case BoardConfig::Board::Sticky: return ssd1677StickyTextConfig();
     // Waveshare ESP32-S3-ePaper-3.97: the vendor driver's bring-up is byte-identical
     // to Seeed's (booster AE C7 C3 C0 80, border 0x01, 0x22 = F7 full / FF partial /
     // D7 fast), so it runs the same config. Grayscale LUT is Sticky's — same panel

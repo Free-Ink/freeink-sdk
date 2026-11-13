@@ -38,7 +38,7 @@ The original pin map and controller details came from stock-firmware analysis
 | Buttons | UP 5 and DOWN 7 active-low; POWER 8 active-high with INPUT_PULLDOWN |
 | Battery | **CW2015** fuel gauge at I²C 0x62 on SDA 2 / SCL 1 (shared with touch and RTC), probed at runtime; ADC GPIO 10 (divider ×1.559) when the gauge does not answer. Charge status GPIO 11 |
 | Touch | **GSLX680** — SDA 2, SCL 1, RST 3, addr 0x40. Firmware blob uploaded at boot (`gsl/EegoA4GslFirmware.h`, extracted + hash-verified); backend in InputManager, with a multi-touch snapshot mirroring the GT911 contract (track IDs from each record's high nibble, up to 4 stored / 5 reported contacts). |
-| Touch mapping | Calibration in `pollGslx680` returns panel-native X 0..767 / Y 0..551; profile swap/flip disabled |
+| Touch mapping | `pollGslx680` maps the digitizer (raw ~0..920 x 0..680) linearly to panel-native X 0..767 / Y 0..551; the profile range 12..779 / 28..553, fitted from hardware taps, trims it; profile swap/flip disabled |
 | Screen key | GSL sentinel `rawX=0x03a0, rawY=0x1020`; short press = Back, 700 ms hold = Home |
 | RTC | **PCF8563** at 0x51, on the **shared touch I2C bus** (SDA 2 / SCL 1), 400 kHz |
 | Power latch | GPIO 4 (held to stay powered) |
@@ -119,8 +119,8 @@ Build with `-DFREEINK_DEVICE_EEGO_A4=1`; see the `eego_a4` environment in
   touch, PCF8563 RTC, dedicated HSPI SD bus, and GPIO4 power latch.
 - `Uc8279cA4Driver` uses the shared `PanelDriver` / `EpdBus` interfaces with
   external Full/Fast/Gray LUTs, bottom-up scan, and padding to 600 panel RAM rows.
-- `InputManager` uploads the GSLX680 firmware and applies calibration in
-  `pollGslx680`, returning panel-native coordinates without a second profile transform.
+- `InputManager` uploads the GSLX680 firmware and maps samples linearly to
+  panel-native coordinates in `pollGslx680`; the profile's raw range trims the result.
 - `BatteryMonitor` probes the CW2015 once. When it answers, a sleeping gauge is
   woken and the 64-byte BATINFO battery profile is compared with the stock
   3.7 V 2000 mAh profile; an empty or different profile is uploaded (profile

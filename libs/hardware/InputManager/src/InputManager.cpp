@@ -2087,56 +2087,14 @@ void InputManager::gslInitBody() {
 #endif
 }
 
-// EEGO A4 stock factory touch calibration: four corner points fanned around a
-// centre point, each mapping a raw GSLX680 sample to a portrait screen pixel.
-// A sample is interpolated barycentrically inside the centre/corner/corner
-// triangle that contains it, then clamped to the 552x768 portrait screen.
-namespace {
-struct GslCalPoint {
-  int32_t rawX, rawY, screenX, screenY;
-};
-constexpr GslCalPoint GSL_CAL_CENTRE = {549, 337, 276, 306};
-constexpr GslCalPoint GSL_CAL_CORNERS[4] = {
-    {720, 94, 80, 168}, {694, 560, 472, 168}, {392, 558, 472, 444}, {374, 97, 80, 444}};
-
-int32_t roundedDiv(int64_t num, int64_t den) {
-  if (den < 0) {
-    num = -num;
-    den = -den;
-  }
-  return static_cast<int32_t>(num >= 0 ? (num + den / 2) / den : -((-num + den / 2) / den));
-}
-}  // namespace
-
+// EEGO A4 touch mapping: the digitizer is portrait (raw ~0..920 x 0..680) and
+// maps linearly onto the 552x768 portrait screen. The profile's raw range then
+// trims and rescales the result (fitted from hardware taps on known targets).
 void InputManager::gslCalibrate(const uint16_t rawX, const uint16_t rawY, int16_t& screenX, int16_t& screenY) {
-  const auto& c = GSL_CAL_CENTRE;
-  const int64_t dx = static_cast<int32_t>(rawX) - c.rawX;
-  const int64_t dy = static_cast<int32_t>(rawY) - c.rawY;
-  // The triangle whose two corners bracket the sample; the last one otherwise.
-  int a = 3;
-  int b = 0;
-  for (int i = 0; i < 4; ++i) {
-    const auto& p = GSL_CAL_CORNERS[i];
-    const auto& q = GSL_CAL_CORNERS[(i + 1) % 4];
-    const int64_t px = p.rawX - c.rawX, py = p.rawY - c.rawY;
-    const int64_t qx = q.rawX - c.rawX, qy = q.rawY - c.rawY;
-    if (px * dy - py * dx >= 0 && qy * dx - qx * dy >= 0) {
-      a = i;
-      b = (i + 1) % 4;
-      break;
-    }
-  }
-  const auto& p = GSL_CAL_CORNERS[a];
-  const auto& q = GSL_CAL_CORNERS[b];
-  const int64_t px = p.rawX - c.rawX, py = p.rawY - c.rawY;
-  const int64_t qx = q.rawX - c.rawX, qy = q.rawY - c.rawY;
-  const int64_t den = px * qy - qx * py;
-  const int64_t wp = dx * qy - qx * dy;  // weight of p, times den
-  const int64_t wq = px * dy - dx * py;  // weight of q, times den
-  const int32_t x = c.screenX + roundedDiv(wp * (p.screenX - c.screenX) + wq * (q.screenX - c.screenX), den);
-  const int32_t y = c.screenY + roundedDiv(wp * (p.screenY - c.screenY) + wq * (q.screenY - c.screenY), den);
-  screenX = static_cast<int16_t>(x < 0 ? 0 : (x > 551 ? 551 : x));
-  screenY = static_cast<int16_t>(y < 0 ? 0 : (y > 767 ? 767 : y));
+  const uint32_t limitedX = rawX > 920 ? 920 : rawX;
+  const uint32_t limitedY = rawY > 680 ? 680 : rawY;
+  screenX = static_cast<int16_t>(limitedY * 551 / 680);
+  screenY = static_cast<int16_t>((920 - limitedX) * 767 / 920);
 }
 
 void InputManager::pollGslx680(const unsigned long now) {
@@ -2206,13 +2164,13 @@ void InputManager::pollGslx680(const unsigned long now) {
     if (sampleX == 0 && sampleY == 0) continue;
     // A Home-pad report can carry a low-X phantom contact. Filter it only
     // alongside the key sentinel: ordinary bottom-edge glass samples also
-    // have X < 64 after factory calibration (for example X=51 at y=720).
+    // have X < 64 (for example X=51 near the bottom of the screen).
     if (anyKey && sampleX < 64) continue;
     ++survived;
     if (stored < MAX_TOUCH_CONTACTS) {
-      // Stock factory calibration to portrait screen pixels, then into the
-      // panel-native frame (x = portrait y, y = 551 - portrait x). The
-      // profile's raw range can still trim the result.
+      // Portrait screen pixels, then into the panel-native frame (x =
+      // portrait y, y = 551 - portrait x). The profile's raw range trims
+      // and rescales the result onto the drawn image.
       int16_t screenX = 0;
       int16_t screenY = 0;
       gslCalibrate(sampleX, sampleY, screenX, screenY);

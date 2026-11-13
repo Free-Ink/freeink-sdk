@@ -575,7 +575,7 @@ int main(int argc, char** argv) {
       return 0;
     }
     // Stock reader table: 24-frame drives, 1-frame top-ups. Text table: black, gray, held white, white.
-    const int stockDose[] = {1, -24, 24, -1}, textDose[] = {24, -2, -1, -24};
+    const int stockDose[] = {1, -24, 24, -1}, textDose[] = {24, 15, -1, -24};
     for (unsigned t = 0; t < 4; ++t) {
       assert(ssd2677LutDose(lut_picco_se0400_fast, t + 1) == stockDose[t]);
       assert(ssd2677LutDose(lut_picco_se0400_text, t + 1) == textDose[t]);

@@ -201,6 +201,21 @@ void testFastDrivesGrayAwayAndOnlyGray() {
   assert(!ramBit(last(bus, 0x10)->bytes, 3, 3));
 }
 
+void testFastWithoutAPreviousFrameIsAFullRefresh() {
+  EpdBus bus;
+  Uc8253MurphyDriver driver;
+  driver.begin(bus);
+  Bits page = blank(0xFF);
+  page.set(3, 3, false);
+  bus.clear();
+  driver.display(bus, page.data(), nullptr, RefreshMode::Fast, false);
+  assert(!std::memcmp(last(bus, 0x22)->bytes.data(), MURPHY_LUT_22_DEFAULT, sizeof(MURPHY_LUT_22_DEFAULT)));
+  assert(last(bus, 0x10)->bytes == last(bus, 0x13)->bytes);
+  bus.clear();
+  driver.display(bus, page.data(), page.data(), RefreshMode::Fast, false);
+  assert(!std::memcmp(last(bus, 0x22)->bytes.data(), MURPHY_LUT_22_FAST, sizeof(MURPHY_LUT_22_FAST)));
+}
+
 void testGrayPixelsClearWithoutAPreviousFrame() {
   const auto cfg = withGray();
   EpdBus bus;
@@ -212,8 +227,11 @@ void testGrayPixelsClearWithoutAPreviousFrame() {
   Bits next = blank(0xFF);
   bus.clear();
   driver.display(bus, next.data(), nullptr, RefreshMode::Fast, false);
-  assert(!ramBit(last(bus, 0x10)->bytes, 3, 3) && ramBit(last(bus, 0x13)->bytes, 3, 3));
-  assert(ramBit(last(bus, 0x10)->bytes, 9, 9));
+  assert(!std::memcmp(last(bus, 0x22)->bytes.data(), MURPHY_LUT_22_DEFAULT, sizeof(MURPHY_LUT_22_DEFAULT)));
+  assert(last(bus, 0x10)->bytes == last(bus, 0x13)->bytes);
+  bus.clear();
+  driver.display(bus, next.data(), next.data(), RefreshMode::Fast, false);
+  assert(ramBit(last(bus, 0x10)->bytes, 3, 3));  // a full refresh leaves no gray for FAST to clear
 }
 
 void testASecondNudgeWouldLiftGrayFurtherSoItIsRefused() {
@@ -332,6 +350,7 @@ int main() {
   testWithoutAGrayBankNothingChanges();
   testGrayBankIsBalancedAndSelectsByPlane();
   testFastDrivesGrayAwayAndOnlyGray();
+  testFastWithoutAPreviousFrameIsAFullRefresh();
   testGrayPixelsClearWithoutAPreviousFrame();
   testASecondNudgeWouldLiftGrayFurtherSoItIsRefused();
   testANudgeRightAfterAPageSkipsTheResetAndSwapsThePlanes();

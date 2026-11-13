@@ -15,11 +15,12 @@
 // forces SdFat's USE_UTF8_LONG_NAMES on for the whole build — without it,
 // SdFat mangles any non-ASCII long filename into an unopenable path.
 
-#include <WString.h>
-#include <vector>
-#include <string>
-#include <SdFat.h>
 #include <BoardConfig.h>
+#include <SdFat.h>
+#include <WString.h>
+
+#include <string>
+#include <vector>
 
 #if FREEINK_SD_SDMMC
 namespace freeink {
@@ -95,21 +96,25 @@ class SDCardManager {
   FsBlockDeviceInterface* rawBlockDevice();
   // End the FsVolume mount while keeping the block device alive for a raw
   // USB-MSC owner. The caller must reinitialize the manager (begin()) after the
-  // owner releases the card. Returns null when nothing is mounted.
+  // owner releases the card. Returns null when unmounted or a checked volume
+  // flush fails; a failed flush retains the firmware's mount.
   FsBlockDeviceInterface* detachFilesystemForRawAccess();
+  // Call after checked file saves have drained all writers. Flushes volume
+  // metadata without dropping the mount; failure leaves the card available.
+  bool syncFilesystem();
 #if FREEINK_SD_SDMMC
   // Stop the card for deep sleep: unmount the volume, stop the SDMMC host, and
   // float the bus pads so their pull-ups stop back-feeding the card's VDD net
   // through sleep. Idempotent; call only after all file users have stopped. A
   // deep-sleep wake resets the MCU and remounts through begin().
-  void shutdown();
+  bool shutdown();
 #else
   // SPI/SdFat boards: sleep either cuts power entirely (C3 Xteink) or gates the
   // SD rail in powerDownRailsForSleep(); there is no host to stop.
-  void shutdown() {}
+  bool shutdown() { return !initialized || syncFilesystem(); }
 #endif
 
- static SDCardManager& getInstance() { return instance; }
+  static SDCardManager& getInstance() { return instance; }
 
  private:
   static SDCardManager instance;

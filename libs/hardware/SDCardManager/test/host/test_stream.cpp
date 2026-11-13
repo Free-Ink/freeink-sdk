@@ -168,5 +168,29 @@ int main() {
   assert(yields == 2 && watchdogResets == 2);
   assert(slowPartial.data == fakeSd::data && fakeSd::closes == 1);
 
-  std::puts("SD stream tests passed (short/stalled writes, read errors, EOF, chunk limits, watchdog)");
+  SDCardManager checked;
+  assert(checked.begin());
+  for (int fault = 0; fault < 3; ++fault) {
+    fakeSd::rootOpenFails = fault == 0;
+    fakeSd::rootSyncFails = fault == 1;
+    fakeSd::rootCloseFails = fault == 2;
+    const auto ends = fakeSd::volumeEnds;
+    assert(!checked.syncFilesystem());
+    assert(!checked.shutdown());
+    assert(checked.ready());
+#if USE_BLOCK_DEVICE_INTERFACE || HAS_SDIO_CLASS
+    assert(checked.detachFilesystemForRawAccess() == nullptr);
+    assert(checked.ready());
+#endif
+    assert(fakeSd::volumeEnds == ends);
+  }
+  fakeSd::rootOpenFails = fakeSd::rootSyncFails = fakeSd::rootCloseFails = false;
+  assert(checked.syncFilesystem());
+  assert(checked.shutdown());
+#if USE_BLOCK_DEVICE_INTERFACE || HAS_SDIO_CLASS
+  const auto ends = fakeSd::volumeEnds;
+  assert(checked.detachFilesystemForRawAccess() != nullptr);
+  assert(fakeSd::volumeEnds == ends + 1 && !checked.ready());
+#endif
+  std::puts("SD stream/storage tests passed (stream errors; checked flush, shutdown and raw handoff)");
 }

@@ -394,8 +394,8 @@ static void expectNightGray(Ssd1677Driver& d) {
   d.setReaderRefresh(false);
 }
 
-// BOOX 2959 overlays reader AA on inverted SE0400 pages. The masks are packed
-// unmodified (MSB high, LSB low); the next page starts masked pixels opposite their target.
+// BOOX 2959 overlays reader AA on inverted SE0400 pages (MSB high, LSB low);
+// the next page starts masked pixels opposite their target.
 static void expectNightGray2677(Ssd2677Driver& s) {
   FreeInkDisplay display(1, 2, 3, 4, 5, 6);
   display._driver = &s;
@@ -612,8 +612,8 @@ int main(int argc, char** argv) {
     const Bytes* g = nullptr;
     for (const auto& w : bus.writes)
       if (w.command == 0x10) g = &w.bytes;
-    // px: (msb,lsb) = 11 11 01 01 | 10 10 00 00
-    assert(g && g->size() == 96000 && (*g)[0] == 0xF5 && (*g)[1] == 0xA0);
+    // px: both masks and LSB-only go out as 01, MSB-only as 10: 01 01 01 01 | 10 10 00 00
+    assert(g && g->size() == 96000 && (*g)[0] == 0x55 && (*g)[1] == 0xA0);
     s.displayGray(bus, newFb.data(), false, nullptr, false);
     for (const auto& w : bus.writes)
       if (w.command == 0x20) lut = &w.bytes;

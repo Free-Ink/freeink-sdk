@@ -10,7 +10,8 @@
 // previous frame in the high bit, the new frame in the low bit; the LUT picks
 // the transition. Init list, LUTs and bit packing are from the stock firmware
 // (build 2912). Grayscale is the stock overlay AA mode (slot-5 LUT): the LSB
-// and MSB masks are packed as the low/high bit of each pixel. Images use the panel's dedicated
+// and MSB masks are packed as the low/high bit of each pixel, with dark pixels
+// (both masks) sent as LSB-only on the Picco. Images use the panel's dedicated
 // slot-4 waveform with the two complete image planes.
 //
 // The newer Seeed Sticky carries the same controller with OTP waveforms: its
@@ -70,7 +71,8 @@ class Ssd2677Driver : public PanelDriver {
  private:
   void initPanel(EpdBus& bus);
   void latchOtpWaveform(EpdBus& bus, uint8_t code);
-  void sendPacked(EpdBus& bus, const uint8_t* hi, const uint8_t* lo);
+  // exclusive: clear the high bit wherever the low bit is set.
+  void sendPacked(EpdBus& bus, const uint8_t* hi, const uint8_t* lo, bool exclusive = false);
   bool ensureLsb();
   void powerOn(EpdBus& bus);
   void powerAndRefresh(EpdBus& bus, bool turnOff);

@@ -223,7 +223,7 @@ void Ssd2677Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev,
   _needsInitialFull = false;
 }
 
-void Ssd2677Driver::sendPacked(EpdBus& bus, const uint8_t* hi, const uint8_t* lo) {
+void Ssd2677Driver::sendPacked(EpdBus& bus, const uint8_t* hi, const uint8_t* lo, bool exclusive) {
   const PanelGeometry g = geometry();
   static uint8_t chunk[1024];
   // The Sticky panel scans rows bottom-to-top relative to the framebuffer
@@ -236,7 +236,9 @@ void Ssd2677Driver::sendPacked(EpdBus& bus, const uint8_t* hi, const uint8_t* lo
     const uint32_t row = static_cast<uint32_t>(reversed ? g.height - 1 - r : r) * g.widthBytes;
     for (uint16_t xb = 0; xb < g.widthBytes; ++xb) {
       // A null plane is all white (0xFF), stock's begin-time seed.
-      packPixels(hi ? hi[row + xb] : 0xFF, lo ? lo[row + xb] : 0xFF, &chunk[n]);
+      const uint8_t low = lo ? lo[row + xb] : 0xFF;
+      const uint8_t high = hi ? hi[row + xb] : 0xFF;
+      packPixels(exclusive ? static_cast<uint8_t>(high & ~low) : high, low, &chunk[n]);
       n += 2;
       if (n == sizeof(chunk)) {
         txn.writeBytes(chunk, n);
@@ -331,10 +333,13 @@ void Ssd2677Driver::copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
   // + init so the gray LUT runs from the same controller state as on the Picco,
   // which never latches one. Reset leaves the glass as it is.
   if (isSticky()) initPanel(bus);
-  // Stock (FUN_42286a70): MSB mask in the high bit, LSB mask in the low bit.
+  // Stock (0x4228b030): MSB mask in the high bit, LSB mask in the low bit.
   // The Picco's stock AA powers on before the upload (0x4200bad0).
   if (!isSticky()) powerOn(bus);
-  sendPacked(bus, msb, _lsb);
+  // lut_picco_se0400_gray lightens code 01 by 3 frames and code 10 by 4 and
+  // leaves code 11 undriven. Dark pixels set both masks, so the Picco sends
+  // them as 01; light pixels (MSB only) stay 10.
+  sendPacked(bus, msb, _lsb, !isSticky());
   if (!isSticky()) {
     // The vendor retains the MSB mask to correct the next B/W transition.
     memcpy(_lsb, msb, geometry().bufferSize);

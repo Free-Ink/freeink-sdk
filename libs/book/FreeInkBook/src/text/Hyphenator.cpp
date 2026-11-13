@@ -72,7 +72,7 @@ bool Hyphenator::init(const uint8_t* data, uint32_t len) {
   if (version != 1) return false;
   maxPatLen_ = data[6];
   const uint32_t count = getU32(data + 8);
-  if (len < 12 + count * 4) return false;
+  if (count > (len - 12) / 4) return false;
   data_ = data;
   offsets_ = reinterpret_cast<const uint32_t*>(data + 12);
   blob_ = data + 12 + count * 4;

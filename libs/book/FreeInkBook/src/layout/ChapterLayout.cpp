@@ -669,7 +669,8 @@ class ImageCollector : public XmlHandler {
       for (uint16_t i = 0; i < count_ && !known; ++i) {
         known = table_[i].hrefHash == hash;
       }
-      if (!known) {
+      // stopParse only takes effect between parse chunks; more <img> still arrive.
+      if (!known && count_ < cap_) {
         table_[count_].hrefHash = hash;
         table_[count_].info = ImageInfo{};
         if (++count_ >= cap_) stopParse = true;  // rest fall back to inline probes
@@ -1015,7 +1016,9 @@ class LayoutEngine : public XmlHandler {
   }
 
   void appendRaw(char c) {
-    if (parLen_ + 1 >= kParTextCap) {
+    // Cut before a lead byte when its sequence might not fit, never mid-codepoint.
+    const bool lead = (static_cast<uint8_t>(c) & 0xC0) != 0x80;
+    if (parLen_ + 1 >= kParTextCap || (lead && parLen_ + 4 >= kParTextCap)) {
       // Pathological paragraph: flush what we have and continue seamlessly.
       const ParaStyle style = para_;
       flushParagraph();
@@ -1070,8 +1073,8 @@ class LayoutEngine : public XmlHandler {
   }
 
   int16_t lineHeightFor(uint16_t sizePx) const {
-    return static_cast<int16_t>(static_cast<int32_t>(params_.font->lineHeight(sizePx)) *
-                                params_.lineSpacingPct / 100);
+    const int32_t h = static_cast<int32_t>(params_.font->lineHeight(sizePx)) * params_.lineSpacingPct / 100;
+    return static_cast<int16_t>(h < 1 ? 1 : h);  // callers divide by it and advance the page with it
   }
 
   uint16_t sizePxForPct(uint16_t sizePct) const {
@@ -1562,9 +1565,13 @@ class LayoutEngine : public XmlHandler {
       uint32_t i = rec.start;
       auto close = [&](uint32_t endPos, bool nextGap, bool nextSpace, bool nextScript,
                        bool nextCompress) {
-        if (endPos > segStart && segCount < 64) {
-          segs[segCount++] = {segStart, endPos, segSpan, segLevel,
-                              gapBefore, spaceBefore, scriptGap, compressBefore, segExtra};
+        if (endPos > segStart) {
+          if (segCount < 64) {
+            segs[segCount++] = {segStart, endPos, segSpan, segLevel,
+                                gapBefore, spaceBefore, scriptGap, compressBefore, segExtra};
+          } else {
+            segs[63].end = endPos;  // keep the text; only its per-gap stretch is lost
+          }
         }
         gapBefore = nextGap;
         spaceBefore = nextSpace;
@@ -1692,7 +1699,9 @@ class LayoutEngine : public XmlHandler {
     }
     const uint8_t runFlags = static_cast<uint8_t>(sg.span->flags | sg.extraFlags);
     const uint32_t segLen = sg.end - sg.start;
-    const uint32_t copyLen = segLen + segLen / 2 + (addHyphen ? 1u : 0u) + 4;
+    // 2x: plain-text input is not validated UTF-8, and a stray continuation
+    // byte re-encodes as two bytes.
+    const uint32_t copyLen = segLen * 2 + (addHyphen ? 1u : 0u) + 4;
     if (runCount_ >= kMaxRunsPerPage) {
       emitPage();
       if (stopParse) return false;
@@ -1719,7 +1728,7 @@ class LayoutEngine : public XmlHandler {
       if (sg.level & 1) cp2 = bidiMirror(cp2);
       outLen += encodeUtf8(cp2, copy + outLen);
     }
-    if (sg.level & 1) reverseUtf8(copy, outLen);  // store visual order (L2)
+    if ((sg.level & 1) && outLen > 1) reverseUtf8(copy, outLen);  // store visual order (L2)
     if (addHyphen) {
       copy[outLen++] = '-';
       segWidth += params_.font->advance('-', spanSizePx(*sg.span), runFlags);

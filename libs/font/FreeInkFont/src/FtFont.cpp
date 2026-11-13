@@ -868,7 +868,8 @@ uint32_t FtFont::ligature(const uint32_t left, const uint32_t right, uint8_t) {
     sequence[2] = right;
     length = 3;
     candidates[0] = right == 'i' ? 0xFB03 : 0xFB04;  // ffi / ffl
-    candidateCount = 2;
+    candidates[1] = 0;
+    candidateCount = 1;
   } else if (left == 'f' && (right == 'f' || right == 'i' || right == 'l')) {
     sequence[0] = left;
     sequence[1] = right;

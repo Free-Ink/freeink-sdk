@@ -921,7 +921,7 @@ void Ssd1677Driver::displayImpl(EpdBus& bus, const uint8_t* fb, const uint8_t* p
 
 void Ssd1677Driver::displayWindow(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, uint16_t x, uint16_t y,
                                   uint16_t w, uint16_t h, bool turnOff) {
-  if (x + w > _w || y + h > _h) return;
+  if (w == 0 || h == 0 || x + w > _w || y + h > _h) return;
   if (x % 8 != 0 || w % 8 != 0) return;  // window must be byte-aligned
   if (!fb) return;
   if (_cfg.piccoWaveforms) {

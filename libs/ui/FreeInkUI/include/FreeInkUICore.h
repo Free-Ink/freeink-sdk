@@ -848,6 +848,8 @@ inline void layoutText(const DrawTarget &target, const Rect rect,
     }
     ranges[lineCount++] = Range{lineStart, fitLen, false};
     p = lineStart + fitLen;
+    while (*p == ' ')
+      ++p; // trailing spaces belong to this line
     if (*p == '\n')
       ++p;
   }
@@ -956,6 +958,10 @@ public:
   int16_t lineHeight(FontId font) const override {
     return inner_.lineHeight(font);
   }
+  Rect inkBounds(FontId font, const char *text,
+                 TextStyle style) const override {
+    return inner_.inkBounds(font, text, style);
+  }
   void fill(Rect rect, Paint paint, uint8_t radius = 0,
             uint8_t corners = CornersAll) override {
     inner_.fill(rect, enabled_ ? invertedPaint(paint) : paint, radius, corners);
@@ -973,8 +979,10 @@ public:
   }
   void text(Rect rect, const char *text, TextStyle style) override {
     if (enabled_) {
-      style.color = invertedColor(style.color);
-      style.inverted = style.color == Color::White;
+      // Resolve `inverted` here and pass a plain colour on: targets disagree
+      // on whether `inverted` flips `color` or just means "paper".
+      style.color = style.inverted ? Color::Black : invertedColor(style.color);
+      style.inverted = false;
     }
     inner_.text(rect, text, style);
   }

@@ -397,7 +397,10 @@ class DisplayTarget final : public DrawTarget {
       cp = ((c0 & 0x0Fu) << 12) | ((static_cast<uint8_t>(s[1]) & 0x3Fu) << 6) | (static_cast<uint8_t>(s[2]) & 0x3Fu);
       return 3;
     }
-    if ((c0 & 0xF8) == 0xF0) { cp = '?'; return 4; }
+    if ((c0 & 0xF8) == 0xF0 && (s[1] & 0xC0) == 0x80 && (s[2] & 0xC0) == 0x80 && (s[3] & 0xC0) == 0x80) {
+      cp = '?';
+      return 4;
+    }
     cp = c0;
     return 1;
   }

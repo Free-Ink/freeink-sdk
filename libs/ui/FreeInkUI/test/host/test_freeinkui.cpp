@@ -3897,6 +3897,12 @@ void testCompactLayoutsMatchBuiltin() {
   buildKeyboardLayout(other, KeyboardLayoutId::QwertzDe, true);
   CHECK(sameText(keyboardOutputFor(ru, 0x439), "\xd0\xb9"));  // й
   CHECK(sameText(keyboardAltOutputFor(ru, 0x435), "\xd1\x91"));  // е -> ё
+  // QwertzDe's ü/ß/ö ids (1101..1103) equal U+044D..U+044F; holding them must
+  // not case-flip into Cyrillic.
+  for (int16_t id = 1101; id <= 1103; ++id) {
+    const char* alt = keyboardAltOutputFor(other.layout, id);
+    CHECK(!alt || static_cast<unsigned char>(alt[0]) != 0xD0);
+  }
   CHECK(&buildKeyboardLayout(buffer, KeyboardLayoutId::QwertyEn) == &buffer.layout);
 }
 

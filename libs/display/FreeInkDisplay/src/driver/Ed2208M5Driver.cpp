@@ -359,7 +359,7 @@ void Ed2208M5Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev
   if (_fullCompletes && mode == RefreshMode::Full) _completeNextRefresh = true;
 
   uint16_t dirtyX = 0, dirtyY = 0, dirtyW = PANEL_WIDTH, dirtyH = PANEL_HEIGHT;
-  const bool forceFullPanelRefresh = (mode == RefreshMode::Full);
+  const bool forceFullPanelRefresh = (mode == RefreshMode::Full) || _completeNextRefresh;
 
   if (!forceFullPanelRefresh && !getDirtyWindow(fb, &dirtyX, &dirtyY, &dirtyW, &dirtyH)) {
     if (turnOff) deepSleep(bus);

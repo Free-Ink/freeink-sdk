@@ -25,7 +25,10 @@ bool SecureClient::tls13Available() {
 
 SecureClient::~SecureClient() { stop(); }
 
-void SecureClient::setCACert(const char* rootCA) { _rootCA = rootCA; }
+void SecureClient::setCACert(const char* rootCA) {
+  _rootCA = rootCA;
+  _insecure = false;
+}
 void SecureClient::setInsecure() { _insecure = true; }
 
 #if defined(FREEINK_NET_WOLFSSL)
@@ -121,6 +124,8 @@ int SecureClient::connectWithMethod(const char* host, uint16_t port, void* metho
   wolfSSL_SetIOReadCtx(ssl, &_transport);
   wolfSSL_SetIOWriteCtx(ssl, &_transport);
   wolfSSL_UseSNI(ssl, WOLFSSL_SNI_HOST_NAME, host, strlen(host));
+  // Chain verification alone accepts any certificate under the pinned root.
+  if (!_insecure) wolfSSL_check_domain_name(ssl, host);
 #if defined(WOLFSSL_TLS13) && defined(HAVE_CURVE25519)
   // MEMFIX-PORT: pin the TLS 1.3 key_share to X25519. wolfSSL's default is a
   // P-256 share, generated with fast-math bignums that WOLFSSL_SMALL_STACK

@@ -577,6 +577,7 @@ BookStatus renderJpegProgressive(BookSource& source, const ZipEntry& entry,
           if (comps[c].id == sc[0]) idx = c;
         }
         if (idx == 0xFF) return BookStatus::ParseError;
+        if ((sc[1] >> 4) > 3) return BookStatus::ParseError;  // four DC tables
         comps[idx].td = sc[1] >> 4;
         scanComp[i] = idx;
       }

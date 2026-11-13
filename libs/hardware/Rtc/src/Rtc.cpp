@@ -357,6 +357,7 @@ bool Rtc::adjust(const int32_t seconds, DateTime* out) {
   // Round-trip through mktime so day/month/year carries are calendar-correct
   // (mktime normalizes out-of-range fields; the fixed offset cancels).
   struct tm t{};
+  t.tm_isdst = -1;  // let mktime decide, or a DST zone gains an hour per call
   t.tm_year = now.year - 1900;
   t.tm_mon = now.month - 1;
   t.tm_mday = now.day;

@@ -52,7 +52,11 @@ B/W refresh cadence is controlled by the caller. FAST requests remain fast,
 including after grayscale; HALF and FULL select the full waveform. The first
 B/W paint after initialization uses the full waveform to clear unknown glass state.
 After grayscale, the next B/W paint seeds the old plane with the inverse of the
-target so every pixel is driven with the requested waveform. Each B/W paint then
+target so every pixel is driven with the requested waveform. HALF and FULL
+paints instead seed the old plane with the target itself: in the full waveform
+the same-state records (white to white, black to black) flash the pixel through
+both states while the changing records drive one way only, so every pixel takes
+a flashing record and the previous screen does not carry into the new one. Each B/W paint then
 copies the displayed frame into the old plane for the next differential update.
 Anti-aliased (overlay) pages use stock V1.0.3's reader "Gray3" path. The B/W
 base is stashed undisplayed; with its gray masks it becomes one three-level
@@ -65,11 +69,10 @@ Gray3 history: the next page shows its base with a normal B/W refresh, which
 fully clears the previous screen, and its grays follow as a Gray3 transition
 from that base.
 
-Full images (absolute/direct planes) follow the stock lockscreen sequence.
-First the V1.0.13 pre-clear in the B/W session: the DU waveform with its
-black-drive records 0x23 and 0x24 lengthened from 36 to 63 frames (byte 1
-0x64 becomes 0x7F), 0x50 = D7, black to DTM2, no DTM1 write, one refresh, then
-power-off, reset and the gray init. Then the stock four-gray waveform (five 42-byte records) with planes MSB to DTM1 and
+Full images (absolute/direct planes) follow the stock V1.0.3 lockscreen
+sequence. First a pre-clear in the B/W session: black to DTM2, no DTM1 write,
+and two refreshes with the GC waveform at half its frame counts. Then the
+stock four-gray waveform (five 42-byte records) with planes MSB to DTM1 and
 LSB to DTM2, so black/dark/light/white are 00/01/10/11. The white record
 (0x21) has its last two white pulses lengthened to 6 frames (stock 0x81,
 0x82 become 0x86, 0x86). DTM1 is seeded white again before power-off.
@@ -83,6 +86,13 @@ off after every refresh showed static screens fuzzing while idle; leaving the
 panel powered into a four-gray paint, without that reset, showed earlier
 screens as ghosts.
 
+`controllerIdle()` ends the hold between frames: it powers the panel off and
+puts the controller in deep sleep, the same sequence as `deepSleep()`, and the
+next paint resets and re-initializes the controller, diffing against the last
+B/W frame. It is meant for screens that keep the device awake with a static
+image. Whether a static image held this way stays as clean as a sleep screen
+needs hardware validation.
+
 Every session uses the stock V1.0.3 power and VCOM settings
 (PWR 03 00 72 72, VCOM_DC 0x32). B/W previously used stronger rails
 (PWR 43 00 78 78 17); with those, static screens fuzzed while idle at every B/W
@@ -93,7 +103,10 @@ Every session uses gate/source 00 00 00 00 and seeds
 DTM1 white before power-on.
 Full refresh uses the stock GC waveform (0x50 = 0x97); fast refresh
 uses the stock production "DU-factory-previous" waveform (0x50 = 0xd7), both
-49-byte records. The planes are
+49-byte records. The fast black-to-black record (0x24) holds instead of
+re-driving black as stock does, so unchanged black pixels are not driven again
+on every fast repaint; this needs hardware validation that text stays dark
+across repeated fast refreshes. The planes are
 lazily allocated, PSRAM first; if allocation fails the driver leaves the
 existing B/W image up.
 

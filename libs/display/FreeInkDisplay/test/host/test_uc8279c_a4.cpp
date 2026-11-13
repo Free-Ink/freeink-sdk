@@ -78,16 +78,19 @@ int main() {
   for (auto mode : {RefreshMode::Half, RefreshMode::Full}) {
     const auto refreshes = bus.refreshes;
     const auto powerOffs = bus.powerOffs;
+    for (auto& b : bw) b = static_cast<uint8_t>(b ^ 0x99);  // a different screen, so OLD differs from NEW
     driver.display(bus, bw.data(), nullptr, mode, false);
     assert(bus.refreshes > refreshes && bus.powerOffs == powerOffs &&
            "B/W refreshes keep the panel powered, as stock's power hold does");
     assert(bus.interval == 0x97 && bus.lutBytes == 49);
+    assert(bus.oldAtRefresh == bus.newAtRefresh &&
+           "complete refreshes must put every pixel on the flashing same-state records");
     driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, false);
     assert(bus.interval == 0xd7 && bus.lutBytes == 49);
   }
 
   // Absolute planes go out as the stock firmware sends them: MSB -> DTM1,
-  // LSB -> DTM2, uninverted, after stock V1.0.13's enhanced DU black pre-clear.
+  // LSB -> DTM2, uninverted, after stock's two-pass pre-clear to black.
   {
     std::vector<uint8_t> lsb(bytes), msb(bytes);
     for (size_t i = 0; i < bytes; ++i) {
@@ -95,16 +98,17 @@ int main() {
       msb[i] = static_cast<uint8_t>(i * 29 + 7);
     }
     const auto before = bus.refreshes;
-    const auto offs = bus.powerOffs;
     driver.beginGrayscale(bus, bw.data(), GrayscaleMode::Direct, RefreshMode::Half, false);
     driver.copyGrayscaleLsb(bus, lsb.data());
     driver.copyGrayscaleMsb(bus, msb.data());
     driver.displayGray(bus, bw.data(), false, nullptr, true);
-    assert(bus.refreshes == before + 2 && "absolute gray pre-clears once, then paints");
-    const auto& clear = bus.shots[bus.shots.size() - 2];
-    assert(clear.interval == 0xd7 && clear.lut23 == 0x7f && clear.lut24 == 0x7f && clear.newBlack &&
-           "pre-clear must be the 63-frame DU black waveform on a black frame");
-    assert(bus.powerOffs == offs + 2 && "power off after the pre-clear and after the gray paint");
+    assert(bus.refreshes == before + 3 && "absolute gray pre-clears twice, then paints");
+    // Stock's halved GC record 0x20 (V1.0.3 lockscreen pre-clear).
+    const std::vector<uint8_t> half20 = {0x01, 0x0c, 0x02, 0x07, 0x05, 0x01, 0x01, 0x01,
+                                         0x05, 0x00, 0x00, 0x00, 0x01, 0x01, 0x01};
+    bool sawHalf = false;
+    for (const auto& r : bus.lut20s) sawHalf |= r.size() == 49 && std::equal(half20.begin(), half20.end(), r.begin());
+    assert(sawHalf && "pre-clear must load stock's halved GC waveform");
     for (size_t i = 0; i < bytes; ++i) {
       const auto physical = (551 - i / 96) * 96 + i % 96;
       assert(bus.oldAtRefresh[physical] == msb[i] && bus.newAtRefresh[physical] == lsb[i]);
@@ -214,6 +218,23 @@ int main() {
   assert(bus.refreshes == wakeStart + 2 && "first paint after wake must drive inverse, then target");
   driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, false);
   assert(bus.interval == 0xd7 && bus.lutBytes == 49);
+  {
+    // controllerIdle() powers the panel off between frames; the next paint
+    // wakes the controller and diffs against the frame left on the glass.
+    const auto shown = bus.oldPlane;
+    const auto offs = bus.powerOffs;
+    driver.controllerIdle(bus);
+    driver.controllerIdle(bus);
+    assert(bus.powerOffs == offs + 1 && "idle must power off once and stay off");
+    for (auto& b : bw) b = static_cast<uint8_t>(b ^ 0x0f);
+    const auto before = bus.refreshes;
+    driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, false);
+    assert(bus.refreshes == before + 1 && bus.interval == 0xd7 && "paint after idle stays one FAST refresh");
+    assert(bus.oldAtRefresh == shown && "paint after idle must diff against the displayed frame");
+    driver.controllerIdle(bus);
+    driver.deepSleep(bus);
+    assert(bus.powerOffs == offs + 2 && "deep sleep after idle sends no second power-off");
+  }
   std::cout << "PASS: A4 FAST cadence, post-AA pixel transitions, retained baseline, explicit cleanup, four-gray and "
-               "Gray3 wire encoding, stock power hold and wake\n";
+               "Gray3 wire encoding, stock power hold and wake, idle power-off\n";
 }

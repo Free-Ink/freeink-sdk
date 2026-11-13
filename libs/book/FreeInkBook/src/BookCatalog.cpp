@@ -1180,6 +1180,10 @@ BookStatus readFooter(CacheStorage& cache, Footer* out) {
   }
   if (out->magic != kMagic || out->version != kCatalogVersion) return BookStatus::Stale;
   if (out->entryCount > 0xFFFFu || out->spineCount > 0xFFFEu) return BookStatus::Stale;
+  if (out->metaSize > static_cast<uint64_t>(fileSize) ||
+      out->metaOff > static_cast<uint64_t>(fileSize) - out->metaSize) {
+    return BookStatus::Stale;
+  }
   return BookStatus::Ok;
 }
 

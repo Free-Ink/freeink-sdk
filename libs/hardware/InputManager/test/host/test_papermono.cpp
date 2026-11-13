@@ -105,6 +105,17 @@ int main() {
   tick(input, 2200, 1);
   assert(input.wasReleased(InputManager::BTN_POWER));
   assert(input.getPowerButtonHeldTime() == 500);
+  // Lifting the two chord fingers one poll apart is not a page turn.
+  for (unsigned last : {1u, 2u}) {
+    InputManager input;
+    tick(input, 5000, 3);
+    tick(input, 5100, last);
+    tick(input, 5120, 0);
+    assert(!input.wasPressed(InputManager::BTN_UP) && !input.wasPressed(InputManager::BTN_DOWN));
+    tick(input, 5200, last);  // the next plain short press still pages
+    tick(input, 5300, 0);
+    assert(input.wasPressed(last == 1 ? InputManager::BTN_UP : InputManager::BTN_DOWN));
+  }
   InputManager::setButtonHook(nullptr);
   std::puts("Paper Mono PMIC click duration and two-button Power chords passed");
 }

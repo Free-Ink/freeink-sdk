@@ -429,7 +429,7 @@ class TouchHoldRouter {
         // occlude and slide low on e-paper). A tap is bounded by the slop
         // radius, so dispatching the key the press landed on is what the
         // user meant — a >slop drag is a swipe and never reaches here.
-        if (!result.event && heldActive >= 0) {
+        if (!result.event && heldActive >= 0 && static_cast<size_t>(heldActive) < interactions.publishedCount()) {
           const Interaction& held = interactions.publishedData()[heldActive];
           if (!hasState(held.state, StateDisabled) && acceptsInput(held.inputMask, InputTouch)) {
             result.event = ActionEvent{held.action, held.value, held.state};

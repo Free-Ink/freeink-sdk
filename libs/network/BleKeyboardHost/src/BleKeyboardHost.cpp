@@ -500,6 +500,8 @@ void doConnect(const char* addrStr, uint8_t type) {
     return;
   }
   self().onLinkUp(addrStr, nullptr, type);  // name resolved from scan/bond lists
+  // A drop during HID setup ran onLinkDown() before onLinkUp() marked the link up.
+  if (g_disconnectObserved.load()) self().onLinkDown();
 }
 
 void connTaskFn(void*) {

@@ -517,7 +517,13 @@ void AudioManager::taskLoop() {
       if (want > left) want = left;
     }
     want &= ~(size_t)3;  // keep sample alignment (16-bit stereo frames)
-    if (want < 4) want = 4;
+    if (want < 4) {
+      if (wav_.dataLength > 0) {
+        consumed = wav_.dataLength;  // partial trailing frame: end of data, not the next chunk
+        continue;
+      }
+      want = 4;
+    }
 
     const int n = source_.read(inBuf, want);
     if (n <= 0) {

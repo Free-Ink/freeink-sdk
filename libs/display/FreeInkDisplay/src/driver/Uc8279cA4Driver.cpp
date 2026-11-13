@@ -200,6 +200,7 @@ void Uc8279cA4Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* pre
                               const bool turnOff) {
   (void)prev;
   (void)turnOff;  // the panel stays powered after refresh(), as on stock
+  _overlayPass = true;  // a B/W paint ends an announced absolute pass
   const bool wasAsleep = _controllerAsleep;
   // Any B/W refresh replaces what a Gray3 transition would start from.
   _gray3HistoryValid = false;
@@ -210,7 +211,11 @@ void Uc8279cA4Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* pre
     hardwareReset(bus);
     initController(bus, Session::Bw);
     // Deep sleep lost DTM1; the glass still holds the last B/W frame, so diff against it.
-    if (wasAsleep && !_redriveAfterGray && !_firstRefreshPending && _grayBase) writeFrame(bus, CMD_DTM1, _grayBase);
+    if (wasAsleep && fb == _grayBase) {
+      _redriveAfterGray = true;  // the stash replaced the on-glass frame: nothing to diff against
+    } else if (wasAsleep && !_redriveAfterGray && !_firstRefreshPending && _grayBase) {
+      writeFrame(bus, CMD_DTM1, _grayBase);
+    }
   }
   ensurePowerOn(bus);
   const bool fast = mode == RefreshMode::Fast && !_firstRefreshPending;

@@ -48,7 +48,38 @@ static void check(const std::string& reply, bool succeeds) {
   assert(http.getString() == (succeeds ? "ok" : ""));
   assert(FakeNet::bytesRead() <= 8192);
 }
+static std::string resolve(const std::string& base, const std::string& ref) {
+  std::string out;
+  assert(freeink::SecureHttpClient::resolveUrl(base, ref, out));
+  return out;
+}
+static void testUrls() {
+  // "://" inside a query is not a scheme; protocol-relative keeps the scheme;
+  // slashes in the base's query are not path segments.
+  assert(resolve("https://a/x/y", "/login?next=https://b/dl") == "https://a/login?next=https://b/dl");
+  assert(resolve("https://a/x/y", "//cdn/f.epub") == "https://cdn/f.epub");
+  assert(resolve("https://a/feed?u=x/y", "page2") == "https://a/page2");
+  assert(resolve("https://a/x/y", "http://b/z") == "http://b/z");
+  // Userinfo never names the host dialed, and a bad port is refused.
+  reset({status + end});
+  {
+    freeink::SecureHttpClient http;
+    assert(http.begin("https://evil:443@a/font") && http.GET() == 200);
+    assert(FakeNet::hosts().size() == 1 && FakeNet::hosts()[0] == "a");
+    assert(!http.begin("https://a:70000/font"));
+    assert(!http.begin("https://a:/font"));
+  }
+  // 204 has no body: complete at once, without waiting for a close.
+  reset({"HTTP/1.1 204 No Content\r\n\r\n"});
+  FakeNet::holdOpen() = true;
+  {
+    freeink::SecureHttpClient http;
+    assert(http.begin("https://a/font") && http.GET() == 204);
+    assert(http.responseComplete());
+  }
+}
 int main() {
+  testUrls();
   // Buffered cap includes CR, excludes LF, preserving the existing boundary.
   for (size_t n : {4094, 4095, 4096, 4097, 4173}) {
     check(status + field("X-Ordinary", n) + "\r\n" + end, n <= 4095);

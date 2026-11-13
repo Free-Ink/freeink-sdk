@@ -468,7 +468,14 @@ bool applyXteinkDisplayController() {
       // own programmed resolution, which separates the 800x480 parts from any
       // new glass (552x768 / 3.68" classes seen in newer stock enums).
       uint8_t raw[sizeof(g_probeDiag.mtp) + 1] = {0};
+      // The VER probe released the bus; drive it again for this read.
+      pinMode(p.cs, OUTPUT);
+      digitalWrite(p.cs, HIGH);
+      pinMode(p.sclk, OUTPUT);
+      digitalWrite(p.sclk, LOW);
+      pinMode(p.dc, OUTPUT);
       epdCmdRead(p, UC81XX_CMD_RMTP, raw, sizeof(raw));
+      releaseDisplayPins(p);
       memcpy(g_probeDiag.mtp, raw + 1, sizeof(g_probeDiag.mtp));
       g_probeDiag.mtpValid = true;
       Serial.printf("[%lu] [XTDET] X4C: VER=%02X %02X %02X unrecognized, MTP[0x000..0x02F]:", millis(), ver[0],

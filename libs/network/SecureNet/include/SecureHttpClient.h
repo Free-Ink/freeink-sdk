@@ -39,6 +39,7 @@
 #include <cctype>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <functional>
 #include <iterator>
 #include <string>
@@ -188,6 +189,11 @@ class SecureHttpClient {
       // Refuse to silently drop transport security: a https -> http redirect
       // stops here (the caller sees the 3xx) unless explicitly allowed.
       if (_scheme == "https" && scheme == "http" && !_allowRedirectDowngrade) return status;
+      // Credentials and caller headers were given for the original origin.
+      if (scheme != _scheme || host != _host || port != _port) {
+        clearBasicAuth();
+        _headers.clear();
+      }
       _scheme = scheme;
       _host = host;
       _path = path;
@@ -310,7 +316,10 @@ class SecureHttpClient {
       _reportProgress = !discardBody && static_cast<bool>(_progress);
 
       bool reusableFraming = true;
-      if (transferEncoding.find("chunked") != std::string::npos) {
+      // These never carry a body, whatever their headers say (RFC 9112 §6.3).
+      if (_status == 204 || _status == 304 || strcmp(method, "HEAD") == 0) {
+        _bodyComplete = true;
+      } else if (transferEncoding.find("chunked") != std::string::npos) {
         _bodyComplete = readChunked(*_conn, bodySink, shouldAbort);
       } else if (transferEncoding.empty() || transferEncoding == "identity") {
         if (_haveContentLength) {
@@ -404,7 +413,10 @@ class SecureHttpClient {
   }
 
   static bool resolveUrl(const std::string& baseUrl, const std::string& location, std::string& resolved) {
-    if (location.find("://") != std::string::npos) {
+    // Absolute only when "://" ends a real scheme prefix, not when it sits in
+    // a path or query ("/login?next=https://...").
+    const size_t schemeEnd = location.find("://");
+    if (schemeEnd != std::string::npos && schemeEnd > 0 && location.find_first_of("/?#") > schemeEnd) {
       resolved = location;
       return true;
     }
@@ -414,11 +426,17 @@ class SecureHttpClient {
     uint16_t port = 0;
     if (!parseUrl(baseUrl, scheme, host, path, port)) return false;
     const std::string authority = hostHeaderFor(scheme, host, port);
+    if (location.compare(0, 2, "//") == 0) {  // protocol-relative
+      resolved = scheme + ":" + location;
+      return true;
+    }
     if (!location.empty() && location[0] == '/') {
       resolved = scheme + "://" + authority + location;
       return true;
     }
     std::string parent = path;
+    const size_t query = parent.find('?');  // slashes in the query are not path segments
+    if (query != std::string::npos) parent.erase(query);
     const size_t slash = parent.rfind('/');
     parent = slash == std::string::npos ? "/" : parent.substr(0, slash + 1);
     resolved = scheme + "://" + authority + parent + location;
@@ -459,14 +477,27 @@ class SecureHttpClient {
     std::transform(scheme.begin(), scheme.end(), scheme.begin(),
                    [](unsigned char c) { return static_cast<char>(tolower(c)); });
     const size_t hostStart = schemeEnd + 3;
-    const size_t pathStart = url.find('/', hostStart);
-    const std::string hostPort =
+    // The authority ends at the first of / ? # and any userinfo is dropped,
+    // exactly as fetchOrigin() does: the host dialed must be the host whose
+    // origin credentials were scoped to ("https://evil:443@trusted/" is trusted).
+    const size_t pathStart = url.find_first_of("/?#", hostStart);
+    std::string hostPort =
         pathStart == std::string::npos ? url.substr(hostStart) : url.substr(hostStart, pathStart - hostStart);
+    const size_t at = hostPort.rfind('@');
+    if (at != std::string::npos) hostPort.erase(0, at + 1);
     path = pathStart == std::string::npos ? "/" : url.substr(pathStart);
+    if (path[0] != '/') path.insert(path.begin(), '/');
+    const size_t fragment = path.find('#');
+    if (fragment != std::string::npos) path.erase(fragment);
     const size_t portSep = hostPort.rfind(':');
     if (portSep != std::string::npos) {
       host = hostPort.substr(0, portSep);
-      port = static_cast<uint16_t>(atoi(hostPort.substr(portSep + 1).c_str()));
+      const std::string digits = hostPort.substr(portSep + 1);
+      if (digits.empty() || digits.size() > 5 || digits.find_first_not_of("0123456789") != std::string::npos)
+        return false;
+      const long value = strtol(digits.c_str(), nullptr, 10);
+      if (value < 1 || value > 65535) return false;
+      port = static_cast<uint16_t>(value);
     } else {
       host = hostPort;
       port = scheme == "https" ? 443 : 80;

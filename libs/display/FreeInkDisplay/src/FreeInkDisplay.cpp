@@ -302,7 +302,9 @@ void FreeInkDisplay::begin() {
 // Framebuffer composition (facade-owned; no driver involvement)
 // ============================================================================
 
-void FreeInkDisplay::clearScreen(uint8_t color) const { memset(frameBuffer, color, bufferSize); }
+void FreeInkDisplay::clearScreen(uint8_t color) const {
+  if (frameBuffer) memset(frameBuffer, color, bufferSize);
+}
 
 // Blit a 1bpp image (MSB-first, 1=white/0=black) into the framebuffer.
 // `transparent` = only paint black pixels (AND, leaving white untouched);
@@ -385,7 +387,9 @@ void FreeInkDisplay::drawImageTransparent(const uint8_t* imageData, uint16_t x, 
   blitImage(imageData, x, y, w, h, fromProgmem, /*transparent=*/true);
 }
 
-void FreeInkDisplay::setFramebuffer(const uint8_t* bwBuffer) const { memcpy(frameBuffer, bwBuffer, bufferSize); }
+void FreeInkDisplay::setFramebuffer(const uint8_t* bwBuffer) const {
+  if (frameBuffer && bwBuffer) memcpy(frameBuffer, bwBuffer, bufferSize);
+}
 
 void FreeInkDisplay::setInverted(const bool inverted) {
   if (_inverted != inverted) cancelGrayscalePass();
@@ -461,6 +465,7 @@ void FreeInkDisplay::releaseBuffers() {
   // use-after-free and would orphan _secondaryLent. returnSecondaryBuffer() first.
   if (_secondaryLent) return;
 #endif
+  if (_buildLent) return;  // the borrower still holds frameBuffer0; returnBuildStorage() first
   syncPendingAsync();  // a refresh in flight was fed from these buffers
   free(frameBuffer0);
   frameBuffer0 = nullptr;
@@ -483,6 +488,7 @@ bool FreeInkDisplay::reallocBuffers() {
   // would reattach it as frameBufferActive and memset the borrower's scratch.
   if (_secondaryLent) return false;
 #endif
+  if (_buildLent) return false;  // would memset the borrower's scratch
   if (!frameBuffer0) frameBuffer0 = allocFrameBufferStorage();
   if (!frameBuffer0) return false;
   frameBuffer = frameBuffer0;
@@ -984,14 +990,20 @@ bool FreeInkDisplay::displayGrayscaleBase(GrayscaleMode mode, RefreshMode fallba
   cancelGrayscalePass();
   const auto caps = grayscaleCapabilities(mode);
   if (!caps.supported()) return false;
-  if (_inverted || (_inversionDirty && (mode == GrayscaleMode::Overlay || caps.base == GrayscaleBase::Separate)))
-    displayBuffer(fallback, turnOffScreen);
+  // A pending inversion change needs a non-fast base, as in displayBuffer().
+  // Painting it with displayBuffer() first would swap the buffers and hand
+  // beginGrayscale() the previous page.
+  const bool dirtyBase =
+      !_inverted && _inversionDirty && (mode == GrayscaleMode::Overlay || caps.base == GrayscaleBase::Separate);
+  if (_inverted) displayBuffer(fallback, turnOffScreen);
+  if (dirtyBase && fallback == FAST_REFRESH) fallback = HALF_REFRESH;
   DisplayPmLock pmLock;
   syncPendingAsync();
   _shadowValid = false;
   _grayPassFailed = false;
   // The inverted B/W base is already on the panel; only its masks follow.
   if (!_inverted) _driver->beginGrayscale(_bus, frameBuffer, mode, toInternal(fallback), turnOffScreen);
+  if (dirtyBase) _inversionDirty = false;
   _grayscaleMode = mode;
   _grayRows[0] = _grayRows[1] = 0;
   return true;
@@ -1072,6 +1084,8 @@ void FreeInkDisplay::copyGrayscaleMsbBuffers(const uint8_t* msbBuffer) {
 void FreeInkDisplay::writeGrayscalePlaneStrip(GrayPlane plane, const uint8_t* rows, uint16_t yStart, uint16_t numRows) {
   if (!grayAllowed()) return;
   if (!acceptGrayscaleRows(plane == GRAY_PLANE_LSB ? 0 : 1, rows, yStart, numRows)) return;
+  // Overlay passes skip the row accounting above; drivers copy by yStart unchecked.
+  if (!rows || !numRows || yStart >= displayHeight || numRows > displayHeight - yStart) return;
   DisplayPmLock pmLock;
   // Paper Mono retains these bytes in PSRAM and performs no bus access here, so
   // staging can overlap the B/W waveform. Other drivers may write controller
@@ -1246,9 +1260,10 @@ void FreeInkDisplay::saveFrameBufferAsPBM(const char* filename) {
   if (!file) return;
 
   // Rotate 90 degrees counterclockwise: 800x480 landscape -> 480x800 portrait.
-  const int W = DISPLAY_WIDTH;
-  const int H = DISPLAY_HEIGHT;
-  const int WB = W / 8;
+  if (!buffer) return;
+  const int W = displayWidth;
+  const int H = displayHeight;
+  const int WB = displayWidthBytes;
 
   file << "P4\n" << H << " " << W << "\n";
   std::vector<uint8_t> rotated((H / 8) * W, 0);

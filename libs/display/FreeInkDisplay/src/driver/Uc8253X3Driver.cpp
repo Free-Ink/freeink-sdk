@@ -35,6 +35,16 @@ constexpr uint8_t CMD_PARTIAL_WINDOW = 0x90;
 constexpr uint8_t CMD_PARTIAL_IN = 0x91;
 constexpr uint8_t CMD_PARTIAL_OUT = 0x92;
 
+// One-pass text: a page and its gray in one refresh of 24 frames, measured with witchhunt-reader's
+// tools/murphy-gray-lab on an X3 (Test 9, 2026-11-07). Each pixel rests, goes white or black with FAST's
+// 18 frames, or turns gray: VSL 9, VSH 12, VSL 3. VSH 12 takes white to 9 % and the last VSL 3 lands
+// about 46 %; from black the first page lands up to 7 points darker. The X3's layout: groups of 6, a
+// level byte for four phases (phase 1 in bits 7:6), four frame counts, a repeat.
+constexpr uint8_t kOnePassRest[42] = {0x00, 24, 0, 0, 0, 1};
+constexpr uint8_t kOnePassWhite[42] = {0x80, 18, 0, 0, 0, 1};
+constexpr uint8_t kOnePassGray[42] = {0x98, 9, 12, 3, 0, 1};
+constexpr uint8_t kOnePassBlack[42] = {0x40, 18, 0, 0, 0, 1};
+constexpr Uc8253LutBank kOnePassBank = {kOnePassRest, kOnePassRest, kOnePassWhite, kOnePassGray, kOnePassBlack};
 }  // namespace
 
 const Uc8253X3Config& uc8253X3DefaultConfig() {
@@ -285,6 +295,44 @@ void Uc8253X3Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev
   }
   _forceFullSyncNext = false;
   _forcedConditionPassesNext = 0;
+}
+
+bool Uc8253X3Driver::displayOnePassStart(EpdBus& bus, const uint8_t* oldPlane, const uint8_t* page,
+                                         RefreshMode mode, bool turnOff) {
+  // A page display() would promote (a clean refresh, the first after boot or a wake, a forced sync),
+  // or one with gray or a direct pass on the panel, keeps its B/W path.
+  if (mode != RefreshMode::Fast || !_redRamSynced || _initialFullSyncsRemaining > 0 || _forceFullSyncNext ||
+      (!_isScreenOn && !turnOff) || _directGrayOnPanel || _inGrayscaleMode) {
+    display(bus, page, nullptr, mode, turnOff);
+    return false;
+  }
+  _absoluteInput = false;
+  _directGrayPass = false;
+  _grayState.lastBaseWasPartial = true;
+  loadBankCdi(bus, 0x29, 0x07, kOnePassBank);
+  bus.sendPlaneFlipped(CMD_DTM1, oldPlane, _h, _wb);
+  bus.cmd(CMD_DATA_STOP);
+  bus.sendPlaneFlipped(CMD_DTM2, page, _h, _wb);
+  bus.cmd(CMD_DATA_STOP);
+  if (!_isScreenOn) {
+    bus.cmd(CMD_POWER_ON);
+    bus.waitBusy(" X3_PON");
+    _isScreenOn = true;
+  }
+  bus.cmd(CMD_DISPLAY_REFRESH);
+  bus.waitBusy(" X3_DRF_onepass");
+  if (turnOff) {
+    bus.cmd(CMD_POWER_OFF);
+    bus.waitBusy(" X3_POF");
+    _isScreenOn = false;
+  }
+  // DTM1 takes the page for the next fast diff, as after display(); a gray pixel counts as black there,
+  // as the page drew it.
+  bus.sendPlaneFlipped(CMD_DTM1, page, _h, _wb);
+  bus.cmd(CMD_DATA_STOP);
+  _grayState.lsbValid = false;
+  _redRamSynced = true;
+  return false;
 }
 
 void Uc8253X3Driver::beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode mode, RefreshMode fallback,

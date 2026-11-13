@@ -233,6 +233,92 @@ static void testGrayCleanupBaseline() {
 }
 #endif
 
+#ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
+// The composed one-pass (the X3): the frame on screen becomes the old plane, white before and after,
+// the host draws the page's gray into it, and the page becomes the frame on screen. Only a frame a
+// display just put there may be used: after a lend nothing is known until the next display.
+class ComposingDriver : public Uc8279X4Driver {
+ public:
+  bool composesOnePassText() const override { return true; }
+  bool displayOnePassStart(EpdBus&, const uint8_t* oldPlane, const uint8_t* page, RefreshMode, bool) override {
+    old.assign(oldPlane, oldPlane + 48000);
+    shown.assign(page, page + 48000);
+    ++frames;
+    return false;
+  }
+  Bytes old, shown;
+  unsigned frames = 0;
+};
+
+// The X4's composed one-pass: page in BW, the old plane in RED, the exchanged X4 Pro table, one 0xCC
+// activation, then both planes become the page. A HALF keeps the B/W path.
+static void testSsdComposedOnePass() {
+  const auto board = BoardConfig::ACTIVE.board;
+  BoardConfig::ACTIVE.board = BoardConfig::Board::XteinkX4;
+  Ssd1677Driver d;
+  EpdBus bus;
+  d.begin(bus);
+  Bytes page(48000, 0xF0), mask(48000, 0x3C);
+  d.display(bus, page.data(), nullptr, RefreshMode::Full, false);
+  assert(d.composesOnePassText());
+  bus.clear();
+  assert(d.displayOnePassStart(bus, mask.data(), page.data(), RefreshMode::Fast, false));
+  assert(lastPlane(bus, 0x24) == page && lastPlane(bus, 0x26) == mask);
+  const Bytes& lut = lastPlane(bus, 0x32);
+  assert(lut.size() == 105 && lut[0] == 0x15 && lut[10] == 0x0A && lut[11] == 0xAA && lut[30] == 0x00 && lut[31] == 0x80);
+  assert(lastRegister(bus, 0x22) == 0xCC);
+  d.displayFinish(bus, page.data());
+  assert(lastPlane(bus, 0x24) == page && lastPlane(bus, 0x26) == page);
+  bus.clear();
+  d.displayOnePassStart(bus, mask.data(), page.data(), RefreshMode::Half, false);
+  d.displayFinish(bus, page.data());
+  for (const auto& w : bus.writes) assert(w.command != 0x32);  // no one-pass table on a clean refresh
+  BoardConfig::ACTIVE.board = BoardConfig::Board::XteinkX4Pro;
+  Ssd1677Driver pro;
+  assert(!pro.composesOnePassText());
+  BoardConfig::ACTIVE.board = board;
+}
+
+static void testComposedOnePass() {
+  ComposingDriver driver;
+  FreeInkDisplay display(12, 11, 13, 18, 14, 6);
+  display._driver = &driver;
+  display.begin();
+  assert(display.composesOnePassText());
+  assert(display.beginOnePassMask() == nullptr);  // nothing of ours on the glass yet
+  Bytes before(48000, 0xFF), page(48000, 0xFF);
+  before[0] = 0x0F;  // left half black on screen
+  page[0] = 0xF0;    // right half black on the new page
+  page[1] = 0x00;
+  std::memcpy(display.getFrameBuffer(), before.data(), before.size());
+  display.displayBuffer(FreeInkDisplay::FAST_REFRESH);
+  std::memcpy(display.getFrameBuffer(), page.data(), page.size());
+  uint8_t* mask = display.beginOnePassMask();
+  assert(mask && mask == display.getFrameBuffer());
+  assert(mask[0] == 0x00 && mask[1] == 0x00 && mask[2] == 0xFF);  // only white before and after rests
+  mask[1] = 0x01;                                                  // the host's gray
+  display.displayOnePassFrame(FreeInkDisplay::FAST_REFRESH);
+  assert(driver.frames == 1 && driver.shown == page);
+  assert(driver.old[0] == 0x00 && driver.old[1] == 0x01 && driver.old[2] == 0xFF);
+  assert(std::equal(page.begin(), page.end(), display.getFrameBuffer()));     // the write buffer keeps the page
+  assert(std::equal(page.begin(), page.end(), display.frameBufferActive));    // and it is the frame on screen
+  assert(display.beginOnePassMask() != nullptr);                              // so the next page may use it
+  display.displayOnePassFrame(FreeInkDisplay::FAST_REFRESH);
+  assert(driver.frames == 2);
+
+  assert(display.borrowSecondaryBuffer(nullptr) != nullptr);
+  assert(display.beginOnePassMask() == nullptr);
+  assert(display.returnSecondaryBuffer());
+  assert(display.beginOnePassMask() == nullptr);  // the borrower wrote over it
+  display.displayBuffer(FreeInkDisplay::FAST_REFRESH);
+  assert(display.beginOnePassMask() != nullptr);
+  display.displayOnePassFrame(FreeInkDisplay::FAST_REFRESH);
+  assert(driver.frames == 3);
+  display.releaseBuffers();
+  free(driver._grayBase);
+}
+#endif
+
 // A driver with no grayscale implementation must never advertise support.
 class BwOnlyDriver : public PanelDriver {
  public:
@@ -1065,6 +1151,8 @@ int main(int argc, char** argv) {
   testAsyncFrame<Uc8279X4Driver>();
 #ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
   testGrayCleanupBaseline();
+  testComposedOnePass();
+  testSsdComposedOnePass();
 #endif
   std::puts("Pro plane bytes, transaction counts, clean refreshes, power state and async frame ownership passed");
 }

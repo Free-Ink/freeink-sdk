@@ -288,6 +288,15 @@ class FreeInkDisplay {
   void requestResync(uint8_t settlePasses = 0);
   // True while book pages are presented (see PanelDriver::setReaderRefresh).
   void setReaderRefresh(bool reading);
+  // One-pass text with no memory beyond the two frame buffers (the X3). The buffer that holds the
+  // frame on screen becomes the old plane: it keeps what was white and stays white, and the write
+  // buffer pointer moves to it so the host draws the page's gray into it (set bits only). Then
+  // displayOnePassFrame() puts page and gray up in one refresh and makes the page the frame on
+  // screen. Null when the frame on screen is not known, after a lend or a window update say: the
+  // host then takes its two-pass path.
+  bool composesOnePassText() const;
+  uint8_t* beginOnePassMask();
+  void displayOnePassFrame(RefreshMode mode, bool turnOffScreen = false);
   // Physical-pixel rectangle; restore=true removes the overlay from the retained gray image.
   bool displayRetainedGrayscaleOverlay(uint16_t x, uint16_t y, uint16_t w, uint16_t h, bool restore = false);
   void skipInitialResync();
@@ -450,6 +459,10 @@ class FreeInkDisplay {
   bool _refreshPending = false;
   uint8_t* _asyncShadow = nullptr;
   bool _shadowValid = false;
+  // frameBufferActive holds what is on the glass: set where a display leaves the frame it showed
+  // there (swapBuffers), cleared by anything that changes either without it.
+  bool _activeMatchesGlass = false;
+  bool _onePassMask = false;  // between beginOnePassMask() and displayOnePassFrame()
 #ifdef EINK_DISPLAY_SINGLE_BUFFER_MODE
   // Frame submitted to the pending update: the shadow for redraw-safe async,
   // or the live frame for entry points requiring it to remain untouched.

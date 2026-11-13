@@ -214,6 +214,16 @@ class PanelDriver {
   virtual void requestResync(uint8_t settlePasses) { (void)settlePasses; }
   // True while the host presents book pages; drivers with a reading waveform use it.
   virtual void setReaderRefresh(bool reading) { (void)reading; }
+  // One-pass text where the host composes the planes, for a board with no memory to stage them:
+  // `oldPlane` is 1 where a pixel rests (white before and after) or turns gray, `page` is the B/W page
+  // with gray drawn black. (1,1) rests, (0,1) goes white, (1,0) gray, (0,0) black, in one waveform.
+  // Same deferral contract as displayStart(). See FreeInkDisplay::beginOnePassMask().
+  virtual bool composesOnePassText() const { return false; }
+  virtual bool displayOnePassStart(EpdBus& bus, const uint8_t* oldPlane, const uint8_t* page, RefreshMode mode,
+                                   bool turnOff) {
+    (void)oldPlane;
+    return displayStart(bus, page, nullptr, mode, turnOff);
+  }
   virtual void skipInitialResync() {}
   // Content-polarity hint: true while the facade is rendering inverted (dark
   // background) frames. Differential drivers idle unchanged pixels, so on a

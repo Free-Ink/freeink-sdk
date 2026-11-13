@@ -34,8 +34,13 @@ sh libs/book/FreeInkBook/test/host/run.sh
 sh libs/book/ContentProtection/test/host/run.sh
 sh libs/hardware/InputManager/test/host/run.sh
 sh libs/hardware/InputManager/test/host/run_metalio.sh
+sh libs/hardware/InputManager/test/host/run_papermono.sh
 sh libs/hardware/HapticManager/test/host/run.sh
 ```
+
+The Paper Mono input suite disables touch and models PMIC click reports. It checks
+that delayed polling does not lengthen clicks and that two-button Power chords
+retain their hold duration, including clicks that overlap a chord.
 
 The book suite also needs `zip`. It uses `sips` or ImageMagick's `convert` for
 JPEG fixtures and optionally Pillow for progressive JPEG fixtures; the related

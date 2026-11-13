@@ -584,6 +584,15 @@ class KeyboardEntry {
   size_t len_ = 0;
 };
 
+// Whether `label` is one character: one UTF-8 sequence. A key labelled with its character never has the label cut to an
+// ellipsis (keyboard()).
+inline bool keyboardSingleCharacter(const char* label) {
+  if (!label || !*label) return false;
+  size_t i = 1;
+  while (label[i] && (static_cast<uint8_t>(label[i]) & 0xC0) == 0x80) ++i;
+  return label[i] == '\0';
+}
+
 template <size_t MaxInteractions>
 void keyboard(Frame<MaxInteractions>& frame, Rect rect, const KeyboardProps& props) {
   if (!props.layout || !props.layout->rows || props.layout->rowCount == 0) return;
@@ -629,6 +638,30 @@ void keyboard(Frame<MaxInteractions>& frame, Rect rect, const KeyboardProps& pro
     return props.keyAction;
   };
 
+  // A character drawn as a key's label or its alternate is drawn whole: a letter wider than `area` in `style` (an Arabic
+  // isolated form on a twelve-key row) takes the alternates' smaller face, and one still wider is drawn past the
+  // area's edges, centred on it (or kept to the edge a right-aligned hint keeps), rather than cut to an ellipsis.
+  const auto drawCharacter = [&](Rect area, const char* character, TextStyle style) {
+    style.maxLines = 1;
+    int16_t width = frame.target().measureText(style.font, character, style).width;
+    if (width > area.width && props.altText.font != style.font) {
+      TextStyle narrow = style;
+      narrow.font = props.altText.font;
+      const int16_t narrowWidth = frame.target().measureText(narrow.font, character, narrow).width;
+      if (narrowWidth < width) {
+        style = narrow;
+        width = narrowWidth;
+      }
+    }
+    if (width > area.width) {
+      const int16_t extra = static_cast<int16_t>(width - area.width);
+      if (style.align == TextAlign::Center) area.x = static_cast<int16_t>(area.x - extra / 2);
+      if (style.align == TextAlign::Right) area.x = static_cast<int16_t>(area.x - extra);
+      area.width = width;
+    }
+    frame.target().text(area, character, style);
+  };
+
   int16_t rowHitOverflow = 0;  // set per row: bottomHitOverflow on the last row
   auto drawKey = [&](Rect keyRect, const KeyboardKey& key, int16_t selectedIndex) {
     State state = StateNormal;
@@ -642,6 +675,14 @@ void keyboard(Frame<MaxInteractions>& frame, Rect rect, const KeyboardProps& pro
     // A button centers its label, which makes a digit collide visually with
     // its upper-corner alternate. Draw this label below the hint instead.
     bp.label = hasAltHint ? nullptr : label;
+    // A character too wide for the key is drawn below, whole, rather than by the button, which would cut it.
+    const bool characterKey = key.kind == KeyKind::Normal && keyboardSingleCharacter(label);
+    bool wideCharacter = false;
+    if (characterKey && !hasAltHint) {
+      const int16_t contentWidth = static_cast<int16_t>(keyRect.width - bp.padding.left - bp.padding.right);
+      wideCharacter = frame.target().measureText(keyText.font, label, keyText).width > contentWidth;
+      if (wideCharacter) bp.label = nullptr;
+    }
     if (key.kind == KeyKind::Space) bp.label = props.spaceLabel;
     if (key.kind == KeyKind::Ok && props.okLabel) bp.label = props.okLabel;
     if (key.kind == KeyKind::Shift && props.shiftLabel) bp.label = props.shiftLabel;
@@ -675,6 +716,14 @@ void keyboard(Frame<MaxInteractions>& frame, Rect rect, const KeyboardProps& pro
       altHintTopInset = static_cast<int16_t>(trim / 2);
     }
     button(frame, keyRect, bp);
+
+    if (wideCharacter) {
+      const State resolvedState = frame.stateFor(action, key.value, state);
+      TextStyle labelStyle = textStyleWithForeground(keyText, styles.resolve(resolvedState).foreground);
+      labelStyle.align = TextAlign::Center;
+      drawCharacter(keyRect.inset(bp.padding), label, labelStyle);
+      return;
+    }
 
     // Delete, Shift, and the script switch use universal glyphs. Symbol-page
     // Shift keys keep their explicit "#+=" / "123" labels.
@@ -731,9 +780,19 @@ void keyboard(Frame<MaxInteractions>& frame, Rect rect, const KeyboardProps& pro
         TextStyle labelStyle = textStyleWithForeground(keyText, styles.resolve(resolvedState).foreground);
         labelStyle.align = TextAlign::Center;
         labelStyle.maxLines = 1;
-        frame.target().text(Rect{labelX, static_cast<int16_t>(labelTop), labelWidth, labelLh}, label, labelStyle);
+        const Rect labelRect{labelX, static_cast<int16_t>(labelTop), labelWidth, labelLh};
+        if (characterKey) {
+          drawCharacter(labelRect, label, labelStyle);
+        } else {
+          frame.target().text(labelRect, label, labelStyle);
+        }
       }
-      frame.target().text(Rect{static_cast<int16_t>(keyRect.x + 2), hintTop, hintWidth, altLh}, key.alt, altStyle);
+      const Rect hintRect{static_cast<int16_t>(keyRect.x + 2), hintTop, hintWidth, altLh};
+      if (keyboardSingleCharacter(key.alt)) {
+        drawCharacter(hintRect, key.alt, altStyle);
+      } else {
+        frame.target().text(hintRect, key.alt, altStyle);
+      }
       return;
     }
 

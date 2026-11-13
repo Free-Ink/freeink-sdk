@@ -90,7 +90,34 @@ inline void packPixels(uint8_t oldByte, uint8_t newByte, uint8_t* out) {
   out[1] = static_cast<uint8_t>(v);
 }
 
+// 6-bit LUT count: value bits 0..5 on byte bits 4,7,6,1,0,3, active-low.
+inline int lutCount(uint8_t v) {
+  static constexpr uint8_t bits[6] = {4, 7, 6, 1, 0, 3};
+  int n = 0;
+  for (int i = 0; i < 6; ++i) n |= ((~v >> bits[i]) & 1) << i;
+  return n;
+}
+
 }  // namespace
+
+int ssd2677LutDose(const unsigned char* lut, unsigned table) {
+  // Level byte, active-low: white drive on bits 5/3/1, black on bits 2/0/6 (see Ssd2677Luts.h).
+  static constexpr uint8_t white[3] = {5, 3, 1}, black[3] = {2, 0, 6};
+  int dose = 0;
+  for (unsigned group = 0; group < 8; ++group) {
+    const unsigned char* g = lut + 7 + table * 88 + group * 11;
+    int net = 0;
+    for (unsigned phase = 0; phase < 8; ++phase) {
+      if (phase % 4 == 3) continue;
+      const uint8_t levels = pgm_read_byte(&g[1 + phase / 4]);
+      const int frames = lutCount(pgm_read_byte(&g[3 + phase]));
+      if (!((levels >> black[phase % 4]) & 1)) net += frames;
+      if (!((levels >> white[phase % 4]) & 1)) net -= frames;
+    }
+    dose += net * lutCount(pgm_read_byte(&g[0]));
+  }
+  return dose;
+}
 
 uint32_t Ssd2677Driver::spiHz() const {
   return BoardConfig::ACTIVE.displaySpiHz != 0 ? BoardConfig::ACTIVE.displaySpiHz : 20000000;
@@ -147,6 +174,8 @@ void Ssd2677Driver::latchOtpWaveform(EpdBus& bus, uint8_t code) {
 
 void Ssd2677Driver::begin(EpdBus& bus) {
   initPanel(bus);
+  const PanelGeometry g = geometry();
+  _textAa.allocate(true, g.widthBytes, g.height);
 
   _needsInitialFull = true;
   _grayPending = _grayMaskReady = false;
@@ -163,9 +192,17 @@ void Ssd2677Driver::begin(EpdBus& bus) {
 
 void Ssd2677Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
   (void)prev;  // unused: single-buffer host passes null; we track our own old plane
+  _textAa.invalidate();
   // First paint after init clears the panel with the full waveform (stock forces
   // mode 0 on the first frame).
   if (_needsInitialFull) mode = RefreshMode::Full;
+  // Gray pixels left by the last gray pass start opposite their target so the
+  // differential waveform drives each of them.
+  if (_grayPending && _old && _lsb) {
+    for (uint32_t i = 0; i < geometry().bufferSize; ++i)
+      _old[i] = (_old[i] & ~_lsb[i]) | (~fb[i] & _lsb[i]);
+  }
+  _grayPending = false;
   if (isSticky()) {
     // OTP waveforms: a full refresh sends old == new (every pixel driven to its
     // level) and powers off; a fast one diffs against the retained old plane
@@ -186,11 +223,6 @@ void Ssd2677Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev,
   // reason non-full frames ghosted). _old == nullptr (alloc failed) falls back to
   // an all-white old plane in sendPacked.
   if (!_old) mode = RefreshMode::Full;
-  if (_grayPending && _old && _lsb) {
-    for (uint32_t i = 0; i < geometry().bufferSize; ++i)
-      _old[i] = (_old[i] & ~_lsb[i]) | (~fb[i] & _lsb[i]);
-  }
-  _grayPending = false;
   // The first frame after a book page still erases reading-depth blacks, so it
   // keeps the reading waveform (reader menu, footnotes over a page).
   const bool reading = _readerRefresh || _afterReader;
@@ -286,6 +318,7 @@ bool Ssd2677Driver::ensureLsb() {
 
 void Ssd2677Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
   (void)bus;
+  if (_textAa.active()) { _textAa.stage(0, lsb, 0, geometry().height); return; }
   if (!lsb) return;
   if (!_absoluteGray) ensureLsb();
   _grayMaskReady = false;
@@ -294,6 +327,14 @@ void Ssd2677Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
 
 void Ssd2677Driver::beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode mode, RefreshMode fallback,
                                    bool turnOff) {
+  if (mode == GrayscaleMode::Overlay && _readerRefresh && _textAa.ready()) {
+    // The page is presented by displayGray; only a clean needs its own refresh.
+    if (fallback != RefreshMode::Fast || _needsInitialFull) display(bus, fb, nullptr, fallback, false);
+    _absoluteGray = false;
+    _textAa.begin(fb);
+    return;
+  }
+  _textAa.invalidate();
   _absoluteGray = mode == GrayscaleMode::Absolute;
   if (_absoluteGray) {
     _grayPending = false;
@@ -314,6 +355,7 @@ void Ssd2677Driver::beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode
 }
 
 void Ssd2677Driver::copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
+  if (_textAa.active()) { _textAa.stage(1, msb, 0, geometry().height); return; }
   if (!msb || !_lsb) return;
   if (_absoluteGray) {
     if (isSticky()) {
@@ -351,6 +393,32 @@ void Ssd2677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
                                 bool factoryMode) {
   (void)lut;
   (void)factoryMode;
+  if (_textAa.active()) {
+    if (!_textAa.compose()) { _textAa.invalidate(); _needsInitialFull = true; return; }
+    // Text codes: white plane in the high bit, gray / driven-white plane in the low bit.
+    // Sticky: a latched OTP waveform is cleared by reset + init before a RAM
+    // table runs, as for its overlay AA. The Picco powers on before the upload.
+    if (!isSticky()) powerOn(bus);
+    else if (_latchedWaveform != 0 && _latchedWaveform != LATCH_REINIT) initPanel(bus);
+    sendPacked(bus, _textAa.high(), _textAa.low());
+    refreshWith(bus, lut_picco_se0400_text, true);  // stock reader pages power off
+    if (isSticky()) _latchedWaveform = LATCH_REINIT;
+    const auto* text = lut_picco_se0400_text;
+    _textAa.finish(ssd2677LutDose(text, 1), ssd2677LutDose(text, 2), ssd2677LutDose(text, 3), ssd2677LutDose(text, 4));
+    // B/W history: the page's base, with its gray pixels flagged so the next
+    // B/W frame drives each of them to its target.
+    const uint32_t size = geometry().bufferSize;
+    if (_old) memcpy(_old, _textAa.base(), size);
+    if (_old && ensureLsb()) {
+      for (uint32_t i = 0; i < size; ++i) _lsb[i] = static_cast<uint8_t>(_textAa.low()[i] & ~_textAa.high()[i]);
+      _grayPending = true;
+    } else {
+      _needsInitialFull = true;
+    }
+    _grayMaskReady = false;
+    _afterReader = true;  // the next B/W frame erases reading-depth ink
+    return;
+  }
   if (_absoluteGray) {
     _absoluteGray = false;
     if (!_lsb || (!isSticky() && !_old)) return;  // beginGrayscale presented the B/W fallback.
@@ -386,7 +454,13 @@ void Ssd2677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
   // Preserve the base outside the gray mask; masked pixels are driven on the next frame.
 }
 
+void Ssd2677Driver::cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) {
+  // A skipped text pass still owes the caller its deferred B/W page.
+  if (_textAa.active()) display(bus, bw ? bw : _textAa.base(), nullptr, RefreshMode::Fast, true);
+}
+
 void Ssd2677Driver::deepSleep(EpdBus& bus) {
+  _textAa.invalidate();
   powerOffBetweenFrames(bus);
   // Stock (FUN_4200b608): 0x07 with the 0xA5 check code.
   bus.cmd(CMD_DEEP_SLEEP);

@@ -10,7 +10,7 @@ HERE = Path(__file__).resolve().parent
 LIB = HERE.parents[1]
 
 
-def build(board, device_macro, test_cpp, directory):
+def build(board, device_macro, test_cpp, directory, extra=()):
     """Build test_cpp against the SSD1677/SSD2677 drivers as a `board` build."""
     root = Path(directory)
     for folder in ("src/driver", "src/bus", "src/lut", "include"):
@@ -86,7 +86,7 @@ inline FakeSerial Serial;
     shutil.copy2(LIB / "include/FreeInkDisplay.h", root / "include/FreeInkDisplay.h")
     exe = root / board.lower()
     subprocess.run([os.environ.get("CXX", "c++"), "-std=c++17", "-Wall", "-Wextra", "-Wno-unused-parameter",
-                    "-Wno-unused-function", "-Wno-unused-variable", "-DARDUINO=1", f"-D{device_macro}=1", "-DFREEINK_DRIVER_SSD1677=1",
+                    "-Wno-unused-function", "-Wno-unused-variable", "-DARDUINO=1", f"-D{device_macro}=1", "-DFREEINK_DRIVER_SSD1677=1", *extra,
                     "-I" + str(root), "-I" + str(root / "include"), str(HERE / test_cpp),
                     str(root / "src/FreeInkDisplay.cpp"), str(root / "src/driver/Ssd1677Driver.cpp"),
                     str(root / "src/driver/Ssd2677Driver.cpp"), "-o", str(exe)], check=True)
@@ -97,8 +97,18 @@ with tempfile.TemporaryDirectory(prefix="freeink-picco-test-") as directory:
     exe = build("Picco", "FREEINK_DEVICE_PICCO", "test_picco.cpp", directory)
     for panel in ("yrd", "depg", "opm", "unknown", "se0400"):
         subprocess.run([str(exe), panel], check=True)
+with tempfile.TemporaryDirectory(prefix="freeink-picco-psram-test-") as directory:
+    # One-pass text AA needs its PSRAM planes; the builds above run without them.
+    exe = build("Picco", "FREEINK_DEVICE_PICCO", "test_picco.cpp", directory, ("-DBOARD_HAS_PSRAM=1",))
+    for panel in ("depg", "yrd"):
+        subprocess.run([str(exe), panel, "textaa"], check=True)
+    subprocess.run([str(exe), "se0400", "textaa"], check=True)
 with tempfile.TemporaryDirectory(prefix="freeink-sticky-test-") as directory:
     exe = build("Sticky", "FREEINK_DEVICE_STICKY", "test_sticky_ssd2677.cpp", directory)
     subprocess.run([str(exe)], check=True)
     subprocess.run([str(exe), "no-old-plane"], check=True)
     subprocess.run([str(exe), "ssd1677"], check=True)
+with tempfile.TemporaryDirectory(prefix="freeink-sticky-psram-test-") as directory:
+    exe = build("Sticky", "FREEINK_DEVICE_STICKY", "test_sticky_ssd2677.cpp", directory, ("-DBOARD_HAS_PSRAM=1",))
+    subprocess.run([str(exe), "textaa"], check=True)
+    subprocess.run([str(exe), "ssd1677", "textaa"], check=True)

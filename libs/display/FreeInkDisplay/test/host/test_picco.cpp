@@ -427,6 +427,117 @@ static void expectNightGray2677(Ssd2677Driver& s) {
   s.setReaderRefresh(false);
 }
 
+// SE0400 overlay AA: dark pixels (both masks) go out as code 01, the darker
+// driven row of the stock gray table; light pixels (MSB only) as code 10.
+static void expectDarkGray2677(Ssd2677Driver& s) {
+  EpdBus bus;
+  Bytes base(48000, 0xFF), lsb(48000, 0x00), msb(48000, 0x00);
+  lsb[0] = 0xF0;  // 4 px dark, then 4 px light
+  msb[0] = 0xFF;
+  s.display(bus, base.data(), nullptr, RefreshMode::Full, false);
+  s.beginGrayscale(bus, base.data(), GrayscaleMode::Overlay, RefreshMode::Fast, false);
+  bus.clear();
+  s.copyGrayscaleLsb(bus, lsb.data());
+  s.copyGrayscaleMsb(bus, msb.data());
+  const Bytes* packed = nullptr;
+  for (const auto& w : bus.writes)
+    if (w.command == 0x10) packed = &w.bytes;
+  assert(packed && (*packed)[0] == 0x55 && (*packed)[1] == 0xAA && (*packed)[2] == 0x00);
+  s.displayGray(bus, base.data(), false, nullptr, false);
+  // The whole gray region is still flagged for the next B/W frame.
+  assert(s._grayPending && s._lsb[0] == 0xFF);
+  s.display(bus, base.data(), nullptr, RefreshMode::Full, false);
+}
+
+// SE0400 reader pages: base and gray in one activation with the panel's text
+// table; leaving the reader drives the gray pixels to the next frame.
+static void expectOnePassTextAa2677(Ssd2677Driver& s) {
+  EpdBus bus;
+  Bytes base(48000, 0xFF), lsb(48000, 0), msb(48000, 0), next(48000, 0xFF);
+  base[0] = 0x1F;  // 3 px black
+  lsb[0] = 0x18;   // then 2 px gray, in the base as white
+  msb[0] = 0x08;
+  s.display(bus, base.data(), nullptr, RefreshMode::Full, false);
+  assert(s.grayscaleCapabilities(GrayscaleMode::Overlay).base == GrayscaleBase::Separate);
+  s.setReaderRefresh(true);
+  assert(s.grayscaleCapabilities(GrayscaleMode::Overlay).base == GrayscaleBase::Combined);
+  bus.clear();
+  s.beginGrayscale(bus, base.data(), GrayscaleMode::Overlay, RefreshMode::Fast, false);
+  s.copyGrayscaleLsb(bus, lsb.data());
+  s.copyGrayscaleMsb(bus, msb.data());
+  assert(bus.writes.empty());  // nothing presented before the combined pass
+  s.displayGray(bus, base.data(), false, nullptr, false);
+  unsigned refreshes = 0;
+  const Bytes* packed = nullptr;
+  for (const auto& w : bus.writes) {
+    refreshes += w.command == 0x12;
+    if (w.command == 0x10) packed = &w.bytes;
+    if (w.command == 0x20) assert(w.bytes == Bytes(lut_picco_se0400_text, lut_picco_se0400_text + 535));
+  }
+  // 3 px black (00), 2 px gray (01), 3 px white (11); then all white.
+  assert(refreshes == 1 && packed && (*packed)[0] == 0x01 && (*packed)[1] == 0x7F && (*packed)[2] == 0xFF);
+  assert(s._textAa.onPanel() && s._needsPowerOn);
+  s.cleanupGrayscaleBuffers(bus, base.data());
+  s.setReaderRefresh(false);
+  bus.clear();
+  s.display(bus, next.data(), nullptr, RefreshMode::Fast, false);
+  packed = nullptr;
+  for (const auto& w : bus.writes)
+    if (w.command == 0x10) packed = &w.bytes;
+  // Black and gray pixels are both driven to the white target (01); white stays (11).
+  assert(packed && (*packed)[0] == 0x55 && (*packed)[1] == 0x7F && !s._textAa.onPanel());
+  // The first frame after a book page keeps the reader waveform.
+  for (const auto& w : bus.writes)
+    if (w.command == 0x20) assert(w.bytes == Bytes(lut_picco_se0400_fast, lut_picco_se0400_fast + 535));
+  // A skipped pass still presents the page.
+  s.setReaderRefresh(true);
+  s.beginGrayscale(bus, base.data(), GrayscaleMode::Overlay, RefreshMode::Fast, false);
+  bus.clear();
+  s.cleanupGrayscaleBuffers(bus, base.data());
+  assert(!s._textAa.active() && !bus.writes.empty());
+  s.setReaderRefresh(false);
+}
+
+// DEPG0397 reader pages: one combined activation, no separate B/W base. Other
+// SSD1677 panels keep the two-pass overlay.
+static void expectOnePassTextAa(Ssd1677Driver& d, bool expected) {
+  EpdBus bus;
+  Bytes base(48000, 0xFF), lsb(48000, 0), msb(48000, 0), next(48000, 0xFF);
+  base[0] = 0x1F;  // 3 px black
+  lsb[0] = 0x18;   // then 2 px gray, in the base as white
+  msb[0] = 0x08;
+  d.display(bus, base.data(), nullptr, RefreshMode::Full, false);
+  d.setReaderRefresh(true);
+  const auto caps = d.grayscaleCapabilities(GrayscaleMode::Overlay);
+  assert((caps.base == GrayscaleBase::Combined) == expected);
+  if (!expected) {
+    d.setReaderRefresh(false);
+    return;
+  }
+  bus.clear();
+  d.beginGrayscale(bus, base.data(), GrayscaleMode::Overlay, RefreshMode::Fast, false);
+  d.copyGrayscaleLsb(bus, lsb.data());
+  d.copyGrayscaleMsb(bus, msb.data());
+  assert(bus.writes.empty());  // nothing presented before the combined pass
+  d.displayGray(bus, base.data(), false, nullptr, false);
+  unsigned activations = 0;
+  for (const auto& w : bus.writes) activations += w.command == 0x20;
+  assert(activations == 1 && lastRegister(bus, 0x22) == 0xCC && d._textAa.onPanel());
+  // The panel's own table, with its voltage tail, not the X4 Pro one.
+  assert(*lastLut(bus) == Bytes(lut_picco_depg_text, lut_picco_depg_text + 105));
+  assert(lastRegister(bus, 0x2C) == lut_picco_depg_text[109]);
+  d.cleanupGrayscaleBuffers(bus, base.data());
+  // Leaving the reader: gray pixels are driven to the new page, black/white are differential.
+  d.setReaderRefresh(false);
+  bus.clear();
+  d.display(bus, next.data(), nullptr, RefreshMode::Fast, false);
+  const Bytes* red = nullptr;
+  for (const auto& w : bus.writes)
+    if (w.command == 0x26) red = &w.bytes;
+  assert(red && (*red)[0] == 0x07 && (*red)[1] == 0xFF);
+  assert(lastRegister(bus, 0x22) == 0x0C);  // stays a fast refresh
+}
+
 int main(int argc, char** argv) {
   const char* which = argc > 1 ? argv[1] : "yrd";
   static const uint8_t yrd[10] = {0xCA, 0xFE, 0x00, 0x16, 0x77, 0x02, 0x10, 0x01, 0x00, 0x91};
@@ -458,6 +569,17 @@ int main(int argc, char** argv) {
     EpdBus bus;
     s.begin(bus);
     assert(lastRegister(bus, 0x00) == 0x27 && lastRegister(bus, 0xE9) == 0x01);
+    if (argc > 2 && !strcmp(argv[2], "textaa")) {
+      expectOnePassTextAa2677(s);
+      std::printf("Picco se0400: one-pass text AA passed\n");
+      return 0;
+    }
+    // Stock reader table: 24-frame drives, 1-frame top-ups. Text table: black, gray, held white, white.
+    const int stockDose[] = {1, -24, 24, -1}, textDose[] = {24, 15, -1, -24};
+    for (unsigned t = 0; t < 4; ++t) {
+      assert(ssd2677LutDose(lut_picco_se0400_fast, t + 1) == stockDose[t]);
+      assert(ssd2677LutDose(lut_picco_se0400_text, t + 1) == textDose[t]);
+    }
     // Picco's final init command has no per-command wait: keep the final
     // completion wait as well as the reset wait.
     assert(bus.busyWaitWriteCounts == std::vector<size_t>({0, 12}));
@@ -663,6 +785,7 @@ int main(int argc, char** argv) {
     for (const auto& w : bus.writes)
       if (w.command == 0x20) assert(w.bytes == Bytes(lut_picco_se0400_full, lut_picco_se0400_full + 535));
     expectNightGray2677(s);
+    expectDarkGray2677(s);
     std::printf("Picco se0400: probe, init, packing and refresh passed\n");
     return 0;
   }
@@ -695,6 +818,11 @@ int main(int argc, char** argv) {
       assert(bus.writes[i].command == commands[i]);
       assert(bus.writes[i].bytes == data[i]);
     }
+  }
+  if (argc > 2 && !strcmp(argv[2], "textaa")) {
+    expectOnePassTextAa(d, variant == PiccoDepg0397);
+    std::printf("Picco %s: one-pass text AA passed\n", which);
+    return 0;
   }
   if (argc > 2 && !strcmp(argv[2], "retained")) {
     expectRetainedGrayStrip(d);

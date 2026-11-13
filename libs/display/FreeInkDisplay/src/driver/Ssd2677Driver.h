@@ -12,7 +12,9 @@
 // (build 2912). Grayscale is the stock overlay AA mode (slot-5 LUT): the LSB
 // and MSB masks are packed as the low/high bit of each pixel, with dark pixels
 // (both masks) sent as LSB-only. Images use the panel's dedicated
-// slot-4 waveform with the two complete image planes.
+// slot-4 waveform with the two complete image planes. Reader pages on both
+// boards take one combined pass with lut_picco_se0400_text instead of base +
+// overlay.
 //
 // The newer Seeed Sticky carries the same controller with OTP waveforms: its
 // stock firmware (v1.2.0) uploads no LUT but latches an OTP waveform before each
@@ -26,6 +28,7 @@
 #include <BoardConfig.h>
 
 #include "PanelDriver.h"
+#include "X4ProTextAa.h"
 
 namespace freeink {
 
@@ -52,6 +55,9 @@ class Ssd2677Driver : public PanelDriver {
   // uses its OTP image waveform. Picco uploads its own slot-4 waveform.
   // Both take a complete image in one activation.
   GrayscaleCapabilities grayscaleCapabilities(GrayscaleMode mode = GrayscaleMode::Overlay) const override {
+    // Reader pages: base and gray in one activation (lut_picco_se0400_text).
+    if (mode == GrayscaleMode::Overlay && _readerRefresh && _textAa.ready())
+      return {GrayscaleEncoding::OverlayMasks, GrayscaleBase::Combined, false, false, false};
     if (mode == GrayscaleMode::Overlay)
       return {GrayscaleEncoding::OverlayMasks, GrayscaleBase::Separate, false, false, false};
     if (mode == GrayscaleMode::Absolute)
@@ -59,6 +65,7 @@ class Ssd2677Driver : public PanelDriver {
     return {};
   }
   void requestResync(uint8_t) override {
+    _textAa.invalidate();
     _absoluteGray = false;
     _grayPending = false;
     if (BoardConfig::ACTIVE.board != BoardConfig::Board::Sticky) _needsInitialFull = true;
@@ -67,6 +74,7 @@ class Ssd2677Driver : public PanelDriver {
   void copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) override;
   void copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) override;
   void displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut, bool factoryMode) override;
+  void cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) override;
 
  private:
   void initPanel(EpdBus& bus);
@@ -78,6 +86,7 @@ class Ssd2677Driver : public PanelDriver {
   void powerAndRefresh(EpdBus& bus, bool turnOff);
   void refreshWith(EpdBus& bus, const unsigned char* lut, bool turnOff);
 
+  X4ProTextAa _textAa;
   bool _readerRefresh = false;
   bool _afterReader = false;  // last frame presented a book page
   bool _darkBackground = false;  // facade renders inverted frames
@@ -93,5 +102,8 @@ class Ssd2677Driver : public PanelDriver {
 };
 
 PanelDriver& ssd2677Driver();
+
+// Net drive of pixel table 1..4 of a 535-byte LUT in frames, black positive.
+int ssd2677LutDose(const unsigned char* lut, unsigned table);
 
 }  // namespace freeink

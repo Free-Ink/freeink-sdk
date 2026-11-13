@@ -83,6 +83,7 @@ const Ssd1677Config& ssd1677DefaultConfig() {
              // reference stage 2); same value the B/W paths leave in the register, so
              // the wire state is unchanged — just no longer relying on carry-over
       false, // grayPowerUpFirst
+      false, // windowRefreshUsesHalfTemp
       true,  // absoluteGrayscale: verified X4 factory LUT
   };
   return cfg;
@@ -114,6 +115,7 @@ static const Ssd1677Config& ssd1677StickyConfig() {
              // black under the grayscale LUT (black frame on every AA/cover refresh)
       true,  // grayPowerUpFirst: vendor sequences power down after every refresh, so
              // settle the rails before the short gray LUT phases (see Ssd1677Config)
+            false, // windowRefreshUsesHalfTemp
       true,  // absoluteGrayscale
   };
   return cfg;
@@ -131,7 +133,7 @@ static const Ssd1677Config& ssd1677StickyConfig() {
 static const Ssd1677Config& ssd1677MetalioConfig() {
   static const Ssd1677Config cfg = {
       {0xAE, 0xC7, 0xC3, 0xC0, 0x80}, 0x02, 0x01, 0x6A, lut_grayscale_metalio,
-      0xF7, 0xFC, 0xD7, 0x01, 0x80, 0x01, 0xC0, false, true, true, true, true, true,
+      0xF7, 0xFC, 0xD7, 0x01, 0x80, 0x01, 0xC0, false, false, true, true, true, true, true,
       lut_factory_quality_metalio, lut_fast_metalio};
   return cfg;
 }
@@ -963,6 +965,10 @@ void Ssd1677Driver::displayWindow(EpdBus& bus, const uint8_t* fb, const uint8_t*
     writeRam(bus, CMD_WRITE_RAM_RED, previousWindow.data(), windowBufferSize);
   }
 
+  if (_cfg.windowRefreshUsesHalfTemp) {
+    bus.cmd(CMD_WRITE_TEMP);
+    bus.data(_cfg.halfRefreshTemp);
+  }
   refresh(bus, RefreshMode::Fast, turnOff);
 
   if (prev == nullptr) {
@@ -1288,6 +1294,25 @@ void Ssd1677Driver::deepSleep(EpdBus& bus) {
 // `const Ssd1677Config& yourConfig();` in namespace freeink and build with
 // -DFREEINK_SSD1677_CONFIG=yourConfig. Resolution is orthogonal: every driver,
 // including X3, takes its geometry from the active BoardProfile.
+#if FREEINK_DEVICE_MURPHY_M4
+// Murphy M4 keeps the generic SSD1677 waveform, but its two panel batches need different
+// pseudo-temperature values for HALF and window refreshes.
+static Ssd1677Config makeSsd1677MurphyM4Config(const uint8_t halfRefreshTemp) {
+  Ssd1677Config value = ssd1677DefaultConfig();
+  value.absoluteGrayscale = false;  // The X4 factory four-tone LUT is not validated on this panel.
+  value.halfRefreshTemp = halfRefreshTemp;
+  value.halfSeqOverride = 0xD4;
+  value.windowRefreshUsesHalfTemp = true;
+  return value;
+}
+
+static const Ssd1677Config& ssd1677MurphyM4Config(const MurphyM4Batch batch) {
+  static const Ssd1677Config first = makeSsd1677MurphyM4Config(0x3C);
+  static const Ssd1677Config second = makeSsd1677MurphyM4Config(0x50);
+  return batch == MurphyM4Batch::First ? first : second;
+}
+#endif
+
 #ifdef FREEINK_SSD1677_CONFIG
 const Ssd1677Config& FREEINK_SSD1677_CONFIG();
 static const Ssd1677Config& ssd1677ActiveConfig() { return FREEINK_SSD1677_CONFIG(); }
@@ -1329,9 +1354,16 @@ static const Ssd1677Config& ssd1677ActiveConfig() {
 }
 #endif
 
+#if FREEINK_DEVICE_MURPHY_M4
+PanelDriver& ssd1677Driver(const MurphyM4Batch batch) {
+  static Ssd1677Driver instance(ssd1677MurphyM4Config(batch));
+  return instance;
+}
+#else
 PanelDriver& ssd1677Driver() {
   static Ssd1677Driver instance(ssd1677ActiveConfig());
   return instance;
 }
+#endif
 
 }  // namespace freeink

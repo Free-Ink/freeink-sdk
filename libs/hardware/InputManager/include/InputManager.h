@@ -16,12 +16,22 @@
 
 #include <cstdint>
 
+#if FREEINK_DEVICE_MURPHY_M4
+#include "MurphyM4TouchPolling.h"
+#endif
+
 class InputManager {
  public:
   InputManager();
   void begin();
   // A4: stop touch and release the shared I2C bus after all other bus users finish.
   bool prepareForDeepSleep();
+  // Reapply volatile FT6336U registers after Murphy M4 display initialization
+  // toggles the reset line shared by the panel and touch controller.
+  bool reinitializeTouchAfterSharedReset();
+#if FREEINK_DEVICE_MURPHY_M4
+  void setMurphyM4Batch(const freeink::MurphyM4Batch batch) { murphyM4Batch = batch; }
+#endif
   uint8_t getState();
 
   // Call regularly from the main loop to update button and touch edge state.
@@ -402,8 +412,33 @@ class InputManager {
   // 0x814E could not be read or cleared: touchWakeIrqPin() reports -1.
   bool gt911StatusFault = false;
 #endif  // FREEINK_TOUCH_GT911 && FREEINK_GT911_INT_WAKE
+#if FREEINK_DEVICE_MURPHY_M4
+  bool beginFt6336u(bool powerCycle);
+  void pollFt6336u(unsigned long now);
+  bool readFt6336uFrame(freeink::murphy_m4_touch::FrameState& state, uint16_t& rawX, uint16_t& rawY);
+  void applyFt6336uSnapshot(const freeink::murphy_m4_touch::Snapshot& snapshot);
+  bool startFt6336uPolling();
+  void pauseFt6336uPolling();
+  static void ft6336uTaskTrampoline(void* self);
+  void ft6336uTaskLoop();
+  TouchPoint mapTouchPoint(uint16_t rawX, uint16_t rawY, unsigned long now) const;
+  void updateTouchContact(const TouchPoint& point);
+  void releaseTouch(unsigned long now);
+  freeink::MurphyM4Batch murphyM4Batch = freeink::defaultMurphyM4Batch();
+  static constexpr uint32_t FT6336U_POLL_MS = 10;
+  static constexpr uint32_t FT6336U_STALE_RELEASE_MS = 100;
+  static constexpr uint32_t FT6336U_TASK_STACK_BYTES = 3072;
+  freeink::murphy_m4_touch::PollState ft6336uPollState{};
+  portMUX_TYPE ft6336uPollMux = portMUX_INITIALIZER_UNLOCKED;
+  bool ft6336uPollingEnabled = false;
+  bool ft6336uPollInFlight = false;
+  TaskHandle_t ft6336uTask = nullptr;
+  StaticTask_t ft6336uTaskTcb{};
+  StackType_t ft6336uTaskStack[FT6336U_TASK_STACK_BYTES]{};
+#else
   void beginFt6336u();
   void pollFt6336u(unsigned long now);
+#endif
   void beginGslx680();
   void gslInitBody();
   static void gslInitTask(void* arg);

@@ -131,6 +131,7 @@ so the SD manager itself stays device-agnostic.
 | **[Silkscreen](https://github.com/iandchasse/silkscreen-pcb)** (formerly de-link) | ESP32-S3 | SSD1677 | 800×480 | B/W + grayscale, PWM frontlight, native 4-bit SDMMC SD |
 | **M5Stack PaperColor** | ESP32-S3 | ED2208 | 400×600 Spectra-6 color | native interrupted-refresh driver, optional M5GFX backend, built-in speaker (ES8311 codec + AW8737A amp), 2x RGB LEDs |
 | **Murphy M3** | ESP32-S3 | UC8253 | 240×416 | B/W (90°-rotated framebuffer, full/fast LUTs), CHSC6x touch, PWM frontlight |
+| **Murphy M4** | ESP32-S3 | SSD1677 | 4.26" 800×480 B/W | FT6336U touch with batch-specific calibration, dual warm/cool PWM frontlight, native 4-bit SDMMC, RX8010 RTC on the shared touch I²C1 bus |
 | **LilyGo T5 S3** | ESP32-S3 | ED047TC1 (raw parallel) | 960×540 16-gray | LovyanGFX EPD driver with 16-gray, GT911 touch, PWM backlight, BQ27220/BQ25896 I²C battery |
 | **M5Paper v1.1** | ESP32 (classic) | IT8951E | 540×960 16-gray ED047TC1 | hand-rolled IT8951 driver (own SPI, 1bpp→4bpp load, GC16/DU/A2 modes, auto rotation onto the portrait panel), GT911 touch, GPIO35 ADC battery |
 | **Sticky** | ESP32-S3 | SSD1677 or SSD2677 | 3.97" 800×480 B/W | reuses the SSD1677 driver (X4-class); newer units carry an SSD2677, detected at boot (CMD 0x70) and driven by the SSD2677 driver with OTP waveforms, GT911 touch, PDM microphone (Microphone lib), BQ27220 I²C battery gauge, PCF8563 RTC + SHT40 temp/humidity + LSM6DS3TR-C IMU (Rtc / EnvironmentSensor / Imu libs), SPI MicroSD (shares the display bus), LEDC buzzer (Buzzer lib); orientation/SD-sharing pending hardware validation |
@@ -155,7 +156,7 @@ profile. In builds without an Xteink profile the helpers compile to no-ops that
 return false without touching any pins, so an unconditional call is safe on
 every device. Devices on a different MCU build their own binary, selected with a
 `-DFREEINK_DEVICE_*` flag. A build targets exactly one of the four MCU families — ESP32-C3 (X3/X4),
-ESP32-C61 (OnePage), ESP32-S3 (Silkscreen/PaperColor/Murphy/LilyGo/Sticky/X4 Pro/Paper Mono/PaperS3/Waveshare 3.97), or classic ESP32 (M5Paper);
+ESP32-C61 (OnePage), ESP32-S3 (Silkscreen/PaperColor/Murphy M3/Murphy M4/LilyGo/Sticky/X4 Pro/Paper Mono/PaperS3/Waveshare 3.97), or classic ESP32 (M5Paper);
 `BoardConfig` rejects mixing families at compile time.
 
 #### Per-batch panel controllers (`applyXteinkDisplayController()`)

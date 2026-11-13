@@ -9,6 +9,10 @@
 #include <I2cBusLock.h>
 #include <soc/soc_caps.h>
 
+#if FREEINK_DEVICE_MURPHY_M4
+#include <MurphyM4I2c.h>
+#endif
+
 namespace freeink {
 namespace {
 
@@ -48,6 +52,11 @@ constexpr uint8_t RX8130_TIMER_STOP = 0x04;
 constexpr uint8_t RX8130_BACKUP_ONLY = 0x01;
 constexpr uint8_t RX8130_CLEAR_VLF = 0xBD;
 constexpr uint8_t RX8130_CLEAR_TF = 0xAF;  // W0C: preserve the other flags.
+
+// Epson RX8010SJ register map (Murphy M4).
+constexpr uint8_t RX8010_REG_TIME = 0x10;
+constexpr uint8_t RX8010_REG_FLAG = 0x1E;
+constexpr uint8_t RX8010_FLAG_VLF = 0x02;
 
 bool g_wireReady[2] = {false, false};
 TwoWire& sensorWire() {
@@ -109,6 +118,22 @@ bool readRegsRetry(uint8_t addr, uint8_t reg, uint8_t* dst, uint8_t len) {
   return false;
 }
 
+#if FREEINK_DEVICE_MURPHY_M4
+bool m4ReadRegs(uint8_t addr, uint8_t reg, uint8_t* dst, uint8_t len) {
+  const auto& s = BoardConfig::ACTIVE.sensors;
+  return freeink::murphy_m4_i2c::read(freeink::murphy_m4_i2c::rtcDevice(s.i2cSda, s.i2cScl, addr), reg, dst, len);
+}
+
+bool m4WriteRegs(uint8_t addr, uint8_t reg, const uint8_t* data, uint8_t len) {
+  if (len > 7) return false;
+  uint8_t payload[8] = {reg};
+  for (uint8_t i = 0; i < len; ++i) payload[i + 1] = data[i];
+  const auto& s = BoardConfig::ACTIVE.sensors;
+  return freeink::murphy_m4_i2c::write(freeink::murphy_m4_i2c::rtcDevice(s.i2cSda, s.i2cScl, addr), payload,
+                                       static_cast<size_t>(len) + 1);
+}
+#endif
+
 }  // namespace
 
 bool Rtc::begin() {
@@ -116,6 +141,15 @@ bool Rtc::begin() {
   if (addr == 0) return false;
   const auto& s = BoardConfig::ACTIVE.sensors;
   if (s.i2cSda < 0 || s.i2cScl < 0 || s.i2cHz == 0) return false;
+#if FREEINK_DEVICE_MURPHY_M4
+  // Not on Wire: touch owns SDA/SCL through the IDF bus, and a second I2C controller on the same pins would break it.
+  if (s.rtcType == BoardConfig::RtcType::Rx8010) {
+    uint8_t flag = 0;
+    if (!m4ReadRegs(addr, RX8010_REG_FLAG, &flag, 1)) return false;
+    begun_ = true;
+    return true;
+  }
+#endif
   ensureWire();
   uint8_t status = 0;
   switch (s.rtcType) {
@@ -135,6 +169,8 @@ bool Rtc::begin() {
     case BoardConfig::RtcType::Rx8130:
       if (!readRegsRetry(addr, RX8130_REG_CONTROL0, &status, 1)) return false;
       break;
+    case BoardConfig::RtcType::Rx8010:
+      return false;
     case BoardConfig::RtcType::None:
       return false;
   }
@@ -211,6 +247,29 @@ bool Rtc::now(DateTime& out) {
       out.year = static_cast<uint16_t>(2000 + bcdToDec(raw[6]));
       return true;
     }
+    case BoardConfig::RtcType::Rx8010: {
+#if FREEINK_DEVICE_MURPHY_M4
+      uint8_t flag = 0;
+      if (!m4ReadRegs(addr, RX8010_REG_FLAG, &flag, 1) || (flag & RX8010_FLAG_VLF)) return false;
+      if (!m4ReadRegs(addr, RX8010_REG_TIME, raw, sizeof(raw))) return false;
+      out.second = bcdToDec(raw[0] & 0x7FU);
+      out.minute = bcdToDec(raw[1] & 0x7FU);
+      out.hour = bcdToDec(raw[2] & 0x3FU);
+      out.weekday = 0;
+      for (uint8_t i = 0; i < 7; ++i) {
+        if (raw[3] & (1u << i)) {
+          out.weekday = i;
+          break;
+        }
+      }
+      out.day = bcdToDec(raw[4] & 0x3FU);
+      out.month = bcdToDec(raw[5] & 0x1FU);
+      out.year = static_cast<uint16_t>(2000 + bcdToDec(raw[6]));
+      return true;
+#else
+      return false;
+#endif
+    }
     case BoardConfig::RtcType::None:
       return false;
   }
@@ -222,6 +281,23 @@ bool Rtc::set(const DateTime& dt) {
   const uint8_t addr = BoardConfig::ACTIVE.sensors.rtcAddr;
   if (!begun_ || addr == 0) return false;
   const auto& s = BoardConfig::ACTIVE.sensors;
+#if FREEINK_DEVICE_MURPHY_M4
+  if (s.rtcType == BoardConfig::RtcType::Rx8010) {
+    const uint8_t time[] = {decToBcd(dt.second),
+                            decToBcd(dt.minute),
+                            decToBcd(dt.hour),
+                            static_cast<uint8_t>(1u << (dt.weekday % 7u)),
+                            decToBcd(dt.day),
+                            decToBcd(dt.month),
+                            decToBcd(static_cast<uint8_t>(dt.year % 100))};
+    if (!m4WriteRegs(addr, RX8010_REG_TIME, time, sizeof(time))) return false;
+    uint8_t flag = 0;
+    if (!m4ReadRegs(addr, RX8010_REG_FLAG, &flag, 1)) return true;
+    flag = static_cast<uint8_t>(flag & ~RX8010_FLAG_VLF);
+    return m4WriteRegs(addr, RX8010_REG_FLAG, &flag, 1);
+  }
+#endif
+  if (s.rtcType == BoardConfig::RtcType::Rx8010) return false;
   const uint8_t centuryBit = dt.year < 2000 ? 0x80U : 0x00U;
   ensureWire();
   auto& wire = sensorWire();

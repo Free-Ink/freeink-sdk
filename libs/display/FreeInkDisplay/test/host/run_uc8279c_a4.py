@@ -65,6 +65,7 @@ public:
       ++refreshes;
       oldAtPrevRefresh=oldAtRefresh;
       newAtPrevRefresh=newAtRefresh;
+      busyPolls=busyPollsPerRefresh;
       oldAtRefresh=oldPlane;
       newAtRefresh=newPlane;
     }
@@ -80,7 +81,11 @@ public:
     cmd(c);
     (c==0x10 ? oldPlane : newPlane).assign(size_t(height)*widthBytes,value);
   }
-  void waitBusy(const char*) {}
+  void waitBusy(const char*) { ++busyWaits; busyPolls=0; }
+  // BUSY reads asserted for this many polls after each refresh command.
+  unsigned busyPollsPerRefresh=0, busyWaits=0;
+  mutable unsigned busyPolls=0;
+  bool isBusy() const { if(busyPolls==0) return false; --busyPolls; return true; }
   struct Pins { int8_t rst=0; };
   Pins pins() const { return {}; }
   struct Txn { EpdBus* b; void writeBytes(const uint8_t* p, size_t n) { b->rawWriteBytes(p, n); } };

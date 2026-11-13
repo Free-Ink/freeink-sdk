@@ -174,10 +174,28 @@ void Uc8279cA4Driver::fillControllerRam(EpdBus& bus, const uint8_t command, cons
   bus.fillPlane(command, fill, CONTROLLER_HEIGHT, _widthBytes);
 }
 
-void Uc8279cA4Driver::refresh(EpdBus& bus, const uint8_t* bwBaseline) {
+void Uc8279cA4Driver::refresh(EpdBus& bus, const uint8_t* bwBaseline, const bool runIdleHook) {
   ensurePowerOn(bus);
   bus.cmd(CMD_DISPLAY_REFRESH);
-  bus.waitBusy(" A4 refresh");
+  bool refreshDone = false;
+  if (runIdleHook && _idleHook) {
+    const auto hook = _idleHook;
+    _idleHook = nullptr;
+    // BUSY takes a moment to assert. Run the hook only once the waveform is
+    // confirmed running, so a refresh that ends during it is not mistaken for
+    // one that never started.
+    const unsigned long start = millis();
+    bool running = bus.isBusy();
+    while (!running && millis() - start < 100) {
+      delay(1);
+      running = bus.isBusy();
+    }
+    if (running) {
+      hook(_idleHookCtx);
+      refreshDone = !bus.isBusy();
+    }
+  }
+  if (!refreshDone) bus.waitBusy(" A4 refresh");
   _lastRefreshMs = millis();
   // The next differential update diffs against this baseline.
   if (bwBaseline) writeFrame(bus, CMD_DTM1, bwBaseline);
@@ -408,7 +426,9 @@ void Uc8279cA4Driver::showGray3(EpdBus& bus, const bool inverted, const bool fro
   const uint8_t interval = 0x00;
   bus.cmdData(CMD_VCOM_DATA_INTERVAL, &interval, 1);
   loadGray3Lut(bus, use.black, use.whiteClear, fromBase);
-  refresh(bus);
+  // The idle hook runs during this refresh; the short second one below, when
+  // the page has a second gray level, is a plain wait.
+  refresh(bus, nullptr, /*runIdleHook=*/true);
   if (use.second) {
     writeGray3Codes(bus, true, true, inverted, fromBase, use);
     writeGray3Codes(bus, false, true, inverted, fromBase, use);

@@ -6,6 +6,8 @@
 
 namespace BoardT5S3 {
 
+// Holds the SDK's shared I2C lock (freeink::i2cBusMutex(), I2cBusLock.h) for its scope, so a
+// caller outside this layer serialises with it and with the SDK's I2C helpers.
 class ScopedI2CLock {
  public:
   ScopedI2CLock();

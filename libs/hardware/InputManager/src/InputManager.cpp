@@ -570,9 +570,11 @@ void InputManager::updateDigitalTwoButton(const unsigned long currentTime) {
   // press this update and the release on the next. Never write the event
   // masks directly — applyStateChange() assigns them from the state diff,
   // clobbering direct writes the same tick.
-  if (freeink::papermono::pollPowerButtonClicked(currentTime)) {
+  const bool pmicClicked = freeink::papermono::pollPowerButtonClicked(currentTime);
+  if (pmicClicked) {
     auxiliaryState |= static_cast<uint8_t>(1u << BTN_POWER);
   }
+  if ((auxiliaryState & (1u << BTN_POWER)) && !isPressed(BTN_POWER)) powerButtonClick = pmicClicked;
 #endif
 
   if (physical != twoButtonPhysicalState) {
@@ -606,7 +608,13 @@ void InputManager::updateDigitalTwoButton(const unsigned long currentTime) {
     nextState |= static_cast<uint8_t>(1u << logical);
   }
   applyStateChange(nextState, currentTime);
-  if (pressedEvents & (1u << BTN_POWER)) powerButtonPressStart = twoButtonPressStart;
+  if (physical == 3 && twoButtonLongPressActive) {
+    powerButtonPressStart = twoButtonPressStart;
+#if FREEINK_DEVICE_PAPERMONO
+    // A chord can take over a PMIC pulse without a new logical press edge.
+    powerButtonClick = false;
+#endif
+  }
 }
 
 void InputManager::update() {
@@ -693,6 +701,9 @@ unsigned long InputManager::getHeldTime() const {
 }
 
 unsigned long InputManager::getPowerButtonHeldTime() const {
+#if FREEINK_DEVICE_PAPERMONO
+  if (powerButtonClick) return 0;
+#endif
   if (isPressed(BTN_POWER)) {
     return millis() - powerButtonPressStart;
   }

@@ -58,6 +58,7 @@ class InputManager {
   unsigned long getHeldTime() const;
 
   // Duration of the current or most recent power-button hold.
+  // PMIC click pulses report zero, independent of the interval between updates.
   unsigned long getPowerButtonHeldTime() const;
 
   static constexpr uint8_t BTN_BACK = 0;
@@ -465,6 +466,9 @@ class InputManager {
   uint8_t twoButtonPhysicalState;
   unsigned long twoButtonPressStart;
   bool twoButtonLongPressActive;
+#if FREEINK_DEVICE_PAPERMONO
+  bool powerButtonClick = false;  // Retained through release; polling latency is not click duration.
+#endif
 
   bool touchDataEnabled = false;         // I2C up, controller present
   bool touchWakeIrqUsable = false;       // INT held in a level mode (touchWakeIrqPin)

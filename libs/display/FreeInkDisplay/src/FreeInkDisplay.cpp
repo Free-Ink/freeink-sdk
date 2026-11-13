@@ -905,6 +905,14 @@ void FreeInkDisplay::displayGrayBuffer(bool turnOffScreen, const unsigned char* 
 #if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
   Serial.printf("[EPD] displayGrayBuffer\n");
 #endif
+  // A refresh idle hook lasts for this call, including the returns below that
+  // never reach the driver.
+  struct IdleHookScope {
+    PanelDriver* driver;
+    ~IdleHookScope() {
+      if (driver) driver->setRefreshIdleHook(nullptr, nullptr);
+    }
+  } idleHookScope{_driver};
   // Inverted mode renders a crisp BW page unless the driver overlays masks on it.
   if (!grayAllowed()) return;
   DisplayPmLock pmLock;
@@ -1160,6 +1168,10 @@ void FreeInkDisplay::requestResync(uint8_t settlePasses) {
 
 void FreeInkDisplay::setReaderRefresh(const bool reading) {
   if (_driver) _driver->setReaderRefresh(reading);
+}
+
+void FreeInkDisplay::setRefreshIdleHook(void (*hook)(void* ctx), void* ctx) {
+  if (_driver) _driver->setRefreshIdleHook(hook, ctx);
 }
 
 void FreeInkDisplay::skipInitialResync() {

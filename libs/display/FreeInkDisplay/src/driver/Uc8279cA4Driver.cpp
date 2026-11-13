@@ -175,10 +175,29 @@ void Uc8279cA4Driver::fillControllerRam(EpdBus& bus, const uint8_t command, cons
   bus.fillPlane(command, fill, CONTROLLER_HEIGHT, _widthBytes);
 }
 
-void Uc8279cA4Driver::refresh(EpdBus& bus, const uint8_t* bwBaseline) {
+void Uc8279cA4Driver::refresh(EpdBus& bus, const uint8_t* bwBaseline, const bool runIdleHook) {
   ensurePowerOn(bus);
   bus.cmd(CMD_DISPLAY_REFRESH);
-  bus.waitBusy(" A4 refresh");
+  bool refreshDone = false;
+  if (runIdleHook && _idleHook) {
+    const auto hook = _idleHook;
+    const auto ctx = _idleHookCtx;
+    clearIdleHook();
+    // BUSY takes a moment to assert. Run the hook only once the waveform is
+    // confirmed running, so a refresh that ends during it is not mistaken for
+    // one that never started.
+    const unsigned long start = millis();
+    bool running = bus.isBusy();
+    while (!running && millis() - start < 100) {
+      delay(1);
+      running = bus.isBusy();
+    }
+    if (running) {
+      hook(ctx);
+      refreshDone = !bus.isBusy();
+    }
+  }
+  if (!refreshDone) bus.waitBusy(" A4 refresh");
   // The next differential update diffs against this baseline.
   if (bwBaseline) writeFrame(bus, CMD_DTM1, bwBaseline);
   // Stock V1.0.3 boots with panel power hold on and leaves the rails up after
@@ -200,6 +219,12 @@ void Uc8279cA4Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* pre
                               const bool turnOff) {
   (void)prev;
   (void)turnOff;  // the panel stays powered after refresh(), as on stock
+  displayBw(bus, fb, mode);
+  // A B/W refresh never runs the idle hook; it must not outlive this call.
+  clearIdleHook();
+}
+
+void Uc8279cA4Driver::displayBw(EpdBus& bus, const uint8_t* fb, const RefreshMode mode) {
   const bool wasAsleep = _controllerAsleep;
   // Any B/W refresh replaces what a Gray3 transition would start from.
   _gray3HistoryValid = false;
@@ -356,7 +381,7 @@ void Uc8279cA4Driver::showGray3(EpdBus& bus) {
   const uint8_t interval = 0x00;
   bus.cmdData(CMD_VCOM_DATA_INTERVAL, &interval, 1);
   loadGray3Lut(bus, anyBlack, anyWhiteClear);
-  refresh(bus);
+  refresh(bus, nullptr, /*runIdleHook=*/true);
   const size_t n = static_cast<size_t>(_widthBytes) * _height;
   memcpy(_gray3White, _grayLsb, n);
   memcpy(_gray3Middle, _grayMsb, n);
@@ -371,13 +396,20 @@ void Uc8279cA4Driver::displayGray(EpdBus& bus, const uint8_t* fb, const bool tur
   (void)fb;
   (void)lut;
   (void)factoryMode;
+  // The idle hook lasts for this call only: whichever way it returns (out of
+  // memory, four-gray planes, or a Gray3 refresh that did not run it), a hook
+  // left set would fire on some later, unrelated page turn.
+  struct IdleHookScope {
+    Uc8279cA4Driver& driver;
+    ~IdleHookScope() { driver.clearIdleHook(); }
+  } idleHookScope{*this};
   // Allocation failure means the already-painted BW page remains visible;
   // never substitute the last rendered bit-plane as a black/white frame.
   const bool overlay = _overlayPass;
   _overlayPass = true;  // overlay unless the next pass is begun as absolute
   if (overlay) {
     if (!_grayLsb || !_grayMsb || !_grayBase || !allocateGray3()) {
-      if (_basePending) display(bus, _grayBase, nullptr, _cleanupPage ? RefreshMode::Half : RefreshMode::Fast, turnOff);
+      if (_basePending) displayBw(bus, _grayBase, _cleanupPage ? RefreshMode::Half : RefreshMode::Fast);
       return;
     }
     const size_t n = static_cast<size_t>(_widthBytes) * _height;
@@ -386,7 +418,8 @@ void Uc8279cA4Driver::displayGray(EpdBus& bus, const uint8_t* fb, const bool tur
       // which fully drives out the previous screen, and start the Gray3
       // history from it. Stock's history-less Gray3 drive clears too weakly
       // and leaves the previous screen ghosting.
-      if (_basePending) display(bus, _grayBase, nullptr, _cleanupPage ? RefreshMode::Half : RefreshMode::Fast, false);
+      // displayBw(), not display(): the hook is still wanted for the Gray3 refresh below.
+      if (_basePending) displayBw(bus, _grayBase, _cleanupPage ? RefreshMode::Half : RefreshMode::Fast);
       _cleanupPage = false;
       memcpy(_gray3White, _grayBase, n);
       memset(_gray3Middle, 0, n);

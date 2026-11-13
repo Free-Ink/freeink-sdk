@@ -35,7 +35,11 @@ bool hostI2cWrite(uint8_t addr, const std::vector<uint8_t>& bytes) {
     writes.push_back({addr, reg, value});
     if (addr == 0x32 && dropCounter && reg == 0x1A) continue;
     if (addr == 0x32 && dropEnable && reg == 0x1C && (value & 0x10)) continue;
-    if (addr == 0x32 && reg == 0x1D) {
+    const bool rx8010 = BoardConfig::ACTIVE.sensors.rtcType == BoardConfig::RtcType::Rx8010;
+    if (addr == 0x32 && rx8010 && reg == 0x1E) {
+      regs[addr][reg] &= value;  // W0C.
+    } else if (addr == 0x32 && reg == 0x1D) {
+      assert(!rx8010);  // There it is the extension register: only the RX8130's flags live here.
       assert(!(value & 0x40));
       regs[addr][reg] &= value | 0x01;  // W0C; VBFF is read-only.
     } else if (addr == 0x6E && reg == 0x05) {

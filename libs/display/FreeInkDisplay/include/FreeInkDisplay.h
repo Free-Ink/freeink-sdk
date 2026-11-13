@@ -288,6 +288,10 @@ class FreeInkDisplay {
   void requestResync(uint8_t settlePasses = 0);
   // True while book pages are presented (see PanelDriver::setReaderRefresh).
   void setReaderRefresh(bool reading);
+  // One-shot work to run while the next page-turn waveform drives the panel
+  // (see PanelDriver::setRefreshIdleHook). Clear with nullptr after the
+  // display call. Only drivers that support it run the hook.
+  void setRefreshIdleHook(void (*hook)(void* ctx), void* ctx);
   // Physical-pixel rectangle; restore=true removes the overlay from the retained gray image.
   bool displayRetainedGrayscaleOverlay(uint16_t x, uint16_t y, uint16_t w, uint16_t h, bool restore = false);
   void skipInitialResync();

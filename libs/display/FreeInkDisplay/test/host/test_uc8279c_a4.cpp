@@ -205,6 +205,55 @@ int main() {
   }
 
   {
+    // Refresh idle hook: one-shot host work during a Gray3 page-turn waveform.
+    struct Calls {
+      EpdBus* bus;
+      unsigned count = 0, refreshesAtCall = 0;
+    } calls{&bus};
+    const auto hook = [](void* ctx) {
+      auto* c = static_cast<Calls*>(ctx);
+      ++c->count;
+      c->refreshesAtCall = c->bus->refreshes;
+    };
+    gray3Page(page.data(), RefreshMode::Fast);  // back in a Gray3 session
+    bus.busyPollsPerRefresh = 1000;             // still busy when the hook returns
+
+    auto before = bus.refreshes;
+    auto waits = bus.busyWaits;
+    driver.setRefreshIdleHook(hook, &calls);
+    gray3Page(page.data(), RefreshMode::Fast);
+    assert(calls.count == 1 && calls.refreshesAtCall == before + 1 && "the hook runs once, after the refresh is fired");
+    assert(bus.busyWaits == waits + 1 && "a waveform still running after the hook is waited out");
+    gray3Page(page.data(), RefreshMode::Fast);
+    assert(calls.count == 1 && "the hook is one-shot");
+
+    // The waveform ends during the hook: no second wait, which would only time out.
+    bus.busyPollsPerRefresh = 1;
+    waits = bus.busyWaits;
+    driver.setRefreshIdleHook(hook, &calls);
+    gray3Page(page.data(), RefreshMode::Fast);
+    assert(calls.count == 2 && bus.busyWaits == waits && "a refresh that finished during the hook is not waited on");
+
+    // BUSY never asserts: the hook is dropped, not run late, and the normal wait runs.
+    bus.busyPollsPerRefresh = 0;
+    waits = bus.busyWaits;
+    driver.setRefreshIdleHook(hook, &calls);
+    gray3Page(page.data(), RefreshMode::Fast);
+    bus.busyPollsPerRefresh = 1000;
+    gray3Page(page.data(), RefreshMode::Fast);
+    assert(calls.count == 2 && bus.busyWaits == waits + 2 && "a hook whose waveform never started must not run");
+
+    // A B/W refresh never runs it, and clearing it keeps it from running later.
+    driver.setRefreshIdleHook(hook, &calls);
+    driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, false);
+    assert(calls.count == 2 && "the hook must not run during a B/W refresh");
+    driver.setRefreshIdleHook(nullptr, nullptr);
+    gray3Page(page.data(), RefreshMode::Fast);
+    assert(calls.count == 2 && "a cleared hook must not run");
+    bus.busyPollsPerRefresh = 0;
+  }
+
+  {
     // Deep sleep powers a held panel off.
     const auto offs = bus.powerOffs;
     driver.deepSleep(bus);
@@ -236,5 +285,5 @@ int main() {
     assert(bus.powerOffs == offs + 2 && "deep sleep after idle sends no second power-off");
   }
   std::cout << "PASS: A4 FAST cadence, post-AA pixel transitions, retained baseline, explicit cleanup, four-gray and "
-               "Gray3 wire encoding, stock power hold and wake, idle power-off\n";
+               "Gray3 wire encoding, refresh idle hook, stock power hold and wake, idle power-off\n";
 }

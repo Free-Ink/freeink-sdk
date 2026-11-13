@@ -4324,6 +4324,44 @@ void testKeyboardAltCaseFlip() {
   const KeyboardLayout& sym = builtinKeyboardLayout(KeyboardLayoutId::QwertyEn, false, true);
   CHECK(keyboardAltOutputFor(sym, '/') == nullptr);
   CHECK(keyboardAltOutputFor(en, QWERTY_KEY_BACKSPACE) == nullptr);
+
+  // The flip follows the letter a key types, not its id. ü, ß and ö keep ids
+  // 1101..1103, the code points of Cyrillic э, ю and я, and a held German key
+  // used to type Э, Ю and Я.
+  const auto same = [](const char* a, const char* b) { return a && b && std::strcmp(a, b) == 0; };
+  KeyboardLayoutBuffer buffer;
+  for (const bool compact : {false, true}) {
+    const KeyboardLayout& de = compact ? buildKeyboardLayout(buffer, KeyboardLayoutId::QwertzDe)
+                                       : builtinKeyboardLayout(KeyboardLayoutId::QwertzDe);
+    CHECK(same(keyboardAltOutputFor(de, 1101), "\xc3\x9c"));  // ü -> Ü
+    CHECK(same(keyboardAltOutputFor(de, 1103), "\xc3\x96"));  // ö -> Ö
+    CHECK(same(keyboardAltOutputFor(de, 1104), "\xc3\x84"));  // ä -> Ä
+    CHECK(keyboardAltOutputFor(de, 1102) == nullptr);          // ß has no capital here
+    CHECK(same(keyboardAltOutputFor(de, 'z'), "Z"));
+    const KeyboardLayout& deShift = compact ? buildKeyboardLayout(buffer, KeyboardLayoutId::QwertzDe, true)
+                                            : builtinKeyboardLayout(KeyboardLayoutId::QwertzDe, true);
+    CHECK(same(keyboardAltOutputFor(deShift, 1151), "\xc3\xbc"));  // Ü -> ü
+    const KeyboardLayout& es = compact ? buildKeyboardLayout(buffer, KeyboardLayoutId::SpanishEs)
+                                       : builtinKeyboardLayout(KeyboardLayoutId::SpanishEs);
+    CHECK(same(keyboardAltOutputFor(es, 1201), "\xc3\x91"));  // ñ -> Ñ
+    const KeyboardLayout& ru = compact ? buildKeyboardLayout(buffer, KeyboardLayoutId::CyrillicRu)
+                                       : builtinKeyboardLayout(KeyboardLayoutId::CyrillicRu);
+    CHECK(same(keyboardAltOutputFor(ru, 0x439), "\xd0\x99"));  // й -> Й
+    CHECK(same(keyboardAltOutputFor(ru, 0x44F), "\xd0\xaf"));  // я -> Я
+    // The Cyrillic letters outside А-я have capitals too: ї, і and є, ў.
+    const KeyboardLayout& uk = compact ? buildKeyboardLayout(buffer, KeyboardLayoutId::CyrillicUk)
+                                       : builtinKeyboardLayout(KeyboardLayoutId::CyrillicUk);
+    CHECK(same(keyboardAltOutputFor(uk, 0x457), "\xd0\x87"));  // ї -> Ї
+    CHECK(same(keyboardAltOutputFor(uk, 0x456), "\xd0\x86"));  // і -> І
+    const KeyboardLayout& beShift = compact ? buildKeyboardLayout(buffer, KeyboardLayoutId::CyrillicBe, true)
+                                            : builtinKeyboardLayout(KeyboardLayoutId::CyrillicBe, true);
+    CHECK(same(keyboardAltOutputFor(beShift, 0x40E), "\xd1\x9e"));  // Ў -> ў
+    CHECK(keyboardAltOutputFor(beShift, '\'') == nullptr);          // the apostrophe key has no case
+    const KeyboardLayout& el = compact ? buildKeyboardLayout(buffer, KeyboardLayoutId::GreekEl)
+                                       : builtinKeyboardLayout(KeyboardLayoutId::GreekEl);
+    CHECK(same(keyboardAltOutputFor(el, 0x3C1), "\xce\xa1"));  // ρ -> Ρ
+    CHECK(keyboardAltOutputFor(el, 0x3C2) == nullptr);          // ς has no capital
+  }
 }
 
 void testTouchTapQueue() {

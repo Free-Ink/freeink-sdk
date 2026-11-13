@@ -384,6 +384,10 @@ class InputManager {
   bool readChsc6xPoint(TouchPoint& point);
   bool decodeChsc6xFrame(const uint8_t* data, size_t len, TouchPoint& point) const;
   uint16_t mapTouchAxis(uint16_t raw, uint16_t rawMin, uint16_t rawMax, uint16_t outMax) const;
+  // Gesture thresholds for the active digitizer; see scaledTouchPx().
+  int scaledTouchPx(int px) const;
+  int touchTapSlopPx() const { return scaledTouchPx(TOUCH_TAP_SLOP_PX); }
+  int touchSwipeMinPx() const { return scaledTouchPx(TOUCH_SWIPE_MIN_PX); }
   void beginGt911();
   bool gt911ReadReg(uint16_t reg, uint8_t* buf, uint8_t len);
   bool gt911ClearStatus();
@@ -540,6 +544,7 @@ class InputManager {
   static constexpr int TOUCH_TAP_SLOP_PX = 28;
   static constexpr int TOUCH_SWIPE_MIN_PX = 60;
   static constexpr int TOUCH_TAP_RELEASE_SLOP_PX = TOUCH_SWIPE_MIN_PX - 1;
+  static constexpr int TOUCH_REFERENCE_SPAN = 639;  // mean axis span the two values above were tuned at
   static constexpr unsigned long TOUCH_SWIPE_MAX_MS = 700;
   static constexpr unsigned long TOUCH_MULTI_SWIPE_MAX_MS = 2000;
   static constexpr int TOUCH_MULTI_CONTACT_SEPARATION_SLOP_PX = 45;

@@ -70,7 +70,9 @@ public:
     // True when the battery is actively charging. Sources by backend:
     //   * ADC boards: the MCP73832-style charge-status pin (LOW = charging),
     //     else an I2C charger IC's CHRG_STAT when one is configured (Picco's
-    //     SGM41562); false when neither exists.
+    //     SGM41562); false when neither exists. With
+    //     FREEINK_USB_PRESENCE_AS_CHARGING and no status pin, this is
+    //     freeink::usbHostPresent() instead.
     //   * Gauge boards: a charger IC's status (BQ25896 CHRG_STAT) when present,
     //     else the gauge's own Current() sign (BQ27220, positive = charging), so
     //     a board with a gauge but no charger IC (e.g. X3) still reports it.
@@ -132,3 +134,13 @@ private:
     float _dividerMultiplier;
     int8_t _chargeStatusPin;
 };
+
+namespace freeink {
+// True while a USB host is attached, read from the SoC's USB-Serial/JTAG
+// start-of-frame counter, so it needs no detect pin. A charger that is not a
+// USB host sends no frames and reads as absent: this is "USB host connected",
+// not "charging" and not "external power present". Always false unless the
+// build sets FREEINK_USB_PRESENCE_AS_CHARGING (BoardConfig.h).
+bool usbHostPresent();
+}  // namespace freeink
+

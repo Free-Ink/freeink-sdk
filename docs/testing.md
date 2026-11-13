@@ -34,6 +34,7 @@ sh libs/book/FreeInkBook/test/host/run.sh
 sh libs/book/ContentProtection/test/host/run.sh
 sh libs/hardware/InputManager/test/host/run.sh
 sh libs/hardware/InputManager/test/host/run_metalio.sh
+sh libs/hardware/InputManager/test/host/run_murphy_touch.sh
 sh libs/hardware/HapticManager/test/host/run.sh
 ```
 

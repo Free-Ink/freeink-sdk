@@ -336,10 +336,10 @@ void Ssd2677Driver::copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
   // Stock (0x4228b030): MSB mask in the high bit, LSB mask in the low bit.
   // The Picco's stock AA powers on before the upload (0x4200bad0).
   if (!isSticky()) powerOn(bus);
-  // lut_picco_se0400_gray lightens code 01 by 3 frames and code 10 by 4 and
-  // leaves code 11 undriven. Dark pixels set both masks, so the Picco sends
-  // them as 01; light pixels (MSB only) stay 10.
-  sendPacked(bus, msb, _lsb, !isSticky());
+  // lut_picco_se0400_gray (both boards) lightens code 01 by 3 frames and code
+  // 10 by 4 and leaves code 11 undriven. Dark pixels set both masks, so they
+  // go out as 01; light pixels (MSB only) stay 10.
+  sendPacked(bus, msb, _lsb, true);
   if (!isSticky()) {
     // The vendor retains the MSB mask to correct the next B/W transition.
     memcpy(_lsb, msb, geometry().bufferSize);

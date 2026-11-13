@@ -11,7 +11,7 @@
 // the transition. Init list, LUTs and bit packing are from the stock firmware
 // (build 2912). Grayscale is the stock overlay AA mode (slot-5 LUT): the LSB
 // and MSB masks are packed as the low/high bit of each pixel, with dark pixels
-// (both masks) sent as LSB-only on the Picco. Images use the panel's dedicated
+// (both masks) sent as LSB-only. Images use the panel's dedicated
 // slot-4 waveform with the two complete image planes.
 //
 // The newer Seeed Sticky carries the same controller with OTP waveforms: its

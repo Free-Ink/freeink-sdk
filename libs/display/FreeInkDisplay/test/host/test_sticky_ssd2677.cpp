@@ -134,7 +134,7 @@ int main(int argc, char** argv) {
   assert(*lastData(bus, 0xE6) == Bytes({0xEE}) && "B/W after a gray image is a full refresh");
 
   // AA (overlay): the base re-inks black pixels using the fast OTP waveform, then the masks
-  // (MSB high, LSB low, like the Picco) are nudged gray with the uploaded AA
+  // (MSB high, LSB low, dark pixels LSB-only, like the Picco) are nudged gray with the uploaded AA
   // waveform; the next frame re-runs init before latching its OTP waveform.
   assert(s.grayscaleCapabilities(GrayscaleMode::Overlay).supported());
   Bytes lsbMask(48000, 0x00), msbMask(48000, 0x00);
@@ -158,7 +158,7 @@ int main(int argc, char** argv) {
   assert(count(bus, 0x00) == 1 && count(bus, 0xE6) == 0 && *lastData(bus, 0xE0) == Bytes({0x10}) &&
          "masks go out after a fresh init, no OTP latch");
   data = lastData(bus, 0x10);
-  assert(data && (*data)[row0] == 0xF5 && (*data)[row0 + 1] == 0xA0 && "px (msb,lsb) = 11 11 01 01 | 10 10 00 00");
+  assert(data && (*data)[row0] == 0x55 && (*data)[row0 + 1] == 0xA0 && "px (msb,lsb) = 01 01 01 01 | 10 10 00 00");
   s.displayGray(bus, white.data(), false, nullptr, false);
   const Bytes* lut = lastData(bus, 0x20);
   assert(lut && *lut == Bytes(lut_picco_se0400_gray, lut_picco_se0400_gray + 535));

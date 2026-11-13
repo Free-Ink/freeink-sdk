@@ -19,6 +19,7 @@ class Uc8279cA4Driver : public PanelDriver {
 
   void begin(EpdBus& bus) override;
   void deepSleep(EpdBus& bus) override;
+  void controllerIdle(EpdBus& bus) override;
   void display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) override;
   // Overlay (anti-aliased text) uses stock's reader "Gray3" path: the B/W base
   // and its gray masks go out as one three-level (white / middle / black)
@@ -51,7 +52,7 @@ class Uc8279cA4Driver : public PanelDriver {
   void writeGray3Codes(EpdBus& bus, bool dtm1, bool& anyBlack, bool& anyWhiteClear);
   void loadGray3Lut(EpdBus& bus, bool anyBlack, bool anyWhiteClear);
   void fillControllerRam(EpdBus& bus, uint8_t command, uint8_t fill);
-  void refresh(EpdBus& bus, const uint8_t* bwBaseline = nullptr, bool holdPower = false);
+  void refresh(EpdBus& bus, const uint8_t* bwBaseline = nullptr);
   uint8_t* allocateGrayBuffer();
   bool allocateGray3();
 
@@ -60,6 +61,7 @@ class Uc8279cA4Driver : public PanelDriver {
   uint16_t _widthBytes;
   bool _screenOn = false;
   bool _grayControllerMode = false;
+  bool _controllerAsleep = false;  // controllerIdle() put the controller in deep sleep
   bool _redriveAfterGray = false;  // re-drive all target pixels after AA, using the requested waveform
   // begin() seeds DTM1 white, but after a reflash/reset the glass holds the
   // previous UI, so a white-assumed diff leaves it ghosting through the first

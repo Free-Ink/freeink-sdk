@@ -78,9 +78,13 @@ int main() {
   for (auto mode : {RefreshMode::Half, RefreshMode::Full}) {
     const auto refreshes = bus.refreshes;
     const auto powerOffs = bus.powerOffs;
+    for (auto& b : bw) b = static_cast<uint8_t>(b ^ 0x99);  // a different screen, so OLD differs from NEW
     driver.display(bus, bw.data(), nullptr, mode, false);
-    assert(bus.powerOffs - powerOffs == bus.refreshes - refreshes && "every refresh must power the panel off");
+    assert(bus.refreshes > refreshes && bus.powerOffs == powerOffs &&
+           "B/W refreshes keep the panel powered, as stock's power hold does");
     assert(bus.interval == 0x97 && bus.lutBytes == 49);
+    assert(bus.oldAtRefresh == bus.newAtRefresh &&
+           "complete refreshes must put every pixel on the flashing same-state records");
     driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, false);
     assert(bus.interval == 0xd7 && bus.lutBytes == 49);
   }
@@ -190,18 +194,23 @@ int main() {
   }
 
   {
-    // Gray3 page turns keep the panel powered, as stock V1.1.3 does for its
-    // reader session. The next B/W refresh powers the held panel off before it
-    // resets the controller, then powers off after its own refresh as usual.
+    // Gray3 page turns keep the panel powered, as stock's power hold does. The
+    // next B/W refresh powers the held panel off only to reset the controller.
     const auto offs = bus.powerOffs;
     gray3Page(page.data(), RefreshMode::Fast);
     gray3Page(page.data(), RefreshMode::Fast);
     assert(bus.powerOffs == offs && "Gray3 page turns must not power off between pages");
     driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, false);
-    assert(bus.powerOffs == offs + 2 && "B/W after Gray3: power off the held panel, then after the refresh");
+    assert(bus.powerOffs == offs + 1 && "B/W after Gray3: power off the held panel for the reset only");
   }
 
-  driver.deepSleep(bus);
+  {
+    // Deep sleep powers a held panel off.
+    const auto offs = bus.powerOffs;
+    driver.deepSleep(bus);
+    assert(bus.powerOffs == offs + 1 && "deep sleep must power the held panel off");
+  }
+  driver.begin(bus);
   driver.begin(bus);
   const auto wakeStart = bus.refreshes;
   driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, false);
@@ -209,6 +218,23 @@ int main() {
   assert(bus.refreshes == wakeStart + 2 && "first paint after wake must drive inverse, then target");
   driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, false);
   assert(bus.interval == 0xd7 && bus.lutBytes == 49);
+  {
+    // controllerIdle() powers the panel off between frames; the next paint
+    // wakes the controller and diffs against the frame left on the glass.
+    const auto shown = bus.oldPlane;
+    const auto offs = bus.powerOffs;
+    driver.controllerIdle(bus);
+    driver.controllerIdle(bus);
+    assert(bus.powerOffs == offs + 1 && "idle must power off once and stay off");
+    for (auto& b : bw) b = static_cast<uint8_t>(b ^ 0x0f);
+    const auto before = bus.refreshes;
+    driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, false);
+    assert(bus.refreshes == before + 1 && bus.interval == 0xd7 && "paint after idle stays one FAST refresh");
+    assert(bus.oldAtRefresh == shown && "paint after idle must diff against the displayed frame");
+    driver.controllerIdle(bus);
+    driver.deepSleep(bus);
+    assert(bus.powerOffs == offs + 2 && "deep sleep after idle sends no second power-off");
+  }
   std::cout << "PASS: A4 FAST cadence, post-AA pixel transitions, retained baseline, explicit cleanup, four-gray and "
-               "Gray3 wire encoding, Gray3 power hold and wake\n";
+               "Gray3 wire encoding, stock power hold and wake, idle power-off\n";
 }

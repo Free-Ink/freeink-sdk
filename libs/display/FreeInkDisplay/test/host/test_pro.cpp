@@ -11,6 +11,8 @@
 #include "src/driver/Uc8179Driver.h"
 #include "src/driver/Uc8279X4Driver.h"
 #include "src/lut/Ssd1677Luts.h"
+#include "src/lut/X4ProTextAaLuts.h"
+#include "src/lut/X4ProImageLuts.h"
 #undef private
 
 using namespace freeink;
@@ -513,11 +515,25 @@ static void testDirectSleep() {
   };
   assert(display.grayscaleCapabilities(GrayscaleMode::Direct).base == GrayscaleBase::Combined);
   for (auto fallback : {FreeInkDisplay::HALF_REFRESH, FreeInkDisplay::FAST_REFRESH}) {
+    driver.setReaderRefresh(true);
+    assert(display.displayGrayscaleBase(GrayscaleMode::Overlay));
+    display.copyGrayscaleBuffers(lsb.data(), msb.data());
+    display.displayGrayBuffer(false);
+    display.cleanupGrayscaleBuffers(bw.data());
     display._bus.clear();
     assert(display.displayGrayscaleBase(GrayscaleMode::Direct, fallback));
     assert(activations() == 0);
     display.copyGrayscaleBuffers(lsb.data(), msb.data());
     assert(activations() == 0);
+    if constexpr (std::is_same_v<Driver, Uc8279X4Driver>) {
+      for (unsigned p = 0; p < 2; ++p) {
+        const auto& source = p ? msb : lsb;
+        const auto uploaded = lastPlane(display._bus, p ? 0x13 : 0x10);
+        assert(uploaded.size() == 60000);
+        for (unsigned i = 0; i < source.size(); ++i)
+          assert(uploaded[12000 + i] == uint8_t(~source[i]));
+      }
+    }
     display.displayGrayBuffer(false);
     assert(activations() == 1);
     display.cleanupGrayscaleBuffers(bw.data());
@@ -553,18 +569,56 @@ static void testUc8279X4WaveformSelection() {
     driver.copyGrayscaleMsb(bus, msb.data());
     bus.clear();
     driver.displayGray(bus, bw.data(), false, nullptr, factory);
+    unsigned panelSettings = 0;
+    for (const auto& w : bus.writes) {
+      if (w.command == 0x00) {
+        assert(w.bytes == Bytes({driver._cfg.psr0, driver._cfg.psr1}));
+        ++panelSettings;
+      }
+    }
+    assert(panelSettings == 2);
     return bank();
   };
   const auto quality = render(GrayscaleMode::Direct, 0, false);
   assert(quality[2] != quality[3]);
   assert(render(GrayscaleMode::Absolute, 0, false) == quality);
-  for (uint8_t variant : {0x02, 0x68, 0x69}) {
+  for (uint8_t variant : {0x02, 0x03, 0x67, 0x68, 0x69}) {
     BoardConfig::ACTIVE.displayControllerVariant = variant;
+    assert(driver.grayscaleCapabilities(GrayscaleMode::Direct).supported());
+    const auto quality = render(GrayscaleMode::Direct, 0, false);
+    const auto* packet = kX4ProImage;
+    constexpr unsigned packetRow[5] = {0, 1, 3, 2, 4};
+    for (unsigned reg = 0; reg < 5; ++reg) {
+      const unsigned row = packetRow[reg];
+      assert(quality[reg] == Bytes(packet + 9 + row * 49, packet + 9 + (row + 1) * 49));
+    }
+    // Dark gray selects 0x22 and light gray 0x23, so 0x22 must end darker: fewer frames
+    // towards white (rail 2) after the last frame towards black (rail 1).
+    const auto whiteTail = [](const Bytes& lut) {
+      int frames = 0;
+      for (unsigned group = 0; group < 7; ++group)
+        for (unsigned phase = 1; phase <= 4; ++phase) {
+          const uint8_t cell = lut[group * 7 + phase];
+          if ((cell >> 6) == 1) frames = 0;
+          if ((cell >> 6) == 2) frames += cell & 0x3F;
+        }
+      return frames;
+    };
+    assert(whiteTail(quality[2]) < whiteTail(quality[3]));
+    assert(lastPlane(bus, 0x01) == Bytes({0x17, 0, 0x78, 0x78, 0x14}));
+    assert(lastPlane(bus, 0x2A) == Bytes({0, 0, 0}));
+    assert(lastRegister(bus, 0x82) == 0x24);
+    assert(lastRegister(bus, 0x30) == driver._cfg.pll);
+    assert(lastRegister(bus, 0x03) == driver._cfg.pfs);
+    assert(lastRegister(bus, 0xe1) == driver._cfg.gateScan);
+    unsigned paints = 0;
+    for (const auto& w : bus.writes) paints += w.command == 0x12;
+    assert(paints == 1);
     for (uint8_t mask : {0x00, 0x01, 0x03}) {
       const auto text = render(GrayscaleMode::Overlay, mask, false);
       assert(text != quality);
       assert(text[2] == text[3]);
-      const uint8_t timing = variant == 0x02 ? 2 : 3;
+      const uint8_t timing = variant < 0x67 ? 2 : 3;
       for (unsigned t = 0; t < 5; ++t) {
         Bytes expected = {1, 2, timing, 1, 1, 1, 1, 0, 0, 0, 0, 0, 1, 1};
         expected.resize(49, 0);
@@ -579,6 +633,35 @@ static void testUc8279X4WaveformSelection() {
     // An image pass must not leave the next sparse page on the quality bank.
     assert(render(GrayscaleMode::Overlay, 0x01, false) != quality);
   }
+  BoardConfig::ACTIVE.board = BoardConfig::Board::XteinkX4;
+  BoardConfig::ACTIVE.displayControllerVariant = 0x68;
+  const auto legacy = render(GrayscaleMode::Direct, 0, false);
+  assert(legacy != quality);
+  BoardConfig::ACTIVE.board = BoardConfig::Board::XteinkX4Classic;
+  for (uint8_t variant : {0x02, 0x03, 0x68, 0x69}) {
+    BoardConfig::ACTIVE.displayControllerVariant = variant;
+    const auto classic = render(GrayscaleMode::Direct, 0, false);
+    assert(classic == legacy);
+    for (const auto& w : bus.writes)
+      assert(w.command != 0x01 && w.command != 0x2A && w.command != 0x82);
+    unsigned paints = 0;
+    for (const auto& w : bus.writes) paints += w.command == 0x12;
+    assert(paints == 1);
+    assert(render(GrayscaleMode::Absolute, 0, false) == classic);
+    assert(render(GrayscaleMode::Overlay, 0x07, false) == classic);
+    assert(render(GrayscaleMode::Overlay, 0, true) == classic);
+    assert(render(GrayscaleMode::Overlay, 0x01, false) != classic);
+  }
+  BoardConfig::ACTIVE.displayControllerVariant = 0x67;
+  assert(!driver.grayscaleCapabilities(GrayscaleMode::Direct).supported());
+  BoardConfig::ACTIVE.board = BoardConfig::Board::XteinkX4;
+  BoardConfig::ACTIVE.displayControllerVariant = 0x68;
+  assert(render(GrayscaleMode::Direct, 0, false) == legacy);
+  BoardConfig::ACTIVE.displayControllerVariant = 0x67;
+  assert(!driver.grayscaleCapabilities(GrayscaleMode::Direct).supported());
+  BoardConfig::ACTIVE.board = BoardConfig::Board::XteinkX4Pro;
+  BoardConfig::ACTIVE.displayControllerVariant = 0xff;
+  assert(render(GrayscaleMode::Direct, 0, false) == legacy);
   BoardConfig::ACTIVE.displayControllerVariant = 0x68;
   free(driver._grayBase);
 }
@@ -743,6 +826,197 @@ static void testDeferredGrayFacadeUsesCurrentDrawFrame() {
   free(driver._grayBase);
 }
 
+
+
+static void testTextWaveforms() {
+  auto polarity = [](unsigned level) { return level == 1 ? 1 : level == 2 ? -1 : 0; };
+  const int ssdDose[] = {17, -2, -2, -24};
+  for (unsigned row = 0; row < 4; ++row) {
+    int dose = 0;
+    for (unsigned group = 0; group < 10; ++group)
+      for (unsigned phase = 0; phase < 4; ++phase)
+        dose += polarity((kX4ProTextSsd1677[row * 10 + group] >> (6 - phase * 2)) & 3) *
+                kX4ProTextSsd1677[50 + group * 5 + phase];
+    assert(dose == ssdDose[row]);
+  }
+  const int ucDose[] = {-22, -1, -1, 20};
+  for (unsigned row = 1; row <= 4; ++row) {
+    int dose = 0;
+    for (unsigned group = 0; group < 7; ++group)
+      for (unsigned phase = 0; phase < 4; ++phase)
+        dose += polarity((kX4ProTextUc8179[row * 42 + group * 6] >> (6 - phase * 2)) & 3) *
+                kX4ProTextUc8179[row * 42 + group * 6 + phase + 1] *
+                kX4ProTextUc8179[row * 42 + group * 6 + 5];
+    assert(dose == ucDose[row - 1]);
+  }
+  for (const auto* bank : {kX4ProTextUc8279, kX4ProTextUc8279Zhx}) {
+    const int doseByRow[] = {-20, -2, -2, 15};
+    for (unsigned row = 1; row <= 4; ++row) {
+      int dose = 0;
+      for (unsigned group = 0; group < 7; ++group)
+        for (unsigned phase = 1; phase <= 2; ++phase) {
+          const auto v = bank[row * 49 + group * 7 + phase];
+          dose += polarity(v >> 6) * (v & 63) * bank[row * 49 + group * 7];
+        }
+      assert(dose == doseByRow[row - 1]);
+    }
+  }
+}
+
+template<class Driver>
+static void testLegacyTextStrips() {
+  Driver whole, strips;
+  EpdBus a, b;
+  whole.begin(a);
+  strips.begin(b);
+  const auto base = frame(2), lsb = frame(19), msb = frame(25);
+  whole.display(a, base.data(), nullptr, RefreshMode::Full, false);
+  strips.display(b, base.data(), nullptr, RefreshMode::Full, false);
+  strips.setReaderRefresh(true); // image pages still paint their base separately
+  a.clear(); b.clear();
+  whole.copyGrayscaleLsb(a, lsb.data());
+  whole.copyGrayscaleMsb(a, msb.data());
+  for (auto plane : {GrayPlane::Lsb, GrayPlane::Msb})
+    for (unsigned y = 0; y < 480; y += 80)
+      strips.writeGrayscalePlaneStrip(b, plane, (plane == GrayPlane::Lsb ? lsb : msb).data() + y * 100, y, 80);
+  assert(lastPlane(a, 0x10) == lastPlane(b, 0x10));
+  assert(lastPlane(a, 0x13) == lastPlane(b, 0x13));
+  free(whole._grayBase); free(strips._grayBase);
+}
+
+static void testTextAaCharge() {
+  X4ProTextAa aa;
+  aa.allocate(true);
+  assert(aa.ready());
+  Bytes base(48000, 0xff), zero(48000, 0);
+  base[0] = 0x7f;
+  auto compose = [&] {
+    aa.begin(base.data());
+    aa.stage(0, zero.data(), 0, 480);
+    aa.stage(1, zero.data(), 0, 480);
+    assert(aa.compose());
+  };
+  compose();
+  assert(aa.high()[0] == 0x7f && aa.low()[0] == 0x7f);
+  aa.finish(17, -2, -2, -24);
+  assert(aa._median == -24);
+  compose();
+  assert(aa.high()[1] == 0xff && aa.low()[1] == 0); // unchanged white holds
+  aa.finish(17, -2, -2, -24);
+  base[0] = 0xff;
+  compose();
+  assert(aa.low()[0] == 0x80); // old black must receive the white drive
+  aa.finish(17, -2, -2, -24);
+  compose();
+  assert(aa.low()[0] == 0x80); // accumulated positive charge needs another pulse
+  aa.finish(17, -2, -2, -24);
+  for (int i = 0; i < 200; ++i) { compose(); aa.finish(17, -2, -2, -24); }
+  assert(aa.low()[0] == 0); // white eventually settles back to hold
+  aa.begin(base.data());
+  aa.stage(0, zero.data(), 80, 80);
+  assert(!aa.compose());
+  aa.invalidate();
+  assert(!aa.onPanel() && !aa._chargeValid);
+  fakeHeapCapsFail = true;
+  X4ProTextAa failed;
+  failed.allocate(true);
+  assert(!failed.ready());
+  fakeHeapCapsFail = false;
+}
+
+template<class Driver>
+static void testOnePassText() {
+  Driver d;
+  EpdBus bus;
+  d.begin(bus);
+  Bytes base(48000, 0xff), lsb(48000, 0), msb(48000, 0);
+  base[0] = 0x7f;
+  lsb[0] = 0x40;
+  msb[0] = 0x20;
+  d.display(bus, base.data(), nullptr, RefreshMode::Full, false);
+  const auto imageEncoding = d.grayscaleCapabilities(GrayscaleMode::Absolute).encoding;
+  d.setReaderRefresh(true);
+  const auto caps = d.grayscaleCapabilities();
+  assert(caps.base == GrayscaleBase::Combined && caps.stripUploads && !caps.asyncBase);
+  assert(d.grayscaleCapabilities(GrayscaleMode::Absolute).encoding == imageEncoding);
+  for (bool off : {false, true}) {
+    base[1] = off ? 0x0f : 0xf0; // the next page must replace, not overlay, the previous text
+    bus.clear();
+    d.beginGrayscale(bus, base.data(), GrayscaleMode::Overlay, RefreshMode::Fast, off);
+    for (unsigned y = 0; y < 480; y += 80) {
+      d.writeGrayscalePlaneStrip(bus, GrayPlane::Lsb, lsb.data() + y * 100, y, 80);
+      d.writeGrayscalePlaneStrip(bus, GrayPlane::Msb, msb.data() + y * 100, y, 80);
+    }
+    assert(bus.writes.empty()); // no intermediate B/W presentation
+    d.displayGray(bus, base.data(), off, nullptr, false);
+    assert(d._textAa.onPanel() && !d._textAa.active());
+    assert(d._textAa.high()[0] == 0x1f);
+    assert(d._textAa.high()[1] == base[1]);
+    assert((d._textAa.low()[1] & static_cast<uint8_t>(~base[1])) == 0);
+    assert((d._textAa.low()[0] & 0xe0) == 0x60); // black + both gray masks
+    unsigned activations = 0;
+    for (const auto& w : bus.writes) {
+      if constexpr (std::is_same_v<Driver, Ssd1677Driver>) {
+        if (w.command == 0x22 && w.bytes == Bytes{0xcc}) ++activations;
+      } else if (w.command == 0x12) ++activations;
+    }
+    assert(activations == 1 && d._isScreenOn == !off);
+    if constexpr (std::is_same_v<Driver, Ssd1677Driver>) {
+      assert(lastPlane(bus, 0x24) == Bytes(d._textAa.high(), d._textAa.high() + 48000));
+      assert(lastPlane(bus, 0x26) == Bytes(d._textAa.low(), d._textAa.low() + 48000));
+    } else {
+      const unsigned row = std::is_same_v<Driver, Uc8179Driver> ? 479 : 120;
+      assert(lastPlane(bus, 0x10)[row * 100] == d._textAa.low()[0]);
+      assert(lastPlane(bus, 0x13)[row * 100] == d._textAa.high()[0]);
+      if constexpr (std::is_same_v<Driver, Uc8279X4Driver>) {
+        assert(lastRegister(bus, 0x30) == d._cfg.pll);
+        // AA uses the same RAM row order as B/W, including after power-on.
+        unsigned panelSettings = 0;
+        for (const auto& w : bus.writes) {
+          if (w.command != 0x00) continue;
+          assert(w.bytes == Bytes({d._cfg.psr0, d._cfg.psr1}));
+          ++panelSettings;
+        }
+        assert(panelSettings == 2);
+      }
+    }
+    bus.clear();
+    d.cleanupGrayscaleBuffers(bus, base.data());
+    for (const auto& w : bus.writes) assert(w.command != 0x12 && w.command != 0x20);
+  }
+  d.setReaderRefresh(false);
+  bus.clear();
+  d.display(bus, base.data(), nullptr, RefreshMode::Fast, true);
+  assert(!d._textAa.onPanel() && !bus.writes.empty());
+  d.setReaderRefresh(true);
+  d.beginGrayscale(bus, base.data(), GrayscaleMode::Overlay, RefreshMode::Fast, false);
+  bus.clear();
+  d.cleanupGrayscaleBuffers(bus, base.data());
+  assert(!d._textAa.active() && !d._textAa.onPanel() && !bus.writes.empty());
+  d.beginGrayscale(bus, base.data(), GrayscaleMode::Overlay, RefreshMode::Fast, false);
+  d.copyGrayscaleLsb(bus, lsb.data());
+  bus.clear();
+  d.displayGray(bus, base.data(), false, nullptr, false);
+  assert(bus.writes.empty() && !d._textAa.onPanel()); // refuse incomplete page
+  d.setReaderRefresh(false);
+  d.display(bus, base.data(), nullptr, RefreshMode::Fast, true);
+  assert(!d._textAa.onPanel());
+  if constexpr (!std::is_same_v<Driver, Ssd1677Driver>) free(d._grayBase);
+}
+
+template<class Driver>
+static void testTextAaAllocationFailure() {
+  Driver d;
+  EpdBus bus;
+  fakeHeapCapsFail = true;
+  d.begin(bus);
+  fakeHeapCapsFail = false;
+  d.setReaderRefresh(true);
+  assert(!d._textAa.ready());
+  assert(d.grayscaleCapabilities().base == GrayscaleBase::Separate);
+  if constexpr (!std::is_same_v<Driver, Ssd1677Driver>) free(d._grayBase);
+}
+
 int main(int argc, char** argv) {
   if (argc > 1 && std::strcmp(argv[1], "metalio") == 0) {
     testMetalio();
@@ -754,6 +1028,23 @@ int main(int argc, char** argv) {
     std::puts("Sticky absolute capability, activation, power-down and B/W recovery passed");
     return 0;
   }
+  testTextWaveforms();
+  testLegacyTextStrips<Uc8179Driver>();
+  testLegacyTextStrips<Uc8279X4Driver>();
+  testTextAaCharge();
+  for (auto board : {BoardConfig::Board::XteinkX4Pro, BoardConfig::Board::XteinkX4Classic}) {
+    BoardConfig::ACTIVE.board = board;
+    testOnePassText<Ssd1677Driver>();
+    testOnePassText<Uc8179Driver>();
+    testTextAaAllocationFailure<Ssd1677Driver>();
+    testTextAaAllocationFailure<Uc8179Driver>();
+    testTextAaAllocationFailure<Uc8279X4Driver>();
+    for (uint8_t variant : {0x02, 0x03, 0x67, 0x68, 0x69}) {
+      BoardConfig::ACTIVE.displayControllerVariant = variant;
+      testOnePassText<Uc8279X4Driver>();
+    }
+  }
+  BoardConfig::ACTIVE.board = BoardConfig::Board::XteinkX4Pro;
   testDeferredGrayBase();
   testDeferredGrayFacadeUsesCurrentDrawFrame();
   testUc8179GrayShadeSplit();

@@ -5,6 +5,7 @@
 // 0x20..0x24; grayscale uses its own five 42-byte records.
 // Full bank SHA-256:  1ed90690ea30f78caf3e89c96693314e60023dcb9bc0257099d56fadc0ae1ed0
 // Fast bank SHA-256:  8787387877ad955c642dca962efa9f4e792b52e668fa4efb8dcf729f191b632d
+// (stock bank; A4_UC8279C_FAST_LUT_24 below differs from it, so the table no longer matches)
 
 #include <Arduino.h>
 
@@ -25,13 +26,15 @@ constexpr uint8_t A4_UC8279C_LUT_24[A4_UC8279C_LUT_LENGTH] = {
 
 // Stock V1.0.3 production fast (DU) waveform, "DU-factory-previous": one
 // 36-frame phase per record (pixels changing to white or black are driven
-// there; pixels staying black are re-driven black; pixels staying white are
-// not driven). The rest of each 49-byte record is zero.
+// there; pixels staying white are not driven). The rest of each 49-byte record
+// is zero. Stock re-drives pixels staying black (0x24 byte 1 = 0x64); here they
+// hold like staying-white pixels (0x24), so unchanged black UI is not driven
+// again on every fast repaint.
 constexpr uint8_t A4_UC8279C_FAST_LUT_20[A4_UC8279C_LUT_LENGTH] = {0x01, 0x32, 0x00, 0x00, 0x00, 0x01, 0x01};
 constexpr uint8_t A4_UC8279C_FAST_LUT_21[A4_UC8279C_LUT_LENGTH] = {0x01, 0x24, 0x00, 0x00, 0x00, 0x01, 0x01};
 constexpr uint8_t A4_UC8279C_FAST_LUT_22[A4_UC8279C_LUT_LENGTH] = {0x01, 0xa4, 0x00, 0x00, 0x00, 0x01, 0x01};
 constexpr uint8_t A4_UC8279C_FAST_LUT_23[A4_UC8279C_LUT_LENGTH] = {0x01, 0x64, 0x00, 0x00, 0x00, 0x01, 0x01};
-constexpr uint8_t A4_UC8279C_FAST_LUT_24[A4_UC8279C_LUT_LENGTH] = {0x01, 0x64, 0x00, 0x00, 0x00, 0x01, 0x01};
+constexpr uint8_t A4_UC8279C_FAST_LUT_24[A4_UC8279C_LUT_LENGTH] = {0x01, 0x24, 0x00, 0x00, 0x00, 0x01, 0x01};
 
 // Stock 4-gray image waveform: five 42-byte records loaded to 0x20-0x24, the
 // "Factory B" profile of stock V1.0.3 (byte-identical in v1.3.0). Absolute

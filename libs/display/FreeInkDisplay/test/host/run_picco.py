@@ -18,9 +18,10 @@ def build(board, device_macro, test_cpp, directory):
     for name in ("Ssd1677", "Ssd2677"):
         for ext in ("h", "cpp"):
             shutil.copy2(LIB / f"src/driver/{name}Driver.{ext}", root / f"src/driver/{name}Driver.{ext}")
-    shutil.copy2(LIB / "src/driver/PanelDriver.h", root / "src/driver/PanelDriver.h")
+    for name in ("PanelDriver.h", "X4ProTextAa.h"):
+        shutil.copy2(LIB / "src/driver" / name, root / "src/driver" / name)
     shutil.copy2(LIB / "include/GrayscaleCapabilities.h", root / "include/GrayscaleCapabilities.h")
-    for name in ("Ssd1677Luts.h", "Ssd2677Luts.h"):
+    for name in ("Ssd1677Luts.h", "Ssd2677Luts.h", "X4ProTextAaLuts.h"):
         shutil.copy2(LIB / f"src/lut/{name}", root / f"src/lut/{name}")
     shutil.copy2(HERE / "pro_stubs/EpdBus.h", root / "src/bus/EpdBus.h")
     for name in ("esp_heap_caps.h", "sdkconfig.h"):
@@ -39,8 +40,8 @@ inline FakeSpi SPI;
 """)
     board_h = (HERE / "pro_stubs/BoardConfig.h").read_text().replace("MetalioEInk4 };", "MetalioEInk4, Picco };")
     (root / "BoardConfig.h").write_text(board_h.replace("Board board=Board::XteinkX4Pro;", "struct { int8_t miso=40; } sd;\n  " + f"Board board=Board::{board};").replace(
-        "inline bool isX4Classic() { return false; }",
-        "inline bool isX4Classic() { return false; }\ninline bool isPicco() { return ACTIVE.board == Board::Picco; }"))
+        "inline bool isX4Classic() { return ACTIVE.board == Board::XteinkX4Classic; }",
+        "inline bool isX4Classic() { return ACTIVE.board == Board::XteinkX4Classic; }\ninline bool isPicco() { return ACTIVE.board == Board::Picco; }"))
     # Arduino stub plus a fake SSD1677 that answers CMD 0x2E with fakePanelId.
     arduino = (HERE / "pro_stubs/Arduino.h").read_text().replace("inline int digitalRead(int) { return 0; }\n", "")
     arduino += """

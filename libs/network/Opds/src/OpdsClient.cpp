@@ -1,5 +1,6 @@
 #include "OpdsClient.h"
 
+#include <string_view>
 #include <utility>
 
 #include "OpdsAuthDoc.h"
@@ -19,6 +20,34 @@ constexpr size_t MAX_PUB_DOC_BYTES = 16 * 1024;
 // ignore this and serve their usual feed.
 constexpr const char* FEED_ACCEPT = "application/opds+json,application/atom+xml;q=0.9,*/*;q=0.8";
 constexpr const char* PUB_ACCEPT = "application/opds-publication+json,application/opds+json";
+
+bool offersBasic(std::string_view header) {
+  while (!header.empty()) {
+    const size_t start = header.find_first_not_of(" \t");
+    if (start == std::string_view::npos) return false;
+    header.remove_prefix(start);
+    if (header.size() >= 5 && (header[0] == 'B' || header[0] == 'b') && (header[1] == 'A' || header[1] == 'a') &&
+        (header[2] == 'S' || header[2] == 's') && (header[3] == 'I' || header[3] == 'i') &&
+        (header[4] == 'C' || header[4] == 'c')) {
+      const size_t param = header.find_first_not_of(" \t", 5);
+      if (header.size() == 5 ||
+          ((header[5] == ' ' || header[5] == '\t') && (param == std::string_view::npos || header[param] != '=')))
+        return true;
+    }
+    bool quoted = false;
+    size_t end = 0;
+    for (; end < header.size(); ++end) {
+      if (quoted && header[end] == '\\' && end + 1 < header.size())
+        ++end;
+      else if (header[end] == '"')
+        quoted = !quoted;
+      else if (!quoted && header[end] == ',')
+        break;
+    }
+    header.remove_prefix(end < header.size() ? end + 1 : end);
+  }
+  return false;
+}
 
 const char* orNull(const std::string& s) { return s.empty() ? nullptr : s.c_str(); }
 
@@ -62,42 +91,47 @@ HttpAuth OpdsClient::currentAuth() const {
 
 HttpAuth OpdsClient::downloadAuth() const { return currentAuth(); }
 
+bool OpdsClient::authenticateDownload(const std::string& url) {
+  authDirty = false;
+  return handleUnauthorized(url, 0);
+}
+
+bool OpdsClient::handleUnauthorized(const std::string& url, const int attempt) {
+  credentialsMissingFlag = false;
+  authDirty = true;  // token state may change or be cleared this attempt
+  notify(ClientPhase::SigningIn);
+  bool advanced = false;
+  if (attempt == 0 && !refreshTokenValue.empty() && !tokenRefreshUrl.empty()) {
+    if (tryRefreshToken()) {
+      advanced = true;
+    } else {
+      refreshTokenValue.clear();  // dead refresh token; drop it and log in fresh
+      tokenRefreshUrl.clear();
+    }
+  }
+  if (!advanced && attempt < 2) {
+    bearerToken.clear();
+    basicAuthLatched = false;
+    advanced = authenticate(url);
+  }
+  return advanced;
+}
+
 OpdsClient::FetchStatus OpdsClient::fetchFeed(const std::string& url, OpdsFeedParser& parser) {
   LOG_DBG("OPDS", "Fetching: %s", url.c_str());
   // Resolve localized (language-map) titles to the UI language.
   parser.setPreferredLanguage(primarySubtag(acceptLang).c_str());
   authDirty = false;
   for (int authAttempt = 0;; ++authAttempt) {
-    const HttpResult res =
-        http.get(url, currentAuth(), FEED_ACCEPT, orNull(acceptLang), false,
-                 [&parser](const uint8_t* data, const size_t len) {
-                   parser.write(data, len);
-                   return !parser.error();  // abort the transfer on a parse error
-                 });
+    const HttpResult res = http.get(url, currentAuth(), FEED_ACCEPT, orNull(acceptLang), false,
+                                    [&parser](const uint8_t* data, const size_t len) {
+                                      parser.write(data, len);
+                                      return !parser.error();  // abort the transfer on a parse error
+                                    });
     parser.flush();
 
     if (!res.ok && res.status == 401) {
-      // The 401 body is an authentication document describing the server's
-      // flows. Try to renew an expired access token first (cheap); fall back to
-      // a full login (several seconds of TLS handshakes across the SSO).
-      credentialsMissingFlag = false;
-      authDirty = true;  // token state may change or be cleared this attempt
-      notify(ClientPhase::SigningIn);
-      bool advanced = false;
-      if (authAttempt == 0 && !refreshTokenValue.empty() && !tokenRefreshUrl.empty()) {
-        if (tryRefreshToken()) {
-          advanced = true;
-        } else {
-          refreshTokenValue.clear();  // dead refresh token; drop it and log in fresh
-          tokenRefreshUrl.clear();
-        }
-      }
-      if (!advanced && authAttempt < 2) {
-        bearerToken.clear();
-        basicAuthLatched = false;
-        advanced = authenticate(url);
-      }
-      if (advanced) {
+      if (!res.redirected && handleUnauthorized(url, authAttempt)) {
         parser.reset();  // drop any finalized backend before the retry
         notify(ClientPhase::Retrying);
         continue;
@@ -174,18 +208,18 @@ bool OpdsClient::authenticate(const std::string& resourceUrl) {
   // No credentials on the probe, but an auth proxy still needs its headers.
   HttpAuth probe;
   probe.headers = customHeaders;
-  const HttpResult res = http.get(resourceUrl, probe, nullptr, nullptr, true,
-                                  [&body](const uint8_t* data, const size_t len) {
-                                    const size_t room = MAX_AUTH_DOC_BYTES - body.size();
-                                    body.append(reinterpret_cast<const char*>(data), len < room ? len : room);
-                                    return true;
-                                  });
-  if (res.status != 401) return false;  // not an auth challenge
+  const HttpResult res =
+      http.get(resourceUrl, probe, nullptr, nullptr, true, [&body](const uint8_t* data, const size_t len) {
+        const size_t room = MAX_AUTH_DOC_BYTES - body.size();
+        body.append(reinterpret_cast<const char*>(data), len < room ? len : room);
+        return true;
+      });
+  if (res.status != 401 || res.redirected) return false;  // not an auth challenge
 
-  // An empty 401 body is a bare Basic challenge; a JSON body is an OPDS auth
-  // document. Either way we proceed to pick a flow below.
+  // OPDS documents describe OAuth/Basic; ordinary HTTP servers use a header.
   OpdsAuthDoc doc;
   const bool haveAuthDoc = parseOpdsAuthDocument(body.data(), body.size(), doc);
+  (void)haveAuthDoc;
   LOG_DBG("OPDS", "Auth flows: doc=%d basic=%d password=%d implicit=%d", haveAuthDoc, doc.hasBasic,
           doc.hasOauthPassword, doc.hasOauthImplicit);
   if (username.empty() || password.empty()) {
@@ -211,8 +245,8 @@ bool OpdsClient::authenticate(const std::string& resourceUrl) {
         refreshTokenValue.clear();
         extractJsonStringField(response.data(), response.size(), "refresh_token", refreshTokenValue);
         tokenRefreshUrl = refreshTokenValue.empty() ? std::string()
-                          : doc.refreshUrl.empty()   ? tokenUrl
-                                                     : http.resolveUrl(resourceUrl, doc.refreshUrl);
+                          : doc.refreshUrl.empty()  ? tokenUrl
+                                                    : http.resolveUrl(resourceUrl, doc.refreshUrl);
         LOG_INF("OPDS", "OAuth password grant succeeded");
         return true;
       }
@@ -238,10 +272,8 @@ bool OpdsClient::authenticate(const std::string& resourceUrl) {
     return false;
   }
 
-  // HTTP Basic: either the auth document offers it, or the 401 wasn't an OPDS
-  // auth document at all (a plain Basic-protected server, e.g. calibre-web).
-  // Latch it so subsequent requests send the credentials.
-  if (doc.hasBasic || !haveAuthDoc) {
+  // A non-OPDS error body alone does not establish the authentication scheme.
+  if (doc.hasBasic || offersBasic(res.wwwAuthenticate)) {
     LOG_INF("OPDS", "Using HTTP Basic authentication");
     basicAuthLatched = true;
     bearerToken.clear();  // Basic uses stored credentials, not a token

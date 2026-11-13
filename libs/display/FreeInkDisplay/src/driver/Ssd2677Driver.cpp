@@ -149,6 +149,7 @@ void Ssd2677Driver::begin(EpdBus& bus) {
   initPanel(bus);
 
   _needsInitialFull = true;
+  _grayPending = _grayMaskReady = false;
   // Retained old-plane: this panel takes old+new as one 2bpp burst, so the old
   // plane must exactly equal what is physically on the glass. The host can't
   // supply it — CrossPoint builds single-buffer (EINK_DISPLAY_SINGLE_BUFFER_MODE),
@@ -184,11 +185,41 @@ void Ssd2677Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev,
   // would see old==new on every incremental update and move nothing (the whole
   // reason non-full frames ghosted). _old == nullptr (alloc failed) falls back to
   // an all-white old plane in sendPacked.
+  if (!_old) mode = RefreshMode::Full;
+  if (_grayPending && _old && _lsb) {
+    for (uint32_t i = 0; i < geometry().bufferSize; ++i)
+      _old[i] = (_old[i] & ~_lsb[i]) | (~fb[i] & _lsb[i]);
+  }
+  _grayPending = false;
+  // The first frame after a book page still erases reading-depth blacks, so it
+  // keeps the reading waveform (reader menu, footnotes over a page).
+  const bool reading = _readerRefresh || _afterReader;
+  _afterReader = _readerRefresh;
+  // BOOX presents book pages and UI screen redraws with mode 2 and powers off;
+  // only small interaction updates (highlight moves) use mode 3 with the rails on.
+  // A redraw changes over 1/8 of the frame.
+  const uint32_t size = geometry().bufferSize;
+  bool redraw = reading;
+  if (mode == RefreshMode::Fast && !redraw && _old) {
+    uint32_t changed = 0;
+    for (uint32_t i = 0; i < size; ++i) changed += _old[i] != fb[i];
+    redraw = changed > size / 8;
+  }
+  // Undriven blacks fade: on a dark background erased white text shows as deeper
+  // black, and in UI dither old dots show through. Drive every black pixel as
+  // white-to-black so old and fresh black match. In light mode only on UI redraws,
+  // and only where the frame changed: re-driving static text and reader pages
+  // builds up ghosts.
+  if (mode == RefreshMode::Fast && (_darkBackground || (redraw && !reading)) && _old) {
+    for (uint32_t i = 0; i < size; ++i)
+      if (_darkBackground || _old[i] != fb[i]) _old[i] |= static_cast<uint8_t>(~fb[i]);
+  }
+  // Real old plane for every mode: old == new gives each pixel the no-change drive.
   sendPacked(bus, _old, fb);
-  // Stock powers off after every refresh (PON, 0x12, POF), whatever `turnOff` says.
-  (void)turnOff;
-  refreshWith(bus, mode == RefreshMode::Fast ? lut_picco_se0400_fast : lut_picco_se0400_full, true);
-  if (_old) memcpy(_old, fb, geometry().bufferSize);  // new becomes old for the next frame
+  const auto* fastLut = redraw ? lut_picco_se0400_fast : lut_picco_se0400_mode3;
+  const bool keepPower = mode == RefreshMode::Fast && !redraw;
+  refreshWith(bus, mode == RefreshMode::Fast ? fastLut : lut_picco_se0400_full, !keepPower);
+  if (_old) memcpy(_old, fb, size);  // new becomes old for the next frame
   _needsInitialFull = false;
 }
 
@@ -204,8 +235,8 @@ void Ssd2677Driver::sendPacked(EpdBus& bus, const uint8_t* hi, const uint8_t* lo
   for (uint16_t r = 0; r < g.height; ++r) {
     const uint32_t row = static_cast<uint32_t>(reversed ? g.height - 1 - r : r) * g.widthBytes;
     for (uint16_t xb = 0; xb < g.widthBytes; ++xb) {
-      // hi == nullptr → an all-white (0xFF) old plane (stock's begin-time seed).
-      packPixels(hi ? hi[row + xb] : 0xFF, lo[row + xb], &chunk[n]);
+      // A null plane is all white (0xFF), stock's begin-time seed.
+      packPixels(hi ? hi[row + xb] : 0xFF, lo ? lo[row + xb] : 0xFF, &chunk[n]);
       n += 2;
       if (n == sizeof(chunk)) {
         txn.writeBytes(chunk, n);
@@ -255,6 +286,7 @@ void Ssd2677Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
   (void)bus;
   if (!lsb) return;
   if (!_absoluteGray) ensureLsb();
+  _grayMaskReady = false;
   if (_lsb) memcpy(_lsb, lsb, geometry().bufferSize);
 }
 
@@ -262,12 +294,13 @@ void Ssd2677Driver::beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode
                                    bool turnOff) {
   _absoluteGray = mode == GrayscaleMode::Absolute;
   if (_absoluteGray) {
+    _grayPending = false;
     // The caller still has the B/W base here. On allocation failure display it
     // before the renderer reuses its framebuffer for the two image planes.
     if ((!isSticky() && !_old) || !ensureLsb()) display(bus, fb, nullptr, RefreshMode::Full, true);
     return;
   }
-  if (mode == GrayscaleMode::Overlay && fallback == RefreshMode::Fast && !_needsInitialFull && _old) {
+  if (isSticky() && mode == GrayscaleMode::Overlay && fallback == RefreshMode::Fast && !_needsInitialFull && _old) {
     // Give every incoming ink pixel the stock white-to-black pulse, even if
     // the last B/W base called it black before AA lightened it. For incoming
     // white, keep the real prior bit so old ink clears and blank paper holds.
@@ -299,7 +332,14 @@ void Ssd2677Driver::copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
   // which never latches one. Reset leaves the glass as it is.
   if (isSticky()) initPanel(bus);
   // Stock (FUN_42286a70): MSB mask in the high bit, LSB mask in the low bit.
+  // The Picco's stock AA powers on before the upload (0x4200bad0).
+  if (!isSticky()) powerOn(bus);
   sendPacked(bus, msb, _lsb);
+  if (!isSticky()) {
+    // The vendor retains the MSB mask to correct the next B/W transition.
+    memcpy(_lsb, msb, geometry().bufferSize);
+    _grayMaskReady = true;
+  }
 }
 
 void Ssd2677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut,
@@ -316,7 +356,7 @@ void Ssd2677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
     } else {
       powerOn(bus);
       sendPacked(bus, _old, _lsb);
-      refreshWith(bus, lut_picco_se0400_image, true);
+      refreshWith(bus, lut_picco_se0400_image, turnOff);
     }
     _needsInitialFull = true;
     return;
@@ -331,16 +371,14 @@ void Ssd2677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
     return;
   }
   if (!_lsb) {  // planes never staged: plain B/W
-    display(bus, fb, nullptr, RefreshMode::Full, turnOff);
+    // An inverted base is already on the glass; `fb` holds the logical frame.
+    if (!_darkBackground) display(bus, fb, nullptr, RefreshMode::Full, turnOff);
     return;
   }
   refreshWith(bus, lut_picco_se0400_gray, true);
-  // NB: do NOT force the next frame to a full refresh here. Every reader page in
-  // AA mode is a gray frame, so forcing a full on the following page flashed the
-  // whole screen black on every page turn. The retained `_old` still holds the
-  // B/W base drawn before this overlay, so the next page diffs against it
-  // correctly; CrossPoint schedules its own periodic full refreshes to clean any
-  // AA-edge residual (stock does the same — its gray present sets no full flag).
+  _grayPending = _grayMaskReady;
+  _grayMaskReady = false;
+  // Preserve the base outside the gray mask; masked pixels are driven on the next frame.
 }
 
 void Ssd2677Driver::deepSleep(EpdBus& bus) {

@@ -85,6 +85,17 @@ int main() {
     const std::string chunked = "Transfer-Encoding: chunked\r\n";
     check(status + (before ? chunked + csp : csp + chunked) + "\r\n2\r\nok\r\n0\r\n\r\n", true);
   }
+  // Authentication challenges may occupy separate fields; preserve their order.
+  reset({"HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Bearer realm=books\r\n"
+         "WWW-Authenticate: Basic realm=books\r\nContent-Length: 0\r\n\r\n"});
+  {
+    freeink::SecureHttpClient http;
+    assert(http.begin("https://a/book.epub") && http.GET() == 401);
+    assert(http.getCombinedHeader("www-authenticate") == "Bearer realm=books, Basic realm=books");
+    assert(http.getCombinedHeader("missing").empty());
+    assert(http.getCombinedHeader("content-length") == "0");
+    assert(http.getHeader("www-authenticate") == "Bearer realm=books");
+  }
   // Exact aggregate boundary includes status, every CR/LF and final blank line.
   const size_t overhead = status.size() + 2 + end.size() - 2;
   check(status + field("Content-Security-Policy", 8192 - overhead) + "\r\n" + end, true);

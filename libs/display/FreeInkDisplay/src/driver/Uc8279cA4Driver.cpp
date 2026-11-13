@@ -46,12 +46,13 @@ PanelGeometry Uc8279cA4Driver::geometry() const {
 }
 
 void Uc8279cA4Driver::hardwareReset(EpdBus& bus) {
-  // A Gray3 session may have left the rails up: discharge them before reset.
+  // Refreshes leave the rails up: discharge them before reset.
   if (_screenOn) {
     bus.cmd(CMD_POWER_OFF);
     bus.waitBusy(" A4 power-off");
     _screenOn = false;
   }
+  _controllerAsleep = false;  // the reset pulse wakes it
   // EpdBus's generic 2-ms low pulse is too short for this panel.
   const int8_t rst = bus.pins().rst;
   digitalWrite(rst, HIGH);
@@ -63,14 +64,11 @@ void Uc8279cA4Driver::hardwareReset(EpdBus& bus) {
 }
 
 void Uc8279cA4Driver::initController(EpdBus& bus, const Session session) {
-  // Gray3 and four-gray use stock V1.0.3's gray session (its lockscreen paint).
-  // B/W keeps stronger rails because this driver changes UI screens with fast
-  // refreshes. Keep stock VCOM_DC for every session: reduced B/W settings
-  // caused the image to deteriorate while idle, even after panel power-off.
-  // Check B/W-to-gray ghosting on hardware when changing this setting.
+  // Every session uses stock V1.0.3's power and VCOM_DC settings. With the
+  // earlier B/W rails (PWR 43 00 78 78 17), static screens fuzzed while idle on
+  // hardware at every B/W VCOM_DC tried (0x24, 0x26, 0x32), on different units.
   const uint8_t panel[] = {0x3f, 0x4a};
-  const uint8_t grayPower[] = {0x03, 0x00, 0x72, 0x72};
-  const uint8_t bwPower[] = {0x43, 0x00, 0x78, 0x78, 0x17};
+  const uint8_t power[] = {0x03, 0x00, 0x72, 0x72};
   const uint8_t booster[] = {0x25, 0x25, 0x3c};
   const uint8_t resolution[] = {0x03, 0x00, 0x02, 0x58};  // 768x600
   const uint8_t interval[] = {0x00, 0x00, 0x00, 0x00};
@@ -81,10 +79,7 @@ void Uc8279cA4Driver::initController(EpdBus& bus, const Session session) {
 
   bus.cmdData(CMD_PANEL_SETTING, panel, sizeof(panel));
   bus.cmdData(CMD_POWER_OFF_SEQUENCE, &powerOffSequence, 1);
-  if (session == Session::Bw)
-    bus.cmdData(CMD_POWER_SETTING, bwPower, sizeof(bwPower));
-  else
-    bus.cmdData(CMD_POWER_SETTING, grayPower, sizeof(grayPower));
+  bus.cmdData(CMD_POWER_SETTING, power, sizeof(power));
   bus.cmdData(CMD_BOOSTER_SOFT_START, booster, sizeof(booster));
   bus.cmdData(CMD_VCOM_DC, &vcom, 1);
   bus.cmdData(CMD_PLL_CONTROL, &pll, 1);
@@ -180,21 +175,15 @@ void Uc8279cA4Driver::fillControllerRam(EpdBus& bus, const uint8_t command, cons
   bus.fillPlane(command, fill, CONTROLLER_HEIGHT, _widthBytes);
 }
 
-void Uc8279cA4Driver::refresh(EpdBus& bus, const uint8_t* bwBaseline, const bool holdPower) {
+void Uc8279cA4Driver::refresh(EpdBus& bus, const uint8_t* bwBaseline) {
   ensurePowerOn(bus);
   bus.cmd(CMD_DISPLAY_REFRESH);
   bus.waitBusy(" A4 refresh");
   // The next differential update diffs against this baseline.
   if (bwBaseline) writeFrame(bus, CMD_DTM1, bwBaseline);
-  // Gray3 page turns keep the rails up, as stock V1.1.3 does for the whole
-  // reader session: powering off after each anti-aliased page let it drift and
-  // ghost while it sat. Every other refresh powers off: left powered, later
-  // four-gray images showed earlier screens as ghosts. hardwareReset() and
-  // deepSleep() power a held panel off before anything else drives it.
-  if (holdPower) return;
-  bus.cmd(CMD_POWER_OFF);
-  bus.waitBusy(" A4 power-off");
-  _screenOn = false;
+  // Stock V1.0.3 boots with panel power hold on and leaves the rails up after
+  // every refresh; only its lockscreen paint and deep sleep power off. Here
+  // hardwareReset(), the four-gray paint and deepSleep() power a held panel off.
 }
 
 void Uc8279cA4Driver::begin(EpdBus& bus) {
@@ -210,15 +199,18 @@ void Uc8279cA4Driver::begin(EpdBus& bus) {
 void Uc8279cA4Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, const RefreshMode mode,
                               const bool turnOff) {
   (void)prev;
-  (void)turnOff;  // refresh() always powers off
+  (void)turnOff;  // the panel stays powered after refresh(), as on stock
+  const bool wasAsleep = _controllerAsleep;
   // Any B/W refresh replaces what a Gray3 transition would start from.
   _gray3HistoryValid = false;
   _gray3Session = false;
   _basePending = false;
-  // Restore B/W controller registers after a grayscale pass.
-  if (_grayControllerMode) {
+  // Restore B/W controller registers after a grayscale pass or controllerIdle().
+  if (_grayControllerMode || wasAsleep) {
     hardwareReset(bus);
     initController(bus, Session::Bw);
+    // Deep sleep lost DTM1; the glass still holds the last B/W frame, so diff against it.
+    if (wasAsleep && !_redriveAfterGray && !_firstRefreshPending && _grayBase) writeFrame(bus, CMD_DTM1, _grayBase);
   }
   ensurePowerOn(bus);
   const bool fast = mode == RefreshMode::Fast && !_firstRefreshPending;
@@ -239,7 +231,13 @@ void Uc8279cA4Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* pre
     writeFrame(bus, CMD_DTM2, fb, /*invert=*/true);
     refresh(bus);
   }
-  if (_firstRefreshPending || _redriveAfterGray) {
+  if (!fast && !_firstRefreshPending) {
+    // In the full bank, 0x21 (white to white) and 0x24 (black to black) flash
+    // the pixel through both states; 0x22 and 0x23 drive a changing pixel one
+    // way only. OLD = NEW puts every pixel on a flashing record, so pixels that
+    // changed and pixels that held get the same drive.
+    writeFrame(bus, CMD_DTM1, fb);
+  } else if (_firstRefreshPending || _redriveAfterGray) {
     // Inverse OLD makes every target pixel transition, clearing unknown startup
     // state or residual AA charge even with the fast waveform.
     writeFrame(bus, CMD_DTM1, fb, /*invert=*/true);
@@ -358,7 +356,7 @@ void Uc8279cA4Driver::showGray3(EpdBus& bus) {
   const uint8_t interval = 0x00;
   bus.cmdData(CMD_VCOM_DATA_INTERVAL, &interval, 1);
   loadGray3Lut(bus, anyBlack, anyWhiteClear);
-  refresh(bus, nullptr, /*holdPower=*/true);
+  refresh(bus);
   const size_t n = static_cast<size_t>(_widthBytes) * _height;
   memcpy(_gray3White, _grayLsb, n);
   memcpy(_gray3Middle, _grayMsb, n);
@@ -420,7 +418,7 @@ void Uc8279cA4Driver::displayGray(EpdBus& bus, const uint8_t* fb, const bool tur
   // Stock V1.0.3's lockscreen sequence. Pre-clear ("GC-black-2x-half") in the
   // B/W session: black to DTM2, no DTM1 write, two refreshes with the halved
   // GC waveform.
-  if (_grayControllerMode) {
+  if (_grayControllerMode || _controllerAsleep) {
     hardwareReset(bus);
     initController(bus, Session::Bw);
   }
@@ -463,7 +461,18 @@ void Uc8279cA4Driver::cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) {
   _basePending = false;
 }
 
+// On screens that keep the device awake: the same power-off and deep sleep as
+// deepSleep(), between frames. The glass keeps its image; the next paint resets
+// and re-initializes the controller.
+void Uc8279cA4Driver::controllerIdle(EpdBus& bus) {
+  if (_controllerAsleep || _basePending) return;
+  deepSleep(bus);
+  _controllerAsleep = true;
+  _gray3Session = false;  // showGray3() resets into a fresh Gray3 session
+}
+
 void Uc8279cA4Driver::deepSleep(EpdBus& bus) {
+  if (_controllerAsleep) return;
   if (_screenOn) {
     bus.cmd(CMD_POWER_OFF);
     bus.waitBusy(" A4 power-off");

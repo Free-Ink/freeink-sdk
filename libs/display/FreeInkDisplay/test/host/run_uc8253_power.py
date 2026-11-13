@@ -125,7 +125,25 @@ int main() {
  const auto before = bus.refreshes;
  d.beginGrayscale(bus, fb.data(), freeink::GrayscaleMode::Absolute, freeink::RefreshMode::Half, false);
  assert(bus.refreshes == before + 1 && bus.interruptWaits == 0);
- std::cout << "PASS: UC8253 rollback boot cleans, blocking polling, gray baseline, power and Direct grayscale\\n";
+ // One-pass text composed by the host: one refresh with its bank, blocking, and DTM1 synced to the page.
+ // A clean refresh keeps the B/W path.
+ {
+   freeink::Uc8253X3Driver x;
+   freeink::EpdBus b;
+   x.begin(b);
+   std::vector<uint8_t> page(792 / 8 * 528, 0xF0), mask(792 / 8 * 528, 0x3C);
+   for (int i = 0; i < 3; i++) x.display(b, page.data(), nullptr, freeink::RefreshMode::Fast, false);
+   assert(x.composesOnePassText());
+   const auto start = b.refreshes;
+   assert(!x.displayOnePassStart(b, mask.data(), page.data(), freeink::RefreshMode::Fast, false));
+   assert(b.refreshes == start + 1 && b.oldPlane == page && b.newPlane == page);
+   const std::vector<uint8_t> rest = {0x00, 24, 0, 0, 0, 1};
+   assert(std::vector<uint8_t>(b.lastBank.begin(), b.lastBank.begin() + 6) == rest);
+   x.displayOnePassStart(b, mask.data(), page.data(), freeink::RefreshMode::Half, false);
+   assert(std::vector<uint8_t>(b.lastBank.begin(), b.lastBank.begin() + 6) != rest);
+   assert(b.oldPlane == page && b.newPlane == page);
+ }
+ std::cout << "PASS: UC8253 rollback boot cleans, blocking polling, gray baseline, power, Direct grayscale, one-pass\\n";
 }
 """)
     exe = root / "test_uc8253_power"

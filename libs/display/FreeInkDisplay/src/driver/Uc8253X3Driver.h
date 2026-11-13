@@ -54,6 +54,12 @@ class Uc8253X3Driver : public PanelDriver {
   void begin(EpdBus& bus) override;
   void deepSleep(EpdBus& bus) override;
 
+  // One-pass text, composed by the host (see PanelDriver::composesOnePassText()). Blocking, as display()
+  // is: returns false, with the page on the glass and in DTM1.
+  bool composesOnePassText() const override { return true; }
+  bool displayOnePassStart(EpdBus& bus, const uint8_t* oldPlane, const uint8_t* page, RefreshMode mode,
+                           bool turnOff) override;
+
   void display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) override;
   void beginGrayscale(EpdBus &bus, const uint8_t *fb, GrayscaleMode mode,
                             RefreshMode fallback, bool turnOff) override;

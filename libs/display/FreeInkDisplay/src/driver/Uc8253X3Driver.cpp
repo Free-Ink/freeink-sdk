@@ -164,6 +164,7 @@ void Uc8253X3Driver::begin(EpdBus& bus) {
   _forcedConditionPassesNext = 0;
   _inGrayscaleMode = false;
   _grayState = {};
+  _grayOnGlass = false;
   _absoluteInput = false;
   _directGrayPass = false;
   _directGrayOnPanel = false;
@@ -195,6 +196,10 @@ void Uc8253X3Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev
       (!fastMode && !halfMode) || !_redRamSynced || _initialFullSyncsRemaining > 0 || forcedFullSync;
   const bool doHalfSync = halfMode && !doFullSync;
   _grayState.lastBaseWasPartial = !doFullSync;
+  // Both _full (from a white DTM1) and _half (WW==BW, WB==BB) drive every pixel to its
+  // target regardless of what is on the glass; _fast diffs against DTM1 and gives an
+  // unchanged-white pixel only the gentle WW cell, which leaves grey where it finds it.
+  if (doFullSync || doHalfSync) _grayOnGlass = false;
 
   if (leavingDirectGray && doFullSync) {
     // Establish the destination before the full recovery's visible flash.
@@ -328,14 +333,30 @@ void Uc8253X3Driver::displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, Refres
   // since the last display — the controller RAM no longer holds the displayed
   // BW frame even though _redRamSynced may still read true, so the
   // differential would mis-drive; take the clean fallback path instead.
-  const bool cleanBaseNeeded =
-      !_redRamSynced || _grayState.lsbValid || _forceFullSyncNext || _initialFullSyncsRemaining > 0;
-  if (cleanBaseNeeded) {
+  const bool ramStale = !_redRamSynced || _grayState.lsbValid;
+  const bool fullSyncOwed = _forceFullSyncNext || _initialFullSyncsRemaining > 0;
+  if (ramStale || fullSyncOwed || (_grayOnGlass && fallback == RefreshMode::Full)) {
     display(bus, fb, nullptr, fallback, /*turnOff=*/false);
     loadBankCdi(bus, 0xA9, 0x07, _cfg.preBwMid);
     triggerRefresh(bus, turnOff);
     return;
   }
+  // _grayOnGlass: the RAM is in sync but does not describe the panel (see the header).
+  // The differential below would hand an AA-edge pixel -- grey on the glass, white in
+  // DTM1, white in the new frame -- the gentle WW settle, and the absolute gray pass
+  // idles WW and BB, so nothing after this point could recover it.
+  //
+  // A _half straight to the new base is not enough either. The base draws both grays
+  // black and the gray pass then lifts them only 2-3 frames toward white, so a gray
+  // pixel shows what its black arrived from: a _half gives every pixel the same 24
+  // frames whatever it held, the page's black text is pushed deeper than the white
+  // around it, and the text shows through the light gray of a sleep cover (X3,
+  // 2026-11-08, reader -> sleep in both AA modes; Home -> sleep was clean, with no
+  // gray on the glass and so the plain differential below). Scrub to white first,
+  // as the revert does, then run the differential from that white: every black
+  // pixel of the base now arrives from white. Same cost as the _half + settle it
+  // replaces: one _half and one _aa_pre_bw_mid.
+  if (_grayOnGlass) scrubToWhite(bus, " X3_GRAYBASE_scrub");
   bus.sendPlaneFlipped(CMD_DTM2, fb, _h, _wb);
   loadBankCdi(bus, 0xA9, 0x07, _cfg.preBwMid);
   triggerRefresh(bus, turnOff);
@@ -487,6 +508,7 @@ void Uc8253X3Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, c
   triggerRefresh(bus, turnOff);
 
   _redRamSynced = false;
+  _grayOnGlass = true;
   _forceFullSyncNext = false;
   _forcedConditionPassesNext = 0;
   _grayState.lsbValid = false;
@@ -519,6 +541,10 @@ void Uc8253X3Driver::cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) {
   // Both planes now hold the rebased BW frame; this is the per-page cleanup the
   // tiled AA reader path runs, so leaving lsbValid true here is what pins
   // cleanBaseNeeded on in steady state.
+  //
+  // Deliberately NOT cleared here: _grayOnGlass. This restores what the controller
+  // believes; it drives no waveform, so the greys the AA pass just painted are still
+  // on the panel. Only a full/half push or a revert clears that claim.
   _grayState.lsbValid = false;
   _redRamSynced = true;
   _forceFullSyncNext = false;
@@ -530,18 +556,24 @@ void Uc8253X3Driver::grayscaleRevert(EpdBus& bus, const uint8_t* fb) {
   (void)fb;
   if (!_inGrayscaleMode) return;
   _inGrayscaleMode = false;
-  // Scrub to clean white: both planes white + the _half scrub bank (CDI 0xA9).
+  scrubToWhite(bus, " X3_DRF");
+}
+
+void Uc8253X3Driver::scrubToWhite(EpdBus& bus, const char* label) {
+  // Both planes white + the _half scrub bank (CDI 0xA9): every pixel driven to white,
+  // whatever DTM1 held.
   bus.fillPlane(CMD_DTM1, 0xFF, _h, _wb);
   bus.cmd(CMD_DATA_STOP);
   bus.fillPlane(CMD_DTM2, 0xFF, _h, _wb);
   bus.cmd(CMD_DATA_STOP);
   loadBankCdi(bus, 0xA9, 0x07, _cfg.half);
-  triggerRefresh(bus, false);
+  triggerRefresh(bus, false, label);
   // Both planes are now all-white (BW-coded), not grayscale planes — clear
-  // lsbValid to match, or it stays true forever and forces the cleanBaseNeeded
+  // lsbValid to match, or it stays true forever and forces the clean base
   // path every page.
   _grayState.lsbValid = false;
   _redRamSynced = true;
+  _grayOnGlass = false;  // the _half scrub above drove every pixel to white
 }
 
 void Uc8253X3Driver::requestResync(uint8_t settlePasses) {
@@ -559,6 +591,7 @@ void Uc8253X3Driver::skipInitialResync() {
 
 void Uc8253X3Driver::deepSleep(EpdBus& bus) {
   _grayState = {};
+  _grayOnGlass = false;
   _absoluteInput = false;
   _directGrayPass = false;
   if (_isScreenOn) {

@@ -27,9 +27,12 @@
 
 namespace freeink {
 
-// True when `host` (a name or an IP literal) resolves; logs a failure.
-// Arduino-ESP32 3.3.x NetworkClient::connect(host) treats a failed lookup as
-// success and waits out the connect timeout on 0.0.0.0, so check this first.
+// Optional application policy/resolver. It receives the original hostname and
+// must return the exact address the transport may connect to. Resolving and
+// connecting that same address prevents DNS rebinding between policy and TCP.
+using DestinationResolver = bool (*)(const char* host, IPAddress& address);
+void setDestinationResolver(DestinationResolver resolver);
+bool resolveDestination(const char* host, IPAddress& address);
 bool hostResolves(const char* host);
 
 class SecureClient : public Client {
@@ -89,7 +92,7 @@ class SecureClient : public Client {
   static bool tls13Available();
 
  private:
-  int connectWithMethod(const char* host, uint16_t port, void* method, const char* label);
+  int connectWithMethod(const char* host, IPAddress address, uint16_t port, void* method, const char* label);
 
   // Polls _shouldAbort and latches _aborted so callers can tell a cancel from
   // a failure after connect() returns 0.

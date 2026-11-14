@@ -52,6 +52,10 @@ uint8_t SecureClient::connected() {
   return _transport.connected();
 }
 bool SecureClient::tls13Available() { return true; }
+bool resolveDestination(const char* host, IPAddress& address) {
+  address = IPAddress(host);
+  return true;
+}
 bool hostResolves(const char*) { return true; }
 }  // namespace freeink
 

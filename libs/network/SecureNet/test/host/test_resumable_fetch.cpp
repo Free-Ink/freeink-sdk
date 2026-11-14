@@ -22,9 +22,16 @@ void SecureClient::flush() {}
 void SecureClient::stop() {}
 uint8_t SecureClient::connected() { return 0; }
 bool SecureClient::tls13Available() { return false; }
-// The plain-http path checks hostResolves(); tests flip dnsWorks.
+// The plain-http path checks resolveDestination(); tests flip dnsWorks.
 bool dnsWorks = true;
-bool hostResolves(const char*) { return dnsWorks; }
+bool resolveDestination(const char* host, IPAddress& address) {
+  address = IPAddress(host);
+  return dnsWorks;
+}
+bool hostResolves(const char* host) {
+  IPAddress address;
+  return resolveDestination(host, address);
+}
 }  // namespace freeink
 
 using freeink::FetchOptions;

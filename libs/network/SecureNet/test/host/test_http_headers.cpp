@@ -20,6 +20,10 @@ void SecureClient::flush() {}
 void SecureClient::stop() { _transport.stop(); }
 uint8_t SecureClient::connected() { return _transport.connected(); }
 bool SecureClient::tls13Available() { return false; }
+bool resolveDestination(const char* host, IPAddress& address) {
+  address = IPAddress(host);
+  return true;
+}
 bool hostResolves(const char*) { return true; }
 }  // namespace freeink
 
@@ -86,8 +90,9 @@ int main() {
     check(status + (before ? chunked + csp : csp + chunked) + "\r\n2\r\nok\r\n0\r\n\r\n", true);
   }
   // Authentication challenges may occupy separate fields; preserve their order.
-  reset({"HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Bearer realm=books\r\n"
-         "WWW-Authenticate: Basic realm=books\r\nContent-Length: 0\r\n\r\n"});
+  reset(
+      {"HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Bearer realm=books\r\n"
+       "WWW-Authenticate: Basic realm=books\r\nContent-Length: 0\r\n\r\n"});
   {
     freeink::SecureHttpClient http;
     assert(http.begin("https://a/book.epub") && http.GET() == 401);

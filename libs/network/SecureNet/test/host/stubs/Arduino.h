@@ -22,4 +22,11 @@ class String {
   std::string s_;
 };
 
-class IPAddress {};
+class IPAddress {
+ public:
+  explicit IPAddress(const char* host = "") : host_(host) {}
+  const char* c_str() const { return host_.c_str(); }
+
+ private:
+  std::string host_;
+};

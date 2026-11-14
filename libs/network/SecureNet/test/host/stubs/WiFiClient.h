@@ -38,7 +38,7 @@ struct FakeNet {
 
 class WiFiClient : public Client {
  public:
-  int connect(IPAddress, uint16_t) override { return 0; }
+  int connect(IPAddress ip, uint16_t port) override { return connect(ip.c_str(), port); }
   int connect(const char* host, uint16_t) override {
     if (FakeNet::replies().empty()) return 0;
     FakeNet::hosts().push_back(host);

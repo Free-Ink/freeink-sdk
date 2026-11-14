@@ -517,7 +517,8 @@ class SecureHttpClient {
     } else {
       _plain.setTimeout(_timeoutMs);
       _plain.setConnectionTimeout(_timeoutMs);
-      if (!hostResolves(_host.c_str()) || !_plain.connect(_host.c_str(), _port)) return false;
+      IPAddress address;
+      if (!resolveDestination(_host.c_str(), address) || !_plain.connect(address, _port)) return false;
       _conn = &_plain;
       _connHttps = false;
     }

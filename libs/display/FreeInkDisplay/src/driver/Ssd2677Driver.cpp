@@ -7,6 +7,7 @@
 #include <cstring>
 
 #include "../lut/Ssd2677Luts.h"
+#include "RestTextCodes.h"
 #include "esp_heap_caps.h"
 
 namespace freeink {
@@ -454,7 +455,8 @@ void Ssd2677Driver::stageRestText(const unsigned plane, const uint8_t* data) {
 // One code per pixel, from what the glass holds (_old, plus _lsb's gray while the last gray pass is still
 // on it) to the page (_textBase, plus the staged gray). A pixel already at its target rests (10): black
 // that stays black is never driven again, which is what keeps static text and the status bar from
-// collecting charge page after page. The rest go to white (11), to black (00) or to gray (01).
+// collecting charge page after page. The rest go to white (11), to black (00) or to gray (01)
+// (RestTextCodes.h).
 void Ssd2677Driver::sendRestCodes(EpdBus& bus, const bool grayKnown) {
   auto& chunk = sendChunk;
   const uint32_t size = geometry().bufferSize;
@@ -462,16 +464,8 @@ void Ssd2677Driver::sendRestCodes(EpdBus& bus, const bool grayKnown) {
   auto txn = bus.beginTxn();
   uint16_t n = 0;
   for (uint32_t i = 0; i < size; ++i) {  // the Picco takes rows in framebuffer order
-    const uint8_t gray = _textGray[i];
-    const uint8_t wasGray = grayKnown ? _lsb[i] : 0;
-    const auto toWhite = static_cast<uint8_t>(_textBase[i] & ~gray);
-    const auto toBlack = static_cast<uint8_t>(~_textBase[i] & ~gray);
-    const auto wasWhite = static_cast<uint8_t>(_old[i] & ~wasGray);
-    const auto wasBlack = static_cast<uint8_t>(~_old[i] & ~wasGray);
-    const auto rest = static_cast<uint8_t>((toWhite & wasWhite) | (toBlack & wasBlack) | (gray & wasGray));
-    const auto driveWhite = static_cast<uint8_t>(toWhite & ~wasWhite);
-    packPixels(static_cast<uint8_t>(rest | driveWhite), static_cast<uint8_t>((gray & ~wasGray) | driveWhite),
-               &chunk[n]);
+    const RestTextDrives d = restTextDrives(_textBase[i], _textGray[i], _old[i], grayKnown ? _lsb[i] : 0, true);
+    packPixels(static_cast<uint8_t>(d.rest | d.toWhite), static_cast<uint8_t>(d.toWhite | d.toGray), &chunk[n]);
     n += 2;
     if (n == sizeof(chunk)) {
       txn.writeBytes(chunk, n);

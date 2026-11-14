@@ -9,6 +9,7 @@
 #include "FreeInkDisplay.h"
 #include "src/driver/Ssd1677Driver.h"
 #include "src/driver/Ssd2677Driver.h"
+#include "src/driver/RestTextCodes.h"
 #include "src/lut/Ssd1677Luts.h"
 #include "src/lut/Ssd2677Luts.h"
 #undef private
@@ -548,7 +549,31 @@ static void expectOnePassTextAa(Ssd1677Driver& d, bool expected) {
   assert(lastRegister(bus, 0x22) == 0x0C);  // stays a fast refresh
 }
 
+// Every pixel, bit by bit: the drive is the page's state unless the glass already holds it. Gray that
+// stays gray rests only when the caller says gray rests.
+static void expectRestTextDrives() {
+  uint32_t seed = 1;
+  const auto next = [&seed]() { return static_cast<uint8_t>((seed = seed * 1103515245u + 12345u) >> 16); };
+  for (int round = 0; round < 512; ++round) {
+    const uint8_t page = next(), pageGray = next(), glass = next(), glassGray = next();
+    const bool grayRests = round & 1;
+    const RestTextDrives d = restTextDrives(page, pageGray, glass, glassGray, grayRests);
+    for (int bit = 0; bit < 8; ++bit) {
+      const auto at = [bit](uint8_t v) { return (v >> bit) & 1; };
+      enum { White, Black, Gray } target = at(pageGray) ? Gray : at(page) ? White : Black,
+                                  held = at(glassGray) ? Gray : at(glass) ? White : Black;
+      const bool rests = target == held && (target != Gray || grayRests);
+      assert(at(d.rest) + at(d.toWhite) + at(d.toGray) + at(d.toBlack) == 1);
+      assert(at(d.rest) == rests);
+      assert(at(d.toWhite) == (!rests && target == White));
+      assert(at(d.toGray) == (!rests && target == Gray));
+      assert(at(d.toBlack) == (!rests && target == Black));
+    }
+  }
+}
+
 int main(int argc, char** argv) {
+  expectRestTextDrives();
   const char* which = argc > 1 ? argv[1] : "yrd";
   static const uint8_t yrd[10] = {0xCA, 0xFE, 0x00, 0x16, 0x77, 0x02, 0x10, 0x01, 0x00, 0x91};
   static const uint8_t depg[10] = {0xCA, 0xFE, 0x00, 0x16, 0x77, 0x00, 0x08, 0x01, 0x00, 0x4E};

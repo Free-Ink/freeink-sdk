@@ -9,6 +9,7 @@
 #include "FreeInkDisplay.h"
 #include "src/driver/Ssd1677Driver.h"
 #include "src/driver/Ssd2677Driver.h"
+#include "src/driver/RestTextCodes.h"
 #include "src/lut/Ssd1677Luts.h"
 #include "src/lut/Ssd2677Luts.h"
 #undef private
@@ -449,8 +450,8 @@ static void expectDarkGray2677(Ssd2677Driver& s) {
   s.display(bus, base.data(), nullptr, RefreshMode::Full, false);
 }
 
-// SE0400 reader pages: base and gray in one activation with the panel's text
-// table; leaving the reader drives the gray pixels to the next frame.
+// SE0400 reader pages: base and gray in one activation of the rest table. A pixel
+// already at its target rests; leaving the reader drives the gray pixels to the next frame.
 static void expectOnePassTextAa2677(Ssd2677Driver& s) {
   EpdBus bus;
   Bytes base(48000, 0xFF), lsb(48000, 0), msb(48000, 0), next(48000, 0xFF);
@@ -472,11 +473,21 @@ static void expectOnePassTextAa2677(Ssd2677Driver& s) {
   for (const auto& w : bus.writes) {
     refreshes += w.command == 0x12;
     if (w.command == 0x10) packed = &w.bytes;
-    if (w.command == 0x20) assert(w.bytes == Bytes(lut_picco_se0400_text, lut_picco_se0400_text + 535));
+    if (w.command == 0x20) assert(w.bytes == Bytes(lut_picco_se0400_text_rest, lut_picco_se0400_text_rest + 535));
   }
-  // 3 px black (00), 2 px gray (01), 3 px white (11); then all white.
-  assert(refreshes == 1 && packed && (*packed)[0] == 0x01 && (*packed)[1] == 0x7F && (*packed)[2] == 0xFF);
-  assert(s._textAa.onPanel() && s._needsPowerOn);
+  // Black and white were already there and rest (10); 2 px new gray (01); the rest of the screen rests.
+  assert(refreshes == 1 && packed && (*packed)[0] == 0xA9 && (*packed)[1] == 0x6A && (*packed)[2] == 0xAA);
+  assert(s._grayPending && s._lsb[0] == 0x18 && s._needsPowerOn && !s._textAa.ready());
+  // The same page again: its gray is on the glass now, so every pixel rests.
+  s.beginGrayscale(bus, base.data(), GrayscaleMode::Overlay, RefreshMode::Fast, false);
+  s.copyGrayscaleLsb(bus, lsb.data());
+  s.copyGrayscaleMsb(bus, msb.data());
+  bus.clear();
+  s.displayGray(bus, base.data(), false, nullptr, false);
+  packed = nullptr;
+  for (const auto& w : bus.writes)
+    if (w.command == 0x10) packed = &w.bytes;
+  assert(packed && (*packed)[0] == 0xAA && (*packed)[1] == 0xAA);
   s.cleanupGrayscaleBuffers(bus, base.data());
   s.setReaderRefresh(false);
   bus.clear();
@@ -485,7 +496,7 @@ static void expectOnePassTextAa2677(Ssd2677Driver& s) {
   for (const auto& w : bus.writes)
     if (w.command == 0x10) packed = &w.bytes;
   // Black and gray pixels are both driven to the white target (01); white stays (11).
-  assert(packed && (*packed)[0] == 0x55 && (*packed)[1] == 0x7F && !s._textAa.onPanel());
+  assert(packed && (*packed)[0] == 0x55 && (*packed)[1] == 0x7F && !s._textBegun);
   // The first frame after a book page keeps the reader waveform.
   for (const auto& w : bus.writes)
     if (w.command == 0x20) assert(w.bytes == Bytes(lut_picco_se0400_fast, lut_picco_se0400_fast + 535));
@@ -494,7 +505,7 @@ static void expectOnePassTextAa2677(Ssd2677Driver& s) {
   s.beginGrayscale(bus, base.data(), GrayscaleMode::Overlay, RefreshMode::Fast, false);
   bus.clear();
   s.cleanupGrayscaleBuffers(bus, base.data());
-  assert(!s._textAa.active() && !bus.writes.empty());
+  assert(!s._textBegun && !bus.writes.empty());
   s.setReaderRefresh(false);
 }
 
@@ -538,7 +549,31 @@ static void expectOnePassTextAa(Ssd1677Driver& d, bool expected) {
   assert(lastRegister(bus, 0x22) == 0x0C);  // stays a fast refresh
 }
 
+// Every pixel, bit by bit: the drive is the page's state unless the glass already holds it. Gray that
+// stays gray rests only when the caller says gray rests.
+static void expectRestTextDrives() {
+  uint32_t seed = 1;
+  const auto next = [&seed]() { return static_cast<uint8_t>((seed = seed * 1103515245u + 12345u) >> 16); };
+  for (int round = 0; round < 512; ++round) {
+    const uint8_t page = next(), pageGray = next(), glass = next(), glassGray = next();
+    const bool grayRests = round & 1;
+    const RestTextDrives d = restTextDrives(page, pageGray, glass, glassGray, grayRests);
+    for (int bit = 0; bit < 8; ++bit) {
+      const auto at = [bit](uint8_t v) { return (v >> bit) & 1; };
+      enum { White, Black, Gray } target = at(pageGray) ? Gray : at(page) ? White : Black,
+                                  held = at(glassGray) ? Gray : at(glass) ? White : Black;
+      const bool rests = target == held && (target != Gray || grayRests);
+      assert(at(d.rest) + at(d.toWhite) + at(d.toGray) + at(d.toBlack) == 1);
+      assert(at(d.rest) == rests);
+      assert(at(d.toWhite) == (!rests && target == White));
+      assert(at(d.toGray) == (!rests && target == Gray));
+      assert(at(d.toBlack) == (!rests && target == Black));
+    }
+  }
+}
+
 int main(int argc, char** argv) {
+  expectRestTextDrives();
   const char* which = argc > 1 ? argv[1] : "yrd";
   static const uint8_t yrd[10] = {0xCA, 0xFE, 0x00, 0x16, 0x77, 0x02, 0x10, 0x01, 0x00, 0x91};
   static const uint8_t depg[10] = {0xCA, 0xFE, 0x00, 0x16, 0x77, 0x00, 0x08, 0x01, 0x00, 0x4E};

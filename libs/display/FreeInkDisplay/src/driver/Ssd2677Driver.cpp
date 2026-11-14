@@ -7,6 +7,7 @@
 #include <cstring>
 
 #include "../lut/Ssd2677Luts.h"
+#include "RestTextCodes.h"
 #include "esp_heap_caps.h"
 
 namespace freeink {
@@ -98,6 +99,9 @@ inline int lutCount(uint8_t v) {
   return n;
 }
 
+// The packed-pixel stream goes out in pieces of this size (sendPacked, sendRestCodes).
+uint8_t sendChunk[1024];
+
 }  // namespace
 
 int ssd2677LutDose(const unsigned char* lut, unsigned table) {
@@ -174,8 +178,6 @@ void Ssd2677Driver::latchOtpWaveform(EpdBus& bus, uint8_t code) {
 
 void Ssd2677Driver::begin(EpdBus& bus) {
   initPanel(bus);
-  const PanelGeometry g = geometry();
-  _textAa.allocate(true, g.widthBytes, g.height);
 
   _needsInitialFull = true;
   _grayPending = _grayMaskReady = false;
@@ -257,7 +259,7 @@ void Ssd2677Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev,
 
 void Ssd2677Driver::sendPacked(EpdBus& bus, const uint8_t* hi, const uint8_t* lo, bool exclusive) {
   const PanelGeometry g = geometry();
-  static uint8_t chunk[1024];
+  auto& chunk = sendChunk;
   // The Sticky panel scans rows bottom-to-top relative to the framebuffer
   // (stock mirrors in software); the Picco takes them in order.
   const bool reversed = isSticky();
@@ -318,6 +320,10 @@ bool Ssd2677Driver::ensureLsb() {
 
 void Ssd2677Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
   (void)bus;
+  if (_textBegun) {
+    stageRestText(0, lsb);
+    return;
+  }
   if (_textAa.active()) { _textAa.stage(0, lsb, 0, geometry().height); return; }
   if (!lsb) return;
   if (!_absoluteGray) ensureLsb();
@@ -327,6 +333,16 @@ void Ssd2677Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
 
 void Ssd2677Driver::beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode mode, RefreshMode fallback,
                                    bool turnOff) {
+  _textBegun = false;
+  if (mode == GrayscaleMode::Overlay && _readerRefresh && !isSticky() && textPassReady()) {
+    // The page is presented by displayGray; only a clean needs its own refresh.
+    if (fallback != RefreshMode::Fast || _needsInitialFull) display(bus, fb, nullptr, fallback, false);
+    _absoluteGray = false;
+    memcpy(_textBase, fb, geometry().bufferSize);
+    _textStaged = 0;
+    _textBegun = true;
+    return;
+  }
   if (mode == GrayscaleMode::Overlay && _readerRefresh && _textAa.ready()) {
     // The page is presented by displayGray; only a clean needs its own refresh.
     if (fallback != RefreshMode::Fast || _needsInitialFull) display(bus, fb, nullptr, fallback, false);
@@ -355,6 +371,10 @@ void Ssd2677Driver::beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode
 }
 
 void Ssd2677Driver::copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
+  if (_textBegun) {
+    stageRestText(1, msb);
+    return;
+  }
   if (_textAa.active()) { _textAa.stage(1, msb, 0, geometry().height); return; }
   if (!msb || !_lsb) return;
   if (_absoluteGray) {
@@ -389,10 +409,102 @@ void Ssd2677Driver::copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
   }
 }
 
+void Ssd2677Driver::setReaderRefresh(const bool reading) {
+  _readerRefresh = reading;
+  if (!reading) return;
+  // First use pays for the planes, so a reader who never opens a book never does.
+  const PanelGeometry g = geometry();
+  if (isSticky()) {
+    if (!_textAa.ready()) _textAa.allocate(true, g.widthBytes, g.height);
+  } else {
+    ensureRestText();
+  }
+}
+
+bool Ssd2677Driver::textPassReady() const {
+  if (isSticky()) return _textAa.ready();
+  return _textGray && _textBase && _lsb && _old;
+}
+
+bool Ssd2677Driver::ensureRestText() {
+#if defined(BOARD_HAS_PSRAM)
+  const uint32_t size = geometry().bufferSize;
+  if (!_textGray) _textGray = static_cast<uint8_t*>(heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (!_textBase) _textBase = static_cast<uint8_t*>(heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  return _textGray && _textBase && ensureLsb();
+#else
+  return false;  // one 48 KB plane more than a board without PSRAM can spare
+#endif
+}
+
+void Ssd2677Driver::stageRestText(const unsigned plane, const uint8_t* data) {
+  if (!data || !_textGray) {
+    _textStaged = 0;
+    return;
+  }
+  const uint32_t size = geometry().bufferSize;
+  if (plane == 0) {
+    memcpy(_textGray, data, size);
+    _textStaged = 1;
+  } else if (_textStaged & 1) {
+    for (uint32_t i = 0; i < size; ++i) _textGray[i] |= data[i];
+    _textStaged |= 2;
+  }
+}
+
+// One code per pixel, from what the glass holds (_old, plus _lsb's gray while the last gray pass is still
+// on it) to the page (_textBase, plus the staged gray). A pixel already at its target rests (10): black
+// that stays black is never driven again, which is what keeps static text and the status bar from
+// collecting charge page after page. The rest go to white (11), to black (00) or to gray (01)
+// (RestTextCodes.h).
+void Ssd2677Driver::sendRestCodes(EpdBus& bus, const bool grayKnown) {
+  auto& chunk = sendChunk;
+  const uint32_t size = geometry().bufferSize;
+  bus.cmd(CMD_DATA);
+  auto txn = bus.beginTxn();
+  uint16_t n = 0;
+  for (uint32_t i = 0; i < size; ++i) {  // the Picco takes rows in framebuffer order
+    const RestTextDrives d = restTextDrives(_textBase[i], _textGray[i], _old[i], grayKnown ? _lsb[i] : 0, true);
+    packPixels(static_cast<uint8_t>(d.rest | d.toWhite), static_cast<uint8_t>(d.toWhite | d.toGray), &chunk[n]);
+    n += 2;
+    if (n == sizeof(chunk)) {
+      txn.writeBytes(chunk, n);
+      n = 0;
+    }
+  }
+  if (n) txn.writeBytes(chunk, n);
+}
+
+bool Ssd2677Driver::presentRestText(EpdBus& bus) {
+  const bool staged = _textStaged == 3;
+  _textStaged = 0;
+  if (!staged || !textPassReady()) return false;
+  // _lsb describes the glass only straight after a gray pass; a B/W frame since drove it to _old.
+  const bool grayKnown = _grayPending;
+  powerOn(bus);
+  sendRestCodes(bus, grayKnown);
+  refreshWith(bus, lut_picco_se0400_text_rest, true);  // stock reader pages power off
+  memcpy(_old, _textBase, geometry().bufferSize);
+  // The page's gray is now the glass's; the old mask's block stages the next page.
+  uint8_t* const glassGray = _textGray;
+  _textGray = _lsb;
+  _lsb = glassGray;
+  _grayPending = true;  // the next B/W frame drives each gray pixel to its target
+  _grayMaskReady = false;
+  _afterReader = true;  // the next B/W frame erases reading-depth ink
+  return true;
+}
+
 void Ssd2677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut,
                                 bool factoryMode) {
   (void)lut;
   (void)factoryMode;
+  if (_textBegun) {
+    _textBegun = false;
+    // On failure the page still goes up, in B/W.
+    if (!presentRestText(bus)) display(bus, _textBase, nullptr, RefreshMode::Fast, turnOff);
+    return;
+  }
   if (_textAa.active()) {
     if (!_textAa.compose()) { _textAa.invalidate(); _needsInitialFull = true; return; }
     // Text codes: white plane in the high bit, gray / driven-white plane in the low bit.
@@ -456,11 +568,16 @@ void Ssd2677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
 
 void Ssd2677Driver::cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) {
   // A skipped text pass still owes the caller its deferred B/W page.
+  if (_textBegun) {
+    _textBegun = false;
+    display(bus, bw ? bw : _textBase, nullptr, RefreshMode::Fast, true);
+  }
   if (_textAa.active()) display(bus, bw ? bw : _textAa.base(), nullptr, RefreshMode::Fast, true);
 }
 
 void Ssd2677Driver::deepSleep(EpdBus& bus) {
   _textAa.invalidate();
+  _textBegun = false;
   powerOffBetweenFrames(bus);
   // Stock (FUN_4200b608): 0x07 with the 0xA5 check code.
   bus.cmd(CMD_DEEP_SLEEP);

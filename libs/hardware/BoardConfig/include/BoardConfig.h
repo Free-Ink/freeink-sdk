@@ -2417,6 +2417,19 @@ inline bool latchConflictsWithBus(int8_t pin) {
   return false;
 }
 
+// Drive `pin` to `level` as an output, then release any pad hold left by deep
+// sleep. The level and mode are set while the hold still freezes the pad, so a
+// held pin goes straight to `level`. Releasing first lets it float to its reset
+// state and then drive LOW before reaching `level`, glitching whatever it powers.
+inline void driveReleasingHold(int8_t pin, uint8_t level) {
+  if (pin < 0) return;
+  const auto g = static_cast<gpio_num_t>(pin);
+  gpio_set_level(g, level);
+  pinMode(pin, OUTPUT);
+  digitalWrite(pin, level);
+  gpio_hold_dis(g);
+}
+
 // Assert the board's power-rail latch pins. Battery-latched boards (e.g. the
 // Sticky) must call this first thing in setup() or the board powers off when
 // the user releases the power button. Releasing the pins (driving them LOW)
@@ -2436,23 +2449,17 @@ inline void holdPowerRails() {
 #endif
       continue;
     }
-    // A previous power-off may have latched the pin LOW with gpio_hold_en —
-    // a state that survives a reset and a USB-powered deep-sleep wake, and
-    // silently defeats the digitalWrite below. Release it first.
-    gpio_hold_dis(static_cast<gpio_num_t>(pin));
-    pinMode(pin, OUTPUT);
-    digitalWrite(pin, HIGH);
+    // A sleep or power-off hold survives a reset and a USB-powered deep-sleep
+    // wake; a latch held HIGH must not dip while that hold is released.
+    driveReleasingHold(pin, HIGH);
   }
   // Charger enable (see PowerConfig::chargeEnable). Held with gpio_hold_en so the
   // level survives esp_sleep_config_gpio_isolate() and deep sleep (PowerManager
   // calls gpio_deep_sleep_hold_en() before sleeping) — the charger must stay
   // enabled whether the firmware is awake or asleep.
   if (const int8_t ce = ACTIVE.power.chargeEnable; ce >= 0 && !latchConflictsWithBus(ce)) {
-    const auto g = static_cast<gpio_num_t>(ce);
-    gpio_hold_dis(g);
-    pinMode(ce, OUTPUT);
-    digitalWrite(ce, ACTIVE.power.chargeEnableActiveHigh ? HIGH : LOW);
-    gpio_hold_en(g);
+    driveReleasingHold(ce, ACTIVE.power.chargeEnableActiveHigh ? HIGH : LOW);
+    gpio_hold_en(static_cast<gpio_num_t>(ce));
   }
 #if FREEINK_DEVICE_PICCO
   // Picco: the GPIO0 enable carried as sd.powerEnable also feeds peripherals the
@@ -2471,13 +2478,9 @@ inline void holdPowerRails() {
 // SDCardManager::begin() does this itself; apps that skip SD should call this
 // once before display.begin(). No-op on boards without a switched SD rail.
 inline void releaseSdRail() {
-  if (ACTIVE.sd.powerEnable >= 0) {
-    gpio_hold_dis(static_cast<gpio_num_t>(ACTIVE.sd.powerEnable));
-    pinMode(ACTIVE.sd.powerEnable, OUTPUT);
-    // Drive the enable to its ON level: HIGH for active-high rails, LOW for the
-    // active-low ones (X4 Pro's GPIO5 powers the card while held LOW).
-    digitalWrite(ACTIVE.sd.powerEnable, ACTIVE.sd.powerActiveHigh ? HIGH : LOW);
-  }
+  // ON level: HIGH for active-high rails, LOW for the active-low ones (X4 Pro's
+  // GPIO5 powers the card while held LOW).
+  driveReleasingHold(ACTIVE.sd.powerEnable, ACTIVE.sd.powerActiveHigh ? HIGH : LOW);
   if (ACTIVE.sd.cs >= 0) {
     pinMode(ACTIVE.sd.cs, OUTPUT);
     digitalWrite(ACTIVE.sd.cs, HIGH);

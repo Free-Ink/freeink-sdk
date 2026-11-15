@@ -2009,6 +2009,59 @@ void testListRtlMirrorsToggleSide() {
   CHECK_EQ(rtlDraw.ops[1].rect.x, 4);             // left edge (band.x + valueInset) in RTL
 }
 
+// valueIcon occupies the value slot: right edge in LTR, left edge in RTL, the
+// label is narrowed to leave it room, and a text value takes precedence.
+void testListValueIconSlot() {
+  static const uint8_t markBits[32] = {0};
+  BitmapRef mark{markBits, 16, 16, BitmapFormat::Mask1, false};
+
+  ListItem item{};
+  item.label = "A long book title that would otherwise use the whole row width";
+  item.valueIcon = mark;
+
+  ListProps props;
+  props.items = &item;
+  props.count = 1;
+  props.rowHeight = 40;
+  props.valueInset = 4;
+  props.sidePadding = 0;
+
+  DeviceContext device = makeDevice();
+  InputSnapshot input;
+  auto draw = [&](FakeDrawTarget& target) {
+    InteractionBuffer<4> interactions;
+    Frame<4> frame(target, device, input, interactions);
+    list(frame, Rect{0, 0, 480, 40}, props);
+  };
+  auto first = [](const FakeDrawTarget& target, FakeDrawTarget::Op::Kind kind) -> const FakeDrawTarget::Op* {
+    for (size_t i = 0; i < target.opCount; ++i)
+      if (target.ops[i].kind == kind) return &target.ops[i];
+    return nullptr;
+  };
+
+  FakeDrawTarget ltr;
+  draw(ltr);
+  const auto* ltrIcon = first(ltr, FakeDrawTarget::Op::Bitmap);
+  const auto* ltrLabel = first(ltr, FakeDrawTarget::Op::Text);
+  CHECK(ltrIcon != nullptr);
+  CHECK(ltrLabel != nullptr);
+  if (ltrIcon) CHECK_EQ(ltrIcon->rect.x, 480 - 16 - 4);
+  if (ltrIcon && ltrLabel) CHECK(ltrLabel->rect.x + ltrLabel->rect.width <= ltrIcon->rect.x);
+
+  props.rtl = true;
+  FakeDrawTarget rtl;
+  draw(rtl);
+  const auto* rtlIcon = first(rtl, FakeDrawTarget::Op::Bitmap);
+  CHECK(rtlIcon != nullptr);
+  if (rtlIcon) CHECK_EQ(rtlIcon->rect.x, 4);
+
+  props.rtl = false;
+  item.value = "1.2 MB";
+  FakeDrawTarget withValue;
+  draw(withValue);
+  CHECK_EQ(withValue.countKind(FakeDrawTarget::Op::Bitmap), 0u);
+}
+
 void testButtonRegistersExpandedHit() {
   FakeDrawTarget draw;
   DeviceContext device = makeDevice();
@@ -6191,6 +6244,7 @@ int main() {
   testListCanUseFullTitleWidthWithShortValue();
   testListRtlMirrorsIconAndValueSides();
   testListRtlMirrorsToggleSide();
+  testListValueIconSlot();
   testButtonRegistersExpandedHit();
   testProgressBarClamps();
   testBatteryIndicator();

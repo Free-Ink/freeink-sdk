@@ -31,6 +31,10 @@ struct ListItem {
   const char *sectionHeading = nullptr;
   // Emphasize this label without changing row interactivity or list-wide bold text.
   bool bold = false;
+  // Icon in the value slot (a status mark such as "downloaded"), drawn in the
+  // row's foreground ink so it inverts with selection. Used only when neither
+  // toggle nor value is set.
+  BitmapRef valueIcon{};
 };
 
 struct ListNav;
@@ -467,12 +471,15 @@ inline ListRowLayout measureListRow(const DrawTarget &target, AssetResolver *ass
     result.valueWidth = props.toggleWidth < 18 ? 18 : props.toggleWidth;
   } else if (item.value) {
     result.valueWidth = target.measureText(props.valueText.font, item.value, props.valueText).width;
+  } else if (item.valueIcon) {
+    result.valueWidth = static_cast<int16_t>(item.valueIcon.width);
   }
-  if (item.toggle || item.value)
+  const bool hasValueSlot = item.toggle || item.value || item.valueIcon;
+  if (hasValueSlot)
     result.labelWidth = static_cast<int16_t>(result.labelWidth - result.valueWidth -
                                             props.valueInset - props.textGap);
   if (props.balanceWrappedLabelWithValue && labelStyle.maxLines > 1 &&
-      (item.toggle || item.value) && item.label &&
+      hasValueSlot && item.label &&
       target.measureText(labelStyle.font, item.label, labelStyle).width > result.labelWidth) {
     const int16_t cap = static_cast<int16_t>(contentWidth * 3 / 5);
     if (result.labelWidth > cap) result.labelWidth = cap;
@@ -489,7 +496,9 @@ inline ListRowLayout measureListRow(const DrawTarget &target, AssetResolver *ass
         ? measureWrappedText(target, item.subtitle, props.subtitleText, contentWidth).height : subLh;
   }
   const int16_t valueHeight = item.toggle ? (props.toggleHeight < 12 ? 12 : props.toggleHeight)
-      : (item.value ? target.lineHeight(props.valueText.font) : 0);
+      : item.value     ? target.lineHeight(props.valueText.font)
+      : item.valueIcon ? static_cast<int16_t>(item.valueIcon.height)
+                       : 0;
   const int16_t labelHeight = static_cast<int16_t>(labelLh * result.labelLines);
   result.labelHeight = labelHeight > valueHeight ? labelHeight : valueHeight;
   int16_t needed = rowH;
@@ -894,6 +903,16 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
                                     props.textGap);
       if (props.rtl)
         labelX = static_cast<int16_t>(band.x + band.width - availW);
+    } else if (item.valueIcon) {
+      const int16_t iconW = static_cast<int16_t>(item.valueIcon.width);
+      const int16_t iconH = static_cast<int16_t>(item.valueIcon.height);
+      const int16_t iconX = props.rtl
+          ? static_cast<int16_t>(band.x + props.valueInset)
+          : static_cast<int16_t>(band.x + availW - iconW - props.valueInset);
+      frame.target().bitmap(Rect{iconX, static_cast<int16_t>(band.y + (band.height - iconH) / 2), iconW, iconH},
+                            item.valueIcon, BitmapMode::Contain, style.foreground);
+      availW = static_cast<int16_t>(availW - iconW - props.valueInset - props.textGap);
+      if (props.rtl) labelX = static_cast<int16_t>(band.x + band.width - availW);
     }
 
     availW = layout.labelWidth;

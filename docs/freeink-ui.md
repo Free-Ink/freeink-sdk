@@ -1435,6 +1435,9 @@ component set:
 
 ## Recent additions
 
+- **`ListItem::valueIcon`** — a `BitmapRef` status mark in the value slot,
+  drawn in the row's foreground ink so it inverts when selected. Used only
+  when neither `toggle` nor `value` is set; on the left in RTL lists.
 - **`flatButtonStyles(radius)`** — the borderless sibling of
   `outlinedButtonStyles`: nothing drawn at rest, a light fill for
   selected/pressed feedback. Assign once (`theme.button =

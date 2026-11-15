@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compile the production EpdBus with a deterministic clock/GPIO/RTOS shim."""
+"""Check production EpdBus waits and S3 DMA framing with deterministic hardware shims."""
 from pathlib import Path
 import os
 import subprocess
@@ -16,6 +16,7 @@ with tempfile.TemporaryDirectory(prefix="freeink-bus-test-") as directory:
 #include <cstddef>
 #include <cstring>
 #include <algorithm>
+#include <vector>
 #define HIGH 1
 #define LOW 0
 #define INPUT 0
@@ -34,7 +35,8 @@ inline void delayMicroseconds(unsigned us) { nowUs += us; }
 inline int digitalRead(int) {
   return nowUs >= busyStartUs && nowUs < busyEndUs ? busyLevel : !busyLevel;
 }
-inline void digitalWrite(int, int) {}
+inline int gpioLevels[64] = {};
+inline void digitalWrite(int pin, int level) { gpioLevels[pin] = level; }
 inline void pinMode(int pin, int mode) { if (pin == 5) busyMode = mode; }
 inline int digitalPinToInterrupt(int pin) { return pin; }
 inline void attachInterrupt(int, void (*fn)(), int) { isr = fn; }
@@ -50,17 +52,26 @@ inline FakeSerial Serial;
 #define MSBFIRST 1
 #define SPI_MODE0 0
 struct SPISettings { SPISettings(uint32_t=0, int=0, int=0) {} };
+inline bool arduinoBusStarted = false;
+inline unsigned pioTransfers = 0;
 struct FakeSPI {
- void begin(int,int,int,int) {}
+ void* bus() { return arduinoBusStarted ? this : nullptr; }
+ void begin(int,int,int,int) { arduinoBusStarted = true; }
  void beginTransaction(SPISettings) {}
  void endTransaction() {}
- uint8_t transfer(uint8_t v) { return v; }
- void writeBytes(const uint8_t*, uint16_t) {}
+ uint8_t transfer(uint8_t v) { ++pioTransfers; return v; }
+ void writeBytes(const uint8_t*, uint16_t) { ++pioTransfers; }
 };
 inline FakeSPI SPI;
 ''')
     (root / "BoardConfig.h").write_text('''#pragma once
-namespace BoardConfig { inline bool isOnePage() { return false; } }
+namespace BoardConfig {
+struct Sd { int cs = -1; bool separateSpi = false; };
+struct Sdmmc { int busWidth = 4; };
+struct Board { Sd sd; Sdmmc sdmmc; };
+inline Board ACTIVE;
+inline bool isOnePage() { return false; }
+}
 ''')
     (root / "driver/gpio.h").write_text('''#pragma once
 using gpio_num_t = int;
@@ -69,6 +80,7 @@ inline void gpio_hold_dis(gpio_num_t) {}
     (root / "freertos/FreeRTOS.h").write_text('''#pragma once
 using BaseType_t = int;
 #define pdFALSE 0
+#define portMAX_DELAY 0xffffffff
 #define pdTRUE 1
 #define pdMS_TO_TICKS(ms) (ms)
 #define portYIELD_FROM_ISR() ((void)0)
@@ -96,9 +108,75 @@ inline int xSemaphoreTake(SemaphoreHandle_t, unsigned long timeout) {
  return 0;
 }
 ''')
+    (root / "esp_heap_caps.h").write_text('''#pragma once
+#include <cstdlib>
+#define MALLOC_CAP_DMA 1
+#define MALLOC_CAP_INTERNAL 2
+inline bool failDmaAllocation = false;
+inline int liveDmaAllocations = 0;
+inline void* heap_caps_malloc(size_t bytes, int) {
+ if (failDmaAllocation) return nullptr;
+ ++liveDmaAllocations;
+ return std::malloc(bytes);
+}
+inline void heap_caps_free(void* ptr) {
+ if (ptr) --liveDmaAllocations;
+ std::free(ptr);
+}
+''')
+    (root / "driver/spi_master.h").write_text('''#pragma once
+#include <Arduino.h>
+#define ESP_OK 0
+#define SPI2_HOST 1
+#define SPI_DMA_CH_AUTO 3
+#define SPI_TRANS_USE_TXDATA 1
+#define SPI_TRANS_USE_RXDATA 2
+using spi_device_handle_t = void*;
+struct spi_bus_config_t {
+ int mosi_io_num, miso_io_num, sclk_io_num, quadwp_io_num, quadhd_io_num, max_transfer_sz;
+};
+struct spi_device_interface_config_t { int clock_speed_hz, mode, spics_io_num, queue_size; };
+struct spi_transaction_t {
+ unsigned flags = 0; size_t length = 0; const void* tx_buffer = nullptr;
+ uint8_t tx_data[4] = {}, rx_data[4] = {};
+};
+struct DmaWrite { int dc; std::vector<uint8_t> bytes; };
+inline std::vector<DmaWrite> dmaWrites;
+inline bool failBusInit = false, failAddDevice = false, failTransmit = false;
+inline int busCount = 0, deviceCount = 0, busLocks = 0;
+inline int spi_bus_initialize(int host, const spi_bus_config_t* bus, int dma) {
+ if (host != SPI2_HOST || dma != SPI_DMA_CH_AUTO || bus->max_transfer_sz != 4096) std::abort();
+ if (failBusInit) return -1;
+ ++busCount; return ESP_OK;
+}
+inline int spi_bus_free(int) { --busCount; return ESP_OK; }
+inline int spi_bus_add_device(int, const spi_device_interface_config_t* device, spi_device_handle_t* handle) {
+ if (device->clock_speed_hz != 10000000 || device->mode || device->spics_io_num != -1) std::abort();
+ if (failAddDevice) return -1;
+ *handle = &deviceCount; ++deviceCount; return ESP_OK;
+}
+inline int spi_bus_remove_device(spi_device_handle_t) { --deviceCount; return ESP_OK; }
+inline int spi_device_acquire_bus(spi_device_handle_t, unsigned) { ++busLocks; return ESP_OK; }
+inline void spi_device_release_bus(spi_device_handle_t) { --busLocks; }
+inline int spi_device_transmit(spi_device_handle_t, spi_transaction_t* transaction) {
+ if (busLocks != 1 || gpioLevels[2] != LOW || transaction->length > 4096 * 8) std::abort();
+ if (failTransmit) return -1;
+ const auto* data = transaction->flags & SPI_TRANS_USE_TXDATA ? transaction->tx_data
+                  : static_cast<const uint8_t*>(transaction->tx_buffer);
+ dmaWrites.push_back({gpioLevels[3], {data, data + transaction->length / 8}});
+ transaction->rx_data[0] = 0x5a;
+ return ESP_OK;
+}
+''')
     exe = root / "test_bus"
     subprocess.run([os.environ.get("CXX", "c++"), "-std=c++17", "-Wall", "-Wextra",
                     "-I"+str(root), "-I"+str(LIB / "src/bus"), str(HERE / "test_bus.cpp"),
                     str(LIB / "src/bus/EpdBus.cpp"), "-o", str(exe)], check=True)
     for mode in ("isr", "hook", "fallback"):
         subprocess.run([str(exe), mode], check=True)
+    dma_exe = root / "test_dma"
+    subprocess.run([os.environ.get("CXX", "c++"), "-std=c++17", "-Wall", "-Wextra",
+                    "-DARDUINO", "-DBOARD_HAS_PSRAM", "-DCONFIG_IDF_TARGET_ESP32S3",
+                    "-I"+str(root), "-I"+str(LIB / "src/bus"), str(HERE / "test_dma.cpp"),
+                    str(LIB / "src/bus/EpdBus.cpp"), "-o", str(dma_exe)], check=True)
+    subprocess.run([str(dma_exe)], check=True)

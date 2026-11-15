@@ -2,6 +2,9 @@
 
 #include <BoardConfig.h>
 #include <driver/gpio.h>
+#if FREEINK_EPD_DMA
+#include <esp_heap_caps.h>
+#endif
 #if defined(ARDUINO) && defined(CONFIG_PM_ENABLE) && CONFIG_PM_ENABLE
 #include <esp_pm.h>
 #endif
@@ -81,6 +84,12 @@ static void IRAM_ATTR epdBusyIsr() {
 }
 
 EpdBus::Transaction::Transaction(EpdBus& bus) : _bus(&bus), _pmLock(bus), _active(true) {
+#if FREEINK_EPD_DMA
+  if (_bus->_dmaDevice) {
+    spi_device_acquire_bus(_bus->_dmaDevice, portMAX_DELAY);
+    return;
+  }
+#endif
   SPI.beginTransaction(_bus->_spi);
 }
 
@@ -108,31 +117,68 @@ void EpdBus::Transaction::end() {
   if (!_active || _bus == nullptr) {
     return;
   }
-  digitalWrite(_bus->_pins.cs, HIGH);
-  SPI.endTransaction();
+#if FREEINK_EPD_DMA
+  if (_bus->_dmaDevice) {
+    _bus->flushDma();
+    digitalWrite(_bus->_pins.cs, HIGH);
+    spi_device_release_bus(_bus->_dmaDevice);
+  } else
+#endif
+  {
+    digitalWrite(_bus->_pins.cs, HIGH);
+    SPI.endTransaction();
+  }
   _pmLock.release();
   _active = false;
 }
 
-uint8_t EpdBus::Transaction::transfer(uint8_t d) { return SPI.transfer(d); }
+uint8_t EpdBus::Transaction::transfer(uint8_t d) {
+#if FREEINK_EPD_DMA
+  if (_bus->_dmaDevice) {
+    _bus->flushDma();
+    spi_transaction_t transaction{};
+    transaction.flags = SPI_TRANS_USE_TXDATA | SPI_TRANS_USE_RXDATA;
+    transaction.length = 8;
+    transaction.tx_data[0] = d;
+    if (spi_device_transmit(_bus->_dmaDevice, &transaction) != ESP_OK) {
+      Serial.printf("[EPD] SPI command transfer failed\n");
+      return 0;
+    }
+    return transaction.rx_data[0];
+  }
+#endif
+  return SPI.transfer(d);
+}
 
 void EpdBus::Transaction::cmd(uint8_t c) {
+#if FREEINK_EPD_DMA
+  if (_bus->_dmaDevice) _bus->flushDma();
+#endif
   digitalWrite(_bus->_pins.dc, LOW);
-  SPI.transfer(c);
+  transfer(c);
   digitalWrite(_bus->_pins.dc, HIGH);
 }
 
 void EpdBus::Transaction::data(uint8_t d) {
   digitalWrite(_bus->_pins.dc, HIGH);
-  SPI.transfer(d);
+  transfer(d);
 }
 
 void EpdBus::Transaction::writeBytes(const uint8_t* d, uint16_t len) {
   digitalWrite(_bus->_pins.dc, HIGH);
+#if FREEINK_EPD_DMA
+  if (_bus->_dmaDevice) {
+    _bus->appendDma(d, len);
+    return;
+  }
+#endif
   SPI.writeBytes(d, len);
 }
 
 EpdBus::~EpdBus() {
+#if FREEINK_EPD_DMA
+  endDma();
+#endif
 #if defined(ARDUINO) && defined(CONFIG_PM_ENABLE) && CONFIG_PM_ENABLE
   if (_spiApbLock != nullptr) {
     esp_pm_lock_delete(_spiApbLock);
@@ -146,6 +192,9 @@ EpdBus::~EpdBus() {
 }
 
 void EpdBus::begin(const EpdPins& pins, uint32_t spiHz, BusyPolarity busy, int8_t spiMiso, int8_t coCs) {
+#if FREEINK_EPD_DMA
+  endDma();
+#endif
   createPmLocks();
   NoLightSleepLockGuard noLightSleepLock(*this);
   _pins = pins;
@@ -176,7 +225,11 @@ void EpdBus::begin(const EpdPins& pins, uint32_t spiHz, BusyPolarity busy, int8_
     // SPI.begin() configures the peripheral/dividers from the current APB clock;
     // keep APB fixed here so the setup matches the requested display SPI rate.
     SpiApbLockGuard spiPmLock(*this);
-    SPI.begin(pins.sclk, spiMiso, pins.mosi, pins.cs);
+#if FREEINK_EPD_DMA
+    beginDma(spiMiso);
+    if (!_dmaDevice)
+#endif
+      SPI.begin(pins.sclk, spiMiso, pins.mosi, pins.cs);
   }
 
   pinMode(pins.cs, OUTPUT);
@@ -198,6 +251,75 @@ void EpdBus::begin(const EpdPins& pins, uint32_t spiHz, BusyPolarity busy, int8_
   digitalWrite(pins.cs, HIGH);
   digitalWrite(pins.dc, HIGH);
 }
+
+#if FREEINK_EPD_DMA
+void EpdBus::beginDma(int8_t spiMiso) {
+  const auto& board = BoardConfig::ACTIVE;
+  // Global Arduino SPI belongs to SD on shared-bus profiles. Never take it over.
+  const bool sdOwnsSpi = board.sdmmc.busWidth == 0 && board.sd.cs >= 0 && !board.sd.separateSpi;
+  if (_coCs >= 0 || sdOwnsSpi || SPI.bus()) return;
+  _dmaBuffer = static_cast<uint8_t*>(heap_caps_malloc(DMA_BYTES, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
+  if (!_dmaBuffer) return;
+  spi_bus_config_t bus{};
+  bus.mosi_io_num = _pins.mosi;
+  bus.miso_io_num = spiMiso;
+  bus.sclk_io_num = _pins.sclk;
+  bus.quadwp_io_num = -1;
+  bus.quadhd_io_num = -1;
+  bus.max_transfer_sz = DMA_BYTES;
+  if (spi_bus_initialize(SPI2_HOST, &bus, SPI_DMA_CH_AUTO) != ESP_OK) {
+    heap_caps_free(_dmaBuffer);
+    _dmaBuffer = nullptr;
+    return;
+  }
+  spi_device_interface_config_t device{};
+  device.clock_speed_hz = _spiHz;
+  device.mode = 0;
+  device.spics_io_num = -1;  // Transaction owns CS across all chunks.
+  device.queue_size = 1;
+  if (spi_bus_add_device(SPI2_HOST, &device, &_dmaDevice) != ESP_OK) {
+    spi_bus_free(SPI2_HOST);
+    heap_caps_free(_dmaBuffer);
+    _dmaBuffer = nullptr;
+    return;
+  }
+  Serial.printf("[EPD] DMA enabled: %u-byte staging, %lu Hz\n", static_cast<unsigned>(DMA_BYTES),
+                static_cast<unsigned long>(_spiHz));
+}
+
+void EpdBus::endDma() {
+  if (_dmaDevice) {
+    spi_bus_remove_device(_dmaDevice);
+    spi_bus_free(SPI2_HOST);
+    _dmaDevice = nullptr;
+  }
+  heap_caps_free(_dmaBuffer);
+  _dmaBuffer = nullptr;
+  _dmaUsed = 0;
+}
+
+void EpdBus::flushDma() {
+  if (!_dmaUsed) return;
+  spi_transaction_t transaction{};
+  transaction.length = _dmaUsed * 8;
+  transaction.tx_buffer = _dmaBuffer;
+  if (spi_device_transmit(_dmaDevice, &transaction) != ESP_OK) {
+    Serial.printf("[EPD] SPI DMA transfer failed\n");
+  }
+  _dmaUsed = 0;
+}
+
+void EpdBus::appendDma(const uint8_t* data, size_t length) {
+  while (length) {
+    const size_t count = std::min(length, DMA_BYTES - _dmaUsed);
+    memcpy(_dmaBuffer + _dmaUsed, data, count);
+    _dmaUsed += count;
+    data += count;
+    length -= count;
+    if (_dmaUsed == DMA_BYTES) flushDma();
+  }
+}
+#endif
 
 void EpdBus::reset(uint16_t extraSettleMs) {
   NoLightSleepLockGuard noLightSleepLock(*this);
@@ -258,7 +380,7 @@ void EpdBus::data(const uint8_t* d, uint16_t len) {
   auto txn = transaction();
   digitalWrite(_pins.dc, HIGH);
   digitalWrite(_pins.cs, LOW);
-  SPI.writeBytes(d, len);
+  txn.writeBytes(d, len);
 }
 
 void EpdBus::cmdData(uint8_t c, const uint8_t* d, uint16_t len) {
@@ -268,7 +390,7 @@ void EpdBus::cmdData(uint8_t c, const uint8_t* d, uint16_t len) {
   txn.transfer(c);
   if (len > 0 && d != nullptr) {
     digitalWrite(_pins.dc, HIGH);
-    SPI.writeBytes(d, len);
+    txn.writeBytes(d, len);
   }
 }
 
@@ -475,15 +597,14 @@ void EpdBus::waitRefreshComplete(const char* tag) {
 }
 
 void EpdBus::sendPlaneFlipped(uint8_t ramCmd, const uint8_t* plane, uint16_t height, uint16_t widthBytes) {
-  cmd(ramCmd);  // own CS pulse
+  cmd(ramCmd);            // own CS pulse
   auto txn = beginTxn();  // single CS-low burst for the whole plane
   for (int y = static_cast<int>(height) - 1; y >= 0; y--) {
     txn.writeBytes(plane + static_cast<uint32_t>(y) * widthBytes, widthBytes);
   }
 }
 
-void EpdBus::sendPlaneFlippedInverted(uint8_t ramCmd, const uint8_t* plane, uint16_t height,
-                                      uint16_t widthBytes) {
+void EpdBus::sendPlaneFlippedInverted(uint8_t ramCmd, const uint8_t* plane, uint16_t height, uint16_t widthBytes) {
   // Streams ~plane[i] row-reversed without a host-side copy of the inverted
   // frame (the C3 boards have no RAM to spare for one). Same single CS-low
   // burst contract as sendPlaneFlipped().

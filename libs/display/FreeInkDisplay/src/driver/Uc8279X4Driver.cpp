@@ -1,6 +1,4 @@
 #include "Uc8279X4Driver.h"
-#include "../lut/X4ProTextAaLuts.h"
-#include "../lut/X4ProImageLuts.h"
 
 #include <Arduino.h>
 #include <BoardConfig.h>
@@ -8,6 +6,8 @@
 #include <string.h>
 
 #include "../lut/Uc8279X3Luts.h"
+#include "../lut/X4ProImageLuts.h"
+#include "../lut/X4ProTextAaLuts.h"
 
 // Orientation of the visible-row stream, switchable per build for field A/B.
 // Defaults (0/0) = the stock convention, HARDWARE-CONFIRMED upright on a field
@@ -340,20 +340,30 @@ void Uc8279X4Driver::streamPlane(EpdBus& bus, uint8_t ramCmd, const uint8_t* fb,
   // + reversed bits) exist for future panel sub-variants whose scan differs.
   // AA planes are sent bitwise-inverted per the vendor reference.
   static const uint8_t kBitRev[16] = {0x0, 0x8, 0x4, 0xC, 0x2, 0xA, 0x6, 0xE, 0x1, 0x9, 0x5, 0xD, 0x3, 0xB, 0x7, 0xF};
-  for (uint16_t n = 0; n < _h; n++) {
-    const uint16_t y = FREEINK_UC8279X4_ROWREV ? static_cast<uint16_t>(_h - 1 - n) : n;
-    const uint8_t* src = fb + static_cast<uint32_t>(y) * _wb;
-    for (uint16_t i = 0; i < wb; i++) {
-      uint8_t b;
-      if (FREEINK_UC8279X4_XMIRROR) {
-        const uint8_t m = src[wb - 1 - i];
-        b = static_cast<uint8_t>((kBitRev[m & 0x0F] << 4) | kBitRev[m >> 4]);
-      } else {
-        b = src[i];
-      }
-      row[i] = invert ? static_cast<uint8_t>(~b) : b;
+  if (!invert && !FREEINK_UC8279X4_ROWREV && !FREEINK_UC8279X4_XMIRROR && wb == _wb) {
+    // No transform: preserve the padded gates but send visible bytes in large bursts.
+    size_t offset = 0;
+    while (offset < _bufferSize) {
+      const uint16_t count = static_cast<uint16_t>(std::min<size_t>(_bufferSize - offset, UINT16_MAX));
+      txn.writeBytes(fb + offset, count);
+      offset += count;
     }
-    txn.writeBytes(row, wb);
+  } else {
+    for (uint16_t n = 0; n < _h; n++) {
+      const uint16_t y = FREEINK_UC8279X4_ROWREV ? static_cast<uint16_t>(_h - 1 - n) : n;
+      const uint8_t* src = fb + static_cast<uint32_t>(y) * _wb;
+      for (uint16_t i = 0; i < wb; i++) {
+        uint8_t b;
+        if (FREEINK_UC8279X4_XMIRROR) {
+          const uint8_t m = src[wb - 1 - i];
+          b = static_cast<uint8_t>((kBitRev[m & 0x0F] << 4) | kBitRev[m >> 4]);
+        } else {
+          b = src[i];
+        }
+        row[i] = invert ? static_cast<uint8_t>(~b) : b;
+      }
+      txn.writeBytes(row, wb);
+    }
   }
   // Gates after the visible window: white, up to the addressed gate count.
   memset(row, 0xFF, wb);
@@ -643,7 +653,10 @@ void Uc8279X4Driver::beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMod
 }
 
 void Uc8279X4Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
-  if (_textAa.active()) { _textAa.stage(0, lsb, 0, _h); return; }
+  if (_textAa.active()) {
+    _textAa.stage(0, lsb, 0, _h);
+    return;
+  }
   if (!lsb) return;
   if (_absoluteInput) {
     bus.waitBusy(" absolute plane");
@@ -672,7 +685,10 @@ void Uc8279X4Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
 #endif
 
 void Uc8279X4Driver::copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
-  if (_textAa.active()) { _textAa.stage(1, msb, 0, _h); return; }
+  if (_textAa.active()) {
+    _textAa.stage(1, msb, 0, _h);
+    return;
+  }
   if (!msb) return;
   if (_absoluteInput) {
     bus.waitBusy(" absolute plane");
@@ -699,19 +715,25 @@ void Uc8279X4Driver::copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
   }
 }
 
-void Uc8279X4Driver::writeGrayscalePlaneStrip(EpdBus& bus, GrayPlane plane, const uint8_t* rows,
-                                                   uint16_t yStart, uint16_t numRows) {
+void Uc8279X4Driver::writeGrayscalePlaneStrip(EpdBus& bus, GrayPlane plane, const uint8_t* rows, uint16_t yStart,
+                                              uint16_t numRows) {
   _textAa.stage(plane == GrayPlane::Msb, rows, yStart, numRows);
   if (!_textAa.active() && _textAa.planeComplete(plane == GrayPlane::Msb)) {
-    if (plane == GrayPlane::Lsb) copyGrayscaleLsb(bus, _textAa.low());
-    else copyGrayscaleMsb(bus, _textAa.high());
+    if (plane == GrayPlane::Lsb)
+      copyGrayscaleLsb(bus, _textAa.low());
+    else
+      copyGrayscaleMsb(bus, _textAa.high());
   }
 }
 
 void Uc8279X4Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut,
                                  bool factoryMode) {
   if (_textAa.active()) {
-    if (!_textAa.compose()) { _textAa.invalidate(); _needFullClear = true; return; }
+    if (!_textAa.compose()) {
+      _textAa.invalidate();
+      _needFullClear = true;
+      return;
+    }
     bus.waitBusy("8279 text ready");
     const uint8_t variant = BoardConfig::ACTIVE.displayControllerVariant;
     if (variant == 2 || variant == 3) {
@@ -750,7 +772,11 @@ void Uc8279X4Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, c
     bus.data(_cfg.psr1);
     bus.cmd(CMD_DISPLAY_REFRESH);
     bus.waitRefreshComplete("UC8279 one-pass text AA");
-    if (bus.isBusy()) { _textAa.invalidate(); _needFullClear = true; return; }
+    if (bus.isBusy()) {
+      _textAa.invalidate();
+      _needFullClear = true;
+      return;
+    }
     _grayRefreshedOnce = true;
     _textAa.finish(15, -2, -2, -20);
     bus.cmd(CMD_PLL);

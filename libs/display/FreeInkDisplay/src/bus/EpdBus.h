@@ -9,7 +9,14 @@
 
 #include <Arduino.h>
 #include <SPI.h>
+
 #include <utility>
+#if defined(ARDUINO) && defined(BOARD_HAS_PSRAM) && defined(CONFIG_IDF_TARGET_ESP32S3)
+#define FREEINK_EPD_DMA 1
+#include <driver/spi_master.h>
+#else
+#define FREEINK_EPD_DMA 0
+#endif
 #if defined(ARDUINO) && defined(CONFIG_PM_ENABLE) && CONFIG_PM_ENABLE
 #include <esp_pm.h>
 #endif
@@ -49,7 +56,7 @@ class EpdBus {
   // Use around non-SPI panel control sequences that must not be paused by light sleep.
   esp_pm_lock_handle_t _noLightSleepLock = nullptr;
 
-  template <esp_pm_lock_handle_t EpdBus::*Lock>
+  template <esp_pm_lock_handle_t EpdBus::* Lock>
   class PmLockGuard {
    public:
     PmLockGuard() = default;
@@ -139,7 +146,10 @@ class EpdBus {
 
   // coCs: a co-resident chip-select (e.g. the SD card sharing the SPI bus on
   // M5 PaperColor) that must be held de-asserted during panel transactions.
+  EpdBus() = default;
   ~EpdBus();
+  EpdBus(const EpdBus&) = delete;
+  EpdBus& operator=(const EpdBus&) = delete;
   void begin(const EpdPins& pins, uint32_t spiHz, BusyPolarity busy, int8_t spiMiso = -1, int8_t coCs = -1);
 
   // Hardware reset pulse; extraSettleMs adds a post-reset settle (X3 needs 50 ms).
@@ -229,6 +239,18 @@ class EpdBus {
 
   void createPmLocks();
   [[nodiscard]] Transaction transaction();
+
+#if FREEINK_EPD_DMA
+  // Internal DMA staging is bus-owned. Caller buffers may reside in PSRAM or on stack.
+  static constexpr size_t DMA_BYTES = 4096;
+  spi_device_handle_t _dmaDevice = nullptr;
+  uint8_t* _dmaBuffer = nullptr;
+  size_t _dmaUsed = 0;
+  void beginDma(int8_t spiMiso);
+  void endDma();
+  void flushDma();
+  void appendDma(const uint8_t* data, size_t length);
+#endif
 
   EpdPins _pins{-1, -1, -1, -1, -1, -1};
   SPISettings _spi;

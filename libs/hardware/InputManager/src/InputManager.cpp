@@ -2351,6 +2351,31 @@ void InputManager::beginTma525c() {
   }
   touchDataEnabled = (mode == PICCO_MODE_APP);
   if (touchDataEnabled) {
+    // Explicitly leave HID sleep mode even when the controller already runs its app.
+    // Reuse the report buffer: touch/command reports may precede the power reply.
+    static constexpr uint8_t wakeCommand[] = {0x05, 0x00, 0x00, 0x08};
+    Wire.beginTransmission(t.i2cAddress);
+    Wire.write(wakeCommand, sizeof(wakeCommand));
+    const auto wakeStatus = Wire.endTransmission();
+    bool wakeAcknowledged = false;
+    const unsigned long wakeStartedAt = millis();
+    while (wakeStatus == 0 && millis() - wakeStartedAt < 500) {
+      const unsigned long elapsed = millis() - wakeStartedAt;
+      if (elapsed >= 500 || !piccoWaitInt(t.irq, 500 - elapsed)) break;
+      const uint16_t len = piccoReadReport(t.i2cAddress, buf, sizeof(buf));
+      if (len >= 5 && buf[2] == 0xF0 && (buf[3] & 0x03) == 0 && (buf[4] & 0x0F) == 0x08) {
+        wakeAcknowledged = true;
+        break;
+      }
+      delay(1);  // A stuck-low IRQ must not spin while waiting for the reply.
+    }
+    if (wakeStatus != 0)
+      LOG_ERR("INPUT", "Picco touch power-on write failed: %u", wakeStatus);
+    else if (!wakeAcknowledged)
+      LOG_ERR("INPUT", "Picco touch power-on acknowledgment missing; continuing touch probe");
+    else
+      LOG_INF("INPUT", "Picco touch power-on acknowledged");
+
     // PIP GET_SYSINFO (as documented by Linux cyttsp5): sensing data starts at
     // byte 33; byte 50 is max_num_of_tch_per_refresh_cycle. Query the panel's
     // configuration rather than assuming the controller family's finger limit.

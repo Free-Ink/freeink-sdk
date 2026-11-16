@@ -80,10 +80,12 @@ constexpr uint8_t A4_UC8279C_GRAY3_TRANSITION_LUT[5][A4_UC8279C_GRAY3_RECORD_LEN
 constexpr uint8_t A4_UC8279C_GRAY3_NO_WHITE_CLEAR = 0x90;
 constexpr uint8_t A4_UC8279C_GRAY3_NO_BLACK_DRIVE = 0x4e;
 constexpr uint8_t A4_UC8279C_GRAY3_NO_BLACK_GRAY = 0x09;
-// Not from stock: the second refresh that makes dark gray. Dark pixels get
-// this many black frames on top of the gray drive in record 0x23 above; the
-// refresh then holds for the settle frames. Raise the extra frames for a
-// darker dark gray.
+// Not from stock: two gray levels. Light gray drives black for the light
+// frames in place of the 5 in record 0x23 above (the record's hold phase takes
+// up the difference); dark gray gets the extra frames on top, in the same
+// refresh after a B/W base and in a short second refresh otherwise, which then
+// holds for the settle frames. More frames are darker.
+constexpr uint8_t A4_UC8279C_GRAY3_LIGHT_FRAMES = 3;
 constexpr uint8_t A4_UC8279C_GRAY3_DARK_EXTRA_FRAMES = 2;
 constexpr uint8_t A4_UC8279C_GRAY3_DARK_SETTLE_FRAMES = 4;
 

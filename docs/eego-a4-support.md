@@ -62,16 +62,20 @@ Anti-aliased (overlay) pages use stock V1.0.3's reader "Gray3" path. The B/W
 base is stashed undisplayed; with its gray masks it becomes one frame, sent
 as a per-pixel transition from the previous Gray3 frame: unchanged white and
 gray pixels hold, black is re-driven, and only changed pixels are cleared or
-nudged. Stock's waveform has one gray level. A short second refresh, not from
-stock, gives the dark-gray pixels a few more black frames
-(`A4_UC8279C_GRAY3_DARK_EXTRA_FRAMES`), so a page has white, light, dark and
-black. A gray pixel that was darker before (black, or dark turning light) is
+nudged. Stock's waveform has one gray level, 5 black frames from white. Here
+light gray drives `A4_UC8279C_GRAY3_LIGHT_FRAMES` instead, and a short second
+refresh, not from stock, gives the dark-gray pixels
+`A4_UC8279C_GRAY3_DARK_EXTRA_FRAMES` more, so a page has white, light, dark
+and black. A gray pixel that was darker before (black, or dark turning light) is
 cleared in the first refresh and driven from white in the second. A
 cleanup request (non-FAST base) shows the page with black and white swapped,
 then the page itself. After a B/W screen or four-gray image there is no
 Gray3 history: the next page shows its base with a normal B/W refresh, which
-fully clears the previous screen, and its grays follow as a Gray3 transition
-from that base.
+fully clears the previous screen. That base goes out with its gray pixels
+white, so both grays are then driven from white in a single refresh (black,
+just driven by the base, holds, and its code selects a dark-from-white record
+instead). A base the caller already displayed with gray pixels black is shown
+once more with them white first.
 
 Full images (absolute/direct planes) follow the stock V1.0.3 lockscreen
 sequence. First a pre-clear in the B/W session: black to DTM2, no DTM1 write,

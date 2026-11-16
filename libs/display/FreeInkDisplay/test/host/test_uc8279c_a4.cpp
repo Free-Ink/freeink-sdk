@@ -132,19 +132,16 @@ int main() {
   };
   {
     // First Gray3 page after a B/W screen: the base goes out as a normal B/W
-    // refresh (clearing the previous screen), then a Gray3 transition from it
-    // re-drives black and clears the base-black gray pixels, which the second
-    // refresh drives from white to light and dark.
+    // refresh with its gray pixels white (clearing the previous screen), then
+    // one Gray3 refresh drives light and dark from white; black holds.
     driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, false);
     const auto before = bus.refreshes;
     gray3Page(page.data(), RefreshMode::Fast);
-    assert(bus.refreshes == before + 3 && "entry must be a B/W base refresh, a Gray3 transition and the dark refresh");
+    assert(bus.refreshes == before + 2 && "entry must be a B/W base refresh and one Gray3 refresh");
     assert(bus.interval == 0x00 && bus.lutBytes == 49);
-    assert(bus.oldAtPrevRefresh[physical0] == 0b01110000 && bus.newAtPrevRefresh[physical0] == 0b00110000 &&
-           "from the B/W base: black re-driven (10), base-black gray cleared (11), white holds");
-    assert(bus.oldAtRefresh[physical0] == 0b00100000 && bus.newAtRefresh[physical0] == 0b00110000 &&
-           "second refresh: dark from white (11), light from white (01)");
-    assert(bus.lut20s.back()[1] == 5 + 2 + 4 && "dark refresh: gray + extra + settle frames");
+    assert(bus.newAtPrevRefresh[physical0] == 0b10111111 && "the base goes out with its gray pixels white");
+    assert(bus.oldAtRefresh[physical0] == 0b00100000 && bus.newAtRefresh[physical0] == 0b00010000 &&
+           "from the B/W base: dark (10) and light (01) from white; white and black hold");
     assert(bus.oldAtRefresh[physical0 + 1] == 0x00 && bus.newAtRefresh[physical0 + 1] == 0x00);
     assert(bus.oldPlane.size() == 600 * 96 && bus.oldPlane[552 * 96] == 0x00 && "padding rows hold");
   }
@@ -176,6 +173,7 @@ int main() {
     assert(bus.refreshes == before + 2);
     assert(bus.oldAtPrevRefresh[physical0] == 0x00 && bus.newAtPrevRefresh[physical0] == 0x00);
     assert(bus.oldAtRefresh[physical0] == 0b10000000 && bus.newAtRefresh[physical0] == 0x00);
+    assert(bus.lut20s.back()[1] == 3 + 2 + 4 && "dark refresh: light + extra + settle frames");
     // Dark -> light is cleared (11), then driven from white (01).
     lsbMask[0] = 0;
     before = bus.refreshes;
@@ -209,8 +207,9 @@ int main() {
     driver.copyGrayscaleMsb(bus, msbMask.data());
     const auto before = bus.refreshes;
     driver.displayGray(bus, page.data(), false, nullptr, false);
-    assert(bus.refreshes == before + 2 && bus.interval == 0x00 && bus.oldAtPrevRefresh[physical0] == 0b01110000 &&
-           bus.newAtPrevRefresh[physical0] == 0b00110000 && "unannounced overlay must transition from the shown base");
+    assert(bus.refreshes == before + 2 && bus.interval == 0x00 && bus.newAtPrevRefresh[physical0] == 0b10111111 &&
+           bus.oldAtRefresh[physical0] == 0b00100000 && bus.newAtRefresh[physical0] == 0b00010000 &&
+           "unannounced overlay: the shown base is repainted with its grays white, then one Gray3 refresh");
   }
 
   {

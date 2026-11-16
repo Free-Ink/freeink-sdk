@@ -58,10 +58,10 @@ class Uc8279cA4Driver : public PanelDriver {
     bool whiteClear = false;
     bool second = false;  // some pixel needs the second refresh
   };
-  Gray3Codes gray3Codes(size_t i, bool inverted) const;
-  void showGray3(EpdBus& bus, bool inverted);
-  void writeGray3Codes(EpdBus& bus, bool dtm1, bool second, bool inverted, Gray3Use& use);
-  void loadGray3Lut(EpdBus& bus, bool anyBlack, bool anyWhiteClear);
+  Gray3Codes gray3Codes(size_t i, bool inverted, bool fromBase) const;
+  void showGray3(EpdBus& bus, bool inverted, bool fromBase);
+  void writeGray3Codes(EpdBus& bus, bool dtm1, bool second, bool inverted, bool fromBase, Gray3Use& use);
+  void loadGray3Lut(EpdBus& bus, bool anyBlack, bool anyWhiteClear, bool darkFromWhite);
   void loadGray3DarkLut(EpdBus& bus);
   void fillControllerRam(EpdBus& bus, uint8_t command, uint8_t fill);
   void refresh(EpdBus& bus, const uint8_t* bwBaseline = nullptr);

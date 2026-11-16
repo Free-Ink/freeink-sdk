@@ -71,8 +71,8 @@ static void compare(const freeink::X4ProTextAa& aa, const Reference& ref) {
 
 static void testHistory() {
   freeink::X4ProTextAa aa;
-  aa.allocate(true);
-  Reference ref(freeink::X4ProTextAa::SIZE);
+  aa.allocate(true, 100, 480);
+  Reference ref(aa._size);
   std::mt19937 random(12345);
   const std::array<int, 4> doses[] = {{{24, 15, -1, -24}}, {{20, 2, 2, -15}}, {{-127, 127, -1, 0}}};
   for (int page = 0; page < 400; ++page) {

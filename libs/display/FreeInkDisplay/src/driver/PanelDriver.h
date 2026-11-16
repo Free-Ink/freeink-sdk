@@ -223,9 +223,9 @@ class PanelDriver {
   // The hook must not touch the bus or the display, and must not write the
   // display's frame buffer: it draws only into buffers of its own. It runs
   // inside the display call, so with FreeInkDisplay's power-management lock
-  // held and with whatever the host holds around its display calls (in
-  // CrossPoint, the render lock); a hook that takes one of those, or waits on
-  // something that does, deadlocks. Default: ignored, the hook never runs.
+  // held and with whatever locks the host holds around its display calls; a
+  // hook that takes one of those, or waits on something that does, deadlocks.
+  // Default: ignored, the hook never runs.
   virtual void setRefreshIdleHook(void (*hook)(void* ctx), void* ctx) {
     (void)hook;
     (void)ctx;

@@ -140,8 +140,10 @@ void coverGrid(Frame<MaxInteractions>& frame, Rect rect, const CoverGridProps& p
     }
     const int16_t thumbH = static_cast<int16_t>(thumbHeight);
     const int32_t scrollRange = props.count - cellsVisible;
+    // Page-aligned tops exceed scrollRange when the last page is partial.
+    const int32_t thumbTop = props.topIndex < scrollRange ? props.topIndex : scrollRange;
     const int16_t thumbY = static_cast<int16_t>(
-        track.y + (scrollRange > 0 ? (static_cast<int32_t>(track.height - thumbH) * props.topIndex) / scrollRange
+        track.y + (scrollRange > 0 ? (static_cast<int32_t>(track.height - thumbH) * thumbTop) / scrollRange
                                    : 0));
     frame.target().fill(Rect{static_cast<int16_t>(track.x - props.scrollIndicatorWidth), thumbY,
                              props.scrollIndicatorWidth, thumbH},

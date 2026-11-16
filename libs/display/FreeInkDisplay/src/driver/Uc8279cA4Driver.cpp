@@ -219,6 +219,7 @@ void Uc8279cA4Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* pre
                               const bool turnOff) {
   (void)prev;
   (void)turnOff;  // the panel stays powered after refresh(), as on stock
+  _overlayPass = true;  // a B/W paint ends an announced absolute pass
   displayBw(bus, fb, mode);
   // A B/W refresh never runs the idle hook; it must not outlive this call.
   clearIdleHook();

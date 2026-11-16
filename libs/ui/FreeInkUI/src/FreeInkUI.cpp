@@ -1168,6 +1168,11 @@ const char* keyboardAltOutputFor(const KeyboardLayout& layout, int16_t value) {
       // Cyrillic: А-Я is U+0410..U+042F and а-я is U+0430..U+044F, the same
       // 0x20 offset as ASCII. Ё/ё sit outside that block at U+0401/U+0451.
       int32_t cp = -1;
+      // Latin layouts reuse this id range for localized letters (QwertzDe's
+      // ü is 1101 == U+044D), so only flip when the id is the key's own
+      // code point.
+      const auto* out = reinterpret_cast<const unsigned char*>(key.output);
+      if (!out || (out[0] & 0xE0) != 0xC0 || (((out[0] & 0x1F) << 6) | (out[1] & 0x3F)) != value) return nullptr;
       if (value >= 0x0410 && value <= 0x042F) cp = value + 0x20;
       if (value >= 0x0430 && value <= 0x044F) cp = value - 0x20;
       if (value == 0x0401) cp = 0x0451;

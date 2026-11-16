@@ -331,8 +331,7 @@ std::vector<String> SDCardManager::listFiles(const char* path, const int maxFile
       f.close();
       continue;
     }
-    f.getName(name, sizeof(name));
-    ret.emplace_back(name);
+    if (f.getName(name, sizeof(name))) ret.emplace_back(name);  // 0 = name longer than the buffer
     f.close();
     count++;
   }
@@ -599,7 +598,9 @@ bool SDCardManager::removeDir(const char* path) {
     if (!filePath.endsWith("/")) {
       filePath += "/";
     }
-    file.getName(name, sizeof(name));
+    // SdFat yields "" for a name longer than the buffer; recursing on "dir/"
+    // would reopen this directory forever.
+    if (file.getName(name, sizeof(name)) == 0) return false;
     filePath += name;
 
     if (file.isDirectory()) {

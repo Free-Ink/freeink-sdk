@@ -2017,7 +2017,7 @@ void testListValueIconSlot() {
 
   ListItem item{};
   item.label = "A long book title that would otherwise use the whole row width";
-  item.valueIcon = mark;
+  item.valueIcon = &mark;
 
   ListProps props;
   props.items = &item;

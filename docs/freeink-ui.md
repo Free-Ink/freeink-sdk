@@ -1435,9 +1435,10 @@ component set:
 
 ## Recent additions
 
-- **`ListItem::valueIcon`** — a `BitmapRef` status mark in the value slot,
-  drawn in the row's foreground ink so it inverts when selected. Used only
-  when neither `toggle` nor `value` is set; on the left in RTL lists.
+- **`ListItem::valueIcon`** — a pointer to a `BitmapRef` status mark in the
+  value slot, drawn in the row's foreground ink so it inverts when selected.
+  Used only when neither `toggle` nor `value` is set; on the left in RTL lists.
+  The bitmap must outlive the `list()` call.
 - **`flatButtonStyles(radius)`** — the borderless sibling of
   `outlinedButtonStyles`: nothing drawn at rest, a light fill for
   selected/pressed feedback. Assign once (`theme.button =

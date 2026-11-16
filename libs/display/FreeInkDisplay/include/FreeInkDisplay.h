@@ -139,6 +139,11 @@ class FreeInkDisplay {
   void copyGrayscaleMsbBuffers(const uint8_t* msbBuffer);
   enum GrayPlane { GRAY_PLANE_LSB, GRAY_PLANE_MSB };
   void writeGrayscalePlaneStrip(GrayPlane plane, const uint8_t* rows, uint16_t yStart, uint16_t numRows);
+  // Stream a full grayscale plane (`H * widthBytes` bytes) in bottom-up gate order
+  // (gate 0 = logical row H - 1) inside one CS-low SPI burst without PTIN/PTL/PTOUT.
+  // Returns false without advancing row state when unsupported, or aborts if truncated.
+  bool writeGrayscalePlaneGateStream(GrayPlane plane, void* ctx,
+                                     size_t (*nextChunk)(void* ctx, const uint8_t** outChunk));
   // Current mode availability, including output inversion and base readiness.
   // A query does not alter the pending refresh or the plane encoding.
   GrayscaleCapabilities grayscaleCapabilities(GrayscaleMode mode = GrayscaleMode::Overlay) const;
@@ -153,6 +158,21 @@ class FreeInkDisplay {
   // grayscale. Available in both buffer modes (CrossPoint's dual-buffer HAL
   // wraps it directly).
   void cleanupGrayscaleBuffers(const uint8_t* bwBuffer);
+  // Two-pass 16-gray refresh and differential DTM1 cleanup (UC8253 X3).
+  // `*Async` variants return true while DRF runs; drain via waitRefreshComplete()
+  // or the next display/upload call. Pass nullptr to beginGray16Cleanup() when
+  // streaming both DTM2 and DTM1 directly before finishGray16Cleanup().
+  bool supportsGray16() const;
+  bool supportsDeferredGray16Base() const;
+  void displayGray16Base(RefreshMode fallback = FAST_REFRESH, bool turnOffScreen = false);
+  bool displayGray16BaseAsync(RefreshMode fallback = FAST_REFRESH);
+  void displayGray16Pass1();
+  bool displayGray16Pass1Async();
+  void displayGray16Pass2(bool turnOffScreen = false);
+  bool displayGray16Pass2Async(bool turnOffScreen = false);
+  void beginGray16Cleanup(const uint8_t* bwBuffer);
+  void finishGray16Cleanup();
+  bool isGray16CleanupActive() const;
 #ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
   // Restore controller RAM and frameBuffer to the BW baseline after grayscale.
   // frameBufferActive is the only valid source: the caller is always inside a
@@ -197,10 +217,14 @@ class FreeInkDisplay {
   // can skip overlap scaffolding (e.g. whole-plane grayscale buffers) when
   // there is nothing to overlap.
   bool supportsAsyncRefresh() const;
-  // End-of-frame idle power policy, currently Picco only. Call under the same
-  // bus/render lock as drawing, after ALL grayscale uploads and cleanup.
-  // Completes pending refreshes, then powers down analog circuitry, not RAM.
+  // End-of-frame idle power-down. Call under the same bus/render lock as
+  // drawing, after all grayscale uploads and cleanup. Completes pending
+  // refreshes, then powers down analog circuitry while retaining controller RAM.
   void powerOffBetweenFrames();
+  // Non-blocking HV rail pre-warm before page render while idle-powered-off.
+  bool prewarmPowerOn();
+  // Post-settle idle HV rail auto-power-off check; non-blocking when a refresh is pending.
+  bool serviceIdlePower();
   // True when the selected driver can use an ordinary deferred B/W refresh as
   // the base for a following grayscale pass.
   bool supportsAsyncGrayscaleBase() const;

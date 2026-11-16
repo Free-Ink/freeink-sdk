@@ -257,13 +257,16 @@ uint8_t* Uc8279cA4Driver::allocateGrayBuffer() {
 
 void Uc8279cA4Driver::beginGrayscale(EpdBus& bus, const uint8_t* fb, const GrayscaleMode mode,
                                      const RefreshMode fallback, const bool turnOff) {
-  (void)bus;
-  (void)turnOff;
   _overlayPass = mode == GrayscaleMode::Overlay;
   if (!_overlayPass) return;  // absolute planes carry every pixel: no base pass
   // Gray3 sends the base with its grays in one refresh: stash it undisplayed.
+  if (!fb) return;
   if (!_grayBase) _grayBase = allocateGrayBuffer();
-  if (!_grayBase || !fb) return;
+  if (!_grayBase) {
+    // No stash buffer: show the B/W frame now so the page still reaches the panel.
+    display(bus, fb, nullptr, fallback, turnOff);
+    return;
+  }
   memcpy(_grayBase, fb, static_cast<size_t>(_widthBytes) * _height);
   _basePending = true;
   _cleanupPage = fallback != RefreshMode::Fast;

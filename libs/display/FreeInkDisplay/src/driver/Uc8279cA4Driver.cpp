@@ -277,9 +277,9 @@ void Uc8279cA4Driver::displayBw(EpdBus& bus, const uint8_t* fb, const RefreshMod
 
 uint8_t* Uc8279cA4Driver::allocateGrayBuffer() {
   const size_t bytes = static_cast<size_t>(_widthBytes) * _height;
-  uint8_t* result = static_cast<uint8_t*>(heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-  if (!result) result = static_cast<uint8_t*>(malloc(bytes));
-  return result;
+  // PSRAM only: a panel-sized buffer that does not fit there would not fit in
+  // the internal heap either, and should not be taken from it.
+  return static_cast<uint8_t*>(heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
 }
 
 void Uc8279cA4Driver::beginGrayscale(EpdBus& bus, const uint8_t* fb, const GrayscaleMode mode,
@@ -327,7 +327,9 @@ bool Uc8279cA4Driver::allocateGray3() {
   if (!_gray3White) _gray3White = allocateGrayBuffer();
   if (!_gray3Middle) _gray3Middle = allocateGrayBuffer();
   if (!_gray3Dark) _gray3Dark = allocateGrayBuffer();
-  return _gray3White && _gray3Middle && _gray3Dark;
+  for (auto& codes : _gray3Code)
+    if (!codes) codes = allocateGrayBuffer();
+  return _gray3White && _gray3Middle && _gray3Dark && _gray3Code[0] && _gray3Code[1] && _gray3Code[2];
 }
 
 // Gray3 page: _grayBase (white / black) with the overlay masks on top
@@ -342,42 +344,79 @@ bool Uc8279cA4Driver::allocateGray3() {
 // Right after the B/W base (fromBase) black was just driven and every gray
 // pixel is white, so one refresh is enough: black holds and code 10 selects a
 // dark-from-white record instead (see loadGray3Lut).
-Uc8279cA4Driver::Gray3Codes Uc8279cA4Driver::gray3Codes(const size_t i, const bool inverted,
-                                                        const bool fromBase) const {
-  const uint8_t gray = _grayMsb[i];
-  const auto dark = static_cast<uint8_t>(_grayLsb[i] & gray);
-  if (fromBase) return {dark, static_cast<uint8_t>(gray & ~dark), 0, 0};
-  const auto white = static_cast<uint8_t>(inverted ? ~(_grayBase[i] | gray) : _grayBase[i] & ~gray);
-  const auto black = static_cast<uint8_t>(~(white | gray));
-  const auto wasBlack = static_cast<uint8_t>(~(_gray3White[i] | _gray3Middle[i]));
-  const auto regray = static_cast<uint8_t>(gray & (wasBlack | (_gray3Dark[i] & ~dark)));
-  const auto whiteClear = static_cast<uint8_t>((white & ~_gray3White[i]) | regray);
-  const auto nudge = static_cast<uint8_t>(gray & ~_gray3Middle[i] & ~regray);
-  const auto darker = static_cast<uint8_t>(dark & ~_gray3Dark[i] & ~regray);
-  // First: 10 black, 01 gray, 11 white-clear, 00 hold. Second: 10 darker,
-  // 01 light from white, 11 dark from white, 00 hold. DTM1 = bit 1.
-  return {static_cast<uint8_t>(whiteClear | black), static_cast<uint8_t>(whiteClear | nudge),
-          static_cast<uint8_t>(darker | (regray & dark)), regray};
+// The codes of one page are worked out once, a row at a time on the stack:
+// the first plane goes straight to the bus and the other three wait in
+// _gray3Code[] in wire order, so sending them is a plain copy. The same pass
+// records the page as the new Gray3 history.
+void Uc8279cA4Driver::writeGray3Page(EpdBus& bus, const bool inverted, const bool fromBase, Gray3Use& use) {
+  constexpr uint16_t MAX_ROW = 96;
+  const uint16_t w = _widthBytes < MAX_ROW ? _widthBytes : MAX_ROW;
+  uint8_t base[MAX_ROW], gray[MAX_ROW], dark[MAX_ROW], wasWhite[MAX_ROW], wasGray[MAX_ROW], wasDark[MAX_ROW];
+  uint8_t hi[MAX_ROW], lo[MAX_ROW], hi2[MAX_ROW], lo2[MAX_ROW];
+  uint8_t anyBlack = 0, anyWhiteClear = 0, anySecond = 0;
+  bus.cmd(CMD_DTM1);
+  auto txn = bus.beginTxn();
+  size_t out = 0;
+  for (int y = static_cast<int>(_height) - 1; y >= 0; --y, out += _widthBytes) {
+    const size_t row = static_cast<size_t>(y) * _widthBytes;
+    memcpy(base, _grayBase + row, w);
+    memcpy(gray, _grayMsb + row, w);
+    memcpy(dark, _grayLsb + row, w);
+    memcpy(wasWhite, _gray3White + row, w);
+    memcpy(wasGray, _gray3Middle + row, w);
+    memcpy(wasDark, _gray3Dark + row, w);
+    for (uint16_t xb = 0; xb < w; ++xb) {
+      const uint8_t g = gray[xb];
+      const auto d = static_cast<uint8_t>(dark[xb] & g);
+      const auto white = static_cast<uint8_t>(inverted ? ~(base[xb] | g) : base[xb] & ~g);
+      if (fromBase) {
+        hi[xb] = d;
+        lo[xb] = static_cast<uint8_t>(g & ~d);
+        hi2[xb] = lo2[xb] = 0;
+      } else {
+        const auto black = static_cast<uint8_t>(~(white | g));
+        const auto wasBlack = static_cast<uint8_t>(~(wasWhite[xb] | wasGray[xb]));
+        const auto regray = static_cast<uint8_t>(g & (wasBlack | (wasDark[xb] & ~d)));
+        const auto whiteClear = static_cast<uint8_t>((white & ~wasWhite[xb]) | regray);
+        const auto nudge = static_cast<uint8_t>(g & ~wasGray[xb] & ~regray);
+        const auto darker = static_cast<uint8_t>(d & ~wasDark[xb] & ~regray);
+        // First: 10 black, 01 gray, 11 white-clear, 00 hold. Second: 10 darker,
+        // 01 light from white, 11 dark from white, 00 hold. DTM1 = bit 1.
+        hi[xb] = static_cast<uint8_t>(whiteClear | black);
+        lo[xb] = static_cast<uint8_t>(whiteClear | nudge);
+        hi2[xb] = static_cast<uint8_t>(darker | (regray & d));
+        lo2[xb] = regray;
+        anyBlack |= static_cast<uint8_t>(hi[xb] & ~lo[xb]);
+      }
+      anyWhiteClear |= static_cast<uint8_t>(hi[xb] & lo[xb]);
+      anySecond |= static_cast<uint8_t>(hi2[xb] | lo2[xb]);
+      wasWhite[xb] = white;
+      dark[xb] = d;
+    }
+    txn.writeBytes(hi, w);
+    memcpy(_gray3Code[0] + out, lo, w);
+    memcpy(_gray3Code[1] + out, hi2, w);
+    memcpy(_gray3Code[2] + out, lo2, w);
+    memcpy(_gray3White + row, wasWhite, w);
+    memcpy(_gray3Middle + row, gray, w);
+    memcpy(_gray3Dark + row, dark, w);
+  }
+  memset(hi, 0x00, sizeof(hi));  // padding rows hold
+  for (uint16_t y = 0; y < PADDING_ROWS; ++y) txn.writeBytes(hi, w);
+  use.black = anyBlack != 0;
+  use.whiteClear = anyWhiteClear != 0;
+  use.second = anySecond != 0;
 }
 
-void Uc8279cA4Driver::writeGray3Codes(EpdBus& bus, const bool dtm1, const bool second, const bool inverted,
-                                      const bool fromBase, Gray3Use& use) {
-  uint8_t rowBuf[96];
+void Uc8279cA4Driver::sendGray3Plane(EpdBus& bus, const bool dtm1, const uint8_t* codes) {
+  constexpr size_t CHUNK = 4096;
+  const size_t n = static_cast<size_t>(_widthBytes) * _height;
   bus.cmd(dtm1 ? CMD_DTM1 : CMD_DTM2);
   auto txn = bus.beginTxn();
-  for (int y = static_cast<int>(_height) - 1; y >= 0; --y) {
-    const size_t row = static_cast<size_t>(y) * _widthBytes;
-    for (uint16_t xb = 0; xb < _widthBytes; ++xb) {
-      const Gray3Codes c = gray3Codes(row + xb, inverted, fromBase);
-      if (!fromBase && (c.hi & ~c.lo)) use.black = true;
-      if (c.hi & c.lo) use.whiteClear = true;
-      if (c.hi2 | c.lo2) use.second = true;
-      rowBuf[xb] = second ? (dtm1 ? c.hi2 : c.lo2) : (dtm1 ? c.hi : c.lo);
-    }
-    txn.writeBytes(rowBuf, _widthBytes);
-  }
-  memset(rowBuf, 0x00, sizeof(rowBuf));  // padding rows hold
-  for (uint16_t y = 0; y < PADDING_ROWS; ++y) txn.writeBytes(rowBuf, _widthBytes);
+  for (size_t at = 0; at < n; at += CHUNK)
+    txn.writeBytes(codes + at, static_cast<uint16_t>(n - at < CHUNK ? n - at : CHUNK));
+  uint8_t hold[96] = {};  // padding rows hold
+  for (uint16_t y = 0; y < PADDING_ROWS; ++y) txn.writeBytes(hold, _widthBytes);
 }
 
 // darkFromWhite: record 0x22 becomes a copy of the gray record (0x23) driving
@@ -429,8 +468,8 @@ void Uc8279cA4Driver::showGray3(EpdBus& bus, const bool inverted, const bool fro
     ensurePowerOn(bus);
   }
   Gray3Use use;
-  writeGray3Codes(bus, true, false, inverted, fromBase, use);
-  writeGray3Codes(bus, false, false, inverted, fromBase, use);
+  writeGray3Page(bus, inverted, fromBase, use);
+  sendGray3Plane(bus, false, _gray3Code[0]);
   const uint8_t interval = 0x00;
   bus.cmdData(CMD_VCOM_DATA_INTERVAL, &interval, 1);
   loadGray3Lut(bus, use.black, use.whiteClear, fromBase);
@@ -438,17 +477,10 @@ void Uc8279cA4Driver::showGray3(EpdBus& bus, const bool inverted, const bool fro
   // the page has a second gray level, is a plain wait.
   refresh(bus, nullptr, /*runIdleHook=*/true);
   if (use.second) {
-    writeGray3Codes(bus, true, true, inverted, fromBase, use);
-    writeGray3Codes(bus, false, true, inverted, fromBase, use);
+    sendGray3Plane(bus, true, _gray3Code[1]);
+    sendGray3Plane(bus, false, _gray3Code[2]);
     loadGray3DarkLut(bus);
     refresh(bus);
-  }
-  const size_t n = static_cast<size_t>(_widthBytes) * _height;
-  for (size_t i = 0; i < n; ++i) {
-    const uint8_t gray = _grayMsb[i];
-    _gray3White[i] = static_cast<uint8_t>(inverted ? ~(_grayBase[i] | gray) : _grayBase[i] & ~gray);
-    _gray3Middle[i] = gray;
-    _gray3Dark[i] = static_cast<uint8_t>(_grayLsb[i] & gray);
   }
   _gray3HistoryValid = true;
   _gray3Session = true;

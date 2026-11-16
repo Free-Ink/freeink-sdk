@@ -380,6 +380,95 @@ int main() {
     assert(bus.refreshes == before + 2 && bus.interval == 0x97 &&
            "real sleep/wake must still establish an unknown-glass baseline");
   }
+  {
+    // Gray3 codes against a per-pixel reference, over random page turns. Each
+    // pixel has a level (0 white, 1 light, 2 dark, 3 black); the code of each
+    // refresh depends on the level shown and the new one.
+    const auto planeBit = [&](const std::vector<uint8_t>& plane, const size_t pixel) {
+      const size_t i = pixel / 8;
+      return (plane[(551 - i / 96) * 96 + i % 96] >> (7 - pixel % 8)) & 1;
+    };
+    const auto assertPaddingHolds = [&](const std::vector<uint8_t>& plane) {
+      assert(plane.size() == 600 * 96);
+      for (size_t i = bytes; i < plane.size(); ++i) assert(plane[i] == 0x00 && "padding rows must hold");
+    };
+    uint32_t seed = 0x2545f491;
+    const auto next = [&] {
+      seed ^= seed << 13;
+      seed ^= seed >> 17;
+      seed ^= seed << 5;
+      return seed;
+    };
+    std::vector<uint8_t> base(bytes), msb(bytes), lsb(bytes), shown(bytes * 8), level(bytes * 8);
+    bool history = false;  // the last refresh above was B/W
+    unsigned twoRefreshTurns = 0;
+    for (int turn = 0; turn < 12; ++turn) {
+      for (size_t i = 0; i < bytes; ++i) {
+        base[i] = static_cast<uint8_t>(next() >> 8);
+        // Sparse grays on most pages, none on one, so both LUT variants and the
+        // one-refresh turn are covered. The dark plane also has bits outside
+        // the gray mask, which must be ignored.
+        msb[i] = turn == 5 ? 0 : static_cast<uint8_t>((next() >> 8) & (next() >> 8));
+        lsb[i] = static_cast<uint8_t>(next() >> 8);
+        for (unsigned bit = 0; bit < 8; ++bit) {
+          const uint8_t mask = static_cast<uint8_t>(0x80 >> bit);
+          level[i * 8 + bit] = msb[i] & mask ? (lsb[i] & mask ? 2 : 1) : (base[i] & mask ? 0 : 3);
+        }
+      }
+      const auto before = bus.refreshes;
+      driver.beginGrayscale(bus, base.data(), GrayscaleMode::Overlay, RefreshMode::Fast, false);
+      driver.copyGrayscaleLsb(bus, lsb.data());
+      driver.copyGrayscaleMsb(bus, msb.data());
+      driver.displayGray(bus, base.data(), false, nullptr, false);
+      driver.cleanupGrayscaleBuffers(bus, base.data());
+      if (!history) {
+        // From the B/W base: one Gray3 refresh, light 01 and dark 10 from white.
+        assert(bus.refreshes == before + 2);
+        assertPaddingHolds(bus.oldAtRefresh);
+        assertPaddingHolds(bus.newAtRefresh);
+        for (size_t px = 0; px < bytes * 8; ++px) {
+          assert(planeBit(bus.oldAtRefresh, px) == (level[px] == 2));
+          assert(planeBit(bus.newAtRefresh, px) == (level[px] == 1));
+        }
+      } else {
+        bool second = false;
+        for (size_t px = 0; px < bytes * 8 && !second; ++px) {
+          const bool gray = level[px] == 1 || level[px] == 2;
+          second = gray && (shown[px] == 3 || (shown[px] == 2 && level[px] == 1) || (shown[px] != 2 && level[px] == 2));
+        }
+        assert(bus.refreshes == before + (second ? 2 : 1));
+        twoRefreshTurns += second;
+        const auto& old1 = second ? bus.oldAtPrevRefresh : bus.oldAtRefresh;
+        const auto& new1 = second ? bus.newAtPrevRefresh : bus.newAtRefresh;
+        assertPaddingHolds(old1);
+        assertPaddingHolds(new1);
+        if (second) {
+          assertPaddingHolds(bus.oldAtRefresh);
+          assertPaddingHolds(bus.newAtRefresh);
+        }
+        for (size_t px = 0; px < bytes * 8; ++px) {
+          const uint8_t was = shown[px], now = level[px];
+          const bool gray = now == 1 || now == 2;
+          // A gray pixel that was darker is cleared first and driven from white second.
+          const bool regray = gray && (was == 3 || (was == 2 && now == 1));
+          unsigned first = 0, later = 0;  // (DTM1, DTM2) codes
+          if (now == 3) first = 0b10;
+          else if (now == 0) first = was == 0 ? 0b00 : 0b11;
+          else if (regray) first = 0b11;
+          else first = was == 0 ? 0b01 : 0b00;
+          if (regray) later = now == 2 ? 0b11 : 0b01;
+          else if (now == 2 && was != 2) later = 0b10;
+          assert(static_cast<unsigned>(planeBit(old1, px) << 1 | planeBit(new1, px)) == first);
+          const unsigned sent = second ? planeBit(bus.oldAtRefresh, px) << 1 | planeBit(bus.newAtRefresh, px) : 0;
+          assert(sent == later);
+        }
+      }
+      shown = level;
+      history = true;
+    }
+    assert(twoRefreshTurns >= 5 && "the random pages must exercise the second refresh");
+  }
   std::cout << "PASS: A4 FAST cadence, post-AA pixel transitions, retained baseline, explicit cleanup, four-gray and "
-               "Gray3 wire encoding, refresh idle hook, stock power hold and wake, idle power-off\n";
+               "Gray3 wire encoding, refresh idle hook, stock power hold and wake, idle power-off, Gray3 codes against "
+               "a reference\n";
 }

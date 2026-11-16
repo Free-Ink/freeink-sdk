@@ -27,7 +27,8 @@ with tempfile.TemporaryDirectory(prefix="uc8279c-a4-test-") as directory:
 inline void digitalWrite(int, int) {}
 #define PROGMEM
 #define log_e(...) std::fprintf(stderr, __VA_ARGS__)
-inline unsigned long millis() { static unsigned long t; return ++t; }
+inline unsigned long& fakeMillis() { static unsigned long t; return t; }
+inline unsigned long millis() { return ++fakeMillis(); }
 inline void delay(unsigned long) {}
 inline int digitalRead(int) { return 0; }
 ''')

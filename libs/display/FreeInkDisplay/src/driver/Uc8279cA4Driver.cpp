@@ -178,6 +178,7 @@ void Uc8279cA4Driver::refresh(EpdBus& bus, const uint8_t* bwBaseline) {
   ensurePowerOn(bus);
   bus.cmd(CMD_DISPLAY_REFRESH);
   bus.waitBusy(" A4 refresh");
+  _lastRefreshMs = millis();
   // The next differential update diffs against this baseline.
   if (bwBaseline) writeFrame(bus, CMD_DTM1, bwBaseline);
   // Stock V1.0.3 boots with panel power hold on and leaves the rails up after
@@ -529,8 +530,11 @@ void Uc8279cA4Driver::cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) {
 // Stock V1.0.3's idle power-off: 500 ms after a refresh, with no further work
 // pending, it sends POWER_OFF (logged "EPD reader idle POF") and the next
 // refresh powers the panel back on. The controller keeps its registers and RAM.
+// The delay is timed here, from the last refresh, so callers can call this
+// whenever they are otherwise idle.
 void Uc8279cA4Driver::controllerIdle(EpdBus& bus) {
-  if (!_screenOn || _basePending) return;
+  constexpr unsigned long IDLE_POWER_OFF_MS = 500;
+  if (!_screenOn || _basePending || millis() - _lastRefreshMs < IDLE_POWER_OFF_MS) return;
   bus.cmd(CMD_POWER_OFF);
   bus.waitBusy(" A4 power-off");
   _screenOn = false;

@@ -72,6 +72,7 @@ class Uc8279cA4Driver : public PanelDriver {
   uint16_t _height;
   uint16_t _widthBytes;
   bool _screenOn = false;
+  unsigned long _lastRefreshMs = 0;  // millis() when the last refresh() finished
   bool _grayControllerMode = false;
   bool _redriveAfterGray = false;  // re-drive all target pixels after AA, using the requested waveform
   // begin() seeds DTM1 white, but after a reflash/reset the glass holds the

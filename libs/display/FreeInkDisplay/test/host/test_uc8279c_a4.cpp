@@ -243,6 +243,9 @@ int main() {
     const auto shown = bus.oldPlane;
     const auto offs = bus.powerOffs;
     driver.controllerIdle(bus);
+    assert(bus.powerOffs == offs && "idle must wait 500 ms after the last refresh");
+    fakeMillis() += 500;
+    driver.controllerIdle(bus);
     driver.controllerIdle(bus);
     assert(bus.powerOffs == offs + 1 && "idle must power off once and stay off");
     for (auto& b : bw) b = static_cast<uint8_t>(b ^ 0x0f);
@@ -250,6 +253,7 @@ int main() {
     driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, false);
     assert(bus.refreshes == before + 1 && bus.interval == 0xd7 && "paint after idle stays one FAST refresh");
     assert(bus.oldAtRefresh == shown && "paint after idle must diff against the displayed frame");
+    fakeMillis() += 500;
     driver.controllerIdle(bus);
     driver.deepSleep(bus);
     assert(bus.powerOffs == offs + 2 && "deep sleep after idle sends no second power-off");

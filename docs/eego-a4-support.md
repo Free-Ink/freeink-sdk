@@ -98,8 +98,10 @@ screens as ghosts.
 `controllerIdle()` ends the hold between frames, as stock V1.0.3 does: 500 ms
 after a refresh, with nothing further pending, stock sends POWER_OFF (logged
 "EPD reader idle POF") and enters light sleep; the next refresh powers the
-panel on again. `controllerIdle()` sends that POWER_OFF and the controller keeps
-its registers and RAM, so the next paint is a normal differential update. A
+panel on again. `controllerIdle()` sends that POWER_OFF once 500 ms have passed
+since the last refresh (it returns without acting before that, so a host can
+call it on every idle loop), and the controller keeps its registers and RAM,
+so the next paint is a normal differential update. A
 panel left powered on a static screen fuzzed and showed earlier screens.
 Whether a static image stays clean once powered off this way needs hardware
 validation.

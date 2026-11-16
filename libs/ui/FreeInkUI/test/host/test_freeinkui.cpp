@@ -1284,7 +1284,7 @@ void testListSectionHeadingPreview() {
     // First book = 61px, gap = 6px, section = 16 + 28 + 6px.
     // Second book starts at 117px and is complete at 178px.
     CHECK_EQ(nav.drawnRows, height < 178 ? 1 : 2);
-    CHECK_EQ(hits.count(), height < 178 ? 1u : 2u);
+    CHECK_EQ(hits.count(), height < 100 ? 1u : 2u);  // a drawn preview takes taps
     CHECK_EQ(draw.countKind(FakeDrawTarget::Op::Text), height < 100 ? 2u : 5u);
     if (height >= 100 && height < 178) {
       CHECK_EQ(draw.headingRect.y, body.y + 83);
@@ -1333,7 +1333,7 @@ void testScreenListContentSizing() {
     CHECK_EQ(nav.visibleRows, touch ? 3 : 6);
     screen.list(props);
     CHECK_EQ(nav.drawnRows, touch ? 3 : 6);
-    CHECK_EQ(hits.count(), touch ? 3u : 6u);
+    CHECK_EQ(hits.count(), touch ? 4u : 6u);  // touch: three rows and the preview
     CHECK_EQ(hits.data()[0].rect.height, props.rowHeight);
     // A swipe starts at the first not-fully-visible item, using the same
     // resolved policy on the next frame (including the tab selection offset).
@@ -1483,7 +1483,7 @@ void testListExactFitAndPreviewGeometry() {
     nav.syncToProps(body, 20, 2, 5, props);
     list(frame, body, props);
     CHECK_EQ(nav.drawnRows, height == 100 ? 3 : 2);
-    CHECK_EQ(interactions.count(), height == 100 ? 3u : 2u);
+    CHECK_EQ(interactions.count(), 3u);  // the preview takes taps
     CHECK_EQ(draw.valuesDrawn, 3); // extension also exists in the preview
     CHECK_EQ(draw.labelMaxLines, 2);
     CHECK_EQ(draw.labelRect.width, 104); // same slot after the extension
@@ -1557,7 +1557,11 @@ void testListPreviewPixels() {
       list(cropFrame, Rect{0, 0, W, 103}, props);
       maskTarget.fill(Rect{0, 0, W, 103}, Paint::solid(Color::Black));
       CHECK_EQ(fullHits.count(), 3u);
-      CHECK_EQ(cropHits.count(), 2u);
+      // The preview takes taps on its visible 23px only, and no button input.
+      CHECK_EQ(cropHits.count(), 3u);
+      CHECK_EQ(cropHits.data()[2].rect.y, 80);
+      CHECK_EQ(cropHits.data()[2].rect.height, 23);
+      CHECK_EQ(cropHits.data()[2].inputMask, static_cast<uint16_t>(InputTouch));
       for (size_t i = 0; i < sizeof(full); ++i)
         CHECK_EQ(cropped[i], static_cast<uint8_t>(full[i] | mask[i]));
       CHECK_EQ(cropTarget.clipRect().height, 32767);

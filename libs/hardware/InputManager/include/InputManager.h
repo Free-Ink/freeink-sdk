@@ -466,6 +466,7 @@ class InputManager {
   uint8_t twoButtonPhysicalState;
   unsigned long twoButtonPressStart;
   bool twoButtonLongPressActive;
+  bool twoButtonChordSeen = false;  // both buttons were down during this press
 #if FREEINK_DEVICE_PAPERMONO
   bool powerButtonClick = false;  // Retained through release; polling latency is not click duration.
 #endif

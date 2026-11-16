@@ -200,6 +200,7 @@ void Uc8279cA4Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* pre
                               const bool turnOff) {
   (void)prev;
   (void)turnOff;  // the panel stays powered after refresh(), as on stock
+  _overlayPass = true;  // a B/W paint ends an announced absolute pass
   // Any B/W refresh replaces what a Gray3 transition would start from.
   _gray3HistoryValid = false;
   _gray3Session = false;

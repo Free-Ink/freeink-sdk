@@ -52,7 +52,6 @@ void Uc8279cA4Driver::hardwareReset(EpdBus& bus) {
     bus.waitBusy(" A4 power-off");
     _screenOn = false;
   }
-  _controllerAsleep = false;  // the reset pulse wakes it
   // EpdBus's generic 2-ms low pulse is too short for this panel.
   const int8_t rst = bus.pins().rst;
   digitalWrite(rst, HIGH);
@@ -179,6 +178,7 @@ void Uc8279cA4Driver::refresh(EpdBus& bus, const uint8_t* bwBaseline) {
   ensurePowerOn(bus);
   bus.cmd(CMD_DISPLAY_REFRESH);
   bus.waitBusy(" A4 refresh");
+  _lastRefreshMs = millis();
   // The next differential update diffs against this baseline.
   if (bwBaseline) writeFrame(bus, CMD_DTM1, bwBaseline);
   // Stock V1.0.3 boots with panel power hold on and leaves the rails up after
@@ -200,17 +200,14 @@ void Uc8279cA4Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* pre
                               const bool turnOff) {
   (void)prev;
   (void)turnOff;  // the panel stays powered after refresh(), as on stock
-  const bool wasAsleep = _controllerAsleep;
   // Any B/W refresh replaces what a Gray3 transition would start from.
   _gray3HistoryValid = false;
   _gray3Session = false;
   _basePending = false;
-  // Restore B/W controller registers after a grayscale pass or controllerIdle().
-  if (_grayControllerMode || wasAsleep) {
+  // Restore B/W controller registers after a grayscale pass.
+  if (_grayControllerMode) {
     hardwareReset(bus);
     initController(bus, Session::Bw);
-    // Deep sleep lost DTM1; the glass still holds the last B/W frame, so diff against it.
-    if (wasAsleep && !_redriveAfterGray && !_firstRefreshPending && _grayBase) writeFrame(bus, CMD_DTM1, _grayBase);
   }
   ensurePowerOn(bus);
   const bool fast = mode == RefreshMode::Fast && !_firstRefreshPending;
@@ -261,13 +258,16 @@ uint8_t* Uc8279cA4Driver::allocateGrayBuffer() {
 
 void Uc8279cA4Driver::beginGrayscale(EpdBus& bus, const uint8_t* fb, const GrayscaleMode mode,
                                      const RefreshMode fallback, const bool turnOff) {
-  (void)bus;
-  (void)turnOff;
   _overlayPass = mode == GrayscaleMode::Overlay;
   if (!_overlayPass) return;  // absolute planes carry every pixel: no base pass
   // Gray3 sends the base with its grays in one refresh: stash it undisplayed.
+  if (!fb) return;
   if (!_grayBase) _grayBase = allocateGrayBuffer();
-  if (!_grayBase || !fb) return;
+  if (!_grayBase) {
+    // No stash buffer: show the B/W frame now so the page still reaches the panel.
+    display(bus, fb, nullptr, fallback, turnOff);
+    return;
+  }
   memcpy(_grayBase, fb, static_cast<size_t>(_widthBytes) * _height);
   _basePending = true;
   _cleanupPage = fallback != RefreshMode::Fast;
@@ -300,30 +300,53 @@ void Uc8279cA4Driver::copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
 bool Uc8279cA4Driver::allocateGray3() {
   if (!_gray3White) _gray3White = allocateGrayBuffer();
   if (!_gray3Middle) _gray3Middle = allocateGrayBuffer();
-  return _gray3White && _gray3Middle;
+  if (!_gray3Dark) _gray3Dark = allocateGrayBuffer();
+  return _gray3White && _gray3Middle && _gray3Dark;
 }
 
-// Gray3 page in _grayLsb (white mask) / _grayMsb (middle mask). Each pixel's
-// code comes from its new level and the level already on the panel (stock
-// V1.0.3): unchanged white/middle pixels hold, black is always re-driven, white
-// after middle/black is cleared, middle after white/black is nudged gray.
-void Uc8279cA4Driver::writeGray3Codes(EpdBus& bus, const bool dtm1, bool& anyBlack, bool& anyWhiteClear) {
+// Gray3 page: _grayBase (white / black) with the overlay masks on top
+// (_grayMsb = gray, _grayLsb = the dark part of it). Each pixel's code comes
+// from its new level and the level already on the panel. First refresh (stock
+// V1.0.3's codes): unchanged white/gray pixels hold, black is always re-driven,
+// a pixel turning white is cleared, a gray pixel after white is nudged gray.
+// Stock has one gray level; the second, darker one is added here with a short
+// second refresh that drives the newly dark pixels a few frames further. A
+// gray pixel that was darker before (black, or dark turning light) is cleared
+// in the first refresh and driven from white in the second.
+// Right after the B/W base (fromBase) black was just driven and every gray
+// pixel is white, so one refresh is enough: black holds and code 10 selects a
+// dark-from-white record instead (see loadGray3Lut).
+Uc8279cA4Driver::Gray3Codes Uc8279cA4Driver::gray3Codes(const size_t i, const bool inverted,
+                                                        const bool fromBase) const {
+  const uint8_t gray = _grayMsb[i];
+  const auto dark = static_cast<uint8_t>(_grayLsb[i] & gray);
+  if (fromBase) return {dark, static_cast<uint8_t>(gray & ~dark), 0, 0};
+  const auto white = static_cast<uint8_t>(inverted ? ~(_grayBase[i] | gray) : _grayBase[i] & ~gray);
+  const auto black = static_cast<uint8_t>(~(white | gray));
+  const auto wasBlack = static_cast<uint8_t>(~(_gray3White[i] | _gray3Middle[i]));
+  const auto regray = static_cast<uint8_t>(gray & (wasBlack | (_gray3Dark[i] & ~dark)));
+  const auto whiteClear = static_cast<uint8_t>((white & ~_gray3White[i]) | regray);
+  const auto nudge = static_cast<uint8_t>(gray & ~_gray3Middle[i] & ~regray);
+  const auto darker = static_cast<uint8_t>(dark & ~_gray3Dark[i] & ~regray);
+  // First: 10 black, 01 gray, 11 white-clear, 00 hold. Second: 10 darker,
+  // 01 light from white, 11 dark from white, 00 hold. DTM1 = bit 1.
+  return {static_cast<uint8_t>(whiteClear | black), static_cast<uint8_t>(whiteClear | nudge),
+          static_cast<uint8_t>(darker | (regray & dark)), regray};
+}
+
+void Uc8279cA4Driver::writeGray3Codes(EpdBus& bus, const bool dtm1, const bool second, const bool inverted,
+                                      const bool fromBase, Gray3Use& use) {
   uint8_t rowBuf[96];
   bus.cmd(dtm1 ? CMD_DTM1 : CMD_DTM2);
   auto txn = bus.beginTxn();
   for (int y = static_cast<int>(_height) - 1; y >= 0; --y) {
     const size_t row = static_cast<size_t>(y) * _widthBytes;
     for (uint16_t xb = 0; xb < _widthBytes; ++xb) {
-      const size_t i = row + xb;
-      const uint8_t white = _grayLsb[i];
-      const uint8_t middle = _grayMsb[i];
-      const auto black = static_cast<uint8_t>(~(white | middle));
-      const auto whiteClear = static_cast<uint8_t>(white & ~_gray3White[i]);
-      const auto gray = static_cast<uint8_t>(middle & ~_gray3Middle[i]);
-      if (black) anyBlack = true;
-      if (whiteClear) anyWhiteClear = true;
-      // code 10 = black, 01 = gray, 11 = white-clear, 00 = hold; DTM1 = bit 1.
-      rowBuf[xb] = dtm1 ? static_cast<uint8_t>(whiteClear | black) : static_cast<uint8_t>(whiteClear | gray);
+      const Gray3Codes c = gray3Codes(row + xb, inverted, fromBase);
+      if (!fromBase && (c.hi & ~c.lo)) use.black = true;
+      if (c.hi & c.lo) use.whiteClear = true;
+      if (c.hi2 | c.lo2) use.second = true;
+      rowBuf[xb] = second ? (dtm1 ? c.hi2 : c.lo2) : (dtm1 ? c.hi : c.lo);
     }
     txn.writeBytes(rowBuf, _widthBytes);
   }
@@ -331,35 +354,74 @@ void Uc8279cA4Driver::writeGray3Codes(EpdBus& bus, const bool dtm1, bool& anyBla
   for (uint16_t y = 0; y < PADDING_ROWS; ++y) txn.writeBytes(rowBuf, _widthBytes);
 }
 
-void Uc8279cA4Driver::loadGray3Lut(EpdBus& bus, const bool anyBlack, const bool anyWhiteClear) {
+// darkFromWhite: record 0x22 becomes a copy of the gray record (0x23) driving
+// the dark frame count.
+void Uc8279cA4Driver::loadGray3Lut(EpdBus& bus, const bool anyBlack, const bool anyWhiteClear,
+                                   const bool darkFromWhite) {
   for (uint8_t r = 0; r < 5; ++r) {
     uint8_t record[A4_UC8279C_LUT_LENGTH] = {};
-    memcpy(record, A4_UC8279C_GRAY3_TRANSITION_LUT[r], A4_UC8279C_GRAY3_RECORD_LENGTH);
+    const bool darkRecord = r == 2 && darkFromWhite;
+    memcpy(record, A4_UC8279C_GRAY3_TRANSITION_LUT[darkRecord ? 3 : r], A4_UC8279C_GRAY3_RECORD_LENGTH);
     if (r == 4 && !anyWhiteClear) record[2] = A4_UC8279C_GRAY3_NO_WHITE_CLEAR;
-    if (r == 2 && !anyBlack) record[1] = A4_UC8279C_GRAY3_NO_BLACK_DRIVE;
-    if (r == 3 && !anyBlack) record[2] = A4_UC8279C_GRAY3_NO_BLACK_GRAY;
+    if (r == 2 && !anyBlack && !darkRecord) record[1] = A4_UC8279C_GRAY3_NO_BLACK_DRIVE;
+    if ((r == 3 || darkRecord) && !anyBlack) record[2] = A4_UC8279C_GRAY3_NO_BLACK_GRAY;
+    if (r == 3 || darkRecord) {
+      // Black phase to the light (or dark) frame count; the hold phase after
+      // it keeps the record's length.
+      const auto frames = static_cast<uint8_t>(A4_UC8279C_GRAY3_LIGHT_FRAMES +
+                                               (darkRecord ? A4_UC8279C_GRAY3_DARK_EXTRA_FRAMES : 0));
+      record[2] = static_cast<uint8_t>(record[2] + (record[1] & 0x3f) - frames);
+      record[1] = static_cast<uint8_t>(0x40 | frames);
+    }
     bus.cmdData(static_cast<uint8_t>(CMD_LUT_VCOM + r), record, A4_UC8279C_LUT_LENGTH);
   }
 }
 
-void Uc8279cA4Driver::showGray3(EpdBus& bus) {
+// Second refresh: one phase per record. 0x22 drives black for the extra dark
+// frames, 0x23 for the light frames, 0x24 for both; 0x21 holds.
+void Uc8279cA4Driver::loadGray3DarkLut(EpdBus& bus) {
+  const uint8_t light = A4_UC8279C_GRAY3_LIGHT_FRAMES;
+  const uint8_t extra = A4_UC8279C_GRAY3_DARK_EXTRA_FRAMES;
+  const uint8_t phase[5] = {static_cast<uint8_t>(light + extra + A4_UC8279C_GRAY3_DARK_SETTLE_FRAMES), 0x00,
+                            static_cast<uint8_t>(0x40 | extra), static_cast<uint8_t>(0x40 | light),
+                            static_cast<uint8_t>(0x40 | (light + extra))};
+  for (uint8_t r = 0; r < 5; ++r) {
+    uint8_t record[A4_UC8279C_LUT_LENGTH] = {};
+    if (phase[r]) {
+      record[0] = record[5] = record[6] = 0x01;
+      record[1] = phase[r];
+    }
+    bus.cmdData(static_cast<uint8_t>(CMD_LUT_VCOM + r), record, A4_UC8279C_LUT_LENGTH);
+  }
+}
+
+void Uc8279cA4Driver::showGray3(EpdBus& bus, const bool inverted, const bool fromBase) {
   if (!_gray3Session) {
     hardwareReset(bus);
     initController(bus, Session::Gray3);
   } else {
     ensurePowerOn(bus);
   }
-  bool anyBlack = false;
-  bool anyWhiteClear = false;
-  writeGray3Codes(bus, true, anyBlack, anyWhiteClear);
-  writeGray3Codes(bus, false, anyBlack, anyWhiteClear);
+  Gray3Use use;
+  writeGray3Codes(bus, true, false, inverted, fromBase, use);
+  writeGray3Codes(bus, false, false, inverted, fromBase, use);
   const uint8_t interval = 0x00;
   bus.cmdData(CMD_VCOM_DATA_INTERVAL, &interval, 1);
-  loadGray3Lut(bus, anyBlack, anyWhiteClear);
+  loadGray3Lut(bus, use.black, use.whiteClear, fromBase);
   refresh(bus);
+  if (use.second) {
+    writeGray3Codes(bus, true, true, inverted, fromBase, use);
+    writeGray3Codes(bus, false, true, inverted, fromBase, use);
+    loadGray3DarkLut(bus);
+    refresh(bus);
+  }
   const size_t n = static_cast<size_t>(_widthBytes) * _height;
-  memcpy(_gray3White, _grayLsb, n);
-  memcpy(_gray3Middle, _grayMsb, n);
+  for (size_t i = 0; i < n; ++i) {
+    const uint8_t gray = _grayMsb[i];
+    _gray3White[i] = static_cast<uint8_t>(inverted ? ~(_grayBase[i] | gray) : _grayBase[i] & ~gray);
+    _gray3Middle[i] = gray;
+    _gray3Dark[i] = static_cast<uint8_t>(_grayLsb[i] & gray);
+  }
   _gray3HistoryValid = true;
   _gray3Session = true;
   _firstRefreshPending = false;
@@ -381,32 +443,36 @@ void Uc8279cA4Driver::displayGray(EpdBus& bus, const uint8_t* fb, const bool tur
       return;
     }
     const size_t n = static_cast<size_t>(_widthBytes) * _height;
+    bool fromBase = false;
     if (!_gray3HistoryValid) {
       // Coming from a B/W screen: show the base with a normal B/W refresh,
       // which fully drives out the previous screen, and start the Gray3
       // history from it. Stock's history-less Gray3 drive clears too weakly
-      // and leaves the previous screen ghosting.
-      if (_basePending) display(bus, _grayBase, nullptr, _cleanupPage ? RefreshMode::Half : RefreshMode::Fast, false);
+      // and leaves the previous screen ghosting. The base goes out with its
+      // gray pixels white, so the grays are then driven from white in one
+      // refresh; a base the caller already showed with them black is shown
+      // again for that.
+      bool grayOnBlack = false;
+      for (size_t i = 0; i < n; ++i) {
+        if (_grayMsb[i] & ~_grayBase[i]) grayOnBlack = true;
+        _grayBase[i] |= _grayMsb[i];
+      }
+      // A stashed base always takes the full waveform: after a fast one, the
+      // previous screen showed in the black areas of the gray pages that
+      // followed.
+      if (_basePending || grayOnBlack)
+        display(bus, _grayBase, nullptr, _basePending || _cleanupPage ? RefreshMode::Half : RefreshMode::Fast, false);
       _cleanupPage = false;
       memcpy(_gray3White, _grayBase, n);
       memset(_gray3Middle, 0, n);
+      memset(_gray3Dark, 0, n);
       _gray3HistoryValid = true;
+      fromBase = true;
     }
-    // Masks (LSB = dark, MSB = dark | light) onto the base: any gray pixel is
-    // middle, the rest keep the base's white/black.
-    for (size_t i = 0; i < n; ++i) {
-      const uint8_t gray = _grayMsb[i];
-      _grayLsb[i] = static_cast<uint8_t>(_grayBase[i] & ~gray);
-      _grayMsb[i] = gray;
-    }
-    if (_cleanupPage) {
-      // Stock's periodic cleanup: the page with black and white swapped
-      // (middle kept), then the page itself, both as Gray3 transitions.
-      for (size_t i = 0; i < n; ++i) _grayLsb[i] = static_cast<uint8_t>(~(_grayLsb[i] | _grayMsb[i]));
-      showGray3(bus);
-      for (size_t i = 0; i < n; ++i) _grayLsb[i] = static_cast<uint8_t>(~(_grayLsb[i] | _grayMsb[i]));
-    }
-    showGray3(bus);
+    // Stock's periodic cleanup: the page with black and white swapped (grays
+    // kept), then the page itself, both as Gray3 transitions.
+    if (_cleanupPage) showGray3(bus, /*inverted=*/true, false);
+    showGray3(bus, /*inverted=*/false, fromBase);
     _basePending = false;
     _cleanupPage = false;
     return;
@@ -418,7 +484,7 @@ void Uc8279cA4Driver::displayGray(EpdBus& bus, const uint8_t* fb, const bool tur
   // Stock V1.0.3's lockscreen sequence. Pre-clear ("GC-black-2x-half") in the
   // B/W session: black to DTM2, no DTM1 write, two refreshes with the halved
   // GC waveform.
-  if (_grayControllerMode || _controllerAsleep) {
+  if (_grayControllerMode) {
     hardwareReset(bus);
     initController(bus, Session::Bw);
   }
@@ -461,18 +527,20 @@ void Uc8279cA4Driver::cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) {
   _basePending = false;
 }
 
-// On screens that keep the device awake: the same power-off and deep sleep as
-// deepSleep(), between frames. The glass keeps its image; the next paint resets
-// and re-initializes the controller.
+// Stock V1.0.3's idle power-off: 500 ms after a refresh, with no further work
+// pending, it sends POWER_OFF (logged "EPD reader idle POF") and the next
+// refresh powers the panel back on. The controller keeps its registers and RAM.
+// The delay is timed here, from the last refresh, so callers can call this
+// whenever they are otherwise idle.
 void Uc8279cA4Driver::controllerIdle(EpdBus& bus) {
-  if (_controllerAsleep || _basePending) return;
-  deepSleep(bus);
-  _controllerAsleep = true;
-  _gray3Session = false;  // showGray3() resets into a fresh Gray3 session
+  constexpr unsigned long IDLE_POWER_OFF_MS = 500;
+  if (!_screenOn || _basePending || millis() - _lastRefreshMs < IDLE_POWER_OFF_MS) return;
+  bus.cmd(CMD_POWER_OFF);
+  bus.waitBusy(" A4 power-off");
+  _screenOn = false;
 }
 
 void Uc8279cA4Driver::deepSleep(EpdBus& bus) {
-  if (_controllerAsleep) return;
   if (_screenOn) {
     bus.cmd(CMD_POWER_OFF);
     bus.waitBusy(" A4 power-off");

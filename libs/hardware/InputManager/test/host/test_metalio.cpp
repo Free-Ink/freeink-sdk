@@ -25,11 +25,32 @@ int main() {
   static_assert(BoardConfig::METALIO_EINK4.sdmmc.d3 == -1);
   std::fill(std::begin(gpioLevels), std::end(gpioLevels), HIGH);
 
-  // A transient boot failure is retryable. Safe output latches precede direction.
+  // A transient boot failure is retryable and restarts the bus. Safe output latches precede direction.
   Wire.failExpander = true;
   assert(!freeink::metalio::ensureBooted());
+  assert(Wire.ends == 1 && !Wire.started);
+  // Polls right after a failure do not touch the bus again.
+  assert(!freeink::metalio::ensureBooted());
+  assert(Wire.ends == 1);
+  fakeNow += 500;
+  assert(!freeink::metalio::ensureBooted());
+  assert(Wire.ends == 2);
+  // A failed attempt clears a bus whose SDA is held low: 9 SCL pulses, then STOP.
+  gpioLevels[41] = LOW;
+  gpioWrites[42] = 0;
+  fakeNow += 500;
+  assert(!freeink::metalio::ensureBooted());
+  assert(gpioWrites[42] == 1 + 9 * 2);
+  gpioLevels[41] = HIGH;
+  // A bounded wait gives up after waitMs without spinning forever.
+  const unsigned long waitStart = fakeNow;
+  assert(!freeink::metalio::ensureBooted(300));
+  assert(fakeNow - waitStart >= 300 && fakeNow - waitStart < 400);
   Wire.failExpander = false;
-  assert(freeink::metalio::ensureBooted());
+  // A slow-starting expander is found within the wait, on a restarted bus.
+  Wire.expanderReadyAt = fakeNow + 2000;
+  assert(freeink::metalio::ensureBooted(3000));
+  assert(Wire.started && fakeNow >= Wire.expanderReadyAt);
   assert(Wire.writes[0][0] == 2 && Wire.writes[1][0] == 6);
   const unsigned out = Wire.expander[2] | (Wire.expander[3] << 8);
   assert((out & ((1 << 5) | (1 << 6) | (1 << 9) | (1 << 11))) ==
@@ -89,14 +110,21 @@ int main() {
   point(input, 120, 200);
   assert(input.touchPressed);
   fakeNow += 150;
-  input.update(); // stale successful frame, IRQ idle
-  assert(!input.touchPressed);
+  input.update(); // finger still down, IRQ idle: the contact holds
+  assert(input.touchPressed);
+  Wire.touch = {};
+  fakeNow += 25;
+  input.update(); // zero-finger frame read without an IRQ releases
+  assert(!input.touchPressed && input.touchReleasedEvent);
 
   Wire.expander[0] &= ~(1 << 7);
   fakeNow += 25;
   assert(input.getState() & (1 << InputManager::BTN_DOWN));
+  // One failed read keeps the last good sample; failures beyond 100 ms release the key.
   Wire.failExpander = true;
   fakeNow += 25;
+  assert(input.getState() & (1 << InputManager::BTN_DOWN));
+  fakeNow += 100;
   assert(!(input.getState() & (1 << InputManager::BTN_DOWN)));
   Wire.failExpander = false;
   assert(freeink::metalio::powerOff());

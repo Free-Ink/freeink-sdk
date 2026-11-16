@@ -37,12 +37,18 @@ bool tagHas(const char* tag, size_t len, const char* token) {
 bool tagAttr(const char* tag, size_t len, const char* attr, std::string* out) {
   const size_t alen = strlen(attr);
   for (size_t i = 1; i + alen + 2 < len; i++) {
-    if (memcmp(tag + i, attr, alen) != 0 || tag[i + alen] != '=') continue;
+    if (memcmp(tag + i, attr, alen) != 0) continue;
     const char before = tag[i - 1];
     if (before != ' ' && before != '\t' && before != '\r' && before != '\n') continue;
-    const char quote = tag[i + alen + 1];
+    size_t pos = i + alen;
+    const auto space = [](char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; };
+    while (pos < len && space(tag[pos])) ++pos;
+    if (pos == len || tag[pos++] != '=') continue;
+    while (pos < len && space(tag[pos])) ++pos;
+    if (pos == len) return false;
+    const char quote = tag[pos++];
     if (quote != '"' && quote != '\'') continue;
-    const char* start = tag + i + alen + 2;
+    const char* start = tag + pos;
     const char* end = static_cast<const char*>(memchr(start, quote, len - (start - tag)));
     if (!end) return false;
     out->assign(start, static_cast<size_t>(end - start));
@@ -105,8 +111,7 @@ void ProtectedBook::setContentKey(const uint8_t* key, size_t len) {
 }
 
 bool ProtectedBook::isEncrypted(const std::string& name) const {
-  return std::binary_search(encryptedUriHashes_.begin(), encryptedUriHashes_.end(),
-                            fnv1a64(name.data(), name.size()));
+  return std::binary_search(encryptedUriHashes_.begin(), encryptedUriHashes_.end(), fnv1a64(name.data(), name.size()));
 }
 
 size_t ProtectedBook::decryptedSize(const std::string& name) const {
@@ -119,9 +124,8 @@ size_t ProtectedBook::decryptedSize(const std::string& name) const {
   return entry ? entry->uncompressedSize : 0;
 }
 
-bool ProtectedBook::decryptEntryToSink(ByteSource& source, Crypto& crypto,
-                                       const std::string& name, ContentChunkSink sink,
-                                       void* context) {
+bool ProtectedBook::decryptEntryToSink(ByteSource& source, Crypto& crypto, const std::string& name,
+                                       ContentChunkSink sink, void* context) {
   if (!hasKey_ || keyLen_ != (aes256_ ? 32u : 16u)) {
     lastError_ = "no content key";
     return false;

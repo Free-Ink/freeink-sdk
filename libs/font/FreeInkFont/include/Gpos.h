@@ -33,6 +33,12 @@ namespace gpos {
 // the face's x_scale (FT_MulFix) for 26.6 pixels at the current size.
 // `gposBytes`/`gposSize` is the raw content of the font's 'GPOS' table (e.g.
 // from FT_Load_Sfnt_Table), not the whole font file.
+// GDEF supplies LookupFlag glyph classes, mark attachment classes, and mark
+// filtering sets. Without GDEF, glyphs are unclassified. An ignored endpoint
+// returns no pair match; this adjacent-pair API cannot skip intervening glyphs.
+// RightToLeft has no effect on PairPos; reserved flag bits skip the lookup.
+int32_t PairKernAdjustment(const uint8_t* gposBytes, size_t gposSize, uint32_t leftGlyph, uint32_t rightGlyph,
+                           const uint8_t* gdefBytes, size_t gdefSize);
 int32_t PairKernAdjustment(const uint8_t* gposBytes, size_t gposSize, uint32_t leftGlyph, uint32_t rightGlyph);
 
 }  // namespace gpos

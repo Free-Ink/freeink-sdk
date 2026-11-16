@@ -38,6 +38,34 @@ static void reset(size_t size) {
 }
 
 int main() {
+  {
+    SDCardManager card;
+    uint64_t used = 99;
+    assert(!card.sdUsedBytes(used) && used == 0);
+    nowMs = 0;
+    fakeSd::clusters = 64;
+    fakeSd::freeClusters = 64;
+    fakeSd::clusterScans = 0;
+    assert(card.begin());
+    assert(card.sdUsedBytes(used) && used == 0);  // a genuinely empty card
+    fakeSd::freeClusters = -1;
+    assert(card.sdUsedBytes(used) && used == 0);  // cached valid zero
+    nowMs += 20001;
+    assert(!card.sdUsedBytes(used) && used == 0);
+    const auto scansAfterFailure = fakeSd::clusterScans;
+    assert(card.sdUsedBytes() == 0);  // preserve the legacy API
+    assert(!card.sdUsedBytes(used));
+    assert(fakeSd::clusterScans == scansAfterFailure);  // cache failure, too
+    fakeSd::freeClusters = 16;
+    nowMs += 20001;
+    assert(card.sdUsedBytes(used) && used == 48 * 512);
+    fakeSd::freeClusters = 100;
+    nowMs += 20001;
+    assert(card.sdUsedBytes(used) && used == 0);  // retain the existing clamp
+    fakeSd::clusters = 1;
+    fakeSd::freeClusters = 1;
+  }
+
   SDCardManager manager;
   reset(8);
   Sink unopened;
@@ -140,5 +168,29 @@ int main() {
   assert(yields == 2 && watchdogResets == 2);
   assert(slowPartial.data == fakeSd::data && fakeSd::closes == 1);
 
-  std::puts("SD stream tests passed (short/stalled writes, read errors, EOF, chunk limits, watchdog)");
+  SDCardManager checked;
+  assert(checked.begin());
+  for (int fault = 0; fault < 3; ++fault) {
+    fakeSd::rootOpenFails = fault == 0;
+    fakeSd::rootSyncFails = fault == 1;
+    fakeSd::rootCloseFails = fault == 2;
+    const auto ends = fakeSd::volumeEnds;
+    assert(!checked.syncFilesystem());
+    assert(!checked.shutdown());
+    assert(checked.ready());
+#if USE_BLOCK_DEVICE_INTERFACE || HAS_SDIO_CLASS
+    assert(checked.detachFilesystemForRawAccess() == nullptr);
+    assert(checked.ready());
+#endif
+    assert(fakeSd::volumeEnds == ends);
+  }
+  fakeSd::rootOpenFails = fakeSd::rootSyncFails = fakeSd::rootCloseFails = false;
+  assert(checked.syncFilesystem());
+  assert(checked.shutdown());
+#if USE_BLOCK_DEVICE_INTERFACE || HAS_SDIO_CLASS
+  const auto ends = fakeSd::volumeEnds;
+  assert(checked.detachFilesystemForRawAccess() != nullptr);
+  assert(fakeSd::volumeEnds == ends + 1 && !checked.ready());
+#endif
+  std::puts("SD stream/storage tests passed (stream errors; checked flush, shutdown and raw handoff)");
 }

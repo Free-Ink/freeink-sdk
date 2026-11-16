@@ -2,6 +2,7 @@
 #include <cstddef>
 #include <cstring>
 #include <string>
+#include <vector>
 
 /**
  * Type of OPDS entry.
@@ -88,4 +89,15 @@ constexpr size_t MAX_FACET_ENTRIES = 24;
 // Per-entry description cap: enough for the detail page's visible lines while
 // bounding worst-case feed RAM (MAX_ENTRIES * this).
 constexpr size_t MAX_DESCRIPTION_CHARS = 500;
+
+// A parser is created once the response is flowing, when TLS has split the heap.
+// These size a vector to the largest free block instead of reserving the full
+// capacity, which aborts when it does not fit. Callers stop appending at
+// capacity(), so parsing never reallocates.
+//
+// Reserves up to ENTRY_STORAGE_CAPACITY entries and returns the entry limit,
+// keeping the MAX_ENTRIES margin; 0 when not even a few rows fit.
+size_t reserveFeedEntries(std::vector<OpdsEntry>& entries);
+// Reserves up to MAX_FACET_ENTRIES facet rows (possibly none).
+void reserveFacetEntries(std::vector<OpdsEntry>& facets);
 }  // namespace OpdsLimits

@@ -30,6 +30,7 @@ namespace freeink {
 
 class Ed2208M5Driver : public PanelDriver {
  public:
+  const char* controllerName() const override { return "ED2208"; }
   uint32_t spiHz() const override;
   BusyPolarity busyPolarity() const override { return BusyPolarity::ActiveLow; }
   PanelGeometry geometry() const override;

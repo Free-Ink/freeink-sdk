@@ -6,12 +6,13 @@
 #include <cstring>
 #include <cstdlib>
 #define IRAM_ATTR
-constexpr int HIGH=1, LOW=0, INPUT=1, OUTPUT=3, INPUT_PULLUP=5, INPUT_PULLDOWN=6, FALLING=2, ADC_11db=3;
+constexpr int HIGH=1, LOW=0, INPUT=1, OUTPUT=3, INPUT_PULLUP=5, INPUT_PULLDOWN=6, FALLING=2, ADC_11db=3, OUTPUT_OPEN_DRAIN=0x13;
 inline unsigned long fakeNow=1000;
 inline int gpioLevels[49]={};
+inline unsigned gpioWrites[49]={};
 inline void (*touchIsr)()=nullptr;
 inline void pinMode(int,int) {}
-inline void digitalWrite(int p,int v) { gpioLevels[p]=v; }
+inline void digitalWrite(int p,int v) { gpioLevels[p]=v; ++gpioWrites[p]; }
 inline int digitalRead(int p) { return gpioLevels[p]; }
 inline void delay(unsigned long n) { fakeNow+=n; }
 inline void delayMicroseconds(unsigned int) {}

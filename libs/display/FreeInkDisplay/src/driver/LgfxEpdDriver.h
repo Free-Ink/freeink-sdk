@@ -27,6 +27,7 @@ namespace freeink {
 
 class LgfxEpdDriver : public PanelDriver {
  public:
+  const char* controllerName() const override { return "LovyanGFX EPD"; }
   explicit LgfxEpdDriver(const LgfxEpdConfig& cfg);
 
   uint32_t spiHz() const override { return 0; }  // LovyanGFX owns the bus

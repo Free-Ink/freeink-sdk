@@ -1,21 +1,52 @@
 #include "OpdsParser.h"
 
+#include <Arduino.h>
 #include <OpdsLog.h>
 #include <XmlParserUtils.h>
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 
 using namespace OpdsLimits;
 
+namespace {
+constexpr size_t STRING_HEADROOM_BYTES = 4096;  // left for the entries' own strings
+constexpr size_t MIN_ENTRY_CAPACITY = 8;
+
+size_t affordableEntries(const size_t cap) {
+  const size_t block = ESP.getMaxAllocHeap();
+  return std::min(cap, block > STRING_HEADROOM_BYTES ? (block - STRING_HEADROOM_BYTES) / sizeof(OpdsEntry) : 0);
+}
+}  // namespace
+
+size_t OpdsLimits::reserveFeedEntries(std::vector<OpdsEntry>& entries) {
+  const size_t capacity = affordableEntries(ENTRY_STORAGE_CAPACITY);
+  if (capacity < MIN_ENTRY_CAPACITY) {
+    LOG_ERR("OPDS", "OOM: room for %u feed entries", static_cast<unsigned>(capacity));
+    return 0;
+  }
+  entries.reserve(capacity);
+  return capacity - (ENTRY_STORAGE_CAPACITY - MAX_ENTRIES);
+}
+
+void OpdsLimits::reserveFacetEntries(std::vector<OpdsEntry>& facets) {
+  facets.reserve(affordableEntries(MAX_FACET_ENTRIES));
+}
+
 OpdsParser::OpdsParser() {
+  // Before expat: it allocates nothing large and fails without aborting.
+  entryLimit = reserveFeedEntries(entries);
+  if (entryLimit == 0) {
+    errorOccured = true;
+    return;
+  }
   parser = XML_ParserCreate(nullptr);
   if (!parser) {
     errorOccured = true;
     LOG_DBG("OPDS", "Couldn't allocate memory for parser");
     return;
   }
-  entries.reserve(ENTRY_STORAGE_CAPACITY);
   XML_SetUserData(parser, this);
   XML_SetElementHandler(parser, startElement, endElement);
   XML_SetCharacterDataHandler(parser, characterData);
@@ -142,7 +173,7 @@ void XMLCALL OpdsParser::startElement(void* userData, const XML_Char* name, cons
 
   if (strcmp(name, "entry") == 0 || strstr(name, ":entry") != nullptr) {
     self->inEntry = true;
-    self->collectCurrentEntry = self->entries.size() < MAX_ENTRIES;
+    self->collectCurrentEntry = self->entries.size() < self->entryLimit;
     self->feedTruncated = self->feedTruncated || !self->collectCurrentEntry;
     self->currentEntry = OpdsEntry{};
     self->currentText.clear();
@@ -196,7 +227,9 @@ void XMLCALL OpdsParser::startElement(void* userData, const XML_Char* name, cons
         assignBounded(self->historyUrl, href, MAX_PAGE_URL_CHARS);
       } else if (rel && strstr(rel, "opds-spec.org/facet") != nullptr && !self->inEntry) {
         const char* title = findAttribute(atts, "title");
-        if (title && title[0] != '\0' && self->facetEntries.size() < MAX_FACET_ENTRIES) {
+        if (self->facetEntries.capacity() == 0) reserveFacetEntries(self->facetEntries);
+        if (self->facetEntries.size() >= self->facetEntries.capacity()) self->feedTruncated = true;
+        if (title && title[0] != '\0' && self->facetEntries.size() < self->facetEntries.capacity()) {
           OpdsEntry facet;
           facet.type = OpdsEntryType::NAVIGATION;
           assignBounded(facet.title, title, MAX_TITLE_CHARS);

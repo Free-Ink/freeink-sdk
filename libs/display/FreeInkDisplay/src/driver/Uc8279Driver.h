@@ -31,6 +31,7 @@ namespace freeink {
 
 class Uc8279Driver : public PanelDriver {
  public:
+  const char* controllerName() const override { return "UC8279"; }
   Uc8279Driver();
 
   uint32_t spiHz() const override;

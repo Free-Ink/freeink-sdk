@@ -48,6 +48,7 @@ const It8951Config& it8951DefaultConfig();
 
 class It8951Driver : public PanelDriver {
  public:
+  const char* controllerName() const override { return "IT8951"; }
   explicit It8951Driver(const It8951Config& cfg = it8951DefaultConfig());
 
   uint32_t spiHz() const override { return 0; }                                    // owns its own SPI

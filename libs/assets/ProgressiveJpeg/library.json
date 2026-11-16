@@ -1,0 +1,10 @@
+{
+  "name": "ProgressiveJpeg",
+  "version": "0.1.0",
+  "description": "FreeInk progressive JPEG decoder: full-resolution 8-bit grayscale rows from progressive (SOF2) JPEGs, with the coefficient store in PSRAM. Decoder-agnostic row output for any scaler or ditherer.",
+  "keywords": "jpeg, progressive, decoder, grayscale, eink",
+  "authors": [{"name": "FreeInk SDK Contributors"}],
+  "dependencies": {},
+  "platforms": "espressif32",
+  "frameworks": ["arduino"]
+}

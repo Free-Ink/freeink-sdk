@@ -31,6 +31,8 @@ class JsonListParser {
   // Rows emitted before a syntax error are kept. Returns false on malformed
   // or truncated JSON. Large (the SAX token buffer plus a read buffer): allocate on the heap.
   bool parse(ReadFn read, void* readCtx);
+  // Account for rows retained by the consumer, not just this parser's current row.
+  void setCaptureBudget(size_t bytes) { captureBudget = bytes; }
 
  private:
   using Path = std::vector<std::string>;
@@ -55,8 +57,10 @@ class JsonListParser {
   Path fields[F_COUNT];
   Path files;
   std::vector<Frame> stack;
-  size_t itemDepth = 0;  // stack depth of the open item object; 0 = none
+  size_t itemDepth = 0;    // stack depth of the open item object; 0 = none
   bool malformed = false;  // mismatched closer (JsonSax does not track nesting)
+  size_t captureBudget = 64 * 1024;
+  size_t capturedBytes = 0;
   Row current;
   RowSink sink;
   void* sinkCtx;

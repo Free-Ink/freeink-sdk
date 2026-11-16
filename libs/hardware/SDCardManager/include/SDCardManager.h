@@ -4,7 +4,7 @@
 // names. Two interchangeable backends behind one FsVolume& seam, so every op
 // returns ordinary FsFile objects:
 //   * SPI / SdFat (default).
-//   * Native 4-bit SDMMC (FREEINK_SD_SDMMC, e.g. de-link) — SdFat can't drive
+//   * Native 4-bit SDMMC (FREEINK_SD_SDMMC, e.g. Silkscreen) — SdFat can't drive
 //     SDIO, so a plain FsVolume is mounted on an esp-idf SDMMC block device
 //     (src/SdmmcBlockDevice). Requires the build to set USE_BLOCK_DEVICE_INTERFACE=1.
 // Boards whose SD rail needs more than a GPIO (e.g. an I2C PMIC) register their
@@ -15,11 +15,12 @@
 // forces SdFat's USE_UTF8_LONG_NAMES on for the whole build — without it,
 // SdFat mangles any non-ASCII long filename into an unopenable path.
 
-#include <WString.h>
-#include <vector>
-#include <string>
-#include <SdFat.h>
 #include <BoardConfig.h>
+#include <SdFat.h>
+#include <WString.h>
+
+#include <string>
+#include <vector>
 
 #if FREEINK_SD_SDMMC
 namespace freeink {
@@ -38,6 +39,8 @@ class SDCardManager {
   // scans the FAT and is too slow to call on every frame). 0 if not mounted or
   // the cluster count cannot be determined.
   uint64_t sdUsedBytes();
+  // Checked form: false if unmounted or the FAT scan failed; usedBytes is then 0.
+  bool sdUsedBytes(uint64_t& usedBytes);
   std::vector<String> listFiles(const char* path = "/", int maxFiles = 200);
   // Read the entire file at `path` into a String. Returns empty string on failure.
   String readFile(const char* path);
@@ -93,21 +96,25 @@ class SDCardManager {
   FsBlockDeviceInterface* rawBlockDevice();
   // End the FsVolume mount while keeping the block device alive for a raw
   // USB-MSC owner. The caller must reinitialize the manager (begin()) after the
-  // owner releases the card. Returns null when nothing is mounted.
+  // owner releases the card. Returns null when unmounted or a checked volume
+  // flush fails; a failed flush retains the firmware's mount.
   FsBlockDeviceInterface* detachFilesystemForRawAccess();
+  // Call after checked file saves have drained all writers. Flushes volume
+  // metadata without dropping the mount; failure leaves the card available.
+  bool syncFilesystem();
 #if FREEINK_SD_SDMMC
   // Stop the card for deep sleep: unmount the volume, stop the SDMMC host, and
   // float the bus pads so their pull-ups stop back-feeding the card's VDD net
   // through sleep. Idempotent; call only after all file users have stopped. A
   // deep-sleep wake resets the MCU and remounts through begin().
-  void shutdown();
+  bool shutdown();
 #else
   // SPI/SdFat boards: sleep either cuts power entirely (C3 Xteink) or gates the
   // SD rail in powerDownRailsForSleep(); there is no host to stop.
-  void shutdown() {}
+  bool shutdown() { return !initialized || syncFilesystem(); }
 #endif
 
- static SDCardManager& getInstance() { return instance; }
+  static SDCardManager& getInstance() { return instance; }
 
  private:
   static SDCardManager instance;
@@ -120,6 +127,7 @@ class SDCardManager {
   uint64_t cachedUsedBytes = 0;
   uint32_t cachedUsedBytesAt = 0;
   bool cachedUsedBytesValid = false;
+  bool cachedUsedBytesAvailable = false;
 
   // All filesystem ops route through one FsVolume& so the backend is swappable.
   // SPI boards: `sd` (SdFs is-a FsVolume). SDMMC boards: a bare FsVolume mounted

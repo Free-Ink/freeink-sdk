@@ -38,3 +38,12 @@ its terms:
     LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
     OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
     SOFTWARE.
+
+-----------------------------------------------------------------------------
+
+libs/hardware/Imu/src/Bmi270ConfigFile.h contains the BMI270 configuration
+file from Bosch Sensortec's BMI270_SensorAPI
+(https://github.com/boschsensortec/BMI270_SensorAPI), provided under the
+BSD-3-Clause license reproduced in that file:
+
+    Copyright (c) 2023 Bosch Sensortec GmbH. All rights reserved.

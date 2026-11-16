@@ -10,6 +10,18 @@
 #include <vector>
 
 struct FakeNet {
+  static unsigned long& readDelay() {
+    static unsigned long ms = 0;
+    return ms;
+  }
+  static size_t& bytesRead() {
+    static size_t n = 0;
+    return n;
+  }
+  static bool& holdOpen() {
+    static bool hold = false;
+    return hold;
+  }
   static std::deque<std::string>& replies() {
     static std::deque<std::string> r;
     return r;
@@ -43,7 +55,12 @@ class WiFiClient : public Client {
     return size;
   }
   int available() override { return open_ ? static_cast<int>(reply_.size() - pos_) : 0; }
-  int read() override { return available() > 0 ? static_cast<uint8_t>(reply_[pos_++]) : -1; }
+  int read() override {
+    if (available() <= 0) return -1;
+    delay(FakeNet::readDelay());
+    ++FakeNet::bytesRead();
+    return static_cast<uint8_t>(reply_[pos_++]);
+  }
   int read(uint8_t* buf, size_t size) override {
     const size_t n = std::min(size, static_cast<size_t>(available()));
     memcpy(buf, reply_.data() + pos_, n);
@@ -53,7 +70,7 @@ class WiFiClient : public Client {
   int peek() override { return available() > 0 ? static_cast<uint8_t>(reply_[pos_]) : -1; }
   void flush() override {}
   void stop() override { open_ = false; }
-  uint8_t connected() override { return open_ && pos_ < reply_.size(); }
+  uint8_t connected() override { return open_ && (FakeNet::holdOpen() || pos_ < reply_.size()); }
   operator bool() override { return connected(); }
   void setConnectionTimeout(unsigned long) {}
 

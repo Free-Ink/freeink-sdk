@@ -1,15 +1,19 @@
 #include "SDCardManager.h"
 
 #include <BoardConfig.h>
+#include <SPI.h>
 #include <driver/gpio.h>
 #include <esp_task_wdt.h>
-#include <SPI.h>
+
 #include <new>
 
 #include "SdmmcBlockDevice.h"  // no-op unless FREEINK_SD_SDMMC
 
 #if FREEINK_DEVICE_PAPERMONO
 #include <PaperMonoBoard.h>
+#endif
+#if FREEINK_DEVICE_EEGO_A4
+#include <Wire.h>
 #endif
 
 SDCardManager SDCardManager::instance;
@@ -83,6 +87,7 @@ FsBlockDeviceInterface* SDCardManager::rawBlockDevice() { return _dev; }
 
 FsBlockDeviceInterface* SDCardManager::detachFilesystemForRawAccess() {
   if (!initialized || !_dev) return nullptr;
+  if (!syncFilesystem()) return nullptr;
   _vol.end();
   initialized = false;
   cachedTotalBytes = 0;
@@ -91,10 +96,11 @@ FsBlockDeviceInterface* SDCardManager::detachFilesystemForRawAccess() {
   return _dev;
 }
 
-void SDCardManager::shutdown() {
-  if (!initialized || !_dev) return;
-  // FsVolume::end() flushes SdFat's cached FAT/directory sectors; SDMMC block
-  // writes are synchronous, so the card is consistent once it returns.
+bool SDCardManager::shutdown() {
+  if (!initialized || !_dev) return true;
+  if (!syncFilesystem()) return false;
+  // end() only releases the mounted volume; syncFilesystem() must succeed
+  // before stopping the host or changing the bus pads.
   _vol.end();
   _dev->end();  // frees the card and runs sdmmc_host_deinit()
   // sdmmc_host_deinit() leaves the bus pads in their last GPIO-matrix state:
@@ -114,6 +120,7 @@ void SDCardManager::shutdown() {
   cachedTotalBytes = 0;
   cachedUsedBytes = 0;
   cachedUsedBytesValid = false;
+  return true;
 }
 #else
 SDCardManager::SDCardManager() : sd() {}
@@ -123,7 +130,8 @@ bool SDCardManager::begin() {
   // dormant — bail out before any pin is touched, or SdFat drives "pin 255" and
   // floods the log. (Native-SDMMC boards like the X4 Pro take the #if branch above.)
   if (BoardConfig::ACTIVE.sd.cs < 0) {
-    if (Serial) Serial.printf("[%lu] [SD] SD disabled: CS unassigned in the %s profile\n", millis(), BoardConfig::ACTIVE.name);
+    if (Serial)
+      Serial.printf("[%lu] [SD] SD disabled: CS unassigned in the %s profile\n", millis(), BoardConfig::ACTIVE.name);
     initialized = false;
     cachedTotalBytes = 0;
     cachedUsedBytesValid = false;
@@ -133,16 +141,44 @@ bool SDCardManager::begin() {
   // Pins/clock come from the runtime-active profile (board-overridable via
   // BoardConfig::ACTIVE.sd.spiHz; 0 = default). Read after device selection.
   const uint8_t SD_CS = BoardConfig::ACTIVE.sd.cs;
-  const int8_t SD_SCLK = BoardConfig::ACTIVE.sd.sclk >= 0 ? BoardConfig::ACTIVE.sd.sclk
-                                                          : (BoardConfig::ACTIVE.sd.separateSpi ? -1
-                                                                                                : BoardConfig::ACTIVE.display.sclk);
-  const int8_t SD_MOSI = BoardConfig::ACTIVE.sd.mosi >= 0 ? BoardConfig::ACTIVE.sd.mosi
-                                                          : (BoardConfig::ACTIVE.sd.separateSpi ? -1
-                                                                                                : BoardConfig::ACTIVE.display.mosi);
+  const int8_t SD_SCLK = BoardConfig::ACTIVE.sd.sclk >= 0
+                             ? BoardConfig::ACTIVE.sd.sclk
+                             : (BoardConfig::ACTIVE.sd.separateSpi ? -1 : BoardConfig::ACTIVE.display.sclk);
+  const int8_t SD_MOSI = BoardConfig::ACTIVE.sd.mosi >= 0
+                             ? BoardConfig::ACTIVE.sd.mosi
+                             : (BoardConfig::ACTIVE.sd.separateSpi ? -1 : BoardConfig::ACTIVE.display.mosi);
   const int8_t SD_MISO = BoardConfig::ACTIVE.sd.miso;
   const uint32_t SPI_FQ = BoardConfig::ACTIVE.sd.spiHz != 0 ? BoardConfig::ACTIVE.sd.spiHz : 40000000;
 
   if (_powerHook) _powerHook();  // board brings up its SD rail (e.g. PMIC) if needed
+
+#if FREEINK_DEVICE_EEGO_A4
+  // EEGO A4 revisions differ on GPIO6. Units whose CW2015 gauge answers use it as
+  // the SD card's active-low power enable (stock V1.0.3 logs "SD power enabled:
+  // GPIO6 active-low"); held HIGH, their card does not answer. Units without the
+  // gauge read the battery on the GPIO10 ADC only with GPIO6 HIGH, which the
+  // profile leaves to display initialization. Decided once, before SD and display
+  // initialization drive the pin.
+  if (BoardConfig::isEegoA4()) {
+    static bool decided = false;
+    const int8_t gpio6 = BoardConfig::ACTIVE.display.powerEnable;
+    if (!decided && gpio6 >= 0) {
+      decided = true;
+      const auto& g = BoardConfig::ACTIVE.batteryGauge;
+      Wire.begin(g.i2cSda, g.i2cScl, g.i2cHz);
+      Wire.beginTransmission(g.gaugeAddr);
+      const bool gauge = Wire.endTransmission() == 0;
+      if (gauge) {
+        BoardConfig::ACTIVE.sd.powerEnable = gpio6;
+        BoardConfig::ACTIVE.sd.powerActiveHigh = false;
+        BoardConfig::ACTIVE.display.powerEnable = BoardConfig::PIN_UNASSIGNED;
+      }
+      if (Serial)
+        Serial.printf("[%lu] [SD] EEGO A4: CW2015 %s, GPIO%d = %s\n", millis(), gauge ? "present" : "absent", gpio6,
+                      gauge ? "SD power (active-low)" : "display enable (HIGH)");
+    }
+  }
+#endif
 
   // Boards that gate the SD rail with a plain GPIO (e.g. Sticky's SD_PWR_EN on
   // GPIO10) must power it before probing. Active-high enable + a brief settle.
@@ -196,9 +232,9 @@ bool SDCardManager::begin() {
 
   if (!cardReady) {
     if (Serial)
-      Serial.printf("[%lu] [SD] SD card not detected (err=0x%02X data=0x%02X cs=%d sclk=%d miso=%d mosi=%d clk=%luHz)\n",
-                    millis(), sd.sdErrorCode(), sd.sdErrorData(), SD_CS, SD_SCLK,
-                    SD_MISO, SD_MOSI, (unsigned long)SPI_FQ);
+      Serial.printf(
+          "[%lu] [SD] SD card not detected (err=0x%02X data=0x%02X cs=%d sclk=%d miso=%d mosi=%d clk=%luHz)\n",
+          millis(), sd.sdErrorCode(), sd.sdErrorData(), SD_CS, SD_SCLK, SD_MISO, SD_MOSI, (unsigned long)SPI_FQ);
     initialized = false;
     cachedTotalBytes = 0;
     cachedUsedBytesValid = false;
@@ -230,6 +266,7 @@ FsBlockDeviceInterface* SDCardManager::detachFilesystemForRawAccess() {
   if (!initialized) return nullptr;
   auto* const card = sd.card();
   if (!card) return nullptr;
+  if (!syncFilesystem()) return nullptr;
   // FsVolume::end() ONLY — deliberately not sd.end(), which would also call
   // SdCard::end() and tear down the card session the USB host is about to read
   // through. The card stays initialized and selected; remounting later goes
@@ -251,9 +288,23 @@ FsBlockDeviceInterface* SDCardManager::detachFilesystemForRawAccess() { return n
 #endif  // USE_BLOCK_DEVICE_INTERFACE || HAS_SDIO_CLASS
 #endif  // FREEINK_SD_SDMMC
 
-bool SDCardManager::ready() const {
-  return initialized;
+bool SDCardManager::syncFilesystem() {
+  if (!initialized) return false;
+  // FsFile stores the root handle inline. Its sync() reaches the mounted
+  // FAT/exFAT volume cache, unlike FsVolume::end(), which only forgets it.
+  FsFile root;
+  if (!root.openRoot(&vol())) {
+    if (Serial) Serial.printf("[%lu] [SD] Could not open volume for sync\n", millis());
+    return false;
+  }
+  const bool synced = root.sync();
+  const bool closed = root.close();
+  if ((!synced || !closed) && Serial)
+    Serial.printf("[%lu] [SD] Volume sync failed; keeping filesystem mounted\n", millis());
+  return synced && closed;
 }
+
+bool SDCardManager::ready() const { return initialized; }
 
 std::vector<String> SDCardManager::listFiles(const char* path, const int maxFiles) {
   std::vector<String> ret;
@@ -382,8 +433,7 @@ bool SDCardManager::readFileToStream(const char* path, Print& out, const size_t 
 }
 
 size_t SDCardManager::readFileToBuffer(const char* path, char* buffer, const size_t bufferSize, const size_t maxBytes) {
-  if (!buffer || bufferSize == 0)
-    return 0;
+  if (!buffer || bufferSize == 0) return 0;
   if (!initialized) {
     if (Serial) Serial.println("SDCardManager: not initialized; cannot read file");
     buffer[0] = '\0';
@@ -505,23 +555,32 @@ bool SDCardManager::openFileForWrite(const char* moduleName, const String& path,
 uint64_t SDCardManager::sdTotalBytes() const { return cachedTotalBytes; }
 
 uint64_t SDCardManager::sdUsedBytes() {
-  if (!initialized) return 0;
+  uint64_t usedBytes = 0;
+  sdUsedBytes(usedBytes);
+  return usedBytes;
+}
+
+bool SDCardManager::sdUsedBytes(uint64_t& usedBytes) {
+  usedBytes = 0;
+  if (!initialized) return false;
   const uint32_t now = millis();
   if (!cachedUsedBytesValid || (now - cachedUsedBytesAt) >= USED_BYTES_CACHE_TTL_MS) {
     const int32_t freeClusters = vol().freeClusterCount();
     const uint64_t clusterCount = vol().clusterCount();
-    if (freeClusters < 0) {
+    cachedUsedBytesAvailable = freeClusters >= 0;
+    if (!cachedUsedBytesAvailable) {
+      if (Serial) Serial.printf("[%lu] [SD] Failed to count free clusters\n", millis());
       cachedUsedBytes = 0;
     } else {
-      const uint64_t cappedFree = (static_cast<uint64_t>(freeClusters) > clusterCount)
-                                      ? clusterCount
-                                      : static_cast<uint64_t>(freeClusters);
+      const uint64_t cappedFree =
+          (static_cast<uint64_t>(freeClusters) > clusterCount) ? clusterCount : static_cast<uint64_t>(freeClusters);
       cachedUsedBytes = (clusterCount - cappedFree) * vol().bytesPerCluster();
     }
     cachedUsedBytesValid = true;
     cachedUsedBytesAt = now;
   }
-  return cachedUsedBytes;
+  usedBytes = cachedUsedBytes;
+  return cachedUsedBytesAvailable;
 }
 
 bool SDCardManager::removeDir(const char* path) {

@@ -14,6 +14,10 @@ struct JsonCallbacks {
   void (*onObjectEnd)(void* ctx);
   void (*onArrayStart)(void* ctx);
   void (*onArrayEnd)(void* ctx);
+  // Optional opt-in for text previews. Called instead of onString when a
+  // string exceeds the fixed token buffer; the prefix may end mid-UTF-8 codepoint.
+  // Keys and numbers still reject overflow. Never treat this prefix as a URL or ID.
+  void (*onStringPrefix)(void* ctx, const char* value, size_t len) = nullptr;
 };
 
 class StreamingJsonParser {

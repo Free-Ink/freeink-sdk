@@ -27,9 +27,14 @@ struct ListItem {
   bool toggle = false;
   bool toggleChecked = false;
   // Optional section heading drawn immediately before this selectable row.
-  // It shares the row's logical index and interaction value. Kept last so
-  // existing aggregate initializers remain source-compatible.
+  // It shares the row's logical index and interaction value.
   const char *sectionHeading = nullptr;
+  // Emphasize this label without changing row interactivity or list-wide bold text.
+  bool bold = false;
+  // Icon in the value slot (a status mark such as "downloaded"), drawn in the
+  // row's foreground ink so it inverts with selection. Used only when neither
+  // toggle nor value is set. The bitmap must outlive the list() call.
+  const BitmapRef *valueIcon = nullptr;
 };
 
 struct ListNav;
@@ -437,6 +442,10 @@ inline void drawListScrollIndicator(DrawTarget &target, const Rect rect,
               Paint::solid(Color::Black));
 }
 
+inline bool listItemHasValueIcon(const ListItem &item) {
+  return item.valueIcon && *item.valueIcon;
+}
+
 // Geometry shared by full rows and previews. Widths are resolved before
 // wrapping, including both the trailing slot and optional balanced wrap cap.
 struct ListRowLayout {
@@ -454,7 +463,9 @@ inline ListRowLayout measureListRow(const DrawTarget &target, AssetResolver *ass
   ListRowLayout result;
   const int16_t rowH = props.rowHeight > 0 ? props.rowHeight : 36;
   const int16_t sidePad = props.sidePadding < 0 ? 8 : props.sidePadding;
-  const int16_t labelLh = target.lineHeight(props.labelText.font);
+  TextStyle labelStyle = props.labelText;
+  labelStyle.bold = labelStyle.bold || item.bold;
+  const int16_t labelLh = target.lineHeight(labelStyle.font);
   const BitmapRef icon = item.icon ? item.icon : resolveBitmap(assets, item.iconAsset);
   const int16_t iconSize = icon ? (props.iconSize > 0 ? props.iconSize : icon.width) : 0;
   const int16_t contentWidth = static_cast<int16_t>(width - sidePad * 2 -
@@ -464,20 +475,23 @@ inline ListRowLayout measureListRow(const DrawTarget &target, AssetResolver *ass
     result.valueWidth = props.toggleWidth < 18 ? 18 : props.toggleWidth;
   } else if (item.value) {
     result.valueWidth = target.measureText(props.valueText.font, item.value, props.valueText).width;
+  } else if (listItemHasValueIcon(item)) {
+    result.valueWidth = static_cast<int16_t>(item.valueIcon->width);
   }
-  if (item.toggle || item.value)
+  const bool hasValueSlot = item.toggle || item.value || listItemHasValueIcon(item);
+  if (hasValueSlot)
     result.labelWidth = static_cast<int16_t>(result.labelWidth - result.valueWidth -
                                             props.valueInset - props.textGap);
-  if (props.balanceWrappedLabelWithValue && props.labelText.maxLines > 1 &&
-      (item.toggle || item.value) && item.label &&
-      target.measureText(props.labelText.font, item.label, props.labelText).width > result.labelWidth) {
+  if (props.balanceWrappedLabelWithValue && labelStyle.maxLines > 1 &&
+      hasValueSlot && item.label &&
+      target.measureText(labelStyle.font, item.label, labelStyle).width > result.labelWidth) {
     const int16_t cap = static_cast<int16_t>(contentWidth * 3 / 5);
     if (result.labelWidth > cap) result.labelWidth = cap;
   }
   if (result.labelWidth < 0) result.labelWidth = 0;
-  if (item.label && props.labelText.maxLines > 1 && labelLh > 0 && result.labelWidth > 0) {
+  if (item.label && labelStyle.maxLines > 1 && labelLh > 0 && result.labelWidth > 0) {
     const int16_t lines = static_cast<int16_t>(measureWrappedText(
-        target, item.label, props.labelText, result.labelWidth).height / labelLh);
+        target, item.label, labelStyle, result.labelWidth).height / labelLh);
     if (lines > 1) result.labelLines = static_cast<uint8_t>(lines);
   }
   const int16_t subLh = item.subtitle ? target.lineHeight(props.subtitleText.font) : 0;
@@ -486,7 +500,9 @@ inline ListRowLayout measureListRow(const DrawTarget &target, AssetResolver *ass
         ? measureWrappedText(target, item.subtitle, props.subtitleText, contentWidth).height : subLh;
   }
   const int16_t valueHeight = item.toggle ? (props.toggleHeight < 12 ? 12 : props.toggleHeight)
-      : (item.value ? target.lineHeight(props.valueText.font) : 0);
+      : item.value     ? target.lineHeight(props.valueText.font)
+      : listItemHasValueIcon(item) ? static_cast<int16_t>(item.valueIcon->height)
+                                   : 0;
   const int16_t labelHeight = static_cast<int16_t>(labelLh * result.labelLines);
   result.labelHeight = labelHeight > valueHeight ? labelHeight : valueHeight;
   int16_t needed = rowH;
@@ -507,6 +523,74 @@ inline ListRowLayout measureListRow(const DrawTarget &target, AssetResolver *ass
 }
 
 // Measure only until the viewport is full; virtualized windows that omit rows cannot be centered.
+// The value slot of a row: a toggle, a value string, or a value icon. Out of
+// line because list() is a template, and each instantiation would otherwise
+// carry its own copy of this drawing.
+__attribute__((noinline)) inline void drawListValueSlot(DrawTarget &target, const ListItem &item,
+                                                        const ListProps &props, const ListRowLayout &layout,
+                                                        const BoxStyle &style, const Rect band) {
+  if (item.toggle) {
+    const int16_t togW = props.toggleWidth < 18 ? 18 : props.toggleWidth;
+    const int16_t togH = props.toggleHeight < 12 ? 12 : props.toggleHeight;
+    const int16_t togX = props.rtl
+        ? static_cast<int16_t>(band.x + props.valueInset)
+        : static_cast<int16_t>(band.x + band.width - togW - props.valueInset);
+    Rect toggleRect{
+        togX,
+        static_cast<int16_t>(band.y + (band.height - togH) / 2), togW, togH};
+    // The switch draws in row-foreground ink with the foreground's opposite
+    // as "paper", so it inverts along with the row when selected.
+    const Paint fg = style.foreground;
+    const bool fgWhite = fg.kind == PaintKind::Solid && fg.color == Color::White;
+    const Paint paper = Paint::solid(fgWhite ? Color::Black : Color::White);
+    if (props.toggleCheckbox) {
+      const int16_t size = static_cast<int16_t>((togW < togH ? togW : togH) - 6);
+      const Rect box{static_cast<int16_t>(toggleRect.right() - size - 3),
+                     static_cast<int16_t>(toggleRect.y + (togH - size) / 2), size, size};
+      target.stroke(box, fg, 2, 2);
+      if (item.toggleChecked) {
+        const int16_t inset = static_cast<int16_t>(size / 4);
+        const Rect inner = box.inset(Insets{inset, inset, inset, inset});
+        target.fill(inner, fg, 2);
+      }
+    } else {
+      const uint8_t trackRadius = static_cast<uint8_t>(props.toggleRadius > togH / 2 ? togH / 2 : props.toggleRadius);
+      target.fill(toggleRect, item.toggleChecked ? fg : paper, trackRadius);
+      if (props.toggleBorderWidth > 0) {
+        target.stroke(toggleRect, fg, props.toggleBorderWidth, trackRadius);
+      }
+      const int16_t knobInset = props.toggleKnobInset < 0 ? 0 : props.toggleKnobInset;
+      const int16_t knobH = static_cast<int16_t>(togH - knobInset * 2);
+      if (knobH > 0) {
+        Rect knob{static_cast<int16_t>(item.toggleChecked ? toggleRect.right() - knobInset - knobH
+                                                          : toggleRect.x + knobInset),
+                  static_cast<int16_t>(toggleRect.y + knobInset), knobH, knobH};
+        const uint8_t knobRadius =
+            static_cast<uint8_t>(props.toggleKnobRadius > knobH / 2 ? knobH / 2 : props.toggleKnobRadius);
+        target.fill(knob, item.toggleChecked ? paper : fg, knobRadius);
+      }
+    }
+  } else if (item.value) {
+    TextStyle valueStyle = textStyleWithForeground(props.valueText, style.foreground);
+    valueStyle.align = props.rtl ? TextAlign::Left : TextAlign::Right;
+    const int16_t valueW = layout.valueWidth;
+    const int16_t valueX = props.rtl
+        ? static_cast<int16_t>(band.x + props.valueInset)
+        : static_cast<int16_t>(band.x + band.width - valueW - props.valueInset);
+    Rect valueRect{valueX, band.y, valueW, band.height};
+    target.text(valueRect, item.value, valueStyle);
+  } else if (listItemHasValueIcon(item)) {
+    const BitmapRef &icon = *item.valueIcon;
+    const int16_t iconW = static_cast<int16_t>(icon.width);
+    const int16_t iconH = static_cast<int16_t>(icon.height);
+    const int16_t iconX = props.rtl
+        ? static_cast<int16_t>(band.x + props.valueInset)
+        : static_cast<int16_t>(band.x + band.width - iconW - props.valueInset);
+    target.bitmap(Rect{iconX, static_cast<int16_t>(band.y + (band.height - iconH) / 2), iconW, iconH},
+                  icon, BitmapMode::Contain, style.foreground);
+  }
+}
+
 inline int listContentHeight(const DrawTarget& target, AssetResolver* assets, Rect rect, const ListProps& props) {
   const int gap = props.rowGap > 0 ? props.rowGap : 0;
   const int inset = props.rowInset > 0 ? props.rowInset : 0;
@@ -651,6 +735,8 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
       cursorY = static_cast<int16_t>(cursorY + headerH + rowGap);
       continue;
     }
+    TextStyle labelStyle = props.labelText;
+    labelStyle.bold = labelStyle.bold || item.bold;
     const ListRowLayout layout = measureListRow(frame.target(), frame.assets(),
                                                  rowArea.width, props, item);
     const int16_t itemH = layout.height;
@@ -710,7 +796,7 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
       // selection pill wraps the text instead of spanning the rect.
       const int16_t labelW =
           frame.target()
-              .measureText(props.labelText.font, item.label, props.labelText)
+              .measureText(labelStyle.font, item.label, labelStyle)
               .width;
       const int16_t hugW = static_cast<int16_t>(labelW + sidePad * 2);
       if (hugW < row.width)
@@ -784,8 +870,7 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
     // Slot layout (mirrors settingRow): the label owns a "title band" and the
     // icon and value align to it; the subtitle spans the full content width
     // under the band so it never collides with the value.
-    TextStyle labelStyle =
-        textStyleWithForeground(props.labelText, style.foreground);
+    labelStyle = textStyleWithForeground(labelStyle, style.foreground);
     // The band holds every label line the height pre-pass measured (usually
     // one); the subtitle and the row's growth both follow it.
     const int16_t labelBlockH = layout.labelHeight;
@@ -832,67 +917,9 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
     // RTL: the value/toggle slot moves to the band's leading (left) edge and
     // the label fills whatever remains on the trailing (right) edge, next to
     // the icon -- computed below via labelX once the slot width is known.
+    drawListValueSlot(frame.target(), item, props, layout, style, band);
     int16_t labelX = band.x;
-    int16_t availW = band.width;
-    if (item.toggle) {
-      const int16_t togW = props.toggleWidth < 18 ? 18 : props.toggleWidth;
-      const int16_t togH = props.toggleHeight < 12 ? 12 : props.toggleHeight;
-      const int16_t togX = props.rtl
-          ? static_cast<int16_t>(band.x + props.valueInset)
-          : static_cast<int16_t>(band.x + band.width - togW - props.valueInset);
-      Rect toggleRect{
-          togX,
-          static_cast<int16_t>(band.y + (band.height - togH) / 2), togW, togH};
-      // The switch draws in row-foreground ink with the foreground's opposite
-      // as "paper", so it inverts along with the row when selected.
-      const Paint fg = style.foreground;
-      const bool fgWhite = fg.kind == PaintKind::Solid && fg.color == Color::White;
-      const Paint paper = Paint::solid(fgWhite ? Color::Black : Color::White);
-      if (props.toggleCheckbox) {
-        const int16_t size = static_cast<int16_t>((togW < togH ? togW : togH) - 6);
-        const Rect box{static_cast<int16_t>(toggleRect.right() - size - 3),
-                       static_cast<int16_t>(toggleRect.y + (togH - size) / 2), size, size};
-        frame.target().stroke(box, fg, 2, 2);
-        if (item.toggleChecked) {
-          const int16_t inset = static_cast<int16_t>(size / 4);
-          const Rect inner = box.inset(Insets{inset, inset, inset, inset});
-          frame.target().fill(inner, fg, 2);
-        }
-      } else {
-        const uint8_t trackRadius = static_cast<uint8_t>(props.toggleRadius > togH / 2 ? togH / 2 : props.toggleRadius);
-        frame.target().fill(toggleRect, item.toggleChecked ? fg : paper, trackRadius);
-        if (props.toggleBorderWidth > 0) {
-          frame.target().stroke(toggleRect, fg, props.toggleBorderWidth, trackRadius);
-        }
-        const int16_t knobInset = props.toggleKnobInset < 0 ? 0 : props.toggleKnobInset;
-        const int16_t knobH = static_cast<int16_t>(togH - knobInset * 2);
-        if (knobH > 0) {
-          Rect knob{static_cast<int16_t>(item.toggleChecked ? toggleRect.right() - knobInset - knobH
-                                                            : toggleRect.x + knobInset),
-                    static_cast<int16_t>(toggleRect.y + knobInset), knobH, knobH};
-          const uint8_t knobRadius =
-              static_cast<uint8_t>(props.toggleKnobRadius > knobH / 2 ? knobH / 2 : props.toggleKnobRadius);
-          frame.target().fill(knob, item.toggleChecked ? paper : fg, knobRadius);
-        }
-      }
-      availW = static_cast<int16_t>(availW - togW - props.valueInset - props.textGap);
-      if (props.rtl) labelX = static_cast<int16_t>(band.x + band.width - availW);
-    } else if (item.value) {
-      TextStyle valueStyle = textStyleWithForeground(props.valueText, style.foreground);
-      valueStyle.align = props.rtl ? TextAlign::Left : TextAlign::Right;
-      const int16_t valueW = layout.valueWidth;
-      const int16_t valueX = props.rtl
-          ? static_cast<int16_t>(band.x + props.valueInset)
-          : static_cast<int16_t>(band.x + availW - valueW - props.valueInset);
-      Rect valueRect{valueX, band.y, valueW, band.height};
-      frame.target().text(valueRect, item.value, valueStyle);
-      availW = static_cast<int16_t>(availW - valueW - props.valueInset -
-                                    props.textGap);
-      if (props.rtl)
-        labelX = static_cast<int16_t>(band.x + band.width - availW);
-    }
-
-    availW = layout.labelWidth;
+    int16_t availW = layout.labelWidth;
     if (props.rtl)
       labelX = static_cast<int16_t>(band.right() - availW);
 

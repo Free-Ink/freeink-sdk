@@ -115,6 +115,8 @@ inline FetchResult fetchResumable(const std::string& startUrl, const FetchOption
       result.status = -1;
       return result;
     }
+    // Bulk body: keep a full-record TLS buffer for the whole transfer.
+    http.setReserveFullRecord(true);
     if (configure) configure(http, fetchOrigin(url) == startOrigin);
     size_t attemptStart = result.bytes;
     const bool resuming = attemptStart > 0;

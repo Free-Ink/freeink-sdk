@@ -27,6 +27,11 @@
 
 namespace freeink {
 
+// True when `host` (a name or an IP literal) resolves; logs a failure.
+// Arduino-ESP32 3.3.x NetworkClient::connect(host) treats a failed lookup as
+// success and waits out the connect timeout on 0.0.0.0, so check this first.
+bool hostResolves(const char* host);
+
 class SecureClient : public Client {
  public:
   SecureClient() = default;
@@ -48,6 +53,18 @@ class SecureClient : public Client {
   // uninterruptible stretch is one setConnectionTimeout() window rather than
   // the four that a failing connect() can otherwise spend.
   void setAbortCallback(AbortCallback cb) { _shouldAbort = std::move(cb); }
+
+  // Bulk downloads: pre-grow this connection's wolfSSL input buffer after
+  // request text has been sent/freed, before reading response headers. Requires
+  // the consumer's verified FREEINK_WOLFSSL_RETAIN_INPUT_BUFFER patch; otherwise
+  // a no-op. Skips negotiated small records, pending data, and a concurrent
+  // reservation. OOM falls back to ordinary record growth. wolfSSL owns/frees
+  // the buffer, including on cancellation/error. Client calls must be serialized.
+#if defined(FREEINK_NET_WOLFSSL)
+  void reserveFullRecord();
+#else
+  void reserveFullRecord() {}
+#endif
 
   // True when the last connect() returned because the abort callback fired
   // rather than because the connection failed.
@@ -81,6 +98,7 @@ class SecureClient : public Client {
   WiFiClient _transport;
   AbortCallback _shouldAbort;
   bool _aborted = false;
+  bool _tcpConnected = false;  // the last connectWithMethod() reached the handshake
   const char* _rootCA = nullptr;
   bool _insecure = false;
   void* _ssl = nullptr;  // WOLFSSL* (opaque to keep wolfSSL headers out of here)

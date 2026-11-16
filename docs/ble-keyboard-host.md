@@ -81,6 +81,8 @@ Page-turner remotes:
 
 ```cpp
 BleHid.armSelectedPeerReconnect(addr);  // retry only the remote the user chose, bounded
+// or: connect whichever bonded remote advertises (Priority waits 3 s for addr)
+BleHid.armBondedReconnect(freeink::PickPolicy::First, nullptr);
 BleHid.connectedAddr();                 // peer on the live link ("" when none)
 
 freeink::RawButtonEvent raw;            // each button edge as the report bytes carry it
@@ -111,7 +113,8 @@ peripheral requires passkey pairing, the host exposes the six-digit code through
   upserted into a fixed array (`kMaxDiscovered`) and the HID service UUID is
   recorded when present. HID is validated at connect time so devices that put
   their name or services in scan response / extended advertising fragments can
-  still appear in the pairing UI.
+  still appear in the pairing UI. The scan of `armBondedReconnect()` is passive
+  and only compares each advertiser with the bonds; nothing enters the array.
 - **Connect** — runs on a dedicated FreeRTOS task: connect → discover HID (if a
   search for the HID UUID finds nothing, all services are listed) →
   `secureConnection()` (bond) → write **Report Protocol** mode → subscribe to
@@ -132,7 +135,11 @@ peripheral requires passkey pairing, the host exposes the six-digit code through
 All storage is fixed-capacity: discovered devices (`kMaxDiscovered` = 24), bonds
 (`kMaxBonds` = 4), the key ring (`kKeyQueueLen` = 16) and the raw button ring
 (`kRawQueueLen` = 17, eight taps). One active connection.
-No `std::vector`/heap in the hot path. Configure NimBLE for a single connection,
+No `std::vector`/heap in the hot path. Each scan report still costs NimBLE an
+advertiser object with its payload buffer, and the callback an address string,
+during pairing scans and the bonded-reconnect scan alike. The bonded scan turns on
+the controller's duplicate filter, which cuts repeats from a device within one 5 s
+scan; its cache is bounded, so in a crowded room repeats come back. Configure NimBLE for a single connection,
 central-only, to keep its static footprint small on the C3.
 
 ### Known remote button profiles

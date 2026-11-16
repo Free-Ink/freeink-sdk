@@ -53,7 +53,7 @@ Do everything in the device section above, plus the following.
    - If the controller needs a sleep command or pin parking before deep
      sleep, add it to `prepareForDeepSleep()`.
    - Check the per-controller special cases for one the new chip also needs:
-     the GT911-only multi-contact queries, and CST816S's virtual buttons in
+     the controller-specific multi-contact queries, and CST816S's virtual buttons in
      `serviceTouch()`.
 9. **Host test**: add `test/host/run_<device>_touch.sh` and its stubs, using
    `run_picco_touch.sh` or `run_eego.sh` as the template. Then run every

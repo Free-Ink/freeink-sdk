@@ -158,6 +158,7 @@ class Opds2Parser final : public Print {
   bool pendingKeyIsPreferred() const;
 
   std::vector<OpdsEntry> entries;
+  size_t entryLimit = 0;  // set by reserveFeedEntries()
   std::vector<OpdsEntry> facetEntries;
   OpdsEntry currentEntry;
 

@@ -46,6 +46,14 @@ int main() {
   Wire = {};
   input.beginGslx680();
   assert(input.hasTouch());
+  // While the controller is still booting the board already reports touch, so
+  // a screen drawn in that window is not laid out for buttons.
+  input.touchDataEnabled = false;
+  input.gslInitRunning = true;
+  assert(input.hasTouch());
+  input.gslInitRunning = false;
+  assert(!input.hasTouch());
+  input.touchDataEnabled = true;
   // A successful ACK cannot hide a later failed upload or invalid firmware magic.
   Wire = {};
   Wire.failAt = 25;
@@ -123,24 +131,173 @@ int main() {
   feed(Frame{1, 0x03a0, 0x1020}, 1000);
   feed(Frame{0, 0, 0}, 1060);
   assert(input.touchHomeKeyTapEvent);
-  // Stock factory calibration: every table point maps to its own screen pixel,
-  // and samples between them interpolate inside their triangle.
+  // Linear digitizer map to portrait screen pixels, clamped at the raw limits.
   struct Cal {
     uint16_t rx, ry;
     int16_t sx, sy;
   };
-  for (const auto& c : {Cal{549, 337, 276, 306}, Cal{720, 94, 80, 168}, Cal{694, 560, 472, 168},
-                        Cal{392, 558, 472, 444}, Cal{374, 97, 80, 444}, Cal{455, 40, 34, 379}}) {
+  for (const auto& c : {Cal{549, 337, 273, 309}, Cal{720, 94, 76, 166}, Cal{919, 0, 0, 0}, Cal{0, 680, 551, 767},
+                        Cal{0, 4095, 551, 767}}) {
     int16_t x = -1, y = -1;
     InputManager::gslCalibrate(c.rx, c.ry, x, y);
-    assert(x == c.sx && y == c.sy && "stock calibration point mismatch");
+    assert(x == c.sx && y == c.sy && "touch map point mismatch");
   }
-  int16_t edgeX = -1, edgeY = -1;
-  InputManager::gslCalibrate(0, 680, edgeX, edgeY);  // extrapolates to (595, 775)
-  assert(edgeX == 551 && edgeY == 767 && "calibration must clamp to the screen");
-  // A frame lands in the panel-native frame: x = portrait y, y = 551 - portrait x.
+  // A frame lands in the panel-native frame (x = portrait y, y = 551 -
+  // portrait x), trimmed by the profile range 12..779 / 28..553.
   reset();
   feed(Frame{1, 549, 0x1000 | 337}, 1000);
-  assert(input.touchPressed && input.touchPoint.x == 306 && input.touchPoint.y == 551 - 276);
-  std::puts("A4 firmware bytes, batching, failure handling, touch sleep and wake, home key classification, stock calibration passed");
+  assert(input.touchPressed && input.touchPoint.x == 297 && input.touchPoint.y == 250);
+
+  // --- Multi-touch snapshot: the GSLX680 backend mirrors the GT911 contract ---
+  assert(input.supportsMultiTouch() && "GSLX680 must report multi-touch support");
+
+  struct Contact {
+    uint16_t xWord, yWord;
+  };
+  const auto feedMulti = [&](std::initializer_list<Contact> contacts, unsigned long now) {
+    Wire = {};
+    input.touchReadAt = 0;
+    Wire.touchFrame = {static_cast<uint8_t>(contacts.size()), 0, 0, 0};
+    for (const auto& c : contacts) {
+      Wire.touchFrame.push_back(static_cast<uint8_t>(c.yWord));
+      Wire.touchFrame.push_back(static_cast<uint8_t>(c.yWord >> 8));
+      Wire.touchFrame.push_back(static_cast<uint8_t>(c.xWord));
+      Wire.touchFrame.push_back(static_cast<uint8_t>(c.xWord >> 8));
+    }
+    input.pollGslx680(now);
+  };
+  const auto clearTouchState = [&]() {
+    reset();
+    input.touchSnapshot = {};
+    // Independent cases must not inherit gesture or event state: a stale
+    // multi-contact sequence or release flag made later assertions vacuous.
+    input.resetMultiTouchGesture();
+    input.touchPressedEvent = false;
+    input.touchReleasedEvent = false;
+    input.touchMovedBeyondTapSlop = false;
+    input.touchMovedBeyondTapReleaseSlop = false;
+    input.touchLongPressEvent = false;
+    input.touchLongPressFired = false;
+    input.touchSuppressed = false;
+  };
+
+  // Two contacts: reportedCount for truncation detection, both stored with
+  // panel-native coordinates; the single-touch API keeps the
+  // first contact and stops being a tap candidate. Hardware-validated on the
+  // A4 LITE (2026-10-29): the real glass reports record top nibbles of 0 —
+  // the A4's records are coordinate-only (no track ids), so ids are
+  // frame-local record slots and idsStable is false, mirroring GT911's
+  // coordinate-only contract. Callers must not retain ids across frames.
+  clearTouchState();
+  feedMulti({{549, 337}, {720, 94}}, 2000);
+  assert(input.touchPressed);
+  assert(input.touchSnapshot.reportedCount == 2 && input.touchSnapshot.count == 2);
+  assert(!input.touchSnapshot.idsStable && "A4 records are coordinate-only (no track ids)");
+  assert(input.touchSnapshot.points[0].id == 0 && input.touchSnapshot.points[1].id == 1 &&
+         "coordinate-only ids are frame-local record slots");
+  assert(input.touchSnapshot.points[0].point.x == 297 && input.touchSnapshot.points[0].point.y == 250);
+  assert(input.touchSnapshot.points[1].point.x == 154 && input.touchSnapshot.points[1].point.y == 447);
+  assert(input.touchSnapshot.points[0].point.timestamp == 2000);
+  assert(input.touchPoint.x == 297 && input.touchPoint.y == 250 && "primary contact must stay the first");
+  assert(input.touchMovedBeyondTapSlop && "a multi-contact frame must not remain a tap candidate");
+
+  // Records swap slots across frames; slot ids follow records, not fingers.
+  feedMulti({{720, 94}, {549, 337}}, 2020);
+  assert(input.touchSnapshot.points[0].id == 0 && input.touchSnapshot.points[0].point.x == 154);
+  assert(input.touchSnapshot.points[1].id == 1 && input.touchSnapshot.points[1].point.x == 297);
+
+  // Three contacts.
+  feedMulti({{549, 337}, {720, 94}, {694, 560}}, 2040);
+  assert(input.touchSnapshot.reportedCount == 3 && input.touchSnapshot.count == 3);
+  assert(input.touchSnapshot.points[2].id == 2 && input.touchSnapshot.points[2].point.x == 176 &&
+         input.touchSnapshot.points[2].point.y == 70);
+
+  // Five contacts: stored count caps at MAX_TOUCH_CONTACTS, reportedCount keeps 5.
+  clearTouchState();
+  feedMulti({{549, 337}, {720, 94}, {694, 560}, {374, 97}, {455, 40}}, 2060);
+  assert(input.touchSnapshot.reportedCount == 5);
+  assert(input.touchSnapshot.count == InputManager::MAX_TOUCH_CONTACTS && "stored contacts must cap");
+  assert(input.touchSnapshot.points[3].id == 3);
+
+  // A past-glass contact (X >= 920) drops per-contact, not per-frame, and is
+  // excluded from reportedCount: the frame is a single-contact touch.
+  clearTouchState();
+  feedMulti({{549, 337}, {0x2000 | 950, 0x2000 | 306}}, 2080);
+  assert(!input.touchHomeKeyEvent && input.touchPressed);
+  assert(input.touchSnapshot.reportedCount == 1 && input.touchSnapshot.count == 1 &&
+         "past-glass contact must drop alone");
+
+  // A key contact alongside an on-glass contact: the touch wins, no key
+  // event, and the key contact is excluded from the snapshot.
+  clearTouchState();
+  feedMulti({{549, 337}, {0x03a0, 0x1020}}, 2100);
+  assert(!input.touchHomeKeyEvent && !input.touchHomeKeyDown && input.touchPressed);
+  assert(input.touchSnapshot.count == 1 && input.touchSnapshot.reportedCount == 1 &&
+         "key contact must not enter the snapshot");
+
+  // A bezel key-pad press leaks a phantom contact at raw x far below the
+  // glass domain (observed raw x 4-5) alongside the sentinel. The phantom must
+  // drop: it is not a glass touch — it must neither cancel the key press
+  // nor decode as a screen tap.
+  clearTouchState();
+  feedMulti({{0x03a0, 0x1020}, {5, 330}}, 2400);
+  assert(input.touchHomeKeyEvent && "the pad's phantom must not cancel the key press");
+  assert(!input.touchPressed && "the phantom must not become a glass touch");
+  assert(input.touchSnapshot.count == 0 && "the phantom must not enter the snapshot");
+  feedMulti({}, 2420);
+  assert(input.touchHomeKeyTapEvent && "a clean pad press taps on release");
+
+  // Low raw X without a Home sentinel is a real touch, not a pad phantom.
+  clearTouchState();
+  feedMulti({{51, 308}}, 2500);
+  assert(input.touchPressed && input.touchPressedEvent);
+  assert(input.touchSnapshot.count == 1 && input.touchSnapshot.reportedCount == 1);
+  assert(input.touchPoint.x == 712);
+  feedMulti({}, 2520);
+  assert(input.touchReleasedEvent && !input.touchHomeKeyTapEvent);
+
+  // Key/phantom classification must not depend on record order.
+  clearTouchState();
+  feedMulti({{5, 330}, {0x03a0, 0x0020}}, 2540);
+  assert(input.touchHomeKeyEvent && !input.touchPressed);
+  feedMulti({}, 2560);
+  assert(input.touchHomeKeyTapEvent);
+
+  // An all-zero record is an absent contact (padded frame), never on-glass and
+  // never counted in reportedCount.
+  clearTouchState();
+  feedMulti({{549, 337}, {0, 0}}, 2120);
+  assert(input.touchSnapshot.reportedCount == 1 && input.touchSnapshot.count == 1);
+
+  // Release: the authoritative zero-contact frame clears the snapshot.
+  feedMulti({}, 2140);
+  assert(input.touchSnapshot.count == 0 && input.touchSnapshot.reportedCount == 0);
+  assert(!input.touchPressed && input.touchReleasedEvent);
+
+  // A multi-contact press/release never becomes a primary tap.
+  clearTouchState();
+  feedMulti({{549, 337}, {720, 94}}, 2200);
+  feedMulti({}, 2260);
+  float tapNx = -1, tapNy = -1;
+  assert(!input.wasTouchTap(tapNx, tapNy) && "multi-contact release must not tap");
+
+  // A finger sharing its frame with a dropped record (key sentinel, past-glass
+  // sample, padded slot) is still a single-contact touch and must still tap:
+  // reportedCount counts only the contacts that survive the filters.
+  clearTouchState();
+  feedMulti({{0x1000 | 549, 0x1000 | 337}, {0x03a0, 0x1020}}, 2300);
+  assert(input.touchPressed && !input.touchMovedBeyondTapSlop);
+  feedMulti({}, 2320);
+  float tapKeyX = -1, tapKeyY = -1;
+  assert(input.wasTouchTap(tapKeyX, tapKeyY) && "a finger with a key record must still tap");
+
+  clearTouchState();
+  feedMulti({{0x1000 | 549, 0x1000 | 337}, {0x2000 | 950, 0x2000 | 306}}, 2340);
+  assert(input.touchPressed && !input.touchMovedBeyondTapSlop);
+  feedMulti({}, 2360);
+  float tapOffX = -1, tapOffY = -1;
+  assert(input.wasTouchTap(tapOffX, tapOffY) && "a finger with a past-glass record must still tap");
+
+  std::puts("A4 firmware bytes, batching, failure handling, touch sleep and wake, home key classification, "
+            "touch map, multi-touch snapshot passed");
 }

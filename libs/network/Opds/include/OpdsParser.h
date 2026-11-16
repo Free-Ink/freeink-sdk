@@ -110,6 +110,7 @@ class OpdsParser final : public Print {
 
   XML_Parser parser = nullptr;
   std::vector<OpdsEntry> entries;
+  size_t entryLimit = 0;  // set by reserveFeedEntries()
   std::vector<OpdsEntry> facetEntries;
   // facetGroup of the last collected facet link; a change starts a new
   // section heading.

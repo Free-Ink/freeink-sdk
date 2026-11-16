@@ -1,16 +1,22 @@
 #include "BatteryMonitor.h"
 
+// BoardConfig.h uses initializer_list in inline functions. Keep this prerequisite first.
+#include <initializer_list>
+
+// Hardware headers
 #include <Arduino.h>
-#include <initializer_list>  // BoardConfig.h range-for over the latch pins
 #include <BoardConfig.h>
+#include <I2cBusLock.h>
 #include <M5Pm1.h>
 #include <esp_idf_version.h>
+
 #if ESP_IDF_VERSION_MAJOR < 5
 #include <esp_adc_cal.h>
 #endif
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 
 #if FREEINK_BATTERY_I2C_GAUGE
 #include <Wire.h>
@@ -48,6 +54,7 @@ void ensureWire() {
 }
 
 bool readReg16(uint8_t addr, uint8_t reg, uint16_t& out) {
+  const freeink::I2cBusLock busLock;
   if (addr == 0) return false;
   ensureWire();
   TwoWire& w = gaugeWire();
@@ -62,6 +69,7 @@ bool readReg16(uint8_t addr, uint8_t reg, uint16_t& out) {
 }
 
 bool readReg8(uint8_t addr, uint8_t reg, uint8_t& out) {
+  const freeink::I2cBusLock busLock;
   if (addr == 0) return false;
   ensureWire();
   TwoWire& w = gaugeWire();
@@ -73,7 +81,30 @@ bool readReg8(uint8_t addr, uint8_t reg, uint8_t& out) {
   return true;
 }
 
+bool readRegs(uint8_t addr, uint8_t reg, uint8_t* out, uint8_t length) {
+  const freeink::I2cBusLock busLock;
+  if (addr == 0) return false;
+  ensureWire();
+  TwoWire& w = gaugeWire();
+  w.beginTransmission(addr);
+  w.write(reg);
+  if (w.endTransmission(false) != 0) return false;
+  if (w.requestFrom(addr, length, static_cast<uint8_t>(true)) < length) return false;
+  for (uint8_t i = 0; i < length; ++i) out[i] = static_cast<uint8_t>(w.read());
+  return true;
+}
+
+// True when a device acknowledges its address (an empty write).
+bool i2cAcks(uint8_t addr) {
+  const freeink::I2cBusLock busLock;
+  ensureWire();
+  TwoWire& w = gaugeWire();
+  w.beginTransmission(addr);
+  return w.endTransmission(true) == 0;
+}
+
 bool writeReg8(uint8_t addr, uint8_t reg, uint8_t val) {
+  const freeink::I2cBusLock busLock;
   if (addr == 0) return false;
   ensureWire();
   TwoWire& w = gaugeWire();
@@ -85,6 +116,7 @@ bool writeReg8(uint8_t addr, uint8_t reg, uint8_t val) {
 
 // One I2C write per word: the X3's BQ27220 ignores a Control() subcommand split in two.
 bool writeReg16(uint8_t addr, uint8_t reg, uint16_t val) {
+  const freeink::I2cBusLock busLock;
   ensureWire();
   TwoWire& w = gaugeWire();
   delayMicroseconds(66);  // BQ27220 bus-free time between transactions
@@ -325,6 +357,104 @@ bool cw2017EnsureProfile(const uint8_t addr) {
   return cw2017WaitUntilReady(addr);
 }
 
+// --- CW2015 (CellWise) fuel gauge -------------------------------------------
+// Sequence and conversions recovered from the EEGO A4 stock firmware (V1.0.3,
+// functions FUN_420a461c / FUN_420a620c / FUN_420a4908 / FUN_420a4a58) via Ghidra.
+// Stock probes the gauge once at boot and uses its battery ADC pin when the gauge
+// does not answer; BatteryMonitor does the same (see gaugeActive()).
+constexpr uint8_t CW2015_REG_VCELL_H = 0x02;  // 14-bit VCELL, 305 uV/LSB, big-endian over 0x02/0x03
+constexpr uint8_t CW2015_REG_CONFIG = 0x08;   // bit 1 = UFG, the profile update flag
+constexpr uint8_t CW2015_REG_MODE = 0x0A;     // [7:6] = 11 sleep, [3:0] = 1111 power-on reset
+constexpr uint8_t CW2015_REG_BATINFO = 0x10;  // 64-byte profile spans 0x10..0x4F
+constexpr uint8_t CW2015_CONFIG_UFG = 0x02;
+constexpr uint8_t CW2015_MODE_SLEEP = 0xC0;
+constexpr uint8_t CW2015_MODE_POR = 0x0F;
+
+// The profile stock uploads ("3.7V 2000mAh target profile", DROM 0x3c697280).
+constexpr uint8_t CW2015_BATINFO[64] = {
+    0x15, 0x7e, 0x7c, 0x5c, 0x64, 0x6a, 0x65, 0x5c, 0x55, 0x53, 0x56, 0x61, 0x6f, 0x66, 0x50, 0x48,
+    0x43, 0x42, 0x40, 0x43, 0x4b, 0x5f, 0x75, 0x7d, 0x52, 0x44, 0x07, 0xae, 0x11, 0x22, 0x40, 0x56,
+    0x6c, 0x7c, 0x85, 0x86, 0x3d, 0x19, 0x8d, 0x1b, 0x06, 0x34, 0x46, 0x79, 0x8d, 0x90, 0x90, 0x46,
+    0x67, 0x80, 0x97, 0xaf, 0x80, 0x9f, 0xae, 0xcb, 0x2f, 0x00, 0x64, 0xa5, 0xb5, 0x11, 0xd0, 0x11};
+
+// Stock reads the profile in 8-byte bursts.
+bool cw2015ReadBatinfo(const uint8_t addr, uint8_t* out) {
+  for (uint8_t i = 0; i < sizeof(CW2015_BATINFO); i += 8) {
+    if (!readRegs(addr, static_cast<uint8_t>(CW2015_REG_BATINFO + i), out + i, 8)) return false;
+  }
+  return true;
+}
+
+// Stock upload: profile bytes one register at a time, CONFIG |= UFG, then MODE
+// power-on reset (|= 0x0F) and back (&= 0xF0) two RTOS ticks later, then read the
+// profile and CONFIG back. true when the profile and UFG read back.
+bool cw2015UploadProfile(const uint8_t addr) {
+  uint8_t config = 0;
+  uint8_t mode = 0;
+  if (!readReg8(addr, CW2015_REG_CONFIG, config) || !readReg8(addr, CW2015_REG_MODE, mode)) return false;
+  for (uint8_t i = 0; i < sizeof(CW2015_BATINFO); ++i) {
+    if (!writeReg8(addr, static_cast<uint8_t>(CW2015_REG_BATINFO + i), CW2015_BATINFO[i])) return false;
+  }
+  if (!writeReg8(addr, CW2015_REG_CONFIG, config | CW2015_CONFIG_UFG)) return false;
+  if (!writeReg8(addr, CW2015_REG_MODE, mode | CW2015_MODE_POR)) return false;
+  delay(20);  // stock: 2 RTOS ticks (2 ms at 1 kHz, 20 ms at 100 Hz); the longer is used
+  if (!writeReg8(addr, CW2015_REG_MODE, mode & 0xF0)) return false;
+  uint8_t stored[sizeof(CW2015_BATINFO)] = {};
+  return cw2015ReadBatinfo(addr, stored) && readReg8(addr, CW2015_REG_CONFIG, config) &&
+         std::memcmp(stored, CW2015_BATINFO, sizeof(stored)) == 0 && (config & CW2015_CONFIG_UFG) != 0;
+}
+
+// One-time setup, as stock runs it after the boot probe: wake a gauge left in
+// sleep mode, then upload the profile when the resident one is empty or differs.
+// A matching profile is kept even with UFG clear, and a failed profile read
+// uploads nothing, both as stock does.
+void cw2015Start(const uint8_t addr) {
+  uint8_t mode = 0;
+  if (readReg8(addr, CW2015_REG_MODE, mode) && (mode & CW2015_MODE_SLEEP) == CW2015_MODE_SLEEP) {
+    writeReg8(addr, CW2015_REG_MODE, 0x00);
+  }
+  uint8_t resident[sizeof(CW2015_BATINFO)] = {};
+  if (!cw2015ReadBatinfo(addr, resident)) return;
+  if (std::memcmp(resident, CW2015_BATINFO, sizeof(resident)) != 0) cw2015UploadProfile(addr);
+}
+
+struct Cw2015State {
+  bool probed = false;
+  bool present = false;
+};
+Cw2015State cw2015State;
+
+// Voltage and the stock battery-icon percentage in one 7-byte read (0x02..0x08).
+// Stock rejects the sample while the gauge sleeps, outside 2500..4500 mV, or with
+// SOC above 100.00%. Percent is SOC rounded to an integer plus one, capped at 100.
+bool cw2015Read(uint16_t& millivolts, uint16_t& percent) {
+  const uint8_t addr = BoardConfig::ACTIVE.batteryGauge.gaugeAddr;
+  uint8_t r[7] = {};
+  uint8_t mode = 0;
+  if (!readRegs(addr, CW2015_REG_VCELL_H, r, sizeof(r)) || !readReg8(addr, CW2015_REG_MODE, mode)) return false;
+  if ((mode & CW2015_MODE_SLEEP) == CW2015_MODE_SLEEP) return false;
+  const uint32_t mv = ((static_cast<uint32_t>(r[0] & 0x3F) << 8 | r[1]) * 305 + 500) / 1000;
+  const uint16_t soc = static_cast<uint16_t>(r[2] << 8 | r[3]);  // 1/256 %
+  if (mv < 2500 || mv > 4500 || soc > 0x6400) return false;
+  millivolts = static_cast<uint16_t>(mv);
+  percent = static_cast<uint16_t>(std::min((soc + 0x80) / 256 + 1, 100));
+  return true;
+}
+
+// Whether the profile's gauge is the battery source. A CW2015 is probed once and,
+// when it answers, set up; when it does not, the board's ADC pin is used instead.
+bool gaugeActive() {
+  const auto& g = BoardConfig::ACTIVE.batteryGauge;
+  if (g.gaugeAddr == 0) return false;
+  if (g.gaugeType != BoardConfig::GaugeType::Cw2015) return true;
+  if (!cw2015State.probed) {
+    cw2015State.probed = true;
+    cw2015State.present = i2cAcks(g.gaugeAddr);
+    if (cw2015State.present) cw2015Start(g.gaugeAddr);
+  }
+  return cw2015State.present;
+}
+
 // SoC (0..100) from the active gauge, dispatched by type. false on I2C failure.
 bool readGaugeSoc(uint16_t& out) {
   const auto& g = BoardConfig::ACTIVE.batteryGauge;
@@ -336,6 +466,10 @@ bool readGaugeSoc(uint16_t& out) {
     return true;
   }
 #endif
+  if (g.gaugeType == BoardConfig::GaugeType::Cw2015) {
+    uint16_t mv = 0;
+    return cw2015Read(mv, out);
+  }
   if (g.gaugeType == BoardConfig::GaugeType::Cw2017) {
     static bool initialized = false;
     static unsigned long lastInitAttemptMs = 0;
@@ -375,6 +509,10 @@ bool readGaugeMillivolts(uint16_t& out) {
 #if FREEINK_DEVICE_WS397
   if (g.gaugeType == BoardConfig::GaugeType::Axp2101) return freeink::axp2101::batteryMillivolts(out);
 #endif
+  if (g.gaugeType == BoardConfig::GaugeType::Cw2015) {
+    uint16_t percent = 0;
+    return cw2015Read(out, percent);
+  }
   if (g.gaugeType == BoardConfig::GaugeType::Cw2017) {
     uint8_t hi = 0, lo = 0;
     if (!readReg8(g.gaugeAddr, CW2017_REG_VCELL_H, hi)) return false;
@@ -421,9 +559,10 @@ bool readGaugeCharging(bool& known) {
 #if FREEINK_DEVICE_WS397
   if (g.gaugeType == BoardConfig::GaugeType::Axp2101) return freeink::axp2101::isCharging(known);
 #endif
-  // CW2017 has no current register and the X4 Pro has no charger IC on this bus, so
-  // charging state is not observable from the gauge (the OEM infers it elsewhere).
-  if (g.gaugeType == BoardConfig::GaugeType::Cw2017) {
+  // CW2017/CW2015 have no current register and their boards have no charger IC on
+  // this bus, so charging state is not observable from the gauge (the OEM firmware
+  // reads a charger STAT pin).
+  if (g.gaugeType == BoardConfig::GaugeType::Cw2017 || g.gaugeType == BoardConfig::GaugeType::Cw2015) {
     known = false;
     return false;
   }
@@ -478,6 +617,9 @@ namespace {
 // the stock firmware's tables (build 2912, DROM 0x3c823ce8 / 0x3c823d3c): battery
 // mV at 100%, 95%, ... 0%, one for charging (terminal voltage runs high under
 // charge current) and one for discharging. Interpolated like stock.
+// Keep stock's ADC estimate anchors: the configured charge-regulation voltage
+// is not a calibration of the voltage measured through the board's divider.
+// Duplicate top anchors are interpolated over the next distinct voltage below.
 constexpr uint16_t PICCO_CHARGING_MV[21] = {4305, 4305, 4300, 4290, 4235, 4187, 4124, 4078, 4045, 4013, 3984,
                                             3961, 3941, 3923, 3906, 3894, 3876, 3840, 3805, 3760, 3500};
 constexpr uint16_t PICCO_DISCHARGING_MV[21] = {4305, 4229, 4171, 4118, 4065, 4019, 3955, 3915, 3876, 3841, 3812,
@@ -491,10 +633,13 @@ uint16_t piccoPercent(uint16_t mv, bool charging) {
   for (uint8_t i = 1; i <= 20; ++i) {
     if (mv < t[i]) continue;
     const uint16_t hi = t[i - 1], lo = t[i];
-    pct = static_cast<uint16_t>(100 - 5 * i + (hi > lo ? 5 * (mv - lo) / (hi - lo) : 5));
+    // The charging table has the same voltage for 95% and 100%. Span that
+    // duplicate anchor from 90% to 100%, rather than jumping 94% -> 100%.
+    const uint16_t span = hi == t[0] ? 5 * i : 5;
+    pct = static_cast<uint16_t>(100 - 5 * i + (hi > lo ? span * (mv - lo) / (hi - lo) : span));
     break;
   }
-  return static_cast<uint16_t>((pct + 5) / 10 * 10);  // the SDK's 10% notches
+  return pct;
 }
 #endif
 
@@ -550,7 +695,7 @@ bool BatteryMonitor::hasAdcBackend() const {
 
 bool BatteryMonitor::hasGaugeBackend() const {
 #if FREEINK_BATTERY_I2C_GAUGE
-  return BoardConfig::ACTIVE.batteryGauge.gaugeAddr != 0;
+  return gaugeActive();
 #else
   return false;
 #endif
@@ -561,10 +706,13 @@ bool BatteryMonitor::hasM5Pm1Backend() const {
 }
 
 uint16_t BatteryMonitor::readPercentage() const {
+#if FREEINK_DEVICE_PICCO && FREEINK_BATTERY_I2C_GAUGE
+  if (BoardConfig::isPicco()) return readStatus().percentage;
+#endif
 #if FREEINK_BATTERY_I2C_GAUGE
   // Runtime, per active profile: gauge boards (X3, LilyGo, X4 Pro) read SoC over I2C;
   // ADC boards (X4) in the same binary fall through to the divider path below.
-  if (BoardConfig::ACTIVE.batteryGauge.gaugeAddr != 0) {
+  if (hasGaugeBackend()) {
     uint16_t soc = 0;
     if (!readGaugeSoc(soc)) return 0;
     return soc;
@@ -580,8 +728,16 @@ uint16_t BatteryMonitor::readPercentage() const {
 }
 
 bool BatteryMonitor::readPercentageChecked(uint16_t& out) const {
+#if FREEINK_DEVICE_PICCO && FREEINK_BATTERY_I2C_GAUGE
+  if (BoardConfig::isPicco()) {
+    const Status status = readStatus();
+    if (!status.percentageKnown) return false;
+    out = status.percentage;
+    return true;
+  }
+#endif
 #if FREEINK_BATTERY_I2C_GAUGE
-  if (BoardConfig::ACTIVE.batteryGauge.gaugeAddr != 0) {
+  if (hasGaugeBackend()) {
     uint16_t soc = 0;
     if (!readGaugeSoc(soc)) return false;
     out = soc;
@@ -653,8 +809,30 @@ bool BatteryMonitor::loadDesignCapacity() {
 BatteryMonitor::Status BatteryMonitor::readStatus() const {
   Status status;
 
+#if FREEINK_DEVICE_PICCO && FREEINK_BATTERY_I2C_GAUGE
+  if (BoardConfig::isPicco()) {
+    status.supported = true;
+    status.millivolts = readMillivolts();
+    status.millivoltsKnown = status.millivolts >= 2500 && status.millivolts <= 4500;
+    // Decode the whole charger state from ONE transaction. Do not sample charge
+    // and USB presence separately across a cable transition.
+    uint8_t charger = 0;
+    if (readReg8(BoardConfig::ACTIVE.batteryGauge.chargerAddr, SGM41562_REG_STATUS, charger)) {
+      status.chargerStatus = charger;
+      status.chargingKnown = status.externalPowerKnown = status.chargeCompleteKnown = true;
+      status.externalPower = (charger & 0x02) != 0;
+      const uint8_t charge = (charger >> 3) & 0x03;
+      status.charging = status.externalPower && (charge == 1 || charge == 2);
+      status.chargeComplete = status.externalPower && charge == 3;
+    }
+    status.percentageKnown = status.millivoltsKnown;
+    if (status.percentageKnown) status.percentage = piccoPercent(status.millivolts, status.charging);
+    return status;
+  }
+#endif
+
 #if FREEINK_BATTERY_I2C_GAUGE
-  if (BoardConfig::ACTIVE.batteryGauge.gaugeAddr != 0) {
+  if (hasGaugeBackend()) {
     status.supported = true;
     uint16_t soc = 0;
     if (readGaugeSoc(soc)) {
@@ -709,7 +887,7 @@ BatteryMonitor::Status BatteryMonitor::readStatus() const {
 
 uint16_t BatteryMonitor::readMillivolts() const {
 #if FREEINK_BATTERY_I2C_GAUGE
-  if (BoardConfig::ACTIVE.batteryGauge.gaugeAddr != 0) {
+  if (hasGaugeBackend()) {
     uint16_t gaugeMv = 0;
     readGaugeMillivolts(gaugeMv);
     return gaugeMv;  // gauge reports true battery mV (no divider)
@@ -721,6 +899,18 @@ uint16_t BatteryMonitor::readMillivolts() const {
     return 0;
   }
   if (!hasAdcBackend()) return 0;
+#if FREEINK_DEVICE_PICCO && ESP_IDF_VERSION_MAJOR >= 5
+  if (BoardConfig::isPicco()) {
+    // Three immediate conversions, once per caller-requested sample. No delays,
+    // background sampler, or extra wakeups. A median rejects one isolated spike.
+    uint32_t a = analogReadMilliVolts(_adcPin);
+    uint32_t b = analogReadMilliVolts(_adcPin);
+    const uint32_t c = analogReadMilliVolts(_adcPin);
+    if (a > b) std::swap(a, b);
+    const uint32_t median = c < a ? a : (c > b ? b : c);
+    return static_cast<uint16_t>(median * _dividerMultiplier);
+  }
+#endif
 #if ESP_IDF_VERSION_MAJOR < 5
   // ESP-IDF 4.x doesn't have analogReadMilliVolts, so calibrate manually.
   const uint16_t raw = analogRead(_adcPin);
@@ -759,7 +949,7 @@ bool BatteryMonitor::isCharging() const {
   // X3) still reports charging. A gauge that cannot observe charging at all
   // (CW2017) reports unknown — fall through to the STAT pin below (X4 Pro
   // GPIO21). Failed reads report false.
-  if (BoardConfig::ACTIVE.batteryGauge.gaugeAddr != 0) {
+  if (hasGaugeBackend()) {
     bool known = false;
     const bool charging = readGaugeCharging(known);
     if (known) {

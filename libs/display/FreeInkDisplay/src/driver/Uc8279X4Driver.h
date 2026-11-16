@@ -1,5 +1,7 @@
 #pragma once
 
+#include "X4ProTextAa.h"
+
 // UC8279 panel driver — Xteink X4 Pro production runs that ship an UltraChip
 // UC8279 (800x480) in place of the SSD1677. NOT the X3's UC8279d (792x528,
 // Uc8279Driver) — this variant has its own init (PSR 0x37/0x4D, stock-exact;
@@ -63,18 +65,27 @@ const Uc8279X4Config& uc8279X4DefaultConfig();
 
 class Uc8279X4Driver : public PanelDriver {
  public:
+  const char* controllerName() const override { return "UC8279"; }
   explicit Uc8279X4Driver(const Uc8279X4Config& cfg = uc8279X4DefaultConfig());
 
   uint32_t spiHz() const override;
   BusyPolarity busyPolarity() const override { return BusyPolarity::UcIdleHigh; }
   PanelGeometry geometry() const override;
 
+  void setReaderRefresh(bool reading) override { _readerRefresh = reading; }
   void begin(EpdBus& bus) override;
   void deepSleep(EpdBus& bus) override;
 
   void display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) override;
   bool displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) override;
   void displayFinish(EpdBus& bus, const uint8_t* fb) override;
+  // Refresh only a rectangular region. Without this the base PanelDriver
+  // implementation repaints the whole panel, which costs ~554 ms on this glass
+  // and makes per-keystroke updates unusable. Falls back to a full Fast refresh
+  // whenever a differential partial would be invalid (no synced OLD plane, a
+  // pending full clear, or a non-byte-aligned x/w).
+  void displayWindow(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, uint16_t x, uint16_t y, uint16_t w,
+                     uint16_t h, bool turnOff) override;
   bool supportsAsyncDisplay() const override { return true; }
 
   void requestResync(uint8_t settlePasses) override;
@@ -100,6 +111,8 @@ class Uc8279X4Driver : public PanelDriver {
   void beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode mode, RefreshMode fallback, bool turnOff) override;
   void copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) override;
   void copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) override;
+  void writeGrayscalePlaneStrip(EpdBus& bus, GrayPlane plane, const uint8_t* rows,
+                                uint16_t yStart, uint16_t numRows) override;
   void displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut, bool factoryMode) override;
   void cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) override;
   // Base frame for a grayscale overlay. The periodic clean the reader asks for
@@ -111,6 +124,8 @@ class Uc8279X4Driver : public PanelDriver {
   void displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, RefreshMode fallback, bool turnOff) override;
 
  private:
+  X4ProTextAa _textAa;
+  bool _readerRefresh = false;
   void initController(EpdBus& bus);
   void startBwRefresh(EpdBus& bus, bool fast);
   // Stream a framebuffer into a RAM plane: 0xFF padding for gates before the
@@ -166,6 +181,10 @@ class Uc8279X4Driver : public PanelDriver {
   bool _pendingRefresh = false;
   bool _pendingTurnOff = false;
   bool _pendingPartial = false;
+  // Set by displayWindow() for the duration of one refresh; consumed by
+  // displayStart() when it builds the PTL (0x90) descriptor.
+  bool _winActive = false;
+  uint16_t _winX = 0, _winY = 0, _winW = 0, _winH = 0;
 };
 
 PanelDriver& uc8279X4Driver();

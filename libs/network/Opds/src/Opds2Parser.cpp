@@ -20,7 +20,8 @@ static_assert(MAX_HREF_CHARS < StreamingJsonParser::TOKEN_BUF_SIZE - 1 &&
 Opds2Parser::Opds2Parser()
     : parser(JsonCallbacks{this, &sOnKey, &sOnString, &sOnNumber, &sOnBool, nullptr, &sOnObjectStart, &sOnObjectEnd,
                            &sOnArrayStart, &sOnArrayEnd}) {
-  entries.reserve(ENTRY_STORAGE_CAPACITY);
+  entryLimit = reserveFeedEntries(entries);
+  if (entryLimit == 0) errorOccured = true;
 }
 
 void Opds2Parser::setPreferredLanguage(const char* lang) {
@@ -224,7 +225,7 @@ void Opds2Parser::beginGroup() {
 void Opds2Parser::endGroup() {
   // Field order in the group object is not guaranteed, so the heading and the
   // "see all" entry are applied only once the whole group has been read.
-  if (!groupSelfHref.empty() && entries.size() < MAX_ENTRIES) {
+  if (!groupSelfHref.empty() && entries.size() < entryLimit) {
     OpdsEntry seeAll;
     seeAll.type = OpdsEntryType::NAVIGATION;
     seeAll.id = OPDS_SEE_ALL_ID;
@@ -451,7 +452,7 @@ void Opds2Parser::commitFeedLink() {
 
 void Opds2Parser::commitNavLink() {
   if (link.href.empty() || link.title.empty()) return;
-  if (entries.size() >= MAX_ENTRIES) {
+  if (entries.size() >= entryLimit) {
     feedTruncated = true;
     return;
   }
@@ -473,7 +474,11 @@ void Opds2Parser::commitGroupLink() {
 
 void Opds2Parser::commitFacetLink() {
   if (link.href.empty() || link.title.empty()) return;
-  if (facetEntries.size() >= MAX_FACET_ENTRIES) return;
+  if (facetEntries.capacity() == 0) reserveFacetEntries(facetEntries);
+  if (facetEntries.size() >= facetEntries.capacity()) {
+    feedTruncated = true;
+    return;
+  }
   OpdsEntry entry;
   entry.type = OpdsEntryType::NAVIGATION;
   entry.title = std::move(link.title);
@@ -556,7 +561,7 @@ void Opds2Parser::commitPublication() {
   // preview: keep only the first MAX_GROUP_PREVIEW so a large group doesn't
   // starve the rest. Top-level (flat-feed) publications are not capped.
   if (depth >= 2 && stack[depth - 2] == Scope::GROUP && ++groupPubCount > MAX_GROUP_PREVIEW) return;
-  if (entries.size() >= MAX_ENTRIES) {
+  if (entries.size() >= entryLimit) {
     feedTruncated = true;
     return;
   }

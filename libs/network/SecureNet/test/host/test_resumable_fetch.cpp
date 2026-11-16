@@ -22,6 +22,9 @@ void SecureClient::flush() {}
 void SecureClient::stop() {}
 uint8_t SecureClient::connected() { return 0; }
 bool SecureClient::tls13Available() { return false; }
+// The plain-http path checks hostResolves(); tests flip dnsWorks.
+bool dnsWorks = true;
+bool hostResolves(const char*) { return dnsWorks; }
 }  // namespace freeink
 
 using freeink::FetchOptions;
@@ -96,7 +99,9 @@ int main() {
     assert(http.getUniqueHeader("content-disposition") == nullptr);
   }
   for (const char* second : {"attachment; filename=Other.epub", "attachment; filename=Book.epub", ""}) {
-    const std::string response = std::string("HTTP/1.1 200 OK\r\nContent-Disposition: attachment; filename=Book.epub\r\ncOnTeNt-DiSpOsItIoN: ") + second + "\r\nContent-Length: 0\r\n\r\n";
+    const std::string response =
+        std::string("HTTP/1.1 200 OK\r\nContent-Disposition: attachment; filename=Book.epub\r\ncOnTeNt-DiSpOsItIoN: ") +
+        second + "\r\nContent-Length: 0\r\n\r\n";
     reset({response.c_str()});
     freeink::SecureHttpClient http;
     assert(http.begin("http://a/f"));
@@ -213,6 +218,31 @@ int main() {
          "HTTP/1.1 206 Partial Content\r\nContent-Length: 0\r\n\r\n"});
   r = get("http://a/f", sink());
   assert(!r.complete && r.bytes == 5);
+
+  // A bounded body is insufficient if the peer can allocate unlimited headers.
+  std::string many = "HTTP/1.1 200 OK\r\n";
+  for (int i = 0; i < 65; ++i) many += "X-H: value\r\n";
+  many += "Content-Length: 0\r\n\r\n";
+  reset({many.c_str()});
+  freeink::SecureHttpClient bounded;
+  assert(bounded.begin("http://example.test/"));
+  assert(bounded.GET() < 0 && !bounded.responseComplete());
+  std::string large = "HTTP/1.1 200 OK\r\n";
+  for (int i = 0; i < 10; ++i) large += "X-H: " + std::string(1000, 'a') + "\r\n";
+  large += "\r\n";
+  reset({large.c_str()});
+  assert(bounded.begin("http://example.test/"));
+  assert(bounded.GET() < 0 && !bounded.responseComplete());
+  reset({"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n"});
+  assert(bounded.begin("http://example.test/"));
+  assert(bounded.GET() < 0 && !bounded.responseComplete());
+
+  // A host that does not resolve fails without a connect attempt.
+  reset({"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nabc"});
+  freeink::dnsWorks = false;
+  r = get("http://a/f", sink());
+  freeink::dnsWorks = true;
+  assert(!r.complete && FakeNet::hosts().empty());
 
   puts("resumable fetch ok");
 }

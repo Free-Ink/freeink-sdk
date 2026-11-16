@@ -27,7 +27,8 @@ with tempfile.TemporaryDirectory(prefix="uc8279c-a4-test-") as directory:
 inline void digitalWrite(int, int) {}
 #define PROGMEM
 #define log_e(...) std::fprintf(stderr, __VA_ARGS__)
-inline unsigned long millis() { static unsigned long t; return ++t; }
+inline unsigned long& fakeMillis() { static unsigned long t; return t; }
+inline unsigned long millis() { return ++fakeMillis(); }
 inline void delay(unsigned long) {}
 inline int digitalRead(int) { return 0; }
 ''')
@@ -45,23 +46,28 @@ enum class BusyPolarity { ActiveLow };
 class EpdBus {
   uint8_t command=0;
 public:
-  unsigned refreshes=0;
-  uint8_t interval=0;
+  unsigned refreshes=0, powerOffs=0;
+  uint8_t interval=0, vcom=0;
   size_t lutBytes=0;
-  std::vector<uint8_t> oldPlane, newPlane, oldAtRefresh, newAtRefresh;
+  std::vector<std::vector<uint8_t>> lut20s;
+  std::vector<uint8_t> oldPlane, newPlane, oldAtRefresh, newAtRefresh, oldAtPrevRefresh, newAtPrevRefresh;
   void cmd(uint8_t c) {
     command=c;
     if(c==0x10) oldPlane.clear();
     if(c==0x13) newPlane.clear();
+    if(c==0x02) ++powerOffs;
     if(c==0x12) {
       ++refreshes;
+      oldAtPrevRefresh=oldAtRefresh;
+      newAtPrevRefresh=newAtRefresh;
       oldAtRefresh=oldPlane;
       newAtRefresh=newPlane;
     }
   }
   void cmdData(uint8_t c, const uint8_t* p, size_t n) {
+    if(c==0x82 && n==1) vcom=*p;
     if(c==0x50 && n==1) interval=*p;
-    if(c==0x20) lutBytes=n;
+    if(c==0x20) { lutBytes=n; lut20s.emplace_back(p, p+n); }
     cmd(c);
   }
   void fillPlane(uint8_t c, uint8_t value, uint16_t height, uint16_t widthBytes) {

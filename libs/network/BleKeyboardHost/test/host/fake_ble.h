@@ -45,7 +45,13 @@ int addInputReport(uint8_t reportId = 0);
 void setValue(int index, const uint8_t* data, size_t len);
 bool notify(int index, const uint8_t* data, size_t len);
 
-void advertise(const char* addr, const char* name);
+void advertise(const char* addr, const char* name, bool connectable = true);
+// The scan in progress runs out of time, as a timed NimBLE scan does.
+void endScan();
+// Whether the last scan was started active (with scan requests).
+bool scanIsActive();
+// Whether the controller reports each advertiser once per scan.
+bool scanFiltersDuplicates();
 size_t retainedScanResults();
 
 void holdAt(Stage stage);
@@ -64,11 +70,25 @@ bool waitUntilHeld(Stage stage, uint32_t timeoutMs = 1000);
 // inside a NimBLE wait.
 bool taskDeletedWhileHeld();
 
+// Teardown instrumentation. NimBLEDevice::deleteClient() and deinit() count how
+// many callers are inside them at once; maxTeardownOverlap() is the highest
+// count seen since resetWorld(). stallTeardown(ms) makes both take that long
+// (real time) so a second caller has a window to land in. holdNextDeinit()
+// parks the next deinit() caller inside it until releaseDeinit(); a deinit()
+// that arrives meanwhile is not held, so it shows up as overlap, not a hang.
+size_t maxTeardownOverlap();
+void stallTeardown(uint32_t ms);
+void holdNextDeinit();
+bool waitUntilDeinitHeld(uint32_t timeoutMs = 1000);
+void releaseDeinit();
+
 size_t connectCalls();
 // Addresses the host asked NimBLE to connect to, in order.
 std::vector<std::string> connectAddresses();
 // While set, every GAP connect fails with a timeout (the peer is off or away).
 void failConnects(bool fail);
+// While set, the link comes up and then pairing fails (the remote lost its keys).
+void failSecurity(bool fail);
 // The peer returns nothing for a search for one service UUID; listing all services
 // still finds them.
 void failServiceSearchByUuid(bool fail);

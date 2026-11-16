@@ -159,15 +159,7 @@ void Uc8253X3Driver::initController(EpdBus& bus) {
 void Uc8253X3Driver::begin(EpdBus& bus) {
   bus.reset(50);  // X3 needs an extra settle after reset
   _redRamSynced = false;
-  // One forced clean after begin(), matching the UC8279/SSD1677 siblings' one-shot
-  // _needFullClear. This was 2, which made the paint AFTER the first one a full sync too,
-  // whatever mode it asked for (see the doFullSync condition in displayStart). On a
-  // consumer that boots into a splash that is measurable: the splash consumed sync #1 and
-  // the first real screen still paid sync #2, so a FAST refresh that costs 435 ms once
-  // warm cost 2989 ms — the X4 running the identical boot paid 526 ms for the same paint.
-  // The remaining sync still clears whatever the panel physically held (the sleep screen),
-  // which is what the initial forced clean is for.
-  _initialFullSyncsRemaining = 1;
+  _initialFullSyncsRemaining = 2;
   _forceFullSyncNext = false;
   _forcedConditionPassesNext = 0;
   _inGrayscaleMode = false;
@@ -179,11 +171,6 @@ void Uc8253X3Driver::begin(EpdBus& bus) {
 }
 
 void Uc8253X3Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
-  displayStart(bus, fb, prev, mode, turnOff);
-  displayFinish(bus, fb);
-}
-
-bool Uc8253X3Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
   (void)prev;
   const bool leavingDirectGray = _directGrayOnPanel;
   _absoluteInput = false;
@@ -243,33 +230,7 @@ bool Uc8253X3Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t*
     _isScreenOn = true;
   }
   bus.cmd(CMD_DISPLAY_REFRESH);
-  // Confirm the waveform actually started (BUSY dropped LOW) before handing the
-  // CPU back, so displayFinish()'s waitBusy() only rides out the second
-  // (LOW->HIGH) phase. Short timeout: a missed edge just falls through to the
-  // full two-phase wait in displayFinish().
-  {
-    const int8_t busyPin = bus.pins().busy;
-    const unsigned long t0 = millis();
-    while (digitalRead(busyPin) == HIGH && millis() - t0 < 50) delay(1);
-  }
-  _pendingTurnOff = turnOff;
-  _pendingDoFullSync = doFullSync;
-  _pendingFastMode = fastMode;
-  _pendingRefresh = true;
-  return true;
-}
-
-void Uc8253X3Driver::displayFinish(EpdBus& bus, const uint8_t* fb) {
-  if (!_pendingRefresh) return;
-  _pendingRefresh = false;
-  const bool turnOff = _pendingTurnOff;
-  const bool doFullSync = _pendingDoFullSync;
-  const bool fastMode = _pendingFastMode;
-
-  // ISR-backed wait: displayStart() already confirmed BUSY dropped LOW, so the
-  // waveform is running and waitRefreshComplete() will wake on the exact
-  // completion edge rather than polling at 1 ms granularity.
-  bus.waitRefreshComplete(" X3_DRF");
+  bus.waitBusy(" X3_DRF");
   if (turnOff) {
     bus.cmd(CMD_POWER_OFF);
     bus.waitBusy(" X3_POF");
@@ -280,7 +241,7 @@ void Uc8253X3Driver::displayFinish(EpdBus& bus, const uint8_t* fb) {
 
   uint8_t postConditionPasses = 0;
   if (doFullSync) {
-    if (_forceFullSyncNext) postConditionPasses = _forcedConditionPassesNext;
+    if (forcedFullSync) postConditionPasses = _forcedConditionPassesNext;
     else if (_initialFullSyncsRemaining == 1) postConditionPasses = 1;
   }
   if (postConditionPasses > 0) {

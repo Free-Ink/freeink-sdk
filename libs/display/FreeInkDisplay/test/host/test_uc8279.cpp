@@ -6,6 +6,11 @@
 
 int main() {
   using namespace freeink;
+  // V6.5.5 includes the control tail of the fifth group even with zero drive durations.
+  for (const auto& row : kUc8279X3_Xth4) {
+    assert(row[28] == 1 && row[33] == 1 && row[34] == 1);
+    for (unsigned i = 29; i < 33; ++i) assert(row[i] == 0);
+  }
   constexpr size_t n = 792 / 8 * 528;
   EpdBus bus;
   Uc8279Driver driver;

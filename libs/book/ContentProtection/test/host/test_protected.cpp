@@ -128,6 +128,19 @@ int main() {
   assert(book.decryptedSize("mimetype") == 20);
   assert(book.decryptedSize("missing") == 0);
 
+  // XML permits whitespace around '=' in every attribute.
+  std::string spacedXml = xml;
+  size_t equals = 0;
+  while ((equals = spacedXml.find('=', equals)) != std::string::npos) {
+    spacedXml.replace(equals, 1, " \t=\n ");
+    equals += 5;
+  }
+  auto spacedSrc = storedZip({{"META-INF/encryption.xml", spacedXml}, {"text/a.xhtml", std::string(48, 'x')}});
+  ProtectedBook spacedBook;
+  assert(spacedBook.open(spacedSrc));
+  assert(spacedBook.isProtected() && spacedBook.isEncrypted("text/a.xhtml"));
+  assert(spacedBook.decryptedSize("text/a.xhtml") == 7175);
+
   auto compressedSrc = storedZip({{"META-INF/encryption.xml", xml}, {"text/a.xhtml", std::string(48, 'x')}}, true);
   ProtectedBook compressedBook;
   assert(compressedBook.open(compressedSrc));

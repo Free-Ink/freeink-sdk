@@ -80,5 +80,11 @@ constexpr uint8_t A4_UC8279C_GRAY3_TRANSITION_LUT[5][A4_UC8279C_GRAY3_RECORD_LEN
 constexpr uint8_t A4_UC8279C_GRAY3_NO_WHITE_CLEAR = 0x90;
 constexpr uint8_t A4_UC8279C_GRAY3_NO_BLACK_DRIVE = 0x4e;
 constexpr uint8_t A4_UC8279C_GRAY3_NO_BLACK_GRAY = 0x09;
+// Not from stock: the second refresh that makes dark gray. Dark pixels get
+// this many black frames on top of the gray drive in record 0x23 above; the
+// refresh then holds for the settle frames. Raise the extra frames for a
+// darker dark gray.
+constexpr uint8_t A4_UC8279C_GRAY3_DARK_EXTRA_FRAMES = 2;
+constexpr uint8_t A4_UC8279C_GRAY3_DARK_SETTLE_FRAMES = 4;
 
 }  // namespace freeink

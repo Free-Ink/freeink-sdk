@@ -49,7 +49,7 @@ public:
   uint8_t interval=0, vcom=0;
   size_t lutBytes=0;
   std::vector<std::vector<uint8_t>> lut20s;
-  std::vector<uint8_t> oldPlane, newPlane, oldAtRefresh, newAtRefresh;
+  std::vector<uint8_t> oldPlane, newPlane, oldAtRefresh, newAtRefresh, oldAtPrevRefresh, newAtPrevRefresh;
   void cmd(uint8_t c) {
     command=c;
     if(c==0x10) oldPlane.clear();
@@ -57,6 +57,8 @@ public:
     if(c==0x02) ++powerOffs;
     if(c==0x12) {
       ++refreshes;
+      oldAtPrevRefresh=oldAtRefresh;
+      newAtPrevRefresh=newAtRefresh;
       oldAtRefresh=oldPlane;
       newAtRefresh=newPlane;
     }

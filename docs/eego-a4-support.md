@@ -59,10 +59,14 @@ both states while the changing records drive one way only, so every pixel takes
 a flashing record and the previous screen does not carry into the new one. Each B/W paint then
 copies the displayed frame into the old plane for the next differential update.
 Anti-aliased (overlay) pages use stock V1.0.3's reader "Gray3" path. The B/W
-base is stashed undisplayed; with its gray masks it becomes one three-level
-frame (white / middle / black), sent as a per-pixel transition from the
-previous Gray3 frame in a single refresh: unchanged white and middle pixels
-hold, black is re-driven, and only changed pixels are cleared or nudged. A
+base is stashed undisplayed; with its gray masks it becomes one frame, sent
+as a per-pixel transition from the previous Gray3 frame: unchanged white and
+gray pixels hold, black is re-driven, and only changed pixels are cleared or
+nudged. Stock's waveform has one gray level. A short second refresh, not from
+stock, gives the dark-gray pixels a few more black frames
+(`A4_UC8279C_GRAY3_DARK_EXTRA_FRAMES`), so a page has white, light, dark and
+black. A gray pixel that was darker before (black, or dark turning light) is
+cleared in the first refresh and driven from white in the second. A
 cleanup request (non-FAST base) shows the page with black and white swapped,
 then the page itself. After a B/W screen or four-gray image there is no
 Gray3 history: the next page shows its base with a normal B/W refresh, which

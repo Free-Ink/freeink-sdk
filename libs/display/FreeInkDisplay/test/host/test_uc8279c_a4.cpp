@@ -58,8 +58,8 @@ int main() {
       driver.copyGrayscaleMsb(bus, gray.data());
       const auto before = bus.refreshes;
       driver.displayGray(bus, bw.data(), false, nullptr, false);
-      assert(bus.refreshes == before + 1 && bus.interval == 0x00 && bus.lutBytes == 49 &&
-             "an AA gray pass must be one Gray3 refresh");
+      assert(bus.refreshes == before + 2 && bus.interval == 0x00 && bus.lutBytes == 49 &&
+             "an AA gray pass must be one Gray3 refresh plus the dark refresh");
       if (cleanup) driver.cleanupGrayscaleBuffers(bus, bw.data());
       for (auto& b : bw) b = static_cast<uint8_t>(b ^ 0x33);
       driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, page == 2);
@@ -116,9 +116,9 @@ int main() {
   }
 
   // Gray3 (anti-aliased pages, stock's reader path). Byte 0 of row 0, bits 7..0:
-  // base white, base black, dark, light, then white x4 -> levels white, black,
-  // middle, middle, white x4. Codes (DTM1, DTM2): 10 black, 01 gray,
-  // 11 white-clear, 00 hold.
+  // base white, base black, dark, light, then white x4. First refresh codes
+  // (DTM1, DTM2): 10 black, 01 gray, 11 white-clear, 00 hold. Second (dark)
+  // refresh: 10 darker, 01 light from white, 11 dark from white, 00 hold.
   const auto physical0 = static_cast<size_t>(551) * 96;  // row 0 is sent last
   std::vector<uint8_t> page(bytes, 0xff), lsbMask(bytes, 0), msbMask(bytes, 0);
   page[0] = 0b10001111;
@@ -133,14 +133,18 @@ int main() {
   {
     // First Gray3 page after a B/W screen: the base goes out as a normal B/W
     // refresh (clearing the previous screen), then a Gray3 transition from it
-    // nudges only the gray pixels and re-drives black.
+    // re-drives black and clears the base-black gray pixels, which the second
+    // refresh drives from white to light and dark.
     driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, false);
     const auto before = bus.refreshes;
     gray3Page(page.data(), RefreshMode::Fast);
-    assert(bus.refreshes == before + 2 && "entry must be one B/W base refresh plus one Gray3 transition");
+    assert(bus.refreshes == before + 3 && "entry must be a B/W base refresh, a Gray3 transition and the dark refresh");
     assert(bus.interval == 0x00 && bus.lutBytes == 49);
-    assert(bus.oldAtRefresh[physical0] == 0b01000000 && bus.newAtRefresh[physical0] == 0b00110000 &&
-           "from the B/W base: black re-driven (10), base-black -> middle nudged (01), white holds");
+    assert(bus.oldAtPrevRefresh[physical0] == 0b01110000 && bus.newAtPrevRefresh[physical0] == 0b00110000 &&
+           "from the B/W base: black re-driven (10), base-black gray cleared (11), white holds");
+    assert(bus.oldAtRefresh[physical0] == 0b00100000 && bus.newAtRefresh[physical0] == 0b00110000 &&
+           "second refresh: dark from white (11), light from white (01)");
+    assert(bus.lut20s.back()[1] == 5 + 2 + 4 && "dark refresh: gray + extra + settle frames");
     assert(bus.oldAtRefresh[physical0 + 1] == 0x00 && bus.newAtRefresh[physical0 + 1] == 0x00);
     assert(bus.oldPlane.size() == 600 * 96 && bus.oldPlane[552 * 96] == 0x00 && "padding rows hold");
   }
@@ -164,6 +168,21 @@ int main() {
     gray3Page(next.data(), RefreshMode::Fast);
     // bit7 white->middle: 01; bit6 black->white: 11; bits5,4 middle->white: 11.
     assert(bus.oldAtRefresh[physical0] == 0b01110000 && bus.newAtRefresh[physical0] == 0b11110000);
+    // Light -> dark holds in the first refresh and is only driven further in
+    // the second (10); nothing else changes.
+    lsbMask[0] = 0b10000000;
+    auto before = bus.refreshes;
+    gray3Page(next.data(), RefreshMode::Fast);
+    assert(bus.refreshes == before + 2);
+    assert(bus.oldAtPrevRefresh[physical0] == 0x00 && bus.newAtPrevRefresh[physical0] == 0x00);
+    assert(bus.oldAtRefresh[physical0] == 0b10000000 && bus.newAtRefresh[physical0] == 0x00);
+    // Dark -> light is cleared (11), then driven from white (01).
+    lsbMask[0] = 0;
+    before = bus.refreshes;
+    gray3Page(next.data(), RefreshMode::Fast);
+    assert(bus.refreshes == before + 2);
+    assert(bus.oldAtPrevRefresh[physical0] == 0b10000000 && bus.newAtPrevRefresh[physical0] == 0b10000000);
+    assert(bus.oldAtRefresh[physical0] == 0x00 && bus.newAtRefresh[physical0] == 0b10000000);
     lsbMask[0] = savedLsb;
     msbMask[0] = savedMsb;
   }
@@ -171,7 +190,8 @@ int main() {
     // A cleanup request runs stock's inverted page first, then the page.
     const auto before = bus.refreshes;
     gray3Page(page.data(), RefreshMode::Half);
-    assert(bus.refreshes == before + 2 && "cleanup page must show the inverted page, then the page");
+    assert(bus.refreshes == before + 3 &&
+           "cleanup page must show the inverted page (with its dark refresh), then the page");
   }
   {
     // A stashed base whose gray pass never runs still reaches the panel.
@@ -189,8 +209,8 @@ int main() {
     driver.copyGrayscaleMsb(bus, msbMask.data());
     const auto before = bus.refreshes;
     driver.displayGray(bus, page.data(), false, nullptr, false);
-    assert(bus.refreshes == before + 1 && bus.interval == 0x00 && bus.oldAtRefresh[physical0] == 0b01000000 &&
-           bus.newAtRefresh[physical0] == 0b00110000 && "unannounced overlay must transition from the shown base");
+    assert(bus.refreshes == before + 2 && bus.interval == 0x00 && bus.oldAtPrevRefresh[physical0] == 0b01110000 &&
+           bus.newAtPrevRefresh[physical0] == 0b00110000 && "unannounced overlay must transition from the shown base");
   }
 
   {

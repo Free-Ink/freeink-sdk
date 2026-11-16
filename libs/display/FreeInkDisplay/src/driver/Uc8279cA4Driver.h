@@ -22,9 +22,10 @@ class Uc8279cA4Driver : public PanelDriver {
   void controllerIdle(EpdBus& bus) override;
   void display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) override;
   // Overlay (anti-aliased text) uses stock's reader "Gray3" path: the B/W base
-  // and its gray masks go out as one three-level (white / middle / black)
-  // transition from the previous Gray3 page, so a page turn drives only the
-  // pixels that change. Absolute/direct planes (full images) use the stock
+  // and its gray masks go out as a transition from the previous Gray3 page, so
+  // a page turn drives only the pixels that change. Stock's waveform has one
+  // gray level; a short second refresh darkens the dark-gray pixels, giving
+  // white / light / dark / black. Absolute/direct planes (full images) use the stock
   // four-gray waveform, which drives every pixel from any prior state.
   GrayscaleCapabilities grayscaleCapabilities(GrayscaleMode mode = GrayscaleMode::Overlay) const override {
     if (mode == GrayscaleMode::Overlay) return {GrayscaleEncoding::OverlayMasks, GrayscaleBase::Combined, true, false, false};
@@ -48,9 +49,20 @@ class Uc8279cA4Driver : public PanelDriver {
   void loadFastLut(EpdBus& bus);
   void loadGrayLut(EpdBus& bus);
   void writeFrame(EpdBus& bus, uint8_t command, const uint8_t* fb, bool invert = false);
-  void showGray3(EpdBus& bus);
-  void writeGray3Codes(EpdBus& bus, bool dtm1, bool& anyBlack, bool& anyWhiteClear);
+  struct Gray3Codes {
+    uint8_t hi, lo;    // first refresh, (DTM1, DTM2)
+    uint8_t hi2, lo2;  // second (dark) refresh
+  };
+  struct Gray3Use {
+    bool black = false;
+    bool whiteClear = false;
+    bool second = false;  // some pixel needs the second refresh
+  };
+  Gray3Codes gray3Codes(size_t i, bool inverted) const;
+  void showGray3(EpdBus& bus, bool inverted);
+  void writeGray3Codes(EpdBus& bus, bool dtm1, bool second, bool inverted, Gray3Use& use);
   void loadGray3Lut(EpdBus& bus, bool anyBlack, bool anyWhiteClear);
+  void loadGray3DarkLut(EpdBus& bus);
   void fillControllerRam(EpdBus& bus, uint8_t command, uint8_t fill);
   void refresh(EpdBus& bus, const uint8_t* bwBaseline = nullptr);
   uint8_t* allocateGrayBuffer();
@@ -78,10 +90,12 @@ class Uc8279cA4Driver : public PanelDriver {
   bool _overlayPass = true;
   bool _basePending = false;   // a stashed base has not reached the panel yet
   bool _cleanupPage = false;   // the stashed base asked for a cleanup (non-FAST) refresh
-  // Gray3 frame currently on the panel, as white / middle masks (bit 1 = that
-  // level); black is neither. Invalid after any other refresh.
+  // Gray3 frame currently on the panel, as white / gray masks (bit 1 = that
+  // level) plus the dark part of gray; black is neither white nor gray.
+  // Invalid after any other refresh.
   uint8_t* _gray3White = nullptr;
   uint8_t* _gray3Middle = nullptr;
+  uint8_t* _gray3Dark = nullptr;
   bool _gray3HistoryValid = false;
   bool _gray3Session = false;  // controller is already set up and powered for Gray3
 };

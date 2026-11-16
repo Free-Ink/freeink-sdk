@@ -277,9 +277,9 @@ void Uc8279cA4Driver::displayBw(EpdBus& bus, const uint8_t* fb, const RefreshMod
 
 uint8_t* Uc8279cA4Driver::allocateGrayBuffer() {
   const size_t bytes = static_cast<size_t>(_widthBytes) * _height;
-  uint8_t* result = static_cast<uint8_t*>(heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-  if (!result) result = static_cast<uint8_t*>(malloc(bytes));
-  return result;
+  // PSRAM only: a panel-sized buffer that does not fit there would not fit in
+  // the internal heap either, and should not be taken from it.
+  return static_cast<uint8_t*>(heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
 }
 
 void Uc8279cA4Driver::beginGrayscale(EpdBus& bus, const uint8_t* fb, const GrayscaleMode mode,

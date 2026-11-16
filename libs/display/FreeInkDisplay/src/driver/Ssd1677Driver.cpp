@@ -130,6 +130,7 @@ static const Ssd1677Config& ssd1677StickyTextConfig() {
   return cfg;
 }
 
+#if FREEINK_DEVICE_WS397
 // Waveshare ESP32-S3-ePaper-3.97. Bring-up is byte-identical to the Sticky's, so
 // it starts from that config and adds the vendor's fast clean: EPD_3IN97_Init_Fast
 // writes 0x1A = 0x6A and EPD_3IN97_TurnOnDisplay_Fast activates 0x22 = 0xD7, a
@@ -147,6 +148,7 @@ static const Ssd1677Config& ssd1677Ws397Config() {
   }();
   return cfg;
 }
+#endif
 
 #if FREEINK_DEVICE_METALIO_EINK4
 // GDEM0397T81 settings from metalio-hw-test. B/W refreshes use its OTP waveforms
@@ -1361,7 +1363,11 @@ static const Ssd1677Config& ssd1677ActiveConfig() {
     // Waveshare ESP32-S3-ePaper-3.97: Sticky's config plus the vendor's 0xD7/0x6A
     // fast clean (see ssd1677Ws397Config). Grayscale LUT is Sticky's — same panel
     // class, but tune here if a unit shows banding.
+#if FREEINK_DEVICE_WS397
     case BoardConfig::Board::WsEpaper397: return ssd1677Ws397Config();
+#else
+    case BoardConfig::Board::WsEpaper397: return ssd1677StickyConfig();
+#endif
 #if FREEINK_DEVICE_PICCO
     // Onyx Picco / BOOX Tiles: per-panel config picked from the panel's user ID
     // (see ssd1677PiccoConfig).

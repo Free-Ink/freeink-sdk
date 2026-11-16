@@ -16,3 +16,7 @@ c++ -std=c++17 -Wall -Wextra -Werror -Wno-unused-parameter -Wno-unused-private-f
   -DFREEINK_DEVICE_PAPERMONO=1 -Istubs -I../../../InputManager/test/host/metalio_stubs \
   -I../../../BoardConfig/include -I../../include test_bmi270.cpp ../../src/Imu.cpp -o "$BUILD_DIR/bmi270"
 "$BUILD_DIR/bmi270"
+c++ -std=c++17 -Wall -Wextra -Werror -Wno-unused-parameter -Wno-unused-private-field -Wno-unused-function -Wno-unused-const-variable \
+  -DFREEINK_DEVICE_METALIO_EINK4=1 -Istubs -I../../../InputManager/test/host/metalio_stubs \
+  -I../../../BoardConfig/include -I../../include test_imu_gating.cpp ../../src/Imu.cpp -o "$BUILD_DIR/gating"
+"$BUILD_DIR/gating"

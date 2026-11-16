@@ -364,7 +364,7 @@ tight. Each defaults on when an included device needs it; force with `=0`/`=1`:
 | `FREEINK_CAP_MIC` | microphone capture (Microphone lib: PDM mic → 16-bit PCM via i2s_pdm RX) | on for Sticky and Paper Mono |
 | `FREEINK_CAP_RTC` | real-time clock (Rtc lib: PCF8563 / DS3231 / RX8130 over I²C, per profile) | on for X3, Sticky, X4 Pro, X4 Classic, and Paper Mono |
 | `FREEINK_CAP_TEMP_HUMIDITY` | temperature + humidity (EnvironmentSensor lib: SHT40 over I²C) | on for Sticky |
-| `FREEINK_CAP_IMU` | 6-axis IMU (Imu lib: LSM6DS3TR-C over I²C) | on for Sticky |
+| `FREEINK_CAP_IMU` | motion sensor (Imu lib: QMI8658, LSM6DS3TR-C, BMI270 or SC7A20H over I²C, per profile) | on for X3, X4 Classic, Sticky, Paper Mono, Waveshare 3.97, Metalio E-Ink 4 and Picco |
 | `FREEINK_CAP_HAPTIC` | consumer-controlled vibration ([HapticManager](docs/haptics.md): intensity, pulses, patterns) | on for Metalio E-Ink 4 |
 | `FREEINK_CAP_BUZZER` | LEDC PWM tone buzzer (Buzzer lib: tone/beep on `audio.buzzer`) | on for Sticky, Murphy, and Paper Mono |
 | `FREEINK_CAP_LED` | RGB LEDs (LedManager: addressable chains, or the Paper Mono's discrete PMIC/expander-driven LED) | on for M5 and Paper Mono |
@@ -380,6 +380,8 @@ tight. Each defaults on when an included device needs it; force with `=0`/`=1`:
 | `-DEINK_DISPLAY_SINGLE_BUFFER_MODE=1` | single framebuffer (uses controller RAM as previous frame) |
 | `-DFREEINK_FB_PSRAM=1` | place the facade framebuffer(s) in PSRAM heap (`MALLOC_CAP_SPIRAM`, allocated in `begin()`) instead of static DRAM `.bss`; auto-on for M5Paper and Paper Mono, off everywhere else |
 | `-DFREEINK_NET_WOLFSSL=1` | enable the wolfSSL TLS 1.3 transport in `SecureNet` |
+| `-DFREEINK_IMU_<PART>=0/1` | build the Imu driver for one part (`QMI8658`, `LSM6DS3`, `BMI270`, `SC7A20H`). Each defaults on when a selected device's profile names it, so a build carries only those (the BMI270's 8 KiB configuration file only with the Paper Mono); turning off a part a selected profile needs is a build error |
+| `-DFREEINK_IMU_ALL_DRIVERS=1` | keep every Imu driver, for a consumer that switches `ACTIVE.sensors` to a part no selected profile names |
 
 Panel **orientation/mirroring** is per-board data, not a flag: set `BoardProfile.orientation`
 (`NO_FLIP`, `MIRROR_X`, `MIRROR_Y`, or `ROTATE_180`). The SSD1677 driver applies it in

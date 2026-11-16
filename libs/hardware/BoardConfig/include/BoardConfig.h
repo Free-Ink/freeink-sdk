@@ -1017,11 +1017,11 @@ constexpr SdmmcPins NO_SDMMC = {
     PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, 0};
 constexpr BatteryGaugeConfig NO_GAUGE = {PIN_UNASSIGNED, PIN_UNASSIGNED, 0, 0, 0};  // ADC battery
 
-// Shared display SPI default for every Xteink board and controller variant.
+// Shared display SPI default for Xteink boards (XTEINK_X3 UC8253 uses 16 MHz).
 constexpr uint32_t XTEINK_DISPLAY_SPI_HZ = 10000000u;
 
 // --- Xteink X4 — ESP32-C3, SSD1677 (800x480) ---------------------------------
-// Default 10 MHz, like the other Xteink profiles. Preserve the explicit legacy
+// Default 10 MHz, like the other SSD1677/UC8179/UC8279 Xteink profiles. Preserve the explicit legacy
 // 40 MHz opt-in for consumers that have validated it on their hardware.
 #ifdef FREEINK_X4_OVERCLOCK_SPI
 #define FREEINK_X4_DISPLAY_SPI_HZ 40000000u
@@ -1065,6 +1065,8 @@ constexpr BoardProfile XTEINK_X4 = {Board::XteinkX4,
 // runtime (setDisplayX3) so one C3 binary drives both. Keeping it a real sibling
 // profile means resolution comes from BoardProfile for X3 just like every other
 // device — the panel driver never special-cases its own geometry.
+constexpr uint32_t XTEINK_X3_UC8253_DISPLAY_SPI_HZ = 16000000u;
+
 constexpr BoardProfile XTEINK_X3 = {
     Board::XteinkX3,
     "xteink_x3",
@@ -1073,7 +1075,7 @@ constexpr BoardProfile XTEINK_X3 = {
     792,
     528,
     {8, 10, 21, 4, 5, 6, PIN_UNASSIGNED},
-    XTEINK_DISPLAY_SPI_HZ,  // displaySpiHz: 10 MHz
+    XTEINK_X3_UC8253_DISPLAY_SPI_HZ,  // UC8253 rated to 20 MHz; 16 MHz = 52.3 ms per 2-plane upload
     // powerEnable=GPIO13 = the X3 SD-rail power switch (active-high; HIGH at boot
     // powers the card, the sleep path drives it LOW). Confirmed by X3 factory-firmware
     // RE: setup() does digitalWrite(13,HIGH); every deep-sleep does digitalWrite(13,LOW).

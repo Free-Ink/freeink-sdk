@@ -47,15 +47,33 @@ inline FakeSerial Serial;
 ''')
     (root / "SPI.h").write_text('''#pragma once
 #include <cstdint>
+#include <vector>
 #define MSBFIRST 1
 #define SPI_MODE0 0
 struct SPISettings { SPISettings(uint32_t=0, int=0, int=0) {} };
 struct FakeSPI {
+ bool recording = false;
+ std::vector<uint8_t> cmdTransfers;
+ std::vector<uint8_t> dataBytes;
+ std::vector<uint16_t> chunkSizes;
+ void clearRecord() {
+   cmdTransfers.clear();
+   dataBytes.clear();
+   chunkSizes.clear();
+ }
  void begin(int,int,int,int) {}
  void beginTransaction(SPISettings) {}
  void endTransaction() {}
- uint8_t transfer(uint8_t v) { return v; }
- void writeBytes(const uint8_t*, uint16_t) {}
+ uint8_t transfer(uint8_t v) {
+   if (recording) cmdTransfers.push_back(v);
+   return v;
+ }
+ void writeBytes(const uint8_t* d, uint16_t len) {
+   if (recording && d && len > 0) {
+     chunkSizes.push_back(len);
+     dataBytes.insert(dataBytes.end(), d, d + len);
+   }
+ }
 };
 inline FakeSPI SPI;
 ''')

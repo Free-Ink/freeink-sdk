@@ -453,8 +453,11 @@ void Uc8279cA4Driver::displayGray(EpdBus& bus, const uint8_t* fb, const bool tur
         if (_grayMsb[i] & ~_grayBase[i]) grayOnBlack = true;
         _grayBase[i] |= _grayMsb[i];
       }
+      // A stashed base always takes the full waveform: after a fast one, the
+      // previous screen showed in the black areas of the gray pages that
+      // followed.
       if (_basePending || grayOnBlack)
-        display(bus, _grayBase, nullptr, _cleanupPage ? RefreshMode::Half : RefreshMode::Fast, false);
+        display(bus, _grayBase, nullptr, _basePending || _cleanupPage ? RefreshMode::Half : RefreshMode::Fast, false);
       _cleanupPage = false;
       memcpy(_gray3White, _grayBase, n);
       memset(_gray3Middle, 0, n);

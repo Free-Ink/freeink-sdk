@@ -70,8 +70,9 @@ and black. A gray pixel that was darker before (black, or dark turning light) is
 cleared in the first refresh and driven from white in the second. A
 cleanup request (non-FAST base) shows the page with black and white swapped,
 then the page itself. After a B/W screen or four-gray image there is no
-Gray3 history: the next page shows its base with a normal B/W refresh, which
-fully clears the previous screen. That base goes out with its gray pixels
+Gray3 history: the next page shows its base with a full B/W refresh, which
+clears the previous screen (after a fast one it showed in the black areas of
+the gray pages that followed). That base goes out with its gray pixels
 white, so both grays are then driven from white in a single refresh (black,
 just driven by the base, holds, and its code selects a dark-from-white record
 instead). A base the caller already displayed with gray pixels black is shown

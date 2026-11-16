@@ -308,6 +308,19 @@ int main() {
     driver.setRefreshIdleHook(nullptr, nullptr);
     gray3Page(page.data(), RefreshMode::Fast);
     assert(calls.count == 3 && "a cleared hook must not run");
+
+    // A page with a pixel going light -> dark takes a second, short refresh.
+    // The hook runs during the first one only.
+    {
+      const auto savedLsb = lsbMask[0];
+      lsbMask[0] = 0b00110000;  // bit 4: light -> dark
+      before = bus.refreshes;
+      driver.setRefreshIdleHook(hook, &calls);
+      gray3Page(page.data(), RefreshMode::Fast);
+      assert(bus.refreshes == before + 2 && calls.count == 4 && calls.refreshesAtCall == before + 1 &&
+             "with a second gray refresh the hook runs once, during the first");
+      lsbMask[0] = savedLsb;
+    }
     bus.busyPollsPerRefresh = 0;
   }
 

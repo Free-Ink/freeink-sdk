@@ -119,6 +119,17 @@ static const Ssd1677Config& ssd1677StickyConfig() {
   return cfg;
 }
 
+// The Sticky itself adds the one-pass reader text table. Boards that borrow the
+// config above (Waveshare 3.97, unrecognized Picco panels) keep the overlay.
+static const Ssd1677Config& ssd1677StickyTextConfig() {
+  static const Ssd1677Config cfg = [] {
+    Ssd1677Config c = ssd1677StickyConfig();
+    c.textAaLut = lut_sticky_text;
+    return c;
+  }();
+  return cfg;
+}
+
 #if FREEINK_DEVICE_METALIO_EINK4
 // GDEM0397T81 settings from metalio-hw-test. B/W refreshes use its OTP waveforms
 // via the vendor 0x22 sequence values; the vendor's separately supplied partial
@@ -305,6 +316,7 @@ static const Ssd1677Config& ssd1677PiccoConfig() {
     c.grayLut = lut_grayscale_sticky;
     c.factoryGrayLut = lut_picco_depg_image;
     c.readerFastLut = lut_picco_depg_custom_fast;  // same drive for UI and book pages
+    c.textAaLut = lut_picco_depg_text;
     c.fastSeqOverride = 0xDC;                      // UI: stock mode 3 keeps the rails on
     return c;
   }();
@@ -394,8 +406,10 @@ uint32_t Ssd1677Driver::spiHz() const {
 PanelGeometry Ssd1677Driver::geometry() const { return {_w, _h, _wb, _bufferSize}; }
 
 void Ssd1677Driver::begin(EpdBus& bus) {
-  _textAa.allocate((BoardConfig::ACTIVE.board == BoardConfig::Board::XteinkX4Pro || BoardConfig::isX4Classic()) &&
-                   _w == 800 && _h == 480);
+  _textLut = _cfg.textAaLut;
+  if (!_textLut && (BoardConfig::ACTIVE.board == BoardConfig::Board::XteinkX4Pro || BoardConfig::isX4Classic()))
+    _textLut = kX4ProTextSsd1677;
+  _textAa.allocate(_textLut != nullptr, _wb, _h);
   bus.reset();
   initController(bus);
 #if FREEINK_DEVICE_PICCO
@@ -1049,6 +1063,22 @@ void Ssd1677Driver::writeGrayscalePlaneStrip(EpdBus& bus, GrayPlane plane, const
     memcpy(_piccoGrayMask + static_cast<uint32_t>(yStart) * _wb, rows, len);
 }
 
+// Net drive of one waveform row in frames, black positive: the charge the text
+// history model books for a pixel that ran that row.
+static int textDose(const unsigned char* lut, unsigned row) {
+  int dose = 0;
+  for (unsigned group = 0; group < 10; ++group) {
+    const uint8_t levels = pgm_read_byte(&lut[row * 10 + group]);
+    const int repeats = pgm_read_byte(&lut[50 + group * 5 + 4]) + 1;
+    for (unsigned phase = 0; phase < 4; ++phase) {
+      const unsigned level = (levels >> (6 - phase * 2)) & 3;
+      const int frames = pgm_read_byte(&lut[50 + group * 5 + phase]) * repeats;
+      dose += level == 1 ? frames : level == 2 ? -frames : 0;
+    }
+  }
+  return dose;
+}
+
 void Ssd1677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut,
                                 bool factoryMode) {
   if (_textAa.active()) {
@@ -1058,7 +1088,7 @@ void Ssd1677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
     writeRam(bus, CMD_WRITE_RAM_BW, _textAa.high(), _bufferSize);
     setRamArea(bus, 0, 0, _w, _h);
     writeRam(bus, CMD_WRITE_RAM_RED, _textAa.low(), _bufferSize);
-    setCustomLut(bus, true, kX4ProTextSsd1677);
+    setCustomLut(bus, true, _textLut);
     bus.cmd(CMD_BORDER_WAVEFORM);
     bus.data(0xC0);
     bus.cmd(CMD_DISPLAY_UPDATE_CTRL1);
@@ -1068,12 +1098,20 @@ void Ssd1677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
     bus.cmd(CMD_MASTER_ACTIVATION);
     bus.waitRefreshComplete("SSD1677 one-pass text AA");
     if (bus.isBusy()) { _textAa.invalidate(); _needsInitialFull = true; return; }
-    _textAa.finish(17, -2, -2, -24);
+    _textAa.finish(textDose(_textLut, 0), textDose(_textLut, 2), textDose(_textLut, 1), textDose(_textLut, 3));
     _isScreenOn = true;
     _needsInitialFull = _needsGrayClear = false;
     _inGrayscaleMode = true;
     setCustomLut(bus, false, nullptr);
-    if (turnOff) powerOffController(bus);
+    if (_piccoOld && _piccoGrayMask) {
+      // Picco B/W history: the page's base, with its gray pixels flagged so the
+      // next B/W paint drives each of them to its target.
+      memcpy(_piccoOld, _textAa.base(), _bufferSize);
+      for (uint32_t i = 0; i < _bufferSize; ++i)
+        _piccoGrayMask[i] = static_cast<uint8_t>(_textAa.low()[i] & ~_textAa.high()[i]);
+      _piccoGrayPending = true;
+    }
+    if (turnOff) powerOffController(bus, _cfg.piccoWaveforms ? 1 : 200);
     return;
   }
 
@@ -1300,7 +1338,7 @@ static const Ssd1677Config& ssd1677ActiveConfig() {
 #if FREEINK_DEVICE_METALIO_EINK4
     case BoardConfig::Board::MetalioEInk4: return ssd1677MetalioConfig();
 #endif
-    case BoardConfig::Board::Sticky: return ssd1677StickyConfig();
+    case BoardConfig::Board::Sticky: return ssd1677StickyTextConfig();
     // Waveshare ESP32-S3-ePaper-3.97: the vendor driver's bring-up is byte-identical
     // to Seeed's (booster AE C7 C3 C0 80, border 0x01, 0x22 = F7 full / FF partial /
     // D7 fast), so it runs the same config. Grayscale LUT is Sticky's — same panel

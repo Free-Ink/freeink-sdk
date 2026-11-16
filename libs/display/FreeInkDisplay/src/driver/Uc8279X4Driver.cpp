@@ -289,8 +289,8 @@ void Uc8279X4Driver::initController(EpdBus& bus) {
 }
 
 void Uc8279X4Driver::begin(EpdBus& bus) {
-  _textAa.allocate((BoardConfig::ACTIVE.board == BoardConfig::Board::XteinkX4Pro || BoardConfig::isX4Classic()) &&
-                   _w == 800 && _h == 480);
+  _textAa.allocate(BoardConfig::ACTIVE.board == BoardConfig::Board::XteinkX4Pro || BoardConfig::isX4Classic(), _wb,
+                   _h);
   _directGrayOnPanel = false;
   _grayImagePass = false;
   _absoluteInput = false;

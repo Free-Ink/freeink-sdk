@@ -427,6 +427,31 @@ static void expectNightGray2677(Ssd2677Driver& s) {
   s.setReaderRefresh(false);
 }
 
+static void expectPackedPairs(Ssd2677Driver& driver) {
+  const size_t size = driver.geometry().bufferSize;
+  Bytes high(size), low(size);
+  for (bool exclusive : {false, true}) {
+    for (unsigned start = 0; start < 65536; start += size) {
+      for (size_t i = 0; i < size; ++i) {
+        high[i] = (start + i) >> 8;
+        low[i] = start + i;
+      }
+      EpdBus bus;
+      driver.sendPacked(bus, high.data(), low.data(), exclusive);
+      assert(bus.writes.size() == 1 && bus.writes[0].command == 0x10);
+      const auto& packed = bus.writes[0].bytes;
+      assert(packed.size() == size * 2);
+      for (size_t i = 0; i < size; ++i) {
+        uint16_t expected = 0;
+        const uint8_t hi = exclusive ? high[i] & ~low[i] : high[i];
+        for (int bit = 7; bit >= 0; --bit)
+          expected = (expected << 2) | (((hi >> bit) & 1) << 1) | ((low[i] >> bit) & 1);
+        assert(packed[i * 2] == expected >> 8 && packed[i * 2 + 1] == (expected & 255));
+      }
+    }
+  }
+}
+
 int main(int argc, char** argv) {
   const char* which = argc > 1 ? argv[1] : "yrd";
   static const uint8_t yrd[10] = {0xCA, 0xFE, 0x00, 0x16, 0x77, 0x02, 0x10, 0x01, 0x00, 0x91};
@@ -457,6 +482,7 @@ int main(int argc, char** argv) {
     assert(s.busyPolarity() == BusyPolarity::ActiveLow);
     EpdBus bus;
     s.begin(bus);
+    expectPackedPairs(s);
     assert(lastRegister(bus, 0x00) == 0x27 && lastRegister(bus, 0xE9) == 0x01);
     // Picco's final init command has no per-command wait: keep the final
     // completion wait as well as the reset wait.

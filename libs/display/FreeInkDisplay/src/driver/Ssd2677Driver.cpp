@@ -84,10 +84,12 @@ constexpr uint16_t LUT_LEN = 535;
 // 8 pixels of old + new -> two bytes of 2-bit pixels, old in the high bit,
 // MSB-first (stock FUN_422869b4).
 inline void packPixels(uint8_t oldByte, uint8_t newByte, uint8_t* out) {
-  uint16_t v = 0;
-  for (int i = 7; i >= 0; --i) v = static_cast<uint16_t>((v << 2) | (((oldByte >> i) & 1) << 1) | ((newByte >> i) & 1));
-  out[0] = static_cast<uint8_t>(v >> 8);
-  out[1] = static_cast<uint8_t>(v);
+  // Spread four bits into the even positions. A 16-byte flash table replaces
+  // eight per-pixel shifts for every framebuffer byte, preserving wire order.
+  static constexpr uint8_t spread[] = {0x00, 0x01, 0x04, 0x05, 0x10, 0x11, 0x14, 0x15,
+                                       0x40, 0x41, 0x44, 0x45, 0x50, 0x51, 0x54, 0x55};
+  out[0] = static_cast<uint8_t>((spread[oldByte >> 4] << 1) | spread[newByte >> 4]);
+  out[1] = static_cast<uint8_t>((spread[oldByte & 15] << 1) | spread[newByte & 15]);
 }
 
 }  // namespace

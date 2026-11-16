@@ -945,6 +945,25 @@ uint32_t utf8Decode(const char* s, uint8_t len) {
   return cp;
 }
 
+// The other case of a letter the layouts type, or 0 for anything without
+// one. ASCII, Latin-1, Greek Α-ω and Cyrillic А-я are each one block per case
+// at a fixed offset; × and ÷ sit between the Latin-1 letters, ß has no capital
+// here, U+03A2 is unassigned and final ς has no capital. The Cyrillic letters
+// outside А-я (ё, ї, і, є, ў) mirror theirs 0x50 apart.
+uint32_t caseFlipped(const uint32_t cp) {
+  if ((cp >= 'a' && cp <= 'z') || (cp >= 0xE0 && cp <= 0xFE && cp != 0xF7) ||
+      (cp >= 0x3B1 && cp <= 0x3C9 && cp != 0x3C2) || (cp >= 0x430 && cp <= 0x44F)) {
+    return cp - 0x20;
+  }
+  if ((cp >= 'A' && cp <= 'Z') || (cp >= 0xC0 && cp <= 0xDE && cp != 0xD7) ||
+      (cp >= 0x391 && cp <= 0x3A9 && cp != 0x3A2) || (cp >= 0x410 && cp <= 0x42F)) {
+    return cp + 0x20;
+  }
+  if (cp >= 0x450 && cp <= 0x45F) return cp - 0x50;
+  if (cp >= 0x400 && cp <= 0x40F) return cp + 0x50;
+  return 0;
+}
+
 // Expands compact rows into a KeyboardLayoutBuffer. Anything that would
 // overflow the buffer is dropped rather than written past it;
 // testCompactLayoutsMatchBuiltin proves no built-in layer comes close.
@@ -1151,38 +1170,28 @@ const char* keyboardAltOutputFor(const KeyboardLayout& layout, int16_t value) {
       if (key.value != value) continue;
       if (key.kind != KeyKind::Normal) return nullptr;
       if (key.alt) return key.alt;
-      // Letters without an explicit alt flip case (hold-for-capital).
+      // Letters without an explicit alt flip case (hold-for-capital), by the
+      // letter the key types rather than by its id: the Latin locale letters
+      // keep ids above 1000 (LEGACY_LETTER_IDS), and ü, ß and ö (1101..1103)
+      // are the code points of Cyrillic э, ю and я: held, they typed Э, Ю, Я.
+      if (!key.output) return nullptr;
+      const uint8_t len = utf8SequenceLength(key.output);
+      if (key.output[len] != 0) return nullptr;  // one character, or no case to flip
+      const uint32_t cp = caseFlipped(utf8Decode(key.output, len));
+      if (cp == 0) return nullptr;
       // Static buffer: single UI-loop caller assumption (see header doc). Three
-      // bytes because Cyrillic encodes to two in UTF-8, plus the terminator.
+      // bytes because every flip is below U+0800, two bytes in UTF-8, plus the
+      // terminator.
       static char flipped[3] = {0, 0, 0};
-      if (value >= 'a' && value <= 'z') {
-        flipped[0] = static_cast<char>(value - ('a' - 'A'));
+      if (cp < 0x80) {
+        flipped[0] = static_cast<char>(cp);
         flipped[1] = 0;
-        return flipped;
-      }
-      if (value >= 'A' && value <= 'Z') {
-        flipped[0] = static_cast<char>(value + ('a' - 'A'));
-        flipped[1] = 0;
-        return flipped;
-      }
-      // Cyrillic: А-Я is U+0410..U+042F and а-я is U+0430..U+044F, the same
-      // 0x20 offset as ASCII. Ё/ё sit outside that block at U+0401/U+0451.
-      int32_t cp = -1;
-      if (value >= 0x0410 && value <= 0x042F) cp = value + 0x20;
-      if (value >= 0x0430 && value <= 0x044F) cp = value - 0x20;
-      if (value == 0x0401) cp = 0x0451;
-      if (value == 0x0451) cp = 0x0401;
-      // Greek: Α-Ω is U+0391..U+03A9 and α-ω U+03B1..U+03C9, again 0x20
-      // apart (U+03A2 is unassigned; final ς has no capital).
-      if (value >= 0x0391 && value <= 0x03A9 && value != 0x03A2) cp = value + 0x20;
-      if (value >= 0x03B1 && value <= 0x03C9 && value != 0x03C2) cp = value - 0x20;
-      if (cp > 0) {
+      } else {
         // Two-byte UTF-8: 110xxxxx 10xxxxxx.
         flipped[0] = static_cast<char>(0xC0 | (cp >> 6));
         flipped[1] = static_cast<char>(0x80 | (cp & 0x3F));
-        return flipped;
       }
-      return nullptr;
+      return flipped;
     }
   }
   return nullptr;

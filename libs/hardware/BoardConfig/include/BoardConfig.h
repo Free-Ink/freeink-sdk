@@ -364,7 +364,7 @@
 #define FREEINK_CAP_RTC                                                                             \
   (FREEINK_DEVICE_X3 || FREEINK_DEVICE_STICKY || FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_X4CLASSIC || \
    FREEINK_DEVICE_PAPERMONO || FREEINK_DEVICE_PAPERS3 || FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_EEGO_A4 || \
-   FREEINK_DEVICE_WS397 || FREEINK_DEVICE_METALIO_EINK4 || FREEINK_DEVICE_PICCO)
+   FREEINK_DEVICE_WS397 || FREEINK_DEVICE_METALIO_EINK4 || FREEINK_DEVICE_PICCO || FREEINK_DEVICE_MURPHY)
 #endif
 #ifndef FREEINK_CAP_TEMP_HUMIDITY
 #define FREEINK_CAP_TEMP_HUMIDITY (FREEINK_DEVICE_STICKY)
@@ -772,7 +772,7 @@ struct MicConfig {
   bool enableActiveHigh;
 };
 
-enum class RtcType : uint8_t { None, Pcf8563, Ds3231, Rx8130, Pcf85063 };
+enum class RtcType : uint8_t { None, Pcf8563, Ds3231, Rx8130, Pcf85063, Rx8010 };
 enum class ImuType : uint8_t { None, Lsm6ds3, Qmi8658, Sc7a20h, Bmi270 };
 
 // On-board I2C sensors sharing one bus (e.g. the Sticky's RTC + temp/humidity +
@@ -1254,7 +1254,12 @@ constexpr BoardProfile MURPHY_M3 = {
     NO_LEDS,
     NO_FLIP,
     NO_SDMMC,
-    NO_GAUGE};
+    NO_GAUGE,
+    NO_MIC,
+    // Epson RX8010SJ on the touch bus. VDD and the pull-ups are on the 3V3 LDO, which has no enable
+    // pin, so it keeps time for as long as the battery lasts; there is no backup cell. 100 kHz is
+    // what the touch driver starts this bus at. The AHT30 at 0x38 has no driver yet.
+    {13, 12, 100000, 0x32, 0, 0, 0, RtcType::Rx8010, ImuType::None}};
 
 // --- Murphy M4 — ESP32-S3R8, SSD1677 (480x800 portrait), FT6336U touch, dual frontlight ---
 // Touch wiring below follows the CrossPoint-derived Murphy Reader v1.2.16

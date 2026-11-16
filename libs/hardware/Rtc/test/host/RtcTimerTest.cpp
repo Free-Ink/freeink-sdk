@@ -91,6 +91,30 @@ int main() {
   BoardConfig::ACTIVE.sensors.rtcType = BoardConfig::RtcType::Pcf8563;
   assert(!rtc.armWakeTimer(60) && !rtc.cancelWakeTimer());
 
+  // RX8010: the RX8130's time block, but flags at 0x1E and control at 0x1F.
+  reset();
+  BoardConfig::ACTIVE.sensors.rtcType = BoardConfig::RtcType::Rx8010;
+  Rtc rx8010;
+  regs[0x32][0x1E] = 0x02;  // VLF, as a chip that has never been set comes up
+  regs[0x32][0x1F] = 0x84;  // TEST must not survive a set(); the other bits must
+  assert(rx8010.begin());
+  assert(regs[0x32][0x17] == 0xD8 && regs[0x32][0x31] == 0x08);
+  assert(!rx8010.now(time));  // no time until one has been set
+  regs[0x32][0x1D] = 0x02;    // VLF's bit in the RX8130's flag register means nothing here
+  const Rtc::DateTime murphy{2026, 11, 5, 17, 6, 30, 4};
+  regs[0x32][0x1E] = 0x3A;  // alarm, timer and update flags are not ours to clear
+  assert(rx8010.set(murphy));
+  assert(regs[0x32][0x1E] == 0x38 && regs[0x32][0x1F] == 0x04 && regs[0x32][0x1D] == 0x02);
+  assert(regs[0x32][0x13] == 0x10);  // weekday is one-hot
+  stopped = false;
+  for (const auto& w : writes)
+    if (w.addr == 0x32 && w.reg == 0x1F && w.value == 0x44) stopped = true;
+  assert(stopped);
+  assert(rx8010.now(time));
+  assert(time.year == 2026 && time.month == 11 && time.day == 5 && time.hour == 17 && time.minute == 6 &&
+         time.second == 30 && time.weekday == 4);
+  assert(!rx8010.armWakeTimer(60));  // the wake timer is the RX8130's
+
   reset();
   assert(freeink::papermono::setRtcWake(true));
   assert(regs[0x6E][0x18] == 1 && !(regs[0x6E][0x19] & 1));

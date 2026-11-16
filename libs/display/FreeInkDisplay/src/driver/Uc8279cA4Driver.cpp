@@ -52,7 +52,6 @@ void Uc8279cA4Driver::hardwareReset(EpdBus& bus) {
     bus.waitBusy(" A4 power-off");
     _screenOn = false;
   }
-  _controllerAsleep = false;  // the reset pulse wakes it
   // EpdBus's generic 2-ms low pulse is too short for this panel.
   const int8_t rst = bus.pins().rst;
   digitalWrite(rst, HIGH);
@@ -200,17 +199,14 @@ void Uc8279cA4Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* pre
                               const bool turnOff) {
   (void)prev;
   (void)turnOff;  // the panel stays powered after refresh(), as on stock
-  const bool wasAsleep = _controllerAsleep;
   // Any B/W refresh replaces what a Gray3 transition would start from.
   _gray3HistoryValid = false;
   _gray3Session = false;
   _basePending = false;
-  // Restore B/W controller registers after a grayscale pass or controllerIdle().
-  if (_grayControllerMode || wasAsleep) {
+  // Restore B/W controller registers after a grayscale pass.
+  if (_grayControllerMode) {
     hardwareReset(bus);
     initController(bus, Session::Bw);
-    // Deep sleep lost DTM1; the glass still holds the last B/W frame, so diff against it.
-    if (wasAsleep && !_redriveAfterGray && !_firstRefreshPending && _grayBase) writeFrame(bus, CMD_DTM1, _grayBase);
   }
   ensurePowerOn(bus);
   const bool fast = mode == RefreshMode::Fast && !_firstRefreshPending;
@@ -418,7 +414,7 @@ void Uc8279cA4Driver::displayGray(EpdBus& bus, const uint8_t* fb, const bool tur
   // Stock V1.0.3's lockscreen sequence. Pre-clear ("GC-black-2x-half") in the
   // B/W session: black to DTM2, no DTM1 write, two refreshes with the halved
   // GC waveform.
-  if (_grayControllerMode || _controllerAsleep) {
+  if (_grayControllerMode) {
     hardwareReset(bus);
     initController(bus, Session::Bw);
   }
@@ -461,18 +457,17 @@ void Uc8279cA4Driver::cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) {
   _basePending = false;
 }
 
-// On screens that keep the device awake: the same power-off and deep sleep as
-// deepSleep(), between frames. The glass keeps its image; the next paint resets
-// and re-initializes the controller.
+// Stock V1.0.3's idle power-off: 500 ms after a refresh, with no further work
+// pending, it sends POWER_OFF (logged "EPD reader idle POF") and the next
+// refresh powers the panel back on. The controller keeps its registers and RAM.
 void Uc8279cA4Driver::controllerIdle(EpdBus& bus) {
-  if (_controllerAsleep || _basePending) return;
-  deepSleep(bus);
-  _controllerAsleep = true;
-  _gray3Session = false;  // showGray3() resets into a fresh Gray3 session
+  if (!_screenOn || _basePending) return;
+  bus.cmd(CMD_POWER_OFF);
+  bus.waitBusy(" A4 power-off");
+  _screenOn = false;
 }
 
 void Uc8279cA4Driver::deepSleep(EpdBus& bus) {
-  if (_controllerAsleep) return;
   if (_screenOn) {
     bus.cmd(CMD_POWER_OFF);
     bus.waitBusy(" A4 power-off");

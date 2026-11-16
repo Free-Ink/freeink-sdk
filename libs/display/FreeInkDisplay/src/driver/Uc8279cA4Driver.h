@@ -61,7 +61,6 @@ class Uc8279cA4Driver : public PanelDriver {
   uint16_t _widthBytes;
   bool _screenOn = false;
   bool _grayControllerMode = false;
-  bool _controllerAsleep = false;  // controllerIdle() put the controller in deep sleep
   bool _redriveAfterGray = false;  // re-drive all target pixels after AA, using the requested waveform
   // begin() seeds DTM1 white, but after a reflash/reset the glass holds the
   // previous UI, so a white-assumed diff leaves it ghosting through the first

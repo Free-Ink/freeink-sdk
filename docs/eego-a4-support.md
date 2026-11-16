@@ -86,12 +86,14 @@ off after every refresh showed static screens fuzzing while idle; leaving the
 panel powered into a four-gray paint, without that reset, showed earlier
 screens as ghosts.
 
-`controllerIdle()` ends the hold between frames: it powers the panel off and
-puts the controller in deep sleep, the same sequence as `deepSleep()`, and the
-next paint resets and re-initializes the controller, diffing against the last
-B/W frame. It is meant for screens that keep the device awake with a static
-image. Whether a static image held this way stays as clean as a sleep screen
-needs hardware validation.
+`controllerIdle()` ends the hold between frames, as stock V1.0.3 does: 500 ms
+after a refresh, with nothing further pending, stock sends POWER_OFF (logged
+"EPD reader idle POF") and enters light sleep; the next refresh powers the
+panel on again. `controllerIdle()` sends that POWER_OFF and the controller keeps
+its registers and RAM, so the next paint is a normal differential update. A
+panel left powered on a static screen fuzzed and showed earlier screens.
+Whether a static image stays clean once powered off this way needs hardware
+validation.
 
 Every session uses the stock V1.0.3 power and VCOM settings
 (PWR 03 00 72 72, VCOM_DC 0x32). B/W previously used stronger rails
@@ -103,10 +105,10 @@ Every session uses gate/source 00 00 00 00 and seeds
 DTM1 white before power-on.
 Full refresh uses the stock GC waveform (0x50 = 0x97); fast refresh
 uses the stock production "DU-factory-previous" waveform (0x50 = 0xd7), both
-49-byte records. The fast black-to-black record (0x24) holds instead of
-re-driving black as stock does, so unchanged black pixels are not driven again
-on every fast repaint; this needs hardware validation that text stays dark
-across repeated fast refreshes. The planes are
+49-byte records. The fast waveform drives black pixels that stay black again
+on every fast repaint. With that record (0x24) set to hold, black pixels kept
+from the previous screen showed lighter than newly driven ones in dithered
+areas. The planes are
 lazily allocated, PSRAM first; if allocation fails the driver leaves the
 existing B/W image up.
 

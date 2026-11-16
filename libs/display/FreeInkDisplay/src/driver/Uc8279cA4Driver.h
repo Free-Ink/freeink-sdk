@@ -38,6 +38,12 @@ class Uc8279cA4Driver : public PanelDriver {
   void copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) override;
   void displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut, bool factoryMode) override;
   void cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) override;
+  // Runs during a Gray3 page-turn waveform, where the CPU otherwise only
+  // polls BUSY for about 0.6 s. Cleared by every display() and displayGray().
+  void setRefreshIdleHook(void (*hook)(void* ctx), void* ctx) override {
+    _idleHook = hook;
+    _idleHookCtx = ctx;
+  }
 
  private:
   void hardwareReset(EpdBus& bus);
@@ -64,7 +70,13 @@ class Uc8279cA4Driver : public PanelDriver {
   void loadGray3Lut(EpdBus& bus, bool anyBlack, bool anyWhiteClear, bool darkFromWhite);
   void loadGray3DarkLut(EpdBus& bus);
   void fillControllerRam(EpdBus& bus, uint8_t command, uint8_t fill);
-  void refresh(EpdBus& bus, const uint8_t* bwBaseline = nullptr);
+  void refresh(EpdBus& bus, const uint8_t* bwBaseline = nullptr, bool runIdleHook = false);
+  // display() without ending the idle hook's lifetime, for use inside displayGray().
+  void displayBw(EpdBus& bus, const uint8_t* fb, RefreshMode mode);
+  void clearIdleHook() {
+    _idleHook = nullptr;
+    _idleHookCtx = nullptr;
+  }
   uint8_t* allocateGrayBuffer();
   bool allocateGray3();
 
@@ -99,6 +111,8 @@ class Uc8279cA4Driver : public PanelDriver {
   uint8_t* _gray3Dark = nullptr;
   bool _gray3HistoryValid = false;
   bool _gray3Session = false;  // controller is already set up and powered for Gray3
+  void (*_idleHook)(void* ctx) = nullptr;
+  void* _idleHookCtx = nullptr;
 };
 
 PanelDriver& uc8279cA4Driver();

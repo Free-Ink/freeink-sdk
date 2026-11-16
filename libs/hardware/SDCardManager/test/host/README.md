@@ -23,3 +23,10 @@ These tests verify transfer logic, not SD hardware or network timing. On a
 device, transfer a multi-chunk file through a `Print`-derived network client and
 compare its size and hash with the SD original. Then interrupt the connection
 and check that the helper reports failure without restarting the device.
+
+The runner also compiles SPI raw-access and SDMMC manager variants. Failed root
+open, volume sync, and root close must keep the mount alive, reject USB raw
+handoff, and prevent transport shutdown or bus isolation. Successful retry and
+repeated shutdown are covered. Only the physical SDMMC transport is stubbed;
+its production manager code and public API are compiled. These tests do not
+simulate a real FAT volume or a physical power cut.

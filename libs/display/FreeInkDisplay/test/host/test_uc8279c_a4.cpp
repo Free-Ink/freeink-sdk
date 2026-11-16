@@ -58,8 +58,8 @@ int main() {
       driver.copyGrayscaleMsb(bus, gray.data());
       const auto before = bus.refreshes;
       driver.displayGray(bus, bw.data(), false, nullptr, false);
-      assert(bus.refreshes == before + 1 && bus.interval == 0x00 && bus.lutBytes == 49 &&
-             "an AA gray pass must be one Gray3 refresh");
+      assert(bus.refreshes == before + 2 && bus.interval == 0x00 && bus.lutBytes == 49 &&
+             "an AA gray pass must be one Gray3 refresh plus the dark refresh");
       if (cleanup) driver.cleanupGrayscaleBuffers(bus, bw.data());
       for (auto& b : bw) b = static_cast<uint8_t>(b ^ 0x33);
       driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, page == 2);
@@ -116,9 +116,9 @@ int main() {
   }
 
   // Gray3 (anti-aliased pages, stock's reader path). Byte 0 of row 0, bits 7..0:
-  // base white, base black, dark, light, then white x4 -> levels white, black,
-  // middle, middle, white x4. Codes (DTM1, DTM2): 10 black, 01 gray,
-  // 11 white-clear, 00 hold.
+  // base white, base black, dark, light, then white x4. First refresh codes
+  // (DTM1, DTM2): 10 black, 01 gray, 11 white-clear, 00 hold. Second (dark)
+  // refresh: 10 darker, 01 light from white, 11 dark from white, 00 hold.
   const auto physical0 = static_cast<size_t>(551) * 96;  // row 0 is sent last
   std::vector<uint8_t> page(bytes, 0xff), lsbMask(bytes, 0), msbMask(bytes, 0);
   page[0] = 0b10001111;
@@ -132,23 +132,29 @@ int main() {
   };
   {
     // First Gray3 page after a B/W screen: the base goes out as a normal B/W
-    // refresh (clearing the previous screen), then a Gray3 transition from it
-    // nudges only the gray pixels and re-drives black.
+    // refresh with its gray pixels white (clearing the previous screen), then
+    // one Gray3 refresh drives light and dark from white; black holds.
     driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, false);
     const auto before = bus.refreshes;
     gray3Page(page.data(), RefreshMode::Fast);
-    assert(bus.refreshes == before + 2 && "entry must be one B/W base refresh plus one Gray3 transition");
+    assert(bus.refreshes == before + 2 && "entry must be a B/W base refresh and one Gray3 refresh");
     assert(bus.interval == 0x00 && bus.lutBytes == 49);
-    assert(bus.oldAtRefresh[physical0] == 0b01000000 && bus.newAtRefresh[physical0] == 0b00110000 &&
-           "from the B/W base: black re-driven (10), base-black -> middle nudged (01), white holds");
+    assert(bus.newAtPrevRefresh[physical0] == 0b10111111 && "the base goes out with its gray pixels white");
+    assert(bus.oldAtRefresh[physical0] == 0b00100000 && bus.newAtRefresh[physical0] == 0b00010000 &&
+           "from the B/W base: dark (10) and light (01) from white; white and black hold");
     assert(bus.oldAtRefresh[physical0 + 1] == 0x00 && bus.newAtRefresh[physical0 + 1] == 0x00);
     assert(bus.oldPlane.size() == 600 * 96 && bus.oldPlane[552 * 96] == 0x00 && "padding rows hold");
   }
   {
-    // The same page again: one refresh; white and middle hold, black re-driven.
+    // Idle retains Gray3 history/session. The same page again must resume with
+    // one power-on and one refresh, with no register reinitialization.
+    fakeMillis() += 500;
+    driver.controllerIdle(bus);
+    const auto ons = bus.powerOns, settings = bus.panelSettings;
     const auto before = bus.refreshes;
     gray3Page(page.data(), RefreshMode::Fast);
     assert(bus.refreshes == before + 1);
+    assert(bus.powerOns == ons + 1 && bus.panelSettings == settings);
     assert(bus.oldAtRefresh[physical0] == 0b01000000 && bus.newAtRefresh[physical0] == 0x00 &&
            "unchanged white/middle must hold, black re-driven");
     assert(bus.oldAtRefresh[physical0 + 1] == 0x00 && bus.newAtRefresh[physical0 + 1] == 0x00);
@@ -164,6 +170,22 @@ int main() {
     gray3Page(next.data(), RefreshMode::Fast);
     // bit7 white->middle: 01; bit6 black->white: 11; bits5,4 middle->white: 11.
     assert(bus.oldAtRefresh[physical0] == 0b01110000 && bus.newAtRefresh[physical0] == 0b11110000);
+    // Light -> dark holds in the first refresh and is only driven further in
+    // the second (10); nothing else changes.
+    lsbMask[0] = 0b10000000;
+    auto before = bus.refreshes;
+    gray3Page(next.data(), RefreshMode::Fast);
+    assert(bus.refreshes == before + 2);
+    assert(bus.oldAtPrevRefresh[physical0] == 0x00 && bus.newAtPrevRefresh[physical0] == 0x00);
+    assert(bus.oldAtRefresh[physical0] == 0b10000000 && bus.newAtRefresh[physical0] == 0x00);
+    assert(bus.lut20s.back()[1] == 3 + 2 + 4 && "dark refresh: light + extra + settle frames");
+    // Dark -> light is cleared (11), then driven from white (01).
+    lsbMask[0] = 0;
+    before = bus.refreshes;
+    gray3Page(next.data(), RefreshMode::Fast);
+    assert(bus.refreshes == before + 2);
+    assert(bus.oldAtPrevRefresh[physical0] == 0b10000000 && bus.newAtPrevRefresh[physical0] == 0b10000000);
+    assert(bus.oldAtRefresh[physical0] == 0x00 && bus.newAtRefresh[physical0] == 0b10000000);
     lsbMask[0] = savedLsb;
     msbMask[0] = savedMsb;
   }
@@ -171,12 +193,16 @@ int main() {
     // A cleanup request runs stock's inverted page first, then the page.
     const auto before = bus.refreshes;
     gray3Page(page.data(), RefreshMode::Half);
-    assert(bus.refreshes == before + 2 && "cleanup page must show the inverted page, then the page");
+    assert(bus.refreshes == before + 3 &&
+           "cleanup page must show the inverted page (with its dark refresh), then the page");
   }
   {
     // A stashed base whose gray pass never runs still reaches the panel.
     driver.beginGrayscale(bus, page.data(), GrayscaleMode::Overlay, RefreshMode::Fast, false);
     const auto before = bus.refreshes;
+    const auto commands = bus.commands.size();
+    driver.controllerIdle(bus);
+    assert(bus.commands.size() == commands && "idle must not interrupt a pending grayscale base");
     driver.cleanupGrayscaleBuffers(bus, page.data());
     assert(bus.refreshes == before + 1 && bus.interval == 0xd7);
     for (size_t i = 0; i < bytes; ++i) assert(bus.newAtRefresh[(551 - i / 96) * 96 + i % 96] == page[i]);
@@ -189,8 +215,9 @@ int main() {
     driver.copyGrayscaleMsb(bus, msbMask.data());
     const auto before = bus.refreshes;
     driver.displayGray(bus, page.data(), false, nullptr, false);
-    assert(bus.refreshes == before + 1 && bus.interval == 0x00 && bus.oldAtRefresh[physical0] == 0b01000000 &&
-           bus.newAtRefresh[physical0] == 0b00110000 && "unannounced overlay must transition from the shown base");
+    assert(bus.refreshes == before + 2 && bus.interval == 0x00 && bus.newAtPrevRefresh[physical0] == 0b10111111 &&
+           bus.oldAtRefresh[physical0] == 0b00100000 && bus.newAtRefresh[physical0] == 0b00010000 &&
+           "unannounced overlay: the shown base is repainted with its grays white, then one Gray3 refresh");
   }
 
   {
@@ -219,21 +246,46 @@ int main() {
   driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, false);
   assert(bus.interval == 0xd7 && bus.lutBytes == 49);
   {
-    // controllerIdle() powers the panel off between frames; the next paint
-    // wakes the controller and diffs against the frame left on the glass.
-    const auto shown = bus.oldPlane;
-    const auto offs = bus.powerOffs;
-    driver.controllerIdle(bus);
-    driver.controllerIdle(bus);
-    assert(bus.powerOffs == offs + 1 && "idle must power off once and stay off");
-    for (auto& b : bw) b = static_cast<uint8_t>(b ^ 0x0f);
-    const auto before = bus.refreshes;
-    driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, false);
-    assert(bus.refreshes == before + 1 && bus.interval == 0xd7 && "paint after idle stays one FAST refresh");
-    assert(bus.oldAtRefresh == shown && "paint after idle must diff against the displayed frame");
+    // Idle is POWER_OFF only, not deep sleep: registers and both RAM planes
+    // survive, and each subsequent paint is still a differential FAST refresh.
+    assert(bus.lut24.size() == 49 && bus.lut24[1] == 0x64 &&
+           "FAST must re-drive unchanged black pixels, matching stock");
+    for (int turn = 0; turn < 3; ++turn) {
+      const auto shown = bus.oldPlane, newPlane = bus.newPlane;
+      const auto offs = bus.powerOffs, ons = bus.powerOns, sleeps = bus.deepSleeps;
+      const auto settings = bus.panelSettings;
+      const auto commandCount = bus.commands.size();
+      const auto refreshedAt = fakeMillis();
+      driver.controllerIdle(bus);
+      assert(bus.commands.size() == commandCount && "idle must not power off immediately after a refresh");
+      fakeMillis() = refreshedAt + 498;  // millis() advances once per call in this harness
+      driver.controllerIdle(bus);
+      assert(bus.commands.size() == commandCount && "idle must retain power through 499 ms");
+      driver.controllerIdle(bus);  // exactly 500 ms since the completed refresh
+      driver.controllerIdle(bus);
+      assert(bus.powerOffs == offs + 1 && bus.deepSleeps == sleeps);
+      assert(bus.commands.size() == commandCount + 1 && bus.commands.back() == 0x02 &&
+             "idle must send only POWER_OFF, once");
+      assert(bus.oldPlane == shown && bus.newPlane == newPlane && "idle must preserve RAM");
+      for (auto& b : bw) b = static_cast<uint8_t>(b ^ 0x0f);
+      const auto before = bus.refreshes;
+      driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, false);
+      assert(bus.refreshes == before + 1 && bus.interval == 0xd7 && "paint after idle stays one FAST refresh");
+      assert(bus.powerOns == ons + 1 && bus.panelSettings == settings &&
+             "paint after idle must power on without reinitializing registers");
+      assert(bus.oldAtRefresh == shown && "paint after idle must diff against the displayed frame");
+    }
+    const auto offs = bus.powerOffs, sleeps = bus.deepSleeps;
+    fakeMillis() += 500;
     driver.controllerIdle(bus);
     driver.deepSleep(bus);
-    assert(bus.powerOffs == offs + 2 && "deep sleep after idle sends no second power-off");
+    assert(bus.powerOffs == offs + 1 && "deep sleep after idle sends no second power-off");
+    assert(bus.deepSleeps == sleeps + 1 && "real sleep still sends DEEP_SLEEP after idle");
+    driver.begin(bus);
+    const auto before = bus.refreshes;
+    driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, false);
+    assert(bus.refreshes == before + 2 && bus.interval == 0x97 &&
+           "real sleep/wake must still establish an unknown-glass baseline");
   }
   std::cout << "PASS: A4 FAST cadence, post-AA pixel transitions, retained baseline, explicit cleanup, four-gray and "
                "Gray3 wire encoding, stock power hold and wake, idle power-off\n";

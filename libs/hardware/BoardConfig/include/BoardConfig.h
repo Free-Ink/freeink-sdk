@@ -1583,9 +1583,10 @@ constexpr BoardProfile EEGO_A4 = {
     11,      // batteryChargeStatus
     1.559f,  // divider
     PIN_UNASSIGNED,
-    // GSLX680: pollGslx680 applies the stock factory calibration and returns
-    // panel-native x=0..767, y=0..551, so the range here is the identity.
-    {TouchController::Gslx680, 2, 1, PIN_UNASSIGNED, 3, 0x40, 0, 767, 0, 551, false, 0, false, false,
+    // GSLX680: pollGslx680 maps the digitizer linearly to panel-native
+    // x=0..767, y=0..551; this range then trims and rescales it, least-squares
+    // fitted from hardware taps on known targets (residuals within ~7px).
+    {TouchController::Gslx680, 2, 1, PIN_UNASSIGNED, 3, 0x40, 12, 779, 28, 553, false, 0, false, false,
      PIN_UNASSIGNED, false, false, false, true, true},  // powerEnable, swapXY, flipX, flipY, hasHomeKey, pwrEnActiveHigh
     // The frontlight is an LM3630A driven via the i2cFrontlight field below, not
     // this LEDC/PWM FrontlightConfig — the frontlit variant's light is I2C only.

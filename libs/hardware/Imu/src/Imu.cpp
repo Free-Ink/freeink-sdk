@@ -295,6 +295,9 @@ bool Imu::begin() {
   uint8_t who = 0;
   switch (s.imuType) {
     case BoardConfig::ImuType::Lsm6ds3:
+      // Each part's branch opens with its FREEINK_IMU_* flag: a constant false drops the driver, and
+      // what only it references (the BMI270's configuration file), from the build.
+      if (!FREEINK_IMU_LSM6DS3) return false;
       if (!readRegs(configuredAddr, REG_WHO_AM_I, &who, 1) || who != WHO_AM_I_VALUE) return false;
       if (!writeReg(configuredAddr, REG_CTRL3_C, CTRL3_C_BDU_IF_INC)) return false;
       if (!writeReg(configuredAddr, REG_CTRL1_XL, CTRL1_XL_104HZ_2G)) return false;
@@ -302,6 +305,7 @@ bool Imu::begin() {
       addr_ = configuredAddr;
       break;
     case BoardConfig::ImuType::Qmi8658: {
+      if (!FREEINK_IMU_QMI8658) return false;
       // SA0 selects between 0x6A and 0x6B. X3 production revisions have used
       // both, so treat the profile address as a preference rather than a
       // guarantee. This restores the fallback used by the pre-SDK X3 driver.
@@ -329,6 +333,7 @@ bool Imu::begin() {
       break;
     }
     case BoardConfig::ImuType::Sc7a20h: {
+      if (!FREEINK_IMU_SC7A20H) return false;
       if (configuredAddr != 0x18 && configuredAddr != 0x19) return false;
       const uint8_t alternate = configuredAddr == 0x19 ? 0x18 : 0x19;
       if (sc7a20hPresentAt(configuredAddr)) addr_ = configuredAddr;
@@ -343,6 +348,7 @@ bool Imu::begin() {
       break;
     }
     case BoardConfig::ImuType::Bmi270: {
+      if (!FREEINK_IMU_BMI270) return false;
       if (configuredAddr != BMI270_ADDR_68 && configuredAddr != BMI270_ADDR_69) return false;
       const uint8_t alternate = configuredAddr == BMI270_ADDR_68 ? BMI270_ADDR_69 : BMI270_ADDR_68;
       if (bmi270PresentAt(configuredAddr)) addr_ = configuredAddr;
@@ -377,7 +383,7 @@ bool Imu::read(Sample& out) {
   const uint8_t addr = addr_;
   if (!begun_ || addr == 0) return false;
   const auto& s = BoardConfig::ACTIVE.sensors;
-  if (s.imuType == BoardConfig::ImuType::Sc7a20h) {
+  if (FREEINK_IMU_SC7A20H && s.imuType == BoardConfig::ImuType::Sc7a20h) {
     if (sleeping_) return false;
     uint8_t status = 0, raw[6] = {};
     if (!readRegs(addr, SC7_STATUS, &status, 1) || !(status & 0x08)) return false;
@@ -391,13 +397,13 @@ bool Imu::read(Sample& out) {
   }
   uint8_t g[6] = {};
   uint8_t a[6] = {};
-  if (s.imuType == BoardConfig::ImuType::Lsm6ds3) {
+  if (FREEINK_IMU_LSM6DS3 && s.imuType == BoardConfig::ImuType::Lsm6ds3) {
     if (!readRegs(addr, REG_OUTX_L_G, g, sizeof(g))) return false;
     if (!readRegs(addr, REG_OUTX_L_XL, a, sizeof(a))) return false;
-  } else if (s.imuType == BoardConfig::ImuType::Qmi8658) {
+  } else if (FREEINK_IMU_QMI8658 && s.imuType == BoardConfig::ImuType::Qmi8658) {
     if (!readRegs(addr, QMI8658_REG_GX_L, g, sizeof(g))) return false;
     if (!readRegs(addr, QMI8658_REG_AX_L, a, sizeof(a))) return false;
-  } else if (s.imuType == BoardConfig::ImuType::Bmi270) {
+  } else if (FREEINK_IMU_BMI270 && s.imuType == BoardConfig::ImuType::Bmi270) {
     if (sleeping_) return false;
     if (!configured_) {
       // A failed start has already switched advanced power save off.
@@ -464,16 +470,20 @@ bool Imu::sleep() {
   if (!begun_ || addr == 0) return false;
   switch (BoardConfig::ACTIVE.sensors.imuType) {
     case BoardConfig::ImuType::Lsm6ds3:
+      if (!FREEINK_IMU_LSM6DS3) return false;
       return writeReg(addr, REG_CTRL1_XL, CTRL_ODR_POWER_DOWN) && writeReg(addr, REG_CTRL2_G, CTRL_ODR_POWER_DOWN);
     case BoardConfig::ImuType::Qmi8658:
+      if (!FREEINK_IMU_QMI8658) return false;
       // CTRL7 only disables sampling; the internal oscillator keeps running.
       // SensorDisable is required for the QMI8658's full power-down mode.
       return powerDownQmi8658(addr);
     case BoardConfig::ImuType::Sc7a20h:
+      if (!FREEINK_IMU_SC7A20H) return false;
       if (!writeReg(addr, SC7_CTRL1, SC7_POWER_DOWN)) return false;
       sleeping_ = true;
       return true;
     case BoardConfig::ImuType::Bmi270:
+      if (!FREEINK_IMU_BMI270) return false;
       // Not configured yet: still in its power-on suspend state.
       if (configured_ && !powerDownBmi270(addr)) return false;
       sleeping_ = true;
@@ -489,17 +499,21 @@ bool Imu::wake() {
   if (!begun_ || addr == 0) return false;
   switch (BoardConfig::ACTIVE.sensors.imuType) {
     case BoardConfig::ImuType::Lsm6ds3:
+      if (!FREEINK_IMU_LSM6DS3) return false;
       return writeReg(addr, REG_CTRL1_XL, CTRL1_XL_104HZ_2G) && writeReg(addr, REG_CTRL2_G, CTRL2_G_104HZ_245DPS);
     case BoardConfig::ImuType::Qmi8658:
+      if (!FREEINK_IMU_QMI8658) return false;
       // Re-enable the internal oscillator before restarting the sensors.
       return writeReg(addr, QMI8658_REG_CTRL1, QMI8658_CTRL1_BASE) &&
              writeReg(addr, QMI8658_REG_CTRL7, QMI8658_CTRL7_ACC_GYRO_ENABLE);
     case BoardConfig::ImuType::Sc7a20h:
+      if (!FREEINK_IMU_SC7A20H) return false;
       if (!writeReg(addr, SC7_CTRL1, SC7_100HZ)) return false;
       delay(10);
       sleeping_ = false;
       return true;
     case BoardConfig::ImuType::Bmi270:
+      if (!FREEINK_IMU_BMI270) return false;
       if (configured_) {
         if (!writeReg(addr, BMI270_REG_PWR_CONF, BMI270_PWR_CONF_ACTIVE)) return false;
         delayMicroseconds(BMI270_POWER_SAVE_WRITE_US);

@@ -494,6 +494,166 @@ void Ssd2677Driver::sendLevelCodes(EpdBus& bus, const uint8_t* levels, const uin
   if (n) txn.writeBytes(chunk, n);
 }
 
+// --- 16-level gray ------------------------------------------------------------
+namespace {
+
+// 535-byte table layout (Ssd2677Luts.h): 7-byte header, six 88-byte tables of
+// eight 11-byte groups; table 0 VCOM, tables 1..4 pixel codes 00/01/10/11.
+constexpr int kHeaderLen = 7, kTableLen = 88, kGroupLen = 11;
+uint8_t* lutGroup(uint8_t* lut, int table, int group) { return lut + kHeaderLen + table * kTableLen + group * kGroupLen; }
+
+// 6-bit counts, active-low, value bits 0..5 on byte bits 4,7,6,1,0,3.
+uint8_t encodeCount(uint8_t n) {
+  static constexpr uint8_t bits[6] = {4, 7, 6, 1, 0, 3};
+  uint8_t v = 0xFF;
+  for (int i = 0; i < 6; ++i)
+    if ((n >> i) & 1) v = static_cast<uint8_t>(v & ~(1u << bits[i]));
+  return v;
+}
+// Level byte, active-low: phase k (0..2) of a half drives white on bit 5/3/1, black on 2/0/6.
+constexpr uint8_t kWhiteBit[3] = {5, 3, 1}, kBlackBit[3] = {2, 0, 6};
+
+// Header and VCOM drive from the stock partial table, every group of tables
+// 0..4 cleared (an all-0xFF group has no repeats and no frames).
+void startTable(uint8_t* out) {
+  memcpy(out, lut_picco_se0400_mode3, LUT_LEN);
+  for (int t = 0; t < 5; ++t)
+    for (int g = 0; g < 8; ++g) memset(lutGroup(out, t, g), 0xFF, kGroupLen);
+}
+
+void writeGroup(uint8_t* out, int table, int group, uint8_t lv0, uint8_t lv1, const uint8_t lens[8]) {
+  uint8_t* g = lutGroup(out, table, group);
+  g[0] = encodeCount(1);
+  g[1] = lv0;
+  g[2] = lv1;
+  for (int p = 0; p < 8; ++p) g[3 + p] = encodeCount(lens[p]);
+}
+
+// One group of binary-weighted phases; code c driven dose[c] frames (black or
+// white). Same bytes as picco-gray-cal lut.build_pass(trim=True).
+void buildDosePass(uint8_t* out, const uint8_t dose[4], bool towardBlack) {
+  static constexpr uint8_t kPhase[6] = {0, 1, 2, 4, 5, 6}, kWeight[6] = {32, 16, 8, 4, 2, 1};
+  startTable(out);
+  uint8_t used = 0;
+  for (int c = 0; c < 4; ++c) used |= dose[c];
+  uint8_t lens[8] = {};
+  for (int i = 0; i < 6; ++i) lens[kPhase[i]] = (used & kWeight[i]) ? kWeight[i] : 0;
+  lens[3] = lens[7] = 1;  // a half only runs when its last phase is non-zero
+  const uint8_t* vcom = reinterpret_cast<const uint8_t*>(lut_picco_se0400_mode3) + kHeaderLen;
+  writeGroup(out, 0, 0, vcom[1], vcom[2], lens);
+  for (int c = 0; c < 4; ++c) {
+    uint8_t lv[2] = {0xFF, 0xFF};
+    for (int i = 0; i < 6; ++i) {
+      if (!(dose[c] & kWeight[i])) continue;
+      const int p = kPhase[i];
+      lv[p / 4] = static_cast<uint8_t>(lv[p / 4] & ~(1u << (towardBlack ? kBlackBit[p % 4] : kWhiteBit[p % 4])));
+    }
+    writeGroup(out, 1 + c, 0, lv[0], lv[1], lens);
+  }
+}
+
+// Turn dissolve (after PR #220's cross-dissolve): group 0 `erase` frames
+// toward white, group 1 `deep` frames toward black. Codes 11 nothing, 01
+// erase, 10 deep, 00 erase then deep. Same bytes as lut.build_dissolve().
+void buildDissolve(uint8_t* out, uint8_t erase, uint8_t deep) {
+  startTable(out);
+  const uint8_t* vcom = reinterpret_cast<const uint8_t*>(lut_picco_se0400_mode3) + kHeaderLen;
+  const uint8_t n[2] = {erase, deep};
+  for (int g = 0; g < 2; ++g) {
+    const uint8_t lens[8] = {n[g], 0, 0, 1, 0, 0, 0, 0};
+    writeGroup(out, 0, g, vcom[1], vcom[2], lens);
+    for (int c = 0; c < 4; ++c) {
+      uint8_t lv0 = 0xFF;
+      if (g == 0 && (c == 1 || c == 0)) lv0 = static_cast<uint8_t>(lv0 & ~(1u << kWhiteBit[0]));
+      if (g == 1 && (c == 2 || c == 0)) lv0 = static_cast<uint8_t>(lv0 & ~(1u << kBlackBit[0]));
+      writeGroup(out, 1 + c, g, lv0, 0xFF, lens);
+    }
+  }
+}
+
+constexpr uint8_t kLevelCode[4] = {3, 1, 2, 0};  // dose index -> pixel code; 11 undriven
+constexpr uint8_t kBalDeep[4] = {0, 8, 16, 24};    // give-back tables (Ssd2677Gray16Luts.h)
+
+}  // namespace
+
+bool Ssd2677Driver::computeGray16Codes(const uint8_t (*paths)[3], const uint8_t black[3], const uint8_t white[3],
+                                       Gray16Codes& c) {
+  c = Gray16Codes{};
+  for (int l = 0; l < 16; ++l) {
+    const uint8_t bi = paths[l][0], wi = paths[l][1], d = paths[l][2];
+    if (bi > 3 || wi > 3 || d > 1) return false;
+    const int net = d * kGray16Deep + (bi ? black[bi - 1] : 0) - (wi ? white[wi - 1] : 0);
+    if (net < 0 || net > 39) return false;  // the give-back covers 0..39 frames toward black
+    int give = 0;  // largest deep give-back leaving 0..15 for coarse + fine
+    for (int k = 3; k >= 0; --k)
+      if (kBalDeep[k] <= net && net - kBalDeep[k] <= 15) {
+        give = k;
+        break;
+      }
+    const int rest = net - kBalDeep[give];
+    c.deep[l] = d ? 2 : 3;  // code 10 = deep black in the dissolve tables
+    c.coarse[l] = kLevelCode[bi];
+    c.pull[l] = kLevelCode[wi];
+    c.balanceDeep[l] = kLevelCode[give];
+    c.balanceCoarse[l] = kLevelCode[rest / 4];
+    c.balanceFine[l] = kLevelCode[rest % 4];
+    c.ink[l] = bi || wi || d;
+    c.useDeep |= d != 0;
+    c.useCoarse |= bi != 0;
+    c.useBalanceDeep |= give != 0;
+  }
+  return true;
+}
+
+void Ssd2677Driver::buildGray16Tables() {
+  const uint8_t black[4] = {0, _g16Black[0], _g16Black[1], _g16Black[2]};
+  const uint8_t white[4] = {0, _g16White[0], _g16White[1], _g16White[2]};
+  // Dose index k maps to code kLevelCode[k]; the builders index doses by code.
+  uint8_t byCodeB[4], byCodeW[4];
+  for (int k = 0; k < 4; ++k) {
+    byCodeB[kLevelCode[k]] = black[k];
+    byCodeW[kLevelCode[k]] = white[k];
+  }
+  buildDosePass(_lutCoarse, byCodeB, true);
+  buildDosePass(_lutPull, byCodeW, false);
+  buildDissolve(_lutDissolve, _g16Erase, kGray16Deep);
+  buildDissolve(_lutDeep, 0, kGray16Deep);
+}
+
+void Ssd2677Driver::ensureGray16Config() {
+  if (_g16Ready) return;
+  memcpy(_g16Black, kGray16DefaultBlack, 3);
+  memcpy(_g16White, kGray16DefaultWhite, 3);
+  _g16Erase = kGray16DefaultErase;
+  memcpy(_g16Paths, kGray16DefaultPaths, sizeof(_g16Paths));
+  computeGray16Codes(_g16Paths, _g16Black, _g16White, _g16);  // the generator checked the defaults
+  buildGray16Tables();
+  _g16Ready = true;
+}
+
+void Ssd2677Driver::sendDissolveCodes(EpdBus& bus, const uint8_t* oldLevels, const uint8_t* newLevels) {
+  const PanelGeometry g = geometry();
+  uint8_t* const chunk = g_txChunk;
+  auto code = [this](uint8_t o, uint8_t n) -> uint8_t {
+    const bool ink = _g16.ink[o], deep = _g16.deep[n] == 2;
+    return ink ? (deep ? 0 : 1) : (deep ? 2 : 3);
+  };
+  bus.cmd(CMD_DATA);
+  auto txn = bus.beginTxn();
+  uint16_t n = 0;
+  const uint32_t bytes = static_cast<uint32_t>(g.width / 2) * g.height;
+  for (uint32_t i = 0; i < bytes; i += 2) {
+    const uint8_t oa = oldLevels[i], ob = oldLevels[i + 1], na = newLevels[i], nb = newLevels[i + 1];
+    chunk[n++] = static_cast<uint8_t>(code(oa >> 4, na >> 4) << 6 | code(oa & 15, na & 15) << 4 |
+                                      code(ob >> 4, nb >> 4) << 2 | code(ob & 15, nb & 15));
+    if (n == sizeof(g_txChunk)) {
+      txn.writeBytes(chunk, n);
+      n = 0;
+    }
+  }
+  if (n) txn.writeBytes(chunk, n);
+}
+
 void Ssd2677Driver::exitGray16(EpdBus& bus) {
   if (!_gray16OnGlass) return;
   balanceGray16(bus);
@@ -506,9 +666,9 @@ void Ssd2677Driver::exitGray16(EpdBus& bus) {
 void Ssd2677Driver::balanceGray16(EpdBus& bus) {
   if (!_gray16OnGlass) return;
   _gray16OnGlass = false;
-  // Each level got deep + B frames toward black and W back; give the net back
-  // toward white (deep balance 0/8/16/24, coarse 0/4/8/12, fine 0/1/2/3) so
-  // the pixels end balanced.
+  // Each level got deep + coarse frames toward black and pull-back frames to
+  // white; give the net back toward white (deep 0/8/16/24, coarse 0/4/8/12,
+  // fine 0/1/2/3) so the pixels end balanced.
   if (_g16.useBalanceDeep) {
     sendLevelCodes(bus, _gray16, _g16.balanceDeep);
     refreshWith(bus, lut_picco_se0400_gray16_deep_balance, false);
@@ -516,14 +676,40 @@ void Ssd2677Driver::balanceGray16(EpdBus& bus) {
   sendLevelCodes(bus, _gray16, _g16.balanceCoarse);
   refreshWith(bus, lut_picco_se0400_gray16_balance, false);
   sendLevelCodes(bus, _gray16, _g16.balanceFine);
-  refreshWith(bus, lut_picco_se0400_gray16_pull, false);
+  refreshWith(bus, lut_picco_se0400_gray16_balance_fine, false);
 }
 
-bool Ssd2677Driver::setGray16Turn(uint8_t topUp, uint8_t scrubEvery) {
-  if (!supportsGray16Image() || (topUp != 0 && topUp != 4 && topUp != 8 && topUp != 12)) return false;
-  _g16TopUp = topUp;
+bool Ssd2677Driver::setGray16Turn(uint8_t scrubEvery) {
+  if (!supportsGray16Image()) return false;
   _g16ScrubEvery = scrubEvery;
   _g16FastTurns = 0;
+  return true;
+}
+
+bool Ssd2677Driver::setGray16Passes(EpdBus& bus, const uint8_t black[3], const uint8_t white[3], uint8_t erase) {
+  if (!supportsGray16Image() || !black || !white || erase > 63) return false;
+  for (int k = 0; k < 3; ++k)
+    if (black[k] < 1 || black[k] > 63 || white[k] < 1 || white[k] > 63) return false;
+  ensureGray16Config();
+  Gray16Codes c;
+  if (!computeGray16Codes(_g16Paths, black, white, c)) return false;
+  exitGray16(bus);  // the image on the glass is balanced with the doses it was drawn with
+  memcpy(_g16Black, black, 3);
+  memcpy(_g16White, white, 3);
+  _g16Erase = erase;
+  _g16 = c;
+  buildGray16Tables();
+  return true;
+}
+
+bool Ssd2677Driver::setGray16Levels(EpdBus& bus, const uint8_t (*paths)[3]) {
+  if (!supportsGray16Image() || !paths) return false;
+  ensureGray16Config();
+  Gray16Codes c;
+  if (!computeGray16Codes(paths, _g16Black, _g16White, c)) return false;
+  exitGray16(bus);  // the image on the glass is balanced with the table it was drawn with
+  memcpy(_g16Paths, paths, sizeof(_g16Paths));
+  _g16 = c;
   return true;
 }
 
@@ -531,30 +717,25 @@ bool Ssd2677Driver::displayGray16Image(EpdBus& bus, const uint8_t* levels, bool 
   if (!supportsGray16Image() || !levels) return false;
   const PanelGeometry g = geometry();
   const uint32_t bytes = static_cast<uint32_t>(g.width / 2) * g.height;
-  // The balance passes need each pixel's level after the caller has freed its
-  // buffer. 192 KB at 800x480: PSRAM only (the Picco always has it), allocated
-  // once and kept, like _old. No allocation, no image: without the copy the
-  // drive could not be given back.
+  // The balance passes and the next turn's dissolve need each pixel's level
+  // after the caller has freed its buffer. 192 KB at 800x480: PSRAM only (the
+  // Picco always has it), allocated once and kept, like _old. No allocation,
+  // no image: without the copy the drive could not be given back.
   if (!_gray16) _gray16 = static_cast<uint8_t*>(heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   if (!_gray16) {
     if (Serial) Serial.printf("[%lu] [EPD] gray16: no PSRAM for %lu-byte level copy\n", millis(), static_cast<unsigned long>(bytes));
     return false;
   }
+  ensureGray16Config();
   _textAa.invalidate();
   _grayPending = _grayMaskReady = _absoluteGray = false;
   if (fast && _gray16OnGlass && _g16FastTurns < _g16ScrubEvery) {
-    // Fast turn: the old image gives its drive back (toward white, no flash),
-    // its gray pixels optionally get a few more white frames, and the new one
-    // is drawn straight over it.
-    balanceGray16(bus);
-    if (_g16TopUp) {
-      static constexpr uint8_t kLevelCode[4] = {3, 1, 2, 0};
-      uint8_t topUp[16];
-      topUp[0] = 3;  // white pixels stay undriven
-      for (int l = 1; l < 16; ++l) topUp[l] = kLevelCode[_g16TopUp / 4];
-      sendLevelCodes(bus, _gray16, topUp);
-      refreshWith(bus, lut_picco_se0400_gray16_balance, false);  // white 0/4/8/12
-    }
+    // Fast turn: one dissolve erases the old image's ink and lays the new deep
+    // blacks, no full clears. The fixed erase does not return each pixel's
+    // exact drive; the full turn every _g16ScrubEvery turns resets the glass.
+    sendDissolveCodes(bus, _gray16, levels);
+    refreshWith(bus, _lutDissolve, false);
+    _gray16OnGlass = false;
     ++_g16FastTurns;
   } else {
     exitGray16(bus);  // a previous 16-level image gives its drive back first
@@ -564,78 +745,23 @@ bool Ssd2677Driver::displayGray16Image(EpdBus& bus, const uint8_t* levels, bool 
       sendLevelCodes(bus, nullptr, nullptr, 3);
       refreshWith(bus, lut_picco_se0400_full, false);
     }
+    if (_g16.useDeep) {  // one contiguous drive: the true black, and dark grays pulled back from it
+      sendLevelCodes(bus, levels, _g16.deep);
+      refreshWith(bus, _lutDeep, false);
+    }
     _g16FastTurns = 0;
   }
-  if (_g16.useDeep) {  // one contiguous drive: true black, and dark grays pulled back from it
-    sendLevelCodes(bus, levels, _g16.deep);
-    refreshWith(bus, lut_picco_se0400_gray16_deep, false);
+  if (_g16.useCoarse) {
+    sendLevelCodes(bus, levels, _g16.coarse);
+    refreshWith(bus, _lutCoarse, false);
   }
-  sendLevelCodes(bus, levels, _g16.coarse);
-  refreshWith(bus, lut_picco_se0400_gray16_coarse, false);
-  sendLevelCodes(bus, levels, _g16.fine);
-  refreshWith(bus, lut_picco_se0400_gray16_fine, false);
   sendLevelCodes(bus, levels, _g16.pull);
-  refreshWith(bus, lut_picco_se0400_gray16_pull, turnOff);
+  refreshWith(bus, _lutPull, turnOff);
   memcpy(_gray16, levels, bytes);
   _gray16OnGlass = true;
   // Anything that replaces the image goes through exitGray16 first, and the
   // B/W history is gone either way.
   _needsInitialFull = true;
-  return true;
-}
-
-Ssd2677Driver::Gray16Codes Ssd2677Driver::defaultGray16Codes() {
-  Gray16Codes c{};
-  memcpy(c.deep, kGray16DeepCode, 16);
-  memcpy(c.coarse, kGray16CoarseCode, 16);
-  memcpy(c.fine, kGray16FineCode, 16);
-  memcpy(c.pull, kGray16PullCode, 16);
-  memcpy(c.balanceDeep, kGray16BalanceDeepCode, 16);
-  memcpy(c.balanceCoarse, kGray16BalanceCoarseCode, 16);
-  memcpy(c.balanceFine, kGray16BalanceFineCode, 16);
-  c.useDeep = c.useBalanceDeep = false;
-  for (int l = 0; l < 16; ++l) {
-    c.useDeep |= c.deep[l] != 3;
-    c.useBalanceDeep |= c.balanceDeep[l] != 3;
-  }
-  return c;
-}
-
-bool Ssd2677Driver::setGray16Levels(EpdBus& bus, const uint8_t (*paths)[3]) {
-  if (!supportsGray16Image() || !paths) return false;
-  // Pass k of a table: code 11 undriven, then 01 / 10 / 00 for the table's
-  // three doses (coarse 4/8/12, fine and pull 1/2/3; see Ssd2677Gray16Luts.h).
-  // The deep pass has one dose, 24 frames, on code 01; its give-back has
-  // 8/16/24 so any net drive 0..39 splits exactly.
-  static constexpr uint8_t kLevelCode[4] = {3, 1, 2, 0};
-  static constexpr uint8_t kDeepBalance[4] = {0, 8, 16, 24};
-  Gray16Codes c{};
-  c.useDeep = c.useBalanceDeep = false;
-  for (int l = 0; l < 16; ++l) {
-    const uint8_t b = paths[l][0], w = paths[l][1], x = paths[l][2];
-    if (b > 15 || w > 3 || (x != 0 && x != 24) || w > b + x) return false;  // balance only drives toward white
-    const int net = x + b - w;
-    // Give back the largest deep-balance dose that leaves 0..15 for coarse + fine.
-    int give = 0;
-    for (int k = 3; k >= 0; --k)
-      if (kDeepBalance[k] <= net && net - kDeepBalance[k] <= 15) {
-        give = k;
-        break;
-      }
-    const int rest = net - kDeepBalance[give];
-    if (rest < 0 || rest > 15) return false;  // unreachable for net 0..39; never index past the tables
-    c.deep[l] = x ? kLevelCode[1] : kLevelCode[0];
-    c.coarse[l] = kLevelCode[b / 4];
-    c.fine[l] = kLevelCode[b % 4];
-    c.pull[l] = kLevelCode[w];
-    c.balanceDeep[l] = kLevelCode[give];
-    c.balanceCoarse[l] = kLevelCode[rest / 4];
-    c.balanceFine[l] = kLevelCode[rest % 4];
-    c.useDeep |= x != 0;
-    c.useBalanceDeep |= give != 0;
-  }
-  exitGray16(bus);  // the image on the glass is balanced with the table it was drawn with
-  _g16 = c;
   return true;
 }
 

@@ -77,12 +77,15 @@ class Ssd2677Driver : public PanelDriver {
   void cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) override;
 
   // Absolute 16 levels on the Picco SE0400NQW47 (not the Sticky: its OTP
-  // waveforms were never calibrated for this). Tables and per-level codes in
-  // lut/Ssd2677Gray16Luts.h.
+  // waveforms were never calibrated for this). Three draw passes (dissolve,
+  // coarse black, pull-back white) built at runtime from the doses; defaults
+  // and the give-back tables in lut/Ssd2677Gray16Luts.h.
   bool supportsGray16Image() const override { return BoardConfig::ACTIVE.board != BoardConfig::Board::Sticky; }
   bool displayGray16Image(EpdBus& bus, const uint8_t* levels, bool turnOff, bool fast = false) override;
-  bool setGray16Turn(uint8_t topUp, uint8_t scrubEvery) override;
+  bool setGray16Turn(uint8_t scrubEvery) override;
+  // paths[l] = {black dose index 0..3, white dose index 0..3, deep 0/1}.
   bool setGray16Levels(EpdBus& bus, const uint8_t (*paths)[3]) override;
+  bool setGray16Passes(EpdBus& bus, const uint8_t black[3], const uint8_t white[3], uint8_t erase) override;
 
  private:
   void initPanel(EpdBus& bus);
@@ -96,12 +99,26 @@ class Ssd2677Driver : public PanelDriver {
   // Stream one 2-bit code per pixel: codes[level] for each 4-bit level, or
   // `solid` for every pixel when levels is null.
   void sendLevelCodes(EpdBus& bus, const uint8_t* levels, const uint8_t codes[16], uint8_t solid = 3);
+  // Fast-turn dissolve codes from the image on the glass and the next one:
+  // 11 nothing, 01 erase old ink, 10 new deep black, 00 both.
+  void sendDissolveCodes(EpdBus& bus, const uint8_t* oldLevels, const uint8_t* newLevels);
   // A 16-level image on the glass gives its net drive back (toward white) and
   // arms a full refresh. Every frame path that replaces the image calls this.
   void exitGray16(EpdBus& bus);
-  // Give the image on the glass its net drive back (toward white only: no
-  // flash) and mark it gone; exitGray16 adds the full refresh.
+  // Give the image on the glass its exact net drive back (toward white only:
+  // no flash) and mark it gone; exitGray16 adds the full refresh.
   void balanceGray16(EpdBus& bus);
+
+  // Per-level pixel codes for each pass, derived from the paths and doses.
+  struct Gray16Codes {
+    uint8_t deep[16], coarse[16], pull[16], balanceDeep[16], balanceCoarse[16], balanceFine[16];
+    bool ink[16];  // the level drives anything (the dissolve erases it on the next fast turn)
+    bool useDeep, useCoarse, useBalanceDeep;
+  };
+  static bool computeGray16Codes(const uint8_t (*paths)[3], const uint8_t black[3], const uint8_t white[3],
+                                 Gray16Codes& out);
+  void ensureGray16Config();  // defaults, codes and tables on first use
+  void buildGray16Tables();   // the four draw tables from the current doses
 
   X4ProTextAa _textAa;
   bool _readerRefresh = false;
@@ -118,17 +135,14 @@ class Ssd2677Driver : public PanelDriver {
   // exitGray16's balance passes. Allocated on first use.
   uint8_t* _gray16 = nullptr;
   bool _gray16OnGlass = false;
-  uint8_t _g16TopUp = 0;       // fast turns: extra white frames on the old image's gray pixels
   uint8_t _g16ScrubEvery = 0;  // fast turns between full clean turns; 0 = always full
   uint8_t _g16FastTurns = 0;   // fast turns since the last full one
-  // Per-level pixel codes for each pass; start as the calibrated defaults in
-  // Ssd2677Gray16Luts.h, replaced by setGray16Levels (114 bytes).
-  struct Gray16Codes {
-    uint8_t deep[16], coarse[16], fine[16], pull[16], balanceDeep[16], balanceCoarse[16], balanceFine[16];
-    bool useDeep, useBalanceDeep;  // a level drives the deep pass / needs its balance
-  };
-  Gray16Codes _g16 = defaultGray16Codes();
-  static Gray16Codes defaultGray16Codes();
+  bool _g16Ready = false;
+  uint8_t _g16Black[3] = {}, _g16White[3] = {}, _g16Erase = 0;
+  uint8_t _g16Paths[16][3] = {};
+  Gray16Codes _g16{};
+  // Runtime draw tables (in the driver object: no heap, 4 x 535 bytes).
+  uint8_t _lutDissolve[535] = {}, _lutDeep[535] = {}, _lutCoarse[535] = {}, _lutPull[535] = {};
   uint8_t* _old = nullptr;  // retained old plane (last displayed frame); host is single-buffer
                             // so `prev` is always null — mirror stock's obj+0x1020, seeded white
 };

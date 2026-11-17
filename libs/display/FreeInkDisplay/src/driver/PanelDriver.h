@@ -262,16 +262,24 @@ class PanelDriver {
     (void)fast;
     return false;
   }
-  // Calibration for fast turns: topUp = extra frames toward white (0/4/8/12) on
-  // the old image's non-white pixels after its drive is given back; a full
-  // clean turn after every `scrubEvery` fast ones (0 = never fast).
-  virtual bool setGray16Turn(uint8_t topUp, uint8_t scrubEvery) {
-    (void)topUp;
+  // Fast turns: a full clean turn after every `scrubEvery` fast ones (0 = never fast).
+  virtual bool setGray16Turn(uint8_t scrubEvery) {
     (void)scrubEvery;
     return false;
   }
-  // Calibration: choose the drive path of each level. paths[l] = {black frames
-  // 0..15, white frames 0..3, deep frames 0 or 24}, white <= black + deep.
+  // Calibration: the three doses (frames) of the coarse-black and pull-back
+  // passes, and the fast-turn erase (frames toward white on old ink). Gives
+  // any image on the glass its drive back first. False = unsupported, or a
+  // level path would then net outside the give-back range.
+  virtual bool setGray16Passes(EpdBus& bus, const uint8_t black[3], const uint8_t white[3], uint8_t erase) {
+    (void)bus;
+    (void)black;
+    (void)white;
+    (void)erase;
+    return false;
+  }
+  // Calibration: choose the drive path of each level. paths[l] = {black dose
+  // index 0..3, white dose index 0..3, deep 0/1} (doses: setGray16Passes).
   // An image on the glass gives its drive back first (the balance needs the
   // paths it was drawn with). False = unsupported or out of range; the table
   // is unchanged.

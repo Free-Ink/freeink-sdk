@@ -1331,8 +1331,15 @@ bool FreeInkDisplay::displayGray16Image(const uint8_t* levels, bool turnOffScree
   return _driver->displayGray16Image(_bus, levels, turnOffScreen, fast);
 }
 
-bool FreeInkDisplay::setGray16Turn(uint8_t topUp, uint8_t scrubEvery) {
-  return supportsGray16Image() && _driver->setGray16Turn(topUp, scrubEvery);
+bool FreeInkDisplay::setGray16Turn(uint8_t scrubEvery) {
+  return supportsGray16Image() && _driver->setGray16Turn(scrubEvery);
+}
+
+bool FreeInkDisplay::setGray16Passes(const uint8_t black[3], const uint8_t white[3], uint8_t erase) {
+  if (!black || !white || !supportsGray16Image()) return false;
+  DisplayPmLock pmLock;
+  syncPendingAsync();
+  return _driver->setGray16Passes(_bus, black, white, erase);
 }
 
 bool FreeInkDisplay::setGray16Levels(const uint8_t (*paths)[3]) {

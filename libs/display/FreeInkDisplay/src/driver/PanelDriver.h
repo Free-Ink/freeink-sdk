@@ -246,6 +246,27 @@ class PanelDriver {
   virtual void beginGray16Cleanup(EpdBus& bus, const uint8_t* bw) { cleanupGrayscaleBuffers(bus, bw); }
   virtual void finishGray16Cleanup(EpdBus& bus) { (void)bus; }
   virtual bool isGray16CleanupActive() const { return false; }
+  // Absolute 16-level image in one call (Picco SE0400NQW47). `levels` holds one
+  // 4-bit level per pixel, 0 = white .. 15 = darkest, two pixels per byte (high
+  // nibble = left pixel), panel-native rows like the framebuffer. The driver
+  // owns the sequence, including giving the drive back before the next frame.
+  // False = not supported here; nothing was sent.
+  virtual bool supportsGray16Image() const { return false; }
+  virtual bool displayGray16Image(EpdBus& bus, const uint8_t* levels, bool turnOff) {
+    (void)bus;
+    (void)levels;
+    (void)turnOff;
+    return false;
+  }
+  // Calibration: choose the drive path of each level. paths[l] = {black frames
+  // 0..15, white frames 0..3}, black >= white. An image on the glass gives its
+  // drive back first (the balance needs the paths it was drawn with). False =
+  // unsupported or out of range; the table is unchanged.
+  virtual bool setGray16Levels(EpdBus& bus, const uint8_t (*paths)[2]) {
+    (void)bus;
+    (void)paths;
+    return false;
+  }
   // Diagnostic four-gray comparison. The full frame is first rendered with
   // the controller's flashing OTP waveform; `custom*` is then rebuilt with the
   // driver's non-flashing grayscale path. Default drivers keep the OTP frame.

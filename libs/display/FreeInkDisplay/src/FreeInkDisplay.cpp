@@ -1315,6 +1315,28 @@ void FreeInkDisplay::finishGray16Cleanup() {
 }
 
 bool FreeInkDisplay::isGray16CleanupActive() const { return _driver != nullptr && _driver->isGray16CleanupActive(); }
+
+bool FreeInkDisplay::supportsGray16Image() const {
+  return !_inverted && _driver != nullptr && _driver->supportsGray16Image();
+}
+
+bool FreeInkDisplay::displayGray16Image(const uint8_t* levels, bool turnOffScreen) {
+  IdleHookScope idleHookScope{_driver};
+  if (!levels || !supportsGray16Image()) return false;
+  cancelGrayscalePass();
+  DisplayPmLock pmLock;
+  syncPendingAsync();
+  _shadowValid = false;
+  _redRamSynced = false;
+  return _driver->displayGray16Image(_bus, levels, turnOffScreen);
+}
+
+bool FreeInkDisplay::setGray16Levels(const uint8_t (*paths)[2]) {
+  if (!paths || !supportsGray16Image()) return false;
+  DisplayPmLock pmLock;
+  syncPendingAsync();
+  return _driver->setGray16Levels(_bus, paths);
+}
 #ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
 void FreeInkDisplay::cleanupGrayscaleWithPreviousBuffer() {
   cancelGrayscalePass();

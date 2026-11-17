@@ -6,6 +6,7 @@
 
 #include <cstring>
 
+#include "../lut/Ssd2677Gray16Luts.h"
 #include "../lut/Ssd2677Luts.h"
 #include "esp_heap_caps.h"
 
@@ -80,6 +81,10 @@ constexpr uint8_t CMD_POWER_OFF = 0x02;
 constexpr uint8_t CMD_REFRESH = 0x12;
 constexpr uint8_t CMD_DEEP_SLEEP = 0x07;
 constexpr uint16_t LUT_LEN = 535;
+
+// One SPI burst staging buffer shared by every frame upload (static: 1 KB of
+// .bss instead of a 1 KB stack frame; uploads never overlap).
+uint8_t g_txChunk[1024];
 
 // 8 pixels of old + new -> two bytes of 2-bit pixels, old in the high bit,
 // MSB-first (stock FUN_422869b4).
@@ -194,6 +199,7 @@ void Ssd2677Driver::begin(EpdBus& bus) {
 
 void Ssd2677Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
   (void)prev;  // unused: single-buffer host passes null; we track our own old plane
+  exitGray16(bus);
   _textAa.invalidate();
   // First paint after init clears the panel with the full waveform (stock forces
   // mode 0 on the first frame).
@@ -259,7 +265,7 @@ void Ssd2677Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev,
 
 void Ssd2677Driver::sendPacked(EpdBus& bus, const uint8_t* hi, const uint8_t* lo, bool exclusive) {
   const PanelGeometry g = geometry();
-  static uint8_t chunk[1024];
+  uint8_t* const chunk = g_txChunk;
   // The Sticky panel scans rows bottom-to-top relative to the framebuffer
   // (stock mirrors in software); the Picco takes them in order.
   const bool reversed = isSticky();
@@ -274,7 +280,7 @@ void Ssd2677Driver::sendPacked(EpdBus& bus, const uint8_t* hi, const uint8_t* lo
       const uint8_t high = hi ? hi[row + xb] : 0xFF;
       packPixels(exclusive ? static_cast<uint8_t>(high & ~low) : high, low, &chunk[n]);
       n += 2;
-      if (n == sizeof(chunk)) {
+      if (n == sizeof(g_txChunk)) {
         txn.writeBytes(chunk, n);
         n = 0;
       }
@@ -329,6 +335,7 @@ void Ssd2677Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
 
 void Ssd2677Driver::beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode mode, RefreshMode fallback,
                                    bool turnOff) {
+  exitGray16(bus);
   if (mode == GrayscaleMode::Overlay && _readerRefresh && _textAa.ready()) {
     // The page is presented by displayGray; only a clean needs its own refresh.
     if (fallback != RefreshMode::Fast || _needsInitialFull) display(bus, fb, nullptr, fallback, false);
@@ -395,6 +402,7 @@ void Ssd2677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
                                 bool factoryMode) {
   (void)lut;
   (void)factoryMode;
+  exitGray16(bus);
   if (_textAa.active()) {
     if (!_textAa.compose()) { _textAa.invalidate(); _needsInitialFull = true; return; }
     // Text codes: white plane in the high bit, gray / driven-white plane in the low bit.
@@ -459,6 +467,113 @@ void Ssd2677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
 void Ssd2677Driver::cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) {
   // A skipped text pass still owes the caller its deferred B/W page.
   if (_textAa.active()) display(bus, bw ? bw : _textAa.base(), nullptr, RefreshMode::Fast, true);
+}
+
+void Ssd2677Driver::sendLevelCodes(EpdBus& bus, const uint8_t* levels, const uint8_t codes[16], uint8_t solid) {
+  const PanelGeometry g = geometry();
+  const uint8_t solidByte = static_cast<uint8_t>((solid & 3) * 0x55);
+  uint8_t* const chunk = g_txChunk;
+  bus.cmd(CMD_DATA);
+  auto txn = bus.beginTxn();
+  uint16_t n = 0;
+  const uint32_t pairs = static_cast<uint32_t>(g.width / 2) * g.height;  // bytes of `levels`
+  // Two level bytes (four pixels) -> one wire byte, MSB-first like packPixels.
+  for (uint32_t i = 0; i < pairs; i += 2) {
+    if (levels) {
+      const uint8_t a = levels[i];
+      const uint8_t b = levels[i + 1];
+      chunk[n++] = static_cast<uint8_t>(codes[a >> 4] << 6 | codes[a & 15] << 4 | codes[b >> 4] << 2 | codes[b & 15]);
+    } else {
+      chunk[n++] = solidByte;
+    }
+    if (n == sizeof(g_txChunk)) {
+      txn.writeBytes(chunk, n);
+      n = 0;
+    }
+  }
+  if (n) txn.writeBytes(chunk, n);
+}
+
+void Ssd2677Driver::exitGray16(EpdBus& bus) {
+  if (!_gray16OnGlass) return;
+  _gray16OnGlass = false;
+  // Each level got B frames toward black and W back; give B - W back toward
+  // white (coarse 0/4/8/12, then fine 0/1/2/3) so the pixels end balanced.
+  // Ink hysteresis leaves them gray, not white: the full refresh armed below
+  // is what clears the page.
+  sendLevelCodes(bus, _gray16, _g16.balanceCoarse);
+  refreshWith(bus, lut_picco_se0400_gray16_balance, false);
+  sendLevelCodes(bus, _gray16, _g16.balanceFine);
+  refreshWith(bus, lut_picco_se0400_gray16_pull, false);
+  if (_old) memset(_old, 0xFF, geometry().bufferSize);  // white once the full refresh has run
+  _needsInitialFull = true;
+}
+
+bool Ssd2677Driver::displayGray16Image(EpdBus& bus, const uint8_t* levels, bool turnOff) {
+  if (!supportsGray16Image() || !levels) return false;
+  const PanelGeometry g = geometry();
+  const uint32_t bytes = static_cast<uint32_t>(g.width / 2) * g.height;
+  // The balance passes need each pixel's level after the caller has freed its
+  // buffer. 192 KB at 800x480: PSRAM only (the Picco always has it), allocated
+  // once and kept, like _old. No allocation, no image: without the copy the
+  // drive could not be given back.
+  if (!_gray16) _gray16 = static_cast<uint8_t*>(heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (!_gray16) {
+    if (Serial) Serial.printf("[%lu] [EPD] gray16: no PSRAM for %lu-byte level copy\n", millis(), static_cast<unsigned long>(bytes));
+    return false;
+  }
+  _textAa.invalidate();
+  _grayPending = _grayMaskReady = _absoluteGray = false;
+  exitGray16(bus);  // a previous 16-level image gives its drive back first
+  // Start from the state the calibration did: two stock full refreshes with
+  // every pixel on code 11 (15 frames black, then 15 white).
+  for (int i = 0; i < 2; ++i) {
+    sendLevelCodes(bus, nullptr, nullptr, 3);
+    refreshWith(bus, lut_picco_se0400_full, false);
+  }
+  sendLevelCodes(bus, levels, _g16.coarse);
+  refreshWith(bus, lut_picco_se0400_gray16_coarse, false);
+  sendLevelCodes(bus, levels, _g16.fine);
+  refreshWith(bus, lut_picco_se0400_gray16_fine, false);
+  sendLevelCodes(bus, levels, _g16.pull);
+  refreshWith(bus, lut_picco_se0400_gray16_pull, turnOff);
+  memcpy(_gray16, levels, bytes);
+  _gray16OnGlass = true;
+  // Anything that replaces the image goes through exitGray16 first, and the
+  // B/W history is gone either way.
+  _needsInitialFull = true;
+  return true;
+}
+
+Ssd2677Driver::Gray16Codes Ssd2677Driver::defaultGray16Codes() {
+  Gray16Codes c{};
+  memcpy(c.coarse, kGray16CoarseCode, 16);
+  memcpy(c.fine, kGray16FineCode, 16);
+  memcpy(c.pull, kGray16PullCode, 16);
+  memcpy(c.balanceCoarse, kGray16BalanceCoarseCode, 16);
+  memcpy(c.balanceFine, kGray16BalanceFineCode, 16);
+  return c;
+}
+
+bool Ssd2677Driver::setGray16Levels(EpdBus& bus, const uint8_t (*paths)[2]) {
+  if (!supportsGray16Image() || !paths) return false;
+  // Pass k of a table: code 11 undriven, then 01 / 10 / 00 for the table's
+  // three doses (coarse 4/8/12, fine and pull 1/2/3; see Ssd2677Gray16Luts.h).
+  static constexpr uint8_t kLevelCode[4] = {3, 1, 2, 0};
+  Gray16Codes c{};
+  for (int l = 0; l < 16; ++l) {
+    const uint8_t b = paths[l][0], w = paths[l][1];
+    if (b > 15 || w > 3 || w > b) return false;  // balance only drives toward white
+    const uint8_t net = static_cast<uint8_t>(b - w);
+    c.coarse[l] = kLevelCode[b / 4];
+    c.fine[l] = kLevelCode[b % 4];
+    c.pull[l] = kLevelCode[w];
+    c.balanceCoarse[l] = kLevelCode[net / 4];
+    c.balanceFine[l] = kLevelCode[net % 4];
+  }
+  exitGray16(bus);  // the image on the glass is balanced with the table it was drawn with
+  _g16 = c;
+  return true;
 }
 
 void Ssd2677Driver::deepSleep(EpdBus& bus) {

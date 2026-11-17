@@ -76,6 +76,13 @@ class Ssd2677Driver : public PanelDriver {
   void displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut, bool factoryMode) override;
   void cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) override;
 
+  // Absolute 16 levels on the Picco SE0400NQW47 (not the Sticky: its OTP
+  // waveforms were never calibrated for this). Tables and per-level codes in
+  // lut/Ssd2677Gray16Luts.h.
+  bool supportsGray16Image() const override { return BoardConfig::ACTIVE.board != BoardConfig::Board::Sticky; }
+  bool displayGray16Image(EpdBus& bus, const uint8_t* levels, bool turnOff) override;
+  bool setGray16Levels(EpdBus& bus, const uint8_t (*paths)[2]) override;
+
  private:
   void initPanel(EpdBus& bus);
   void latchOtpWaveform(EpdBus& bus, uint8_t code);
@@ -85,6 +92,12 @@ class Ssd2677Driver : public PanelDriver {
   void powerOn(EpdBus& bus);
   void powerAndRefresh(EpdBus& bus, bool turnOff);
   void refreshWith(EpdBus& bus, const unsigned char* lut, bool turnOff);
+  // Stream one 2-bit code per pixel: codes[level] for each 4-bit level, or
+  // `solid` for every pixel when levels is null.
+  void sendLevelCodes(EpdBus& bus, const uint8_t* levels, const uint8_t codes[16], uint8_t solid = 3);
+  // A 16-level image on the glass gives its net drive back (toward white) and
+  // arms a full refresh. Every frame path that replaces the image calls this.
+  void exitGray16(EpdBus& bus);
 
   X4ProTextAa _textAa;
   bool _readerRefresh = false;
@@ -97,6 +110,17 @@ class Ssd2677Driver : public PanelDriver {
   bool _grayMaskReady = false;
   bool _absoluteGray = false;  // the current gray pass began as a complete image
   uint8_t* _lsb = nullptr;  // retained LSB mask: the renderer reuses its buffer for the MSB pass
+  // Levels of the 16-level image on the glass (W*H/2 bytes, PSRAM), kept for
+  // exitGray16's balance passes. Allocated on first use.
+  uint8_t* _gray16 = nullptr;
+  bool _gray16OnGlass = false;
+  // Per-level pixel codes for each pass; start as the calibrated defaults in
+  // Ssd2677Gray16Luts.h, replaced by setGray16Levels (80 bytes).
+  struct Gray16Codes {
+    uint8_t coarse[16], fine[16], pull[16], balanceCoarse[16], balanceFine[16];
+  };
+  Gray16Codes _g16 = defaultGray16Codes();
+  static Gray16Codes defaultGray16Codes();
   uint8_t* _old = nullptr;  // retained old plane (last displayed frame); host is single-buffer
                             // so `prev` is always null — mirror stock's obj+0x1020, seeded white
 };

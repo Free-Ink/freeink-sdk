@@ -10,6 +10,7 @@
 #include "src/driver/Ssd1677Driver.h"
 #include "src/driver/Ssd2677Driver.h"
 #include "src/lut/Ssd1677Luts.h"
+#include "src/lut/Ssd2677Gray16Luts.h"
 #include "src/lut/Ssd2677Luts.h"
 #undef private
 
@@ -538,6 +539,122 @@ static void expectOnePassTextAa(Ssd1677Driver& d, bool expected) {
   assert(lastRegister(bus, 0x22) == 0x0C);  // stays a fast refresh
 }
 
+// 16-level image: two clears, then coarse / fine / pull, each pixel on its
+// level's code; the next frame gives the drive back before its full refresh,
+// and every level nets to zero drive over the whole round trip.
+static void expectGray16Image(Ssd2677Driver& s) {
+  using Lut = const unsigned char*;
+  auto lutsOf = [](const EpdBus& bus) {
+    std::vector<Bytes> out;
+    for (const auto& w : bus.writes)
+      if (w.command == 0x20) out.push_back(w.bytes);
+    return out;
+  };
+  auto framesOf = [](const EpdBus& bus) {
+    std::vector<Bytes> out;
+    for (const auto& w : bus.writes)
+      if (w.command == 0x10) out.push_back(w.bytes);
+    return out;
+  };
+  auto asBytes = [](Lut l) { return Bytes(l, l + 535); };
+  auto codeAt = [](const Bytes& frame, uint32_t pixel) { return (frame[pixel / 4] >> (6 - 2 * (pixel % 4))) & 3; };
+  // Every row runs through all 16 levels, 50 pixels each.
+  auto levelAt = [](int x) { return static_cast<uint8_t>((x / 50) % 16); };
+  Bytes levels(400 * 480);
+  for (int y = 0; y < 480; ++y)
+    for (int x = 0; x < 800; x += 2) levels[y * 400 + x / 2] = static_cast<uint8_t>(levelAt(x) << 4 | levelAt(x + 1));
+
+  EpdBus bus;
+  assert(s.supportsGray16Image());
+  assert(s.displayGray16Image(bus, levels.data(), true));
+  const std::vector<Bytes> expectLuts = {asBytes(lut_picco_se0400_full), asBytes(lut_picco_se0400_full),
+                                         asBytes(lut_picco_se0400_gray16_coarse), asBytes(lut_picco_se0400_gray16_fine),
+                                         asBytes(lut_picco_se0400_gray16_pull)};
+  assert(lutsOf(bus) == expectLuts);
+  const auto frames = framesOf(bus);
+  assert(frames.size() == 5);
+  for (const auto& f : frames) assert(f.size() == 96000);
+  assert(frames[0] == Bytes(96000, 0xFF) && frames[1] == Bytes(96000, 0xFF));  // code 11 everywhere
+  const uint8_t* passCodes[3] = {kGray16CoarseCode, kGray16FineCode, kGray16PullCode};
+  for (int pass = 0; pass < 3; ++pass)
+    for (uint32_t y : {0u, 239u, 479u})
+      for (uint32_t x = 0; x < 800; ++x) assert(codeAt(frames[2 + pass], y * 800 + x) == passCodes[pass][levelAt(x)]);
+  assert(lastRegister(bus, 0x02) == 0x00 && bus.writes.back().command == 0x02);  // powered off at the end
+  assert(s._gray16OnGlass);
+
+  // The next frame: balance (coarse, toward white), fine balance, then a full refresh.
+  bus.clear();
+  const Bytes page(48000, 0xFF);
+  s.display(bus, page.data(), nullptr, RefreshMode::Fast, false);
+  const std::vector<Bytes> exitLuts = {asBytes(lut_picco_se0400_gray16_balance), asBytes(lut_picco_se0400_gray16_pull),
+                                       asBytes(lut_picco_se0400_full)};
+  assert(lutsOf(bus) == exitLuts);
+  const auto exitFrames = framesOf(bus);
+  assert(exitFrames.size() == 3);
+  for (uint32_t x = 0; x < 800; ++x) {
+    assert(codeAt(exitFrames[0], x) == kGray16BalanceCoarseCode[levelAt(x)]);
+    assert(codeAt(exitFrames[1], x) == kGray16BalanceFineCode[levelAt(x)]);
+  }
+  assert(!s._gray16OnGlass);
+
+  // Net drive per level over image + exit is zero (black positive).
+  for (int l = 0; l < 16; ++l) {
+    const int net = ssd2677LutDose(lut_picco_se0400_gray16_coarse, kGray16CoarseCode[l] + 1) +
+                    ssd2677LutDose(lut_picco_se0400_gray16_fine, kGray16FineCode[l] + 1) +
+                    ssd2677LutDose(lut_picco_se0400_gray16_pull, kGray16PullCode[l] + 1) +
+                    ssd2677LutDose(lut_picco_se0400_gray16_balance, kGray16BalanceCoarseCode[l] + 1) +
+                    ssd2677LutDose(lut_picco_se0400_gray16_pull, kGray16BalanceFineCode[l] + 1);
+    assert(net == 0);
+  }
+  // Level 0 is white: undriven in every pass, so the page around an image stays put.
+  assert(kGray16CoarseCode[0] == 3 && kGray16FineCode[0] == 3 && kGray16PullCode[0] == 3);
+  for (Lut l : {lut_picco_se0400_gray16_coarse, lut_picco_se0400_gray16_fine, lut_picco_se0400_gray16_pull,
+                lut_picco_se0400_gray16_balance})
+    assert(ssd2677LutDose(l, 4) == 0);  // table 4 = code 11
+
+  // Runtime table: the calibrated paths reproduce the generated codes exactly.
+  // The reader-tuned defaults (picco-gray-cal design-reader-final.json).
+  static const uint8_t design[16][2] = {{0, 0}, {3, 3}, {4, 3}, {3, 2}, {4, 2}, {11, 3}, {6, 2}, {8, 2}, {9, 2}, {12, 2}, {15, 2}, {8, 1}, {10, 1}, {12, 1}, {8, 0}, {14, 0}};
+  bus.clear();
+  assert(s.setGray16Levels(bus, design));
+  assert(bus.writes.empty());  // nothing on the glass to give back
+  assert(!memcmp(s._g16.coarse, kGray16CoarseCode, 16) && !memcmp(s._g16.fine, kGray16FineCode, 16) &&
+         !memcmp(s._g16.pull, kGray16PullCode, 16) && !memcmp(s._g16.balanceCoarse, kGray16BalanceCoarseCode, 16) &&
+         !memcmp(s._g16.balanceFine, kGray16BalanceFineCode, 16));
+  // Out of range (white beyond black, black past 15) leaves the table alone.
+  uint8_t bad[16][2];
+  memcpy(bad, design, sizeof(bad));
+  bad[5][1] = bad[5][0] + 1;
+  assert(!s.setGray16Levels(bus, bad));
+  memcpy(bad, design, sizeof(bad));
+  bad[3][0] = 16;
+  assert(!s.setGray16Levels(bus, bad));
+  assert(!memcmp(s._g16.coarse, kGray16CoarseCode, 16));
+  // With an image up, a new table first balances it with the old one.
+  assert(s.displayGray16Image(bus, levels.data(), true));
+  bus.clear();
+  uint8_t shifted[16][2];
+  memcpy(shifted, design, sizeof(shifted));
+  shifted[7][0] = static_cast<uint8_t>(design[7][0] + 1);
+  assert(s.setGray16Levels(bus, shifted));
+  assert(lutsOf(bus) == std::vector<Bytes>({asBytes(lut_picco_se0400_gray16_balance), asBytes(lut_picco_se0400_gray16_pull)}));
+  assert(codeAt(framesOf(bus)[0], 7 * 50) == kGray16BalanceCoarseCode[7]);
+  {
+    static constexpr uint8_t kLevelCode[4] = {3, 1, 2, 0};
+    const uint8_t b = shifted[7][0];
+    assert(!s._gray16OnGlass && s._g16.coarse[7] == kLevelCode[b / 4] && s._g16.fine[7] == kLevelCode[b % 4]);
+  }
+  assert(s.setGray16Levels(bus, design));
+
+  // No PSRAM for the level copy: refused before anything reaches the panel.
+  Ssd2677Driver fresh;
+  bus.clear();
+  fakeHeapCapsFail = true;
+  assert(!fresh.displayGray16Image(bus, levels.data(), true));
+  fakeHeapCapsFail = false;
+  assert(bus.writes.empty());
+}
+
 static void expectPackedPairs(Ssd2677Driver& driver) {
   const size_t size = driver.geometry().bufferSize;
   Bytes high(size), low(size);
@@ -812,7 +929,8 @@ int main(int argc, char** argv) {
       if (w.command == 0x20) assert(w.bytes == Bytes(lut_picco_se0400_full, lut_picco_se0400_full + 535));
     expectNightGray2677(s);
     expectDarkGray2677(s);
-    std::printf("Picco se0400: probe, init, packing and refresh passed\n");
+    expectGray16Image(s);
+    std::printf("Picco se0400: probe, init, packing, refresh and 16-level image passed\n");
     return 0;
   }
   checkController("SSD1677");

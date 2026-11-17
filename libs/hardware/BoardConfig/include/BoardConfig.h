@@ -2417,17 +2417,23 @@ inline bool latchConflictsWithBus(int8_t pin) {
   return false;
 }
 
-// Drive `pin` to `level` as an output, then release any pad hold left by deep
-// sleep. The level and mode are set while the hold still freezes the pad, so a
-// held pin goes straight to `level`. Releasing first lets it float to its reset
-// state and then drive LOW before reaching `level`, glitching whatever it powers.
+// Release any pad hold left by deep sleep and drive `pin` to `level` as an output.
+// Picco: the level and mode are set while the hold still freezes the pad, so a
+// held pin goes straight to `level`. Releasing first lets it float and dip LOW
+// before reaching `level`, which drops the keep-alive latch and cuts power on wake.
 inline void driveReleasingHold(int8_t pin, uint8_t level) {
   if (pin < 0) return;
   const auto g = static_cast<gpio_num_t>(pin);
+#if FREEINK_DEVICE_PICCO
   gpio_set_level(g, level);
   pinMode(pin, OUTPUT);
   digitalWrite(pin, level);
   gpio_hold_dis(g);
+#else
+  gpio_hold_dis(g);
+  pinMode(pin, OUTPUT);
+  digitalWrite(pin, level);
+#endif
 }
 
 // Assert the board's power-rail latch pins. Battery-latched boards (e.g. the

@@ -254,6 +254,13 @@ void FreeInkDisplay::selectDriver() {
 
 const char* FreeInkDisplay::getControllerName() const { return _driver ? _driver->controllerName() : nullptr; }
 
+const char* FreeInkDisplay::getPanelName() const {
+#if FREEINK_DEVICE_PICCO
+  if (BoardConfig::isPicco()) return piccoPanelName();
+#endif
+  return nullptr;
+}
+
 void FreeInkDisplay::begin() {
   cancelGrayscalePass();
   DisplayPmLock pmLock;

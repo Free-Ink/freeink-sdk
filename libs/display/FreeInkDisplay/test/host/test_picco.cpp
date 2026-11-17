@@ -578,6 +578,7 @@ int main(int argc, char** argv) {
     FreeInkDisplay display(1, 2, 3, 4, 5, 6);
     const int before = fakePanelCommand;
     assert(display.getControllerName() == nullptr && fakePanelCommand == before);
+    assert(display.getPanelName() == nullptr && fakePanelCommand == before);
     display.selectDriver();
     assert(!strcmp(display.getControllerName(), expected));
     const int after = fakePanelCommand;
@@ -589,6 +590,7 @@ int main(int argc, char** argv) {
     memcpy(fakePanelRev, rev, 3);
     checkController("SSD2677");
     assert(piccoProbePanel() == PiccoSe0400nqw47);
+    assert(!strcmp(FreeInkDisplay(1, 2, 3, 4, 5, 6).getPanelName(), "SE0400NQW47"));
     auto& s = static_cast<Ssd2677Driver&>(ssd2677Driver());
     assert(s.busyPolarity() == BusyPolarity::ActiveLow);
     EpdBus bus;
@@ -613,15 +615,16 @@ int main(int argc, char** argv) {
     newFb[0] = 0x0F;  // left 4 px black, right 4 px white; old all white
     bus.clear();
     s.display(bus, newFb.data(), oldFb.data(), RefreshMode::Fast, false);
-    // First paint is forced FULL, drawn from the white seed in one pass.
+    // First paint after begin(): a clean to white with every pixel taken as
+    // black (01), then the frame as a FULL from white.
     const Bytes* data = nullptr;
     unsigned frames = 0;
     for (const auto& w : bus.writes)
       if (w.command == 0x10) {
-        ++frames;
+        if (++frames == 1) assert(w.bytes == Bytes(96000, 0x55));
         data = &w.bytes;
       }
-    assert(frames == 1 && data && data->size() == 96000);
+    assert(frames == 2 && data && data->size() == 96000);
     assert((*data)[0] == 0xAA && (*data)[1] == 0xFF);  // white->black, white->white
     const Bytes* lut = nullptr;
     for (const auto& w : bus.writes)
@@ -735,6 +738,29 @@ int main(int argc, char** argv) {
     }
     assert((imageCommands == std::vector<uint8_t>{0x04, 0x10, 0x20, 0x12, 0x02}));
     assert(s._needsInitialFull && s._needsPowerOn);
+    // Charge strip over the retained image: B/W rectangle, then restore.
+    s.requestResync(1);  // facade finishes an absolute session this way
+    {
+      Bytes strip(48000, 0xF0);
+      for (const bool restore : {false, true}) {
+        bus.clear();
+        assert(s.displayRetainedGrayscaleOverlay(bus, restore ? nullptr : strip.data(), 8, 2, 16, 3));
+        std::vector<uint8_t> commands;
+        for (const auto& w : bus.writes) {
+          commands.push_back(w.command);
+          if (w.command == 0x20) assert(w.bytes == Bytes(lut_picco_se0400_image, lut_picco_se0400_image + 535));
+          if (w.command != 0x10) continue;
+          assert(w.bytes.size() == 96000);
+          for (size_t i = 0; i < 48000; ++i) {
+            const bool inside = !restore && i / 100 >= 2 && i / 100 < 5 && i % 100 >= 1 && i % 100 < 3;
+            assert(w.bytes[2 * i] == (inside ? 0xFF : 0x1B) && w.bytes[2 * i + 1] == (inside ? 0x00 : 0x1B));
+          }
+        }
+        assert((commands == std::vector<uint8_t>{0x04, 0x10, 0x20, 0x12, 0x02}));
+      }
+      bus.clear();
+      assert(!s.displayRetainedGrayscaleOverlay(bus, strip.data(), 799, 0, 2, 1) && bus.writes.empty());
+    }
     // Each group of four exercises B->B, B->W, W->B, W->W respectively.
     Bytes prior(48000, 0x33), target(48000, 0x55);
     s.display(bus, prior.data(), nullptr, RefreshMode::Full, false);
@@ -823,6 +849,12 @@ int main(int argc, char** argv) {
   // The probe issued Read User ID; an unrecognized ID goes on to CMD 0x70.
   assert(fakePanelCommand == (strcmp(which, "unknown") ? 0x2E : 0x70));
   const uint8_t variant = BoardConfig::ACTIVE.displayControllerVariant;
+  const char* panelName = FreeInkDisplay(1, 2, 3, 4, 5, 6).getPanelName();
+  const char* wantPanel = !strcmp(which, "depg")      ? "DEPG0397"
+                          : !strcmp(which, "opm")     ? "OPM040B3"
+                          : !strcmp(which, "unknown") ? nullptr
+                                                      : "YRD0426";
+  assert(wantPanel ? panelName && !strcmp(panelName, wantPanel) : panelName == nullptr);
   EpdBus bus;
   d.begin(bus);
   const Bytes gateOutput = (variant == PiccoYrd0426 || variant == PiccoDepg0397)

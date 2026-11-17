@@ -211,6 +211,8 @@ enum PiccoPanel : uint8_t {
   PiccoSe0400nqw47 = 4,  // the stock "SSD2677" driver path (Ssd2677Driver)
 };
 uint8_t piccoProbePanel();
+// Part number of the probed panel; nullptr before the probe or when unidentified.
+const char* piccoPanelName();
 #endif
 
 #if FREEINK_DEVICE_STICKY

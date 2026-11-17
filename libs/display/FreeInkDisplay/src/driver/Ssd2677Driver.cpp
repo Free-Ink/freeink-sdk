@@ -157,6 +157,7 @@ void Ssd2677Driver::initPanel(EpdBus& bus) {
   if (!list[count - 1].waitBusy) bus.waitBusy(" SSD2677 init");
   _needsPowerOn = true;
   _latchedWaveform = 0;
+  _imageRetained = false;
 }
 
 // Sticky: select the OTP waveform for the next frame (stock
@@ -180,6 +181,7 @@ void Ssd2677Driver::begin(EpdBus& bus) {
   _textAa.allocate(true, g.widthBytes, g.height);
 
   _needsInitialFull = true;
+  _glassUnknown = true;
   _grayPending = _grayMaskReady = false;
   // Retained old-plane: this panel takes old+new as one 2bpp burst, so the old
   // plane must exactly equal what is physically on the glass. The host can't
@@ -195,6 +197,7 @@ void Ssd2677Driver::begin(EpdBus& bus) {
 void Ssd2677Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
   (void)prev;  // unused: single-buffer host passes null; we track our own old plane
   _textAa.invalidate();
+  _imageRetained = false;
   // First paint after init clears the panel with the full waveform (stock forces
   // mode 0 on the first frame).
   if (_needsInitialFull) mode = RefreshMode::Full;
@@ -233,6 +236,17 @@ void Ssd2677Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev,
   // only small interaction updates (highlight moves) use mode 3 with the rails on.
   // A redraw changes over 1/8 of the frame.
   const uint32_t size = geometry().bufferSize;
+  if (_glassUnknown && _old) {
+    // First paint after begin(): the glass holds whatever was shown before
+    // (the sleep screen after a wake), not the white the old plane is seeded
+    // with. Clean to white first, with every pixel taken as black so each one
+    // gets the white drive; the paint below then starts from white.
+    memset(_old, 0x00, size);
+    sendPacked(bus, _old, nullptr);
+    refreshWith(bus, lut_picco_se0400_full, true);
+    memset(_old, 0xFF, size);
+  }
+  _glassUnknown = false;
   bool redraw = reading;
   if (mode == RefreshMode::Fast && !redraw && _old) {
     uint32_t changed = 0;
@@ -322,6 +336,7 @@ void Ssd2677Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
   (void)bus;
   if (_textAa.active()) { _textAa.stage(0, lsb, 0, geometry().height); return; }
   if (!lsb) return;
+  _imageRetained = false;
   if (!_absoluteGray) ensureLsb();
   _grayMaskReady = false;
   if (_lsb) memcpy(_lsb, lsb, geometry().bufferSize);
@@ -329,6 +344,7 @@ void Ssd2677Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
 
 void Ssd2677Driver::beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode mode, RefreshMode fallback,
                                    bool turnOff) {
+  _imageRetained = false;
   if (mode == GrayscaleMode::Overlay && _readerRefresh && _textAa.ready()) {
     // The page is presented by displayGray; only a clean needs its own refresh.
     if (fallback != RefreshMode::Fast || _needsInitialFull) display(bus, fb, nullptr, fallback, false);
@@ -432,6 +448,7 @@ void Ssd2677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
       powerOn(bus);
       sendPacked(bus, _old, _lsb);
       refreshWith(bus, lut_picco_se0400_image, turnOff);
+      _imageRetained = true;
     }
     _needsInitialFull = true;
     return;
@@ -455,6 +472,42 @@ void Ssd2677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
   _grayMaskReady = false;
   // Preserve the base outside the gray mask; masked pixels are driven on the next frame.
 }
+
+#if FREEINK_DEVICE_PICCO
+bool Ssd2677Driver::displayRetainedGrayscaleOverlay(EpdBus& bus, const uint8_t* fb, uint16_t x, uint16_t y,
+                                                    uint16_t w, uint16_t h) {
+  const PanelGeometry g = geometry();
+  if (!_imageRetained || !w || !h || x >= g.width || y >= g.height || w > g.width - x || h > g.height - y)
+    return false;
+  // Resend the image planes with the rectangle's pixels taken from fb (black 00, white 11).
+  powerOn(bus);
+  bus.cmd(CMD_DATA);
+  {
+    static uint8_t chunk[1024];
+    auto txn = bus.beginTxn();
+    uint16_t n = 0;
+    for (uint32_t i = 0; i < g.bufferSize; ++i) {
+      uint8_t mask = 0;
+      const uint16_t row = i / g.widthBytes;
+      if (fb && row >= y && row < y + h) {
+        const uint16_t column = (i % g.widthBytes) * 8;
+        for (uint8_t bit = 0; bit < 8; ++bit)
+          if (column + bit >= x && column + bit < x + w) mask |= 0x80 >> bit;
+      }
+      const uint8_t bw = fb ? fb[i] & mask : 0;
+      packPixels((_old[i] & ~mask) | bw, (_lsb[i] & ~mask) | bw, &chunk[n]);
+      n += 2;
+      if (n == sizeof(chunk)) {
+        txn.writeBytes(chunk, n);
+        n = 0;
+      }
+    }
+    if (n) txn.writeBytes(chunk, n);
+  }
+  refreshWith(bus, lut_picco_se0400_image, true);
+  return true;
+}
+#endif
 
 void Ssd2677Driver::cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) {
   // A skipped text pass still owes the caller its deferred B/W page.

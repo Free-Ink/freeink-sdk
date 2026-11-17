@@ -92,6 +92,9 @@ class FreeInkDisplay {
   // Selected controller/backend identity; nullptr until a driver is selected by begin().
   // Read-only: never probes hardware or substitutes the board profile default.
   const char* getControllerName() const;
+  // Panel part number when the board's probe identified one; nullptr otherwise.
+  // Read-only like getControllerName().
+  const char* getPanelName() const;
 
   // Runtime dimensions
   uint16_t getDisplayWidth() const { return displayWidth; }

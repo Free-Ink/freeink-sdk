@@ -75,6 +75,10 @@ class Ssd2677Driver : public PanelDriver {
   void copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) override;
   void displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut, bool factoryMode) override;
   void cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) override;
+#if FREEINK_DEVICE_PICCO
+  bool displayRetainedGrayscaleOverlay(EpdBus& bus, const uint8_t* fb, uint16_t x, uint16_t y, uint16_t w,
+                                       uint16_t h) override;
+#endif
 
  private:
   void initPanel(EpdBus& bus);
@@ -90,12 +94,14 @@ class Ssd2677Driver : public PanelDriver {
   bool _readerRefresh = false;
   bool _afterReader = false;  // last frame presented a book page
   bool _darkBackground = false;  // facade renders inverted frames
+  bool _glassUnknown = false;    // begin() ran and nothing has been painted since
   bool _needsPowerOn = true;
   bool _needsInitialFull = true;
   uint8_t _latchedWaveform = 0;  // Sticky: OTP waveform code currently latched (0 = none)
   bool _grayPending = false;
   bool _grayMaskReady = false;
   bool _absoluteGray = false;  // the current gray pass began as a complete image
+  bool _imageRetained = false;  // Picco: _old/_lsb still hold the image planes on the glass
   uint8_t* _lsb = nullptr;  // retained LSB mask: the renderer reuses its buffer for the MSB pass
   uint8_t* _old = nullptr;  // retained old plane (last displayed frame); host is single-buffer
                             // so `prev` is always null — mirror stock's obj+0x1020, seeded white

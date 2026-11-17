@@ -86,5 +86,9 @@ constexpr uint8_t A4_UC8279C_GRAY3_NO_BLACK_DRIVE = 0x4e;
 // ink, then drives them white for these frames in the same refresh. More
 // frames are lighter; at most 14.
 constexpr uint8_t A4_UC8279C_GRAY3_GRAY_WHITE_FRAMES = 5;
+// Two-gray pages: a short second refresh drives the lighter gray's pixels
+// white for the extra frames, then holds for the settle frames.
+constexpr uint8_t A4_UC8279C_GRAY3_LIGHT_EXTRA_WHITE_FRAMES = 2;
+constexpr uint8_t A4_UC8279C_GRAY3_LIGHT_SETTLE_FRAMES = 4;
 
 }  // namespace freeink

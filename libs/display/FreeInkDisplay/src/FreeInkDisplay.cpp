@@ -1184,6 +1184,10 @@ void FreeInkDisplay::setReaderRefresh(const bool reading) {
   if (_driver) _driver->setReaderRefresh(reading);
 }
 
+void FreeInkDisplay::setOverlayFullTone(const bool fullTone) {
+  if (_driver) _driver->setOverlayFullTone(fullTone);
+}
+
 void FreeInkDisplay::setRefreshIdleHook(void (*hook)(void* ctx), void* ctx) {
   if (_driver) _driver->setRefreshIdleHook(hook, ctx);
 }

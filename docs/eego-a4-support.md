@@ -73,7 +73,11 @@ white, one gray and black: the dark overlay level (both masks set) is drawn
 black. The gray record is not stock's. It is the black record's 18 frames
 followed by `A4_UC8279C_GRAY3_GRAY_WHITE_FRAMES` of white drive, so a gray
 pixel is drawn black with the rest of the ink and lightened in the same
-refresh, from any previous level; more frames are lighter. A cleanup request
+refresh, from any previous level; more frames are lighter. With
+`setOverlayFullTone(true)` both overlay levels are gray: the gray record draws
+every new gray pixel at the darker level, and a short second refresh drives
+the lighter level's pixels white for
+`A4_UC8279C_GRAY3_LIGHT_EXTRA_WHITE_FRAMES` more. A cleanup request
 (non-FAST base) shows the page with black and white swapped, then the page
 itself. After a B/W screen or four-gray image there is no Gray3 history: a
 stashed base is shown first with a full B/W refresh, which clears the previous

@@ -201,6 +201,33 @@ int main() {
     msbMask[0] = savedMsb;
   }
   {
+    // Full tone: both overlay levels are gray. The gray record draws both
+    // (01); a second refresh then lightens the light one (code 01 again, with
+    // DTM1 all hold). The panel shows the previous block's page: bit 7 gray,
+    // the rest white.
+    driver.setOverlayFullTone(true);
+    auto before = bus.refreshes;
+    gray3Page(page.data(), RefreshMode::Fast);
+    assert(bus.refreshes == before + 2 && "a page with a new light pixel takes the second refresh");
+    assert(bus.oldAtPrevRefresh[physical0] == 0b11000000 && bus.newAtPrevRefresh[physical0] == 0b10110000 &&
+           "gray -> white 11, black 10, both new grays 01");
+    assert(bus.oldAtRefresh[physical0] == 0x00 && bus.newAtRefresh[physical0] == 0b00010000 &&
+           "second refresh: only the light pixel is lightened");
+    assert(bus.lut23[1] == (0x80 | 2) && bus.lut20s.back()[1] == 2 + 4);
+    // The same page again: both grays hold, one refresh.
+    before = bus.refreshes;
+    gray3Page(page.data(), RefreshMode::Fast);
+    assert(bus.refreshes == before + 1 && bus.oldAtRefresh[physical0] == 0b01000000 &&
+           bus.newAtRefresh[physical0] == 0x00);
+    // Back to one gray level: dark is black again (10) and the lightened
+    // pixel is redrawn at the single gray level (01).
+    driver.setOverlayFullTone(false);
+    before = bus.refreshes;
+    gray3Page(page.data(), RefreshMode::Fast);
+    assert(bus.refreshes == before + 1 && bus.oldAtRefresh[physical0] == 0b01100000 &&
+           bus.newAtRefresh[physical0] == 0b00010000);
+  }
+  {
     // A cleanup request runs stock's inverted page first, then the page.
     const auto before = bus.refreshes;
     gray3Page(page.data(), RefreshMode::Half);

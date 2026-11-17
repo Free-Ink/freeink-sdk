@@ -24,7 +24,9 @@ class Uc8279cA4Driver : public PanelDriver {
   // Overlay (anti-aliased text) uses stock's reader "Gray3" path: the B/W base
   // and its gray masks go out as a transition from the previous Gray3 page, so
   // a page turn drives only the pixels that change, in one refresh. A page has
-  // white, one gray and black: the dark overlay level is drawn black.
+  // white, one gray and black: the dark overlay level is drawn black. With
+  // setOverlayFullTone(true) both overlay levels are gray, and a short second
+  // refresh lightens the light one.
   // Absolute/direct planes (full images) use the stock four-gray waveform,
   // which drives every pixel from any prior state.
   GrayscaleCapabilities grayscaleCapabilities(GrayscaleMode mode = GrayscaleMode::Overlay) const override {
@@ -39,6 +41,7 @@ class Uc8279cA4Driver : public PanelDriver {
   void displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut, bool factoryMode) override;
   void cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) override;
   void setReaderRefresh(bool reading) override { _readerRefresh = reading; }
+  void setOverlayFullTone(bool fullTone) override { _fullTone = fullTone; }
   // Runs during a Gray3 page-turn waveform, where the CPU otherwise only
   // polls BUSY for about 0.6 s. Cleared by every display() and displayGray().
   void setRefreshIdleHook(void (*hook)(void* ctx), void* ctx) override {
@@ -59,10 +62,12 @@ class Uc8279cA4Driver : public PanelDriver {
   struct Gray3Use {
     bool black = false;
     bool whiteClear = false;
+    bool lighten = false;  // some pixel needs the second refresh
   };
-  void showGray3(EpdBus& bus, bool inverted);
-  // Sends the DTM1 plane, fills _gray3Code and updates the Gray3 history.
-  void writeGray3Page(EpdBus& bus, bool inverted, Gray3Use& use);
+  void showGray3(EpdBus& bus, bool inverted, bool twoGrays);
+  // Sends the DTM1 plane, fills _gray3Code (and _gray3Lighten) and updates the Gray3 history.
+  void writeGray3Page(EpdBus& bus, bool inverted, bool twoGrays, Gray3Use& use);
+  void loadGray3LightenLut(EpdBus& bus);
   void sendGray3Plane(EpdBus& bus, bool dtm1, const uint8_t* codes);
   void loadGray3Lut(EpdBus& bus, bool anyBlack, bool anyWhiteClear);
   void fillControllerRam(EpdBus& bus, uint8_t command, uint8_t fill);
@@ -83,6 +88,7 @@ class Uc8279cA4Driver : public PanelDriver {
   unsigned long _lastRefreshMs = 0;  // millis() when the last refresh() finished
   bool _grayControllerMode = false;
   bool _readerRefresh = false;  // the host is presenting book pages
+  bool _fullTone = false;       // overlay pages keep both gray levels
   bool _uiShown = false;        // a B/W paint that was not a book page is on the panel
   bool _redriveAfterGray = false;  // re-drive all target pixels after AA, using the requested waveform
   // begin() seeds DTM1 white, but after a reflash/reset the glass holds the
@@ -107,6 +113,10 @@ class Uc8279cA4Driver : public PanelDriver {
   uint8_t* _gray3Middle = nullptr;
   // DTM2 plane of the page being shown, in wire order.
   uint8_t* _gray3Code = nullptr;
+  // Two-gray pages only, allocated on first use: the gray pixels on the panel
+  // that are at the lighter level, and the second refresh's DTM2 plane.
+  uint8_t* _gray3Light = nullptr;
+  uint8_t* _gray3Lighten = nullptr;
   bool _gray3HistoryValid = false;
   bool _gray3Session = false;  // controller is already set up and powered for Gray3
   void (*_idleHook)(void* ctx) = nullptr;

@@ -288,6 +288,8 @@ class FreeInkDisplay {
   void requestResync(uint8_t settlePasses = 0);
   // True while book pages are presented (see PanelDriver::setReaderRefresh).
   void setReaderRefresh(bool reading);
+  // True asks overlay passes for every gray level (see PanelDriver::setOverlayFullTone).
+  void setOverlayFullTone(bool fullTone);
   // One-shot work to run while the next display call's page-turn waveform
   // drives the panel; it lasts for that one call. It must not touch the
   // display or write its frame buffer, and runs with the caller's locks held

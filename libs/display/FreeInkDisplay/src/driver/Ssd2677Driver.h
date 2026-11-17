@@ -80,7 +80,8 @@ class Ssd2677Driver : public PanelDriver {
   // waveforms were never calibrated for this). Tables and per-level codes in
   // lut/Ssd2677Gray16Luts.h.
   bool supportsGray16Image() const override { return BoardConfig::ACTIVE.board != BoardConfig::Board::Sticky; }
-  bool displayGray16Image(EpdBus& bus, const uint8_t* levels, bool turnOff) override;
+  bool displayGray16Image(EpdBus& bus, const uint8_t* levels, bool turnOff, bool fast = false) override;
+  bool setGray16Turn(uint8_t topUp, uint8_t scrubEvery) override;
   bool setGray16Levels(EpdBus& bus, const uint8_t (*paths)[3]) override;
 
  private:
@@ -98,6 +99,9 @@ class Ssd2677Driver : public PanelDriver {
   // A 16-level image on the glass gives its net drive back (toward white) and
   // arms a full refresh. Every frame path that replaces the image calls this.
   void exitGray16(EpdBus& bus);
+  // Give the image on the glass its net drive back (toward white only: no
+  // flash) and mark it gone; exitGray16 adds the full refresh.
+  void balanceGray16(EpdBus& bus);
 
   X4ProTextAa _textAa;
   bool _readerRefresh = false;
@@ -114,6 +118,9 @@ class Ssd2677Driver : public PanelDriver {
   // exitGray16's balance passes. Allocated on first use.
   uint8_t* _gray16 = nullptr;
   bool _gray16OnGlass = false;
+  uint8_t _g16TopUp = 0;       // fast turns: extra white frames on the old image's gray pixels
+  uint8_t _g16ScrubEvery = 0;  // fast turns between full clean turns; 0 = always full
+  uint8_t _g16FastTurns = 0;   // fast turns since the last full one
   // Per-level pixel codes for each pass; start as the calibrated defaults in
   // Ssd2677Gray16Luts.h, replaced by setGray16Levels (114 bytes).
   struct Gray16Codes {

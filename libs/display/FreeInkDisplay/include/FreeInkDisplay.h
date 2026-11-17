@@ -179,7 +179,10 @@ class FreeInkDisplay {
   // display call first returns the image's drive, then clears with a full
   // refresh. False when unsupported (other panels, inverted output).
   bool supportsGray16Image() const;
-  bool displayGray16Image(const uint8_t* levels, bool turnOffScreen = true);
+  // fast: turn from a 16-level image already up without the full clears (see
+  // PanelDriver::displayGray16Image); ignored when none is up.
+  bool displayGray16Image(const uint8_t* levels, bool turnOffScreen = true, bool fast = false);
+  bool setGray16Turn(uint8_t topUp, uint8_t scrubEvery);
   // Calibration hook: paths[l] = {black 0..15, white 0..3, deep 0 or 24} frames per level.
   bool setGray16Levels(const uint8_t (*paths)[3]);
 #ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE

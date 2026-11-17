@@ -692,6 +692,47 @@ static void expectGray16Image(Ssd2677Driver& s) {
   for (Lut l : {lut_picco_se0400_gray16_deep, lut_picco_se0400_gray16_deep_balance}) assert(ssd2677LutDose(l, 4) == 0);
   assert(s.setGray16Levels(bus, design));
 
+  // Fast turns: no full refresh while one is up, top-up only on the old gray pixels,
+  // a full clean turn after `scrubEvery` fast ones.
+  {
+    auto hasFull = [&](const EpdBus& b) {
+      for (const auto& l : lutsOf(b))
+        if (l == asBytes(lut_picco_se0400_full)) return true;
+      return false;
+    };
+    assert(!s.setGray16Turn(5, 2));
+    assert(s.setGray16Turn(4, 2));
+    bus.clear();
+    assert(s.displayGray16Image(bus, levels.data(), true, true));  // nothing up yet: full path
+    assert(hasFull(bus));
+    Bytes reversed(levels.size());
+    for (size_t i = 0; i < levels.size(); ++i)
+      reversed[i] = static_cast<uint8_t>((15 - (levels[i] >> 4)) << 4 | (15 - (levels[i] & 15)));
+    for (int turn = 0; turn < 2; ++turn) {
+      bus.clear();
+      assert(s.displayGray16Image(bus, (turn ? levels : reversed).data(), true, true));
+      assert(!hasFull(bus));
+      const std::vector<Bytes> fastLuts = {
+          asBytes(lut_picco_se0400_gray16_deep_balance), asBytes(lut_picco_se0400_gray16_balance),
+          asBytes(lut_picco_se0400_gray16_pull),         asBytes(lut_picco_se0400_gray16_balance),
+          asBytes(lut_picco_se0400_gray16_deep),         asBytes(lut_picco_se0400_gray16_coarse),
+          asBytes(lut_picco_se0400_gray16_fine),         asBytes(lut_picco_se0400_gray16_pull)};
+      assert(lutsOf(bus) == fastLuts);
+      const Bytes topUp = framesOf(bus)[3];
+      const auto& prev = turn ? reversed : levels;  // the image the top-up lightens
+      for (uint32_t x = 0; x < 800; ++x) {
+        const uint8_t l = (prev[x / 2] >> ((x & 1) ? 0 : 4)) & 15;
+        assert(codeAt(topUp, x) == (l ? 1 : 3));  // 4 frames white on gray pixels, white ones undriven
+      }
+    }
+    bus.clear();
+    assert(s.displayGray16Image(bus, levels.data(), true, true));  // third turn: the scrub
+    assert(hasFull(bus));
+    assert(s.setGray16Turn(0, 0));
+    bus.clear();
+    s.display(bus, page.data(), nullptr, RefreshMode::Fast, false);
+  }
+
   // No PSRAM for the level copy: refused before anything reaches the panel.
   Ssd2677Driver fresh;
   bus.clear();

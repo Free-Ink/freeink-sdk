@@ -496,11 +496,19 @@ void Ssd2677Driver::sendLevelCodes(EpdBus& bus, const uint8_t* levels, const uin
 
 void Ssd2677Driver::exitGray16(EpdBus& bus) {
   if (!_gray16OnGlass) return;
+  balanceGray16(bus);
+  // Ink hysteresis leaves the balanced pixels gray, not white: the full
+  // refresh armed here is what clears the page.
+  if (_old) memset(_old, 0xFF, geometry().bufferSize);  // white once the full refresh has run
+  _needsInitialFull = true;
+}
+
+void Ssd2677Driver::balanceGray16(EpdBus& bus) {
+  if (!_gray16OnGlass) return;
   _gray16OnGlass = false;
   // Each level got deep + B frames toward black and W back; give the net back
-  // toward white (deep 0/16/24/32, coarse 0/4/8/12, fine 0/1/2/3) so the
-  // pixels end balanced. Ink hysteresis leaves them gray, not white: the full
-  // refresh armed below is what clears the page.
+  // toward white (deep balance 0/8/16/24, coarse 0/4/8/12, fine 0/1/2/3) so
+  // the pixels end balanced.
   if (_g16.useBalanceDeep) {
     sendLevelCodes(bus, _gray16, _g16.balanceDeep);
     refreshWith(bus, lut_picco_se0400_gray16_deep_balance, false);
@@ -509,11 +517,17 @@ void Ssd2677Driver::exitGray16(EpdBus& bus) {
   refreshWith(bus, lut_picco_se0400_gray16_balance, false);
   sendLevelCodes(bus, _gray16, _g16.balanceFine);
   refreshWith(bus, lut_picco_se0400_gray16_pull, false);
-  if (_old) memset(_old, 0xFF, geometry().bufferSize);  // white once the full refresh has run
-  _needsInitialFull = true;
 }
 
-bool Ssd2677Driver::displayGray16Image(EpdBus& bus, const uint8_t* levels, bool turnOff) {
+bool Ssd2677Driver::setGray16Turn(uint8_t topUp, uint8_t scrubEvery) {
+  if (!supportsGray16Image() || (topUp != 0 && topUp != 4 && topUp != 8 && topUp != 12)) return false;
+  _g16TopUp = topUp;
+  _g16ScrubEvery = scrubEvery;
+  _g16FastTurns = 0;
+  return true;
+}
+
+bool Ssd2677Driver::displayGray16Image(EpdBus& bus, const uint8_t* levels, bool turnOff, bool fast) {
   if (!supportsGray16Image() || !levels) return false;
   const PanelGeometry g = geometry();
   const uint32_t bytes = static_cast<uint32_t>(g.width / 2) * g.height;
@@ -528,12 +542,29 @@ bool Ssd2677Driver::displayGray16Image(EpdBus& bus, const uint8_t* levels, bool 
   }
   _textAa.invalidate();
   _grayPending = _grayMaskReady = _absoluteGray = false;
-  exitGray16(bus);  // a previous 16-level image gives its drive back first
-  // Start from the state the calibration did: two stock full refreshes with
-  // every pixel on code 11 (15 frames black, then 15 white).
-  for (int i = 0; i < 2; ++i) {
-    sendLevelCodes(bus, nullptr, nullptr, 3);
-    refreshWith(bus, lut_picco_se0400_full, false);
+  if (fast && _gray16OnGlass && _g16FastTurns < _g16ScrubEvery) {
+    // Fast turn: the old image gives its drive back (toward white, no flash),
+    // its gray pixels optionally get a few more white frames, and the new one
+    // is drawn straight over it.
+    balanceGray16(bus);
+    if (_g16TopUp) {
+      static constexpr uint8_t kLevelCode[4] = {3, 1, 2, 0};
+      uint8_t topUp[16];
+      topUp[0] = 3;  // white pixels stay undriven
+      for (int l = 1; l < 16; ++l) topUp[l] = kLevelCode[_g16TopUp / 4];
+      sendLevelCodes(bus, _gray16, topUp);
+      refreshWith(bus, lut_picco_se0400_gray16_balance, false);  // white 0/4/8/12
+    }
+    ++_g16FastTurns;
+  } else {
+    exitGray16(bus);  // a previous 16-level image gives its drive back first
+    // Start from the state the calibration did: two stock full refreshes with
+    // every pixel on code 11 (15 frames black, then 15 white).
+    for (int i = 0; i < 2; ++i) {
+      sendLevelCodes(bus, nullptr, nullptr, 3);
+      refreshWith(bus, lut_picco_se0400_full, false);
+    }
+    _g16FastTurns = 0;
   }
   if (_g16.useDeep) {  // one contiguous drive: true black, and dark grays pulled back from it
     sendLevelCodes(bus, levels, _g16.deep);

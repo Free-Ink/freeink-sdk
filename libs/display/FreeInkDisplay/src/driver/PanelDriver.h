@@ -252,10 +252,22 @@ class PanelDriver {
   // owns the sequence, including giving the drive back before the next frame.
   // False = not supported here; nothing was sent.
   virtual bool supportsGray16Image() const { return false; }
-  virtual bool displayGray16Image(EpdBus& bus, const uint8_t* levels, bool turnOff) {
+  // fast: when a 16-level image is already up, turn to this one without the
+  // full clears (give the old drive back, then draw); every Nth fast turn still
+  // takes the full path (setGray16Turn).
+  virtual bool displayGray16Image(EpdBus& bus, const uint8_t* levels, bool turnOff, bool fast = false) {
     (void)bus;
     (void)levels;
     (void)turnOff;
+    (void)fast;
+    return false;
+  }
+  // Calibration for fast turns: topUp = extra frames toward white (0/4/8/12) on
+  // the old image's non-white pixels after its drive is given back; a full
+  // clean turn after every `scrubEvery` fast ones (0 = never fast).
+  virtual bool setGray16Turn(uint8_t topUp, uint8_t scrubEvery) {
+    (void)topUp;
+    (void)scrubEvery;
     return false;
   }
   // Calibration: choose the drive path of each level. paths[l] = {black frames

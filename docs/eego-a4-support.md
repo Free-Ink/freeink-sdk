@@ -61,25 +61,24 @@ the same-state records (white to white, black to black) flash the pixel through
 both states while the changing records drive one way only, so every pixel takes
 a flashing record and the previous screen does not carry into the new one. Each B/W paint then
 copies the displayed frame into the old plane for the next differential update.
+On the first book page (`setReaderRefresh(true)`) painted B/W after a paint that
+was not a book page, a FAST paint drives pixels turning black for 48 frames
+instead of 36.
 Anti-aliased (overlay) pages use stock V1.0.3's reader "Gray3" path. The B/W
-base is stashed undisplayed; with its gray masks it becomes one frame, sent
-as a per-pixel transition from the previous Gray3 frame: unchanged white and
-gray pixels hold, black is re-driven, and only changed pixels are cleared or
-nudged. Stock's waveform has one gray level, 5 black frames from white. Here
-light gray drives `A4_UC8279C_GRAY3_LIGHT_FRAMES` instead, and a short second
-refresh, not from stock, gives the dark-gray pixels
-`A4_UC8279C_GRAY3_DARK_EXTRA_FRAMES` more, so a page has white, light, dark
-and black. A gray pixel that was darker before (black, or dark turning light) is
-cleared in the first refresh and driven from white in the second. A
-cleanup request (non-FAST base) shows the page with black and white swapped,
-then the page itself. After a B/W screen or four-gray image there is no
-Gray3 history: the next page shows its base with a full B/W refresh, which
-clears the previous screen (after a fast one it showed in the black areas of
-the gray pages that followed). That base goes out with its gray pixels
-white, so both grays are then driven from white in a single refresh (black,
-just driven by the base, holds, and its code selects a dark-from-white record
-instead). A base the caller already displayed with gray pixels black is shown
-once more with them white first.
+base is stashed undisplayed; with its gray mask it becomes one frame, sent
+as a per-pixel transition from the previous Gray3 frame in a single refresh:
+unchanged white and gray pixels hold, black is re-driven, a pixel turning
+white is cleared, and a new gray pixel takes the gray record. A page has
+white, one gray and black: the dark overlay level (both masks set) is drawn
+black. The gray record is not stock's. It is the black record's 18 frames
+followed by `A4_UC8279C_GRAY3_GRAY_WHITE_FRAMES` of white drive, so a gray
+pixel is drawn black with the rest of the ink and lightened in the same
+refresh, from any previous level; more frames are lighter. A cleanup request
+(non-FAST base) shows the page with black and white swapped, then the page
+itself. After a B/W screen or four-gray image there is no Gray3 history: a
+stashed base is shown first with a full B/W refresh, which clears the previous
+screen (after a fast one it showed in the black areas of the gray pages that
+followed), and the Gray3 refresh follows from that base.
 
 Full images (absolute/direct planes) follow the stock V1.0.3 lockscreen
 sequence. First a pre-clear in the B/W session: black to DTM2, no DTM1 write,

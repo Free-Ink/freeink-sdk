@@ -497,10 +497,14 @@ void Ssd2677Driver::sendLevelCodes(EpdBus& bus, const uint8_t* levels, const uin
 void Ssd2677Driver::exitGray16(EpdBus& bus) {
   if (!_gray16OnGlass) return;
   _gray16OnGlass = false;
-  // Each level got B frames toward black and W back; give B - W back toward
-  // white (coarse 0/4/8/12, then fine 0/1/2/3) so the pixels end balanced.
-  // Ink hysteresis leaves them gray, not white: the full refresh armed below
-  // is what clears the page.
+  // Each level got deep + B frames toward black and W back; give the net back
+  // toward white (deep 0/16/24/32, coarse 0/4/8/12, fine 0/1/2/3) so the
+  // pixels end balanced. Ink hysteresis leaves them gray, not white: the full
+  // refresh armed below is what clears the page.
+  if (_g16.useBalanceDeep) {
+    sendLevelCodes(bus, _gray16, _g16.balanceDeep);
+    refreshWith(bus, lut_picco_se0400_gray16_deep_balance, false);
+  }
   sendLevelCodes(bus, _gray16, _g16.balanceCoarse);
   refreshWith(bus, lut_picco_se0400_gray16_balance, false);
   sendLevelCodes(bus, _gray16, _g16.balanceFine);
@@ -531,6 +535,10 @@ bool Ssd2677Driver::displayGray16Image(EpdBus& bus, const uint8_t* levels, bool 
     sendLevelCodes(bus, nullptr, nullptr, 3);
     refreshWith(bus, lut_picco_se0400_full, false);
   }
+  if (_g16.useDeep) {  // one contiguous drive: true black, and dark grays pulled back from it
+    sendLevelCodes(bus, levels, _g16.deep);
+    refreshWith(bus, lut_picco_se0400_gray16_deep, false);
+  }
   sendLevelCodes(bus, levels, _g16.coarse);
   refreshWith(bus, lut_picco_se0400_gray16_coarse, false);
   sendLevelCodes(bus, levels, _g16.fine);
@@ -547,29 +555,53 @@ bool Ssd2677Driver::displayGray16Image(EpdBus& bus, const uint8_t* levels, bool 
 
 Ssd2677Driver::Gray16Codes Ssd2677Driver::defaultGray16Codes() {
   Gray16Codes c{};
+  memcpy(c.deep, kGray16DeepCode, 16);
   memcpy(c.coarse, kGray16CoarseCode, 16);
   memcpy(c.fine, kGray16FineCode, 16);
   memcpy(c.pull, kGray16PullCode, 16);
+  memcpy(c.balanceDeep, kGray16BalanceDeepCode, 16);
   memcpy(c.balanceCoarse, kGray16BalanceCoarseCode, 16);
   memcpy(c.balanceFine, kGray16BalanceFineCode, 16);
+  c.useDeep = c.useBalanceDeep = false;
+  for (int l = 0; l < 16; ++l) {
+    c.useDeep |= c.deep[l] != 3;
+    c.useBalanceDeep |= c.balanceDeep[l] != 3;
+  }
   return c;
 }
 
-bool Ssd2677Driver::setGray16Levels(EpdBus& bus, const uint8_t (*paths)[2]) {
+bool Ssd2677Driver::setGray16Levels(EpdBus& bus, const uint8_t (*paths)[3]) {
   if (!supportsGray16Image() || !paths) return false;
   // Pass k of a table: code 11 undriven, then 01 / 10 / 00 for the table's
   // three doses (coarse 4/8/12, fine and pull 1/2/3; see Ssd2677Gray16Luts.h).
+  // The deep pass has one dose, 24 frames, on code 01; its give-back has
+  // 8/16/24 so any net drive 0..39 splits exactly.
   static constexpr uint8_t kLevelCode[4] = {3, 1, 2, 0};
+  static constexpr uint8_t kDeepBalance[4] = {0, 8, 16, 24};
   Gray16Codes c{};
+  c.useDeep = c.useBalanceDeep = false;
   for (int l = 0; l < 16; ++l) {
-    const uint8_t b = paths[l][0], w = paths[l][1];
-    if (b > 15 || w > 3 || w > b) return false;  // balance only drives toward white
-    const uint8_t net = static_cast<uint8_t>(b - w);
+    const uint8_t b = paths[l][0], w = paths[l][1], x = paths[l][2];
+    if (b > 15 || w > 3 || (x != 0 && x != 24) || w > b + x) return false;  // balance only drives toward white
+    const int net = x + b - w;
+    // Give back the largest deep-balance dose that leaves 0..15 for coarse + fine.
+    int give = 0;
+    for (int k = 3; k >= 0; --k)
+      if (kDeepBalance[k] <= net && net - kDeepBalance[k] <= 15) {
+        give = k;
+        break;
+      }
+    const int rest = net - kDeepBalance[give];
+    if (rest < 0 || rest > 15) return false;  // unreachable for net 0..39; never index past the tables
+    c.deep[l] = x ? kLevelCode[1] : kLevelCode[0];
     c.coarse[l] = kLevelCode[b / 4];
     c.fine[l] = kLevelCode[b % 4];
     c.pull[l] = kLevelCode[w];
-    c.balanceCoarse[l] = kLevelCode[net / 4];
-    c.balanceFine[l] = kLevelCode[net % 4];
+    c.balanceDeep[l] = kLevelCode[give];
+    c.balanceCoarse[l] = kLevelCode[rest / 4];
+    c.balanceFine[l] = kLevelCode[rest % 4];
+    c.useDeep |= x != 0;
+    c.useBalanceDeep |= give != 0;
   }
   exitGray16(bus);  // the image on the glass is balanced with the table it was drawn with
   _g16 = c;

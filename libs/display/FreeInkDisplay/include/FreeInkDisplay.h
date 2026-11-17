@@ -180,8 +180,8 @@ class FreeInkDisplay {
   // refresh. False when unsupported (other panels, inverted output).
   bool supportsGray16Image() const;
   bool displayGray16Image(const uint8_t* levels, bool turnOffScreen = true);
-  // Calibration hook: paths[l] = {black frames 0..15, white frames 0..3} per level.
-  bool setGray16Levels(const uint8_t (*paths)[2]);
+  // Calibration hook: paths[l] = {black 0..15, white 0..3, deep 0 or 24} frames per level.
+  bool setGray16Levels(const uint8_t (*paths)[3]);
 #ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
   // Restore controller RAM and frameBuffer to the BW baseline after grayscale.
   // frameBufferActive is the only valid source: the caller is always inside a

@@ -81,7 +81,7 @@ class Ssd2677Driver : public PanelDriver {
   // lut/Ssd2677Gray16Luts.h.
   bool supportsGray16Image() const override { return BoardConfig::ACTIVE.board != BoardConfig::Board::Sticky; }
   bool displayGray16Image(EpdBus& bus, const uint8_t* levels, bool turnOff) override;
-  bool setGray16Levels(EpdBus& bus, const uint8_t (*paths)[2]) override;
+  bool setGray16Levels(EpdBus& bus, const uint8_t (*paths)[3]) override;
 
  private:
   void initPanel(EpdBus& bus);
@@ -115,9 +115,10 @@ class Ssd2677Driver : public PanelDriver {
   uint8_t* _gray16 = nullptr;
   bool _gray16OnGlass = false;
   // Per-level pixel codes for each pass; start as the calibrated defaults in
-  // Ssd2677Gray16Luts.h, replaced by setGray16Levels (80 bytes).
+  // Ssd2677Gray16Luts.h, replaced by setGray16Levels (114 bytes).
   struct Gray16Codes {
-    uint8_t coarse[16], fine[16], pull[16], balanceCoarse[16], balanceFine[16];
+    uint8_t deep[16], coarse[16], fine[16], pull[16], balanceDeep[16], balanceCoarse[16], balanceFine[16];
+    bool useDeep, useBalanceDeep;  // a level drives the deep pass / needs its balance
   };
   Gray16Codes _g16 = defaultGray16Codes();
   static Gray16Codes defaultGray16Codes();

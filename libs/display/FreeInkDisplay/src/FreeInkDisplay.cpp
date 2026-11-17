@@ -1331,7 +1331,7 @@ bool FreeInkDisplay::displayGray16Image(const uint8_t* levels, bool turnOffScree
   return _driver->displayGray16Image(_bus, levels, turnOffScreen);
 }
 
-bool FreeInkDisplay::setGray16Levels(const uint8_t (*paths)[2]) {
+bool FreeInkDisplay::setGray16Levels(const uint8_t (*paths)[3]) {
   if (!paths || !supportsGray16Image()) return false;
   DisplayPmLock pmLock;
   syncPendingAsync();

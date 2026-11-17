@@ -259,10 +259,11 @@ class PanelDriver {
     return false;
   }
   // Calibration: choose the drive path of each level. paths[l] = {black frames
-  // 0..15, white frames 0..3}, black >= white. An image on the glass gives its
-  // drive back first (the balance needs the paths it was drawn with). False =
-  // unsupported or out of range; the table is unchanged.
-  virtual bool setGray16Levels(EpdBus& bus, const uint8_t (*paths)[2]) {
+  // 0..15, white frames 0..3, deep frames 0 or 24}, white <= black + deep.
+  // An image on the glass gives its drive back first (the balance needs the
+  // paths it was drawn with). False = unsupported or out of range; the table
+  // is unchanged.
+  virtual bool setGray16Levels(EpdBus& bus, const uint8_t (*paths)[3]) {
     (void)bus;
     (void)paths;
     return false;

@@ -51,8 +51,11 @@ The original pin map and controller details came from stock-firmware analysis
 B/W refresh cadence is controlled by the caller. FAST requests remain fast,
 including after grayscale; HALF and FULL select the full waveform. The first
 B/W paint after initialization uses the full waveform to clear unknown glass state.
-After grayscale, the next B/W paint seeds the old plane with the inverse of the
-target so every pixel is driven with the requested waveform. HALF and FULL
+After a four-gray image, the next B/W paint seeds the old plane with the inverse
+of the target so every pixel is driven with the requested waveform. A FAST paint
+straight after a Gray3 page seeds it with that page as the panel shows it, each
+gray pixel as the inverse of its target: gray pixels and pixels that change are
+driven, white that stays white is not. HALF and FULL
 paints instead seed the old plane with the target itself: in the full waveform
 the same-state records (white to white, black to black) flash the pixel through
 both states while the changing records drive one way only, so every pixel takes

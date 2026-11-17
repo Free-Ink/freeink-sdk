@@ -226,6 +226,8 @@ void Uc8279cA4Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* pre
 }
 
 void Uc8279cA4Driver::displayBw(EpdBus& bus, const uint8_t* fb, const RefreshMode mode) {
+  // The Gray3 history, while valid, is what the panel shows.
+  const bool afterGray3 = _gray3HistoryValid && _gray3Code[0];
   // Any B/W refresh replaces what a Gray3 transition would start from.
   _gray3HistoryValid = false;
   _gray3Session = false;
@@ -260,6 +262,14 @@ void Uc8279cA4Driver::displayBw(EpdBus& bus, const uint8_t* fb, const RefreshMod
     // way only. OLD = NEW puts every pixel on a flashing record, so pixels that
     // changed and pixels that held get the same drive.
     writeFrame(bus, CMD_DTM1, fb);
+  } else if (afterGray3 && !_firstRefreshPending) {
+    // Fast refresh straight after a Gray3 page: OLD is the page as the panel
+    // shows it, with each gray pixel as the inverse of its target so that it
+    // is driven. White that stays white is not driven.
+    const size_t n = static_cast<size_t>(_widthBytes) * _height;
+    uint8_t* old = _gray3Code[0];
+    for (size_t i = 0; i < n; ++i) old[i] = static_cast<uint8_t>(_gray3White[i] | (_gray3Middle[i] & ~fb[i]));
+    writeFrame(bus, CMD_DTM1, old);
   } else if (_firstRefreshPending || _redriveAfterGray) {
     // Inverse OLD makes every target pixel transition, clearing unknown startup
     // state or residual AA charge even with the fast waveform.

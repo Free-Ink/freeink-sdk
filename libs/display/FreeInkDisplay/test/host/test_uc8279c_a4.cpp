@@ -68,7 +68,10 @@ int main() {
       for (size_t i = 0; i < bytes; ++i) {
         const auto physical = (551 - i / 96) * 96 + i % 96;
         assert(bus.newAtRefresh[physical] == bw[i]);
-        assert(bus.oldAtRefresh[physical] == static_cast<uint8_t>(~bw[i]));
+        // OLD is the gray page as shown (the previous frame, gray where masked),
+        // with each gray pixel as the inverse of its target.
+        const auto shownWhite = static_cast<uint8_t>((bw[i] ^ 0x33) & ~gray[i]);
+        assert(bus.oldAtRefresh[physical] == static_cast<uint8_t>(shownWhite | (gray[i] & ~bw[i])));
       }
       assert(bus.oldPlane == bus.newPlane);
     }

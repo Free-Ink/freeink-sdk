@@ -399,10 +399,8 @@ void Uc8279cA4Driver::writeGray3Page(EpdBus& bus, const bool inverted, const boo
     memcpy(_gray3Code + out, lo, w);
     memcpy(_gray3White + row, wasWhite, w);
     memcpy(_gray3Middle + row, gray, w);
-    if (_gray3Light) {
-      memcpy(_gray3Lighten + out, lighten, w);
-      memcpy(_gray3Light + row, wasLight, w);
-    }
+    if (twoGrays) memcpy(_gray3Lighten + out, lighten, w);
+    if (_gray3Light) memcpy(_gray3Light + row, wasLight, w);
   }
   memset(hi, 0x00, sizeof(hi));  // padding rows hold
   for (uint16_t y = 0; y < PADDING_ROWS; ++y) txn.writeBytes(hi, w);

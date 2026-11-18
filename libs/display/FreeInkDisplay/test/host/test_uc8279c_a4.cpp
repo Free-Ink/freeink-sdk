@@ -4,8 +4,10 @@
 #include <vector>
 
 #include "driver/Uc8279cA4Driver.h"
+#include "esp_heap_caps.h"
 
-int main() {
+int main(int argc, char** argv) {
+  assert(argc == 2);
   using namespace freeink;
   constexpr size_t bytes = 768 / 8 * 552;
   std::vector<uint8_t> bw(bytes, 0xff), gray(bytes, 0xaa);
@@ -172,6 +174,17 @@ int main() {
     assert(bus.oldAtRefresh[physical0] == 0b01100000 && bus.newAtRefresh[physical0] == 0x00 &&
            "unchanged white/gray must hold, black re-driven");
     assert(bus.oldAtRefresh[physical0 + 1] == 0x00 && bus.newAtRefresh[physical0 + 1] == 0x00);
+
+    // Either optional allocation may fail. The single-gray page still reaches
+    // the panel, and the full-tone test below retries the missing buffer.
+    driver.setOverlayFullTone(true);
+    failOnAllocation = std::atoi(argv[1]);
+    assert(failOnAllocation == 1 || failOnAllocation == 2);
+    const auto beforeFallback = bus.refreshes;
+    gray3Page(page.data(), RefreshMode::Fast);
+    assert(failOnAllocation == 0 && bus.refreshes == beforeFallback + 1);
+    assert(bus.oldAtRefresh[physical0] == 0b01100000 && bus.newAtRefresh[physical0] == 0x00);
+    driver.setOverlayFullTone(false);
   }
   {
     // A page where those pixels change: gray -> white is cleared, white ->

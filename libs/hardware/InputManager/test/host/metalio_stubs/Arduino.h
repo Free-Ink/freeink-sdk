@@ -18,7 +18,8 @@ inline void delay(unsigned long n) { fakeNow+=n; }
 inline void delayMicroseconds(unsigned int) {}
 inline unsigned long millis() { return fakeNow; }
 inline void analogSetAttenuation(int) {}
-inline int analogReadMilliVolts(int) { return 3300; }
+inline int analogMilliVolts = 3300;
+inline int analogReadMilliVolts(int) { return analogMilliVolts; }
 inline int analogRead(int) { return 4095; }
 inline int digitalPinToInterrupt(int p) { return p; }
 inline void attachInterrupt(int,void (*f)(),int) { touchIsr=f; }

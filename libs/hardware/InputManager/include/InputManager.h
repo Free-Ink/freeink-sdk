@@ -34,6 +34,9 @@ class InputManager {
   // logical click/hold classification. False when the board has no such GPIO.
   bool isPowerButtonPhysicallyPressed() const;
 
+  // Sample the ADC ladder without polling touch or changing debounced button state.
+  bool isAdcLadderPhysicallyPressed();
+
   // Press edge since the previous update().
   bool wasPressed(uint8_t buttonIndex) const;
 

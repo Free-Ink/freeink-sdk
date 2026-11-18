@@ -214,6 +214,9 @@ class PanelDriver {
   virtual void requestResync(uint8_t settlePasses) { (void)settlePasses; }
   // True while the host presents book pages; drivers with a reading waveform use it.
   virtual void setReaderRefresh(bool reading) { (void)reading; }
+  // True asks overlay passes for every gray level the masks carry, where a
+  // driver otherwise renders them with fewer levels in less time.
+  virtual void setOverlayFullTone(bool fullTone) { (void)fullTone; }
   // One-shot host work to run while a page-turn waveform drives the panel,
   // when the CPU would otherwise only poll BUSY. The hook lasts for exactly one
   // display call: set it right before display() or displayGray(); a driver

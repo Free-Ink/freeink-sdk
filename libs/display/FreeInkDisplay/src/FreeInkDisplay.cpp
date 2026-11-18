@@ -254,6 +254,13 @@ void FreeInkDisplay::selectDriver() {
 
 const char* FreeInkDisplay::getControllerName() const { return _driver ? _driver->controllerName() : nullptr; }
 
+const char* FreeInkDisplay::getPanelName() const {
+#if FREEINK_DEVICE_PICCO
+  if (BoardConfig::isPicco()) return piccoPanelName();
+#endif
+  return nullptr;
+}
+
 void FreeInkDisplay::begin() {
   cancelGrayscalePass();
   DisplayPmLock pmLock;
@@ -1182,6 +1189,10 @@ void FreeInkDisplay::requestResync(uint8_t settlePasses) {
 
 void FreeInkDisplay::setReaderRefresh(const bool reading) {
   if (_driver) _driver->setReaderRefresh(reading);
+}
+
+void FreeInkDisplay::setOverlayFullTone(const bool fullTone) {
+  if (_driver) _driver->setOverlayFullTone(fullTone);
 }
 
 void FreeInkDisplay::setRefreshIdleHook(void (*hook)(void* ctx), void* ctx) {

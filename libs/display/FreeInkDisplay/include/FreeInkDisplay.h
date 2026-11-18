@@ -92,6 +92,9 @@ class FreeInkDisplay {
   // Selected controller/backend identity; nullptr until a driver is selected by begin().
   // Read-only: never probes hardware or substitutes the board profile default.
   const char* getControllerName() const;
+  // Panel part number when the board's probe identified one; nullptr otherwise.
+  // Read-only like getControllerName().
+  const char* getPanelName() const;
 
   // Runtime dimensions
   uint16_t getDisplayWidth() const { return displayWidth; }
@@ -288,6 +291,8 @@ class FreeInkDisplay {
   void requestResync(uint8_t settlePasses = 0);
   // True while book pages are presented (see PanelDriver::setReaderRefresh).
   void setReaderRefresh(bool reading);
+  // True asks overlay passes for every gray level (see PanelDriver::setOverlayFullTone).
+  void setOverlayFullTone(bool fullTone);
   // One-shot work to run while the next display call's page-turn waveform
   // drives the panel; it lasts for that one call. It must not touch the
   // display or write its frame buffer, and runs with the caller's locks held

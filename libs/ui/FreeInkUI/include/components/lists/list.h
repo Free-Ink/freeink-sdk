@@ -155,10 +155,10 @@ struct ListProps {
   // Draws a thin position indicator along the right edge when the list
   // overflows the rect.
   bool scrollIndicator = true;
-  // Draw a non-interactive preview of the next row when there is
-  // leftover space after the fully visible rows. Uses normal row layout and
-  // pixel clipping; omitted on targets without clipping. Only full rows count
-  // towards navigation and interaction.
+  // Draw a preview of the next row when there is leftover space after the
+  // fully visible rows. Uses normal row layout and pixel clipping; omitted on
+  // targets without clipping. The preview takes taps on its visible part but
+  // is never selected or focused; only full rows count towards navigation.
   bool partialTrailingRow = false;
   int16_t partialTrailingMinHeight = 18;
   // Additional marker drawn on the selected row (the v1 theme Underline and
@@ -822,7 +822,8 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
       state |= StateSelected;
     if (!item.enabled)
       state |= StateDisabled;
-    if (!partial && props.action != NO_ACTION && item.enabled) {
+    // The preview is a touch target only: buttons never reach it.
+    if ((!partial || frame.device().hasTouch) && props.action != NO_ACTION && item.enabled) {
       // item.enabled controls interactivity; a StateDisabled carried in
       // item.state is visual-only dimming and must not block touch routing
       // (findTouch skips disabled interactions).
@@ -847,7 +848,10 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
         hit.y = row.y;
         hit.height = row.height;
       }
-      frame.hit(hit, props.action, item.actionValue, props.inputMask, hitState);
+      // The preview takes taps on the part of it that is on screen.
+      if (partial)
+        hit.height = static_cast<int16_t>(rowArea.bottom() - row.y);
+      frame.hit(hit, props.action, item.actionValue, partial ? InputTouch : props.inputMask, hitState);
       if (revealed)
         frame.hit(actionRect, reveal->action, item.actionValue,
                   InputTouch, StateNormal);

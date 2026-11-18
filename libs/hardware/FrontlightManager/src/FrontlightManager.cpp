@@ -72,7 +72,8 @@ void pm1FrontlightAttach(uint32_t freqHz) {
 }
 
 void pm1FrontlightWrite(uint32_t pct) {
-  const uint32_t duty = (pct * pct * 4095u) / 10000u;  // 0-100% -> 12-bit, gamma ~2
+  uint32_t duty = (pct * pct * 4095u) / 10000u;  // 0-100% -> 12-bit, gamma ~2
+  if (pct && !duty) duty = 1;                    // 1% stays lit, as on the LEDC path
   const uint8_t data[2] = {static_cast<uint8_t>(duty & 0xFF),
                            static_cast<uint8_t>(((duty >> 8) & 0x0F) | (duty ? PM1_PWM_ENABLE : 0))};
   freeink::m5pm1::writeBytes(freeink::m5pm1::REG_PWM0_DUTY_L, data, sizeof(data));
@@ -769,6 +770,7 @@ void FrontlightManager::setBrightnessLevel(uint8_t level) {
 #if FREEINK_CAP_FRONTLIGHT
   _brightnessLevel = level;
   _brightness = (static_cast<uint16_t>(level) * 100u) / 255u;
+  if (level && !_brightness) _brightness = 1;  // backends treat 0% as off
   _useLevel = true;
   apply();
 #else

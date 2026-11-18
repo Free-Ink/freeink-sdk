@@ -23,40 +23,10 @@ This document describes the FreeInk SDK board support profile for OnePage (`FREE
 
 ## FreeInk SDK Profile
 
-In FreeInk SDK (`BoardConfig.h`):
-
-```cpp
-constexpr BoardProfile ONEPAGE = {
-    Board::OnePage,
-    "onepage",
-    InputStyle::OnePageAdcLadder,
-    DisplayController::SSD1677,
-    800,
-    480,
-    {22, 23, 25, 8, 27, 29, PIN_UNASSIGNED},  // display SPI
-    20000000,                                 // display 20 MHz; SD 20 MHz
-    {22, 24, 23, 26, PIN_UNASSIGNED, false, 20000000, true}, // microSD
-    {PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, 6, 9, 2, false, 4}, // input
-    5,                                         // batteryAdc (GPIO5)
-    11,                                        // batteryChargeStatus (GPIO11)
-    2.0f,                                      // batteryDividerMultiplier
-    11,                                        // usbDetect (GPIO11)
-    NO_TOUCH,
-    NO_FRONTLIGHT,
-    NO_AUDIO,
-    NO_LEDS,
-    NO_FLIP,
-    NO_SDMMC,
-    NO_GAUGE,
-    NO_MIC,
-    NO_SENSORS,
-    1.0f,                                      // uiScale
-    {PIN_UNASSIGNED, PIN_UNASSIGNED, 10, true},// chargeEnable (GPIO10)
-    0,
-    {9, 3, 3, 3},
-    false                                      // batteryChargeStatusActiveHigh: false
-};
-```
+The [OnePage board profile](../libs/hardware/BoardConfig/include/BoardConfig.h)
+defines the pinout. Enable the pull-up on GPIO11 before checking for a USB
+cable. The profile sets `usbDetectActiveHigh` to `false` because GPIO11 goes
+low when a cable is connected.
 
 ## Display configuration
 

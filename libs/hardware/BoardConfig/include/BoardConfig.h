@@ -2127,7 +2127,16 @@ constexpr BoardProfile ONEPAGE = {
     {PIN_UNASSIGNED, PIN_UNASSIGNED, 10, true},
     0,               // displayControllerVariant
     {0, 0, 0, 0},    // viewableInsets: full 800x480 panel frame
-    false};          // batteryChargeStatusActiveHigh: false (low = USB present)
+    false,           // batteryChargeStatusActiveHigh: low = USB present
+    NO_I2C_FRONTLIGHT,
+    {},      // haptic: none
+    0,       // headerOffsetY
+    0,       // cornerRadius
+    0,       // tabBarOffsetY
+    100,     // tabBarHeightPct
+    100,     // tabBarWidthPct
+    0,       // wifiMaxTxPower: radio default
+    false};  // usbDetectActiveHigh: GPIO11 is low while a cable is attached
 
 static_assert(ONEPAGE.displayWidth / 8 * ONEPAGE.displayHeight == 48000,
               "OnePage framebuffer must be 48,000 bytes (800/8 x 480)");

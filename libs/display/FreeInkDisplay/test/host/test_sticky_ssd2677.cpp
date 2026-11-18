@@ -12,6 +12,7 @@
 #include "FreeInkDisplay.h"
 #include "src/driver/Ssd1677Driver.h"
 #include "src/driver/Ssd2677Driver.h"
+#include "src/lut/Ssd1677Luts.h"
 #include "src/lut/Ssd2677Luts.h"
 #undef private
 
@@ -45,6 +46,34 @@ int main(int argc, char** argv) {
   // The board profile still says SSD1677; diagnostics must follow the selected driver.
   assert(BoardConfig::ACTIVE.displayController == BoardConfig::DisplayController::SSD1677);
   assert(!strcmp(display.getControllerName(), expected) && fakeSpiRestarts == 1);
+  if (originalPanel && argc > 2) {
+    // Reader pages take one combined activation with the Sticky text table.
+    auto& d = static_cast<Ssd1677Driver&>(ssd1677Driver());
+    EpdBus bus;
+    d.begin(bus);
+    Bytes base(48000, 0xFF), lsb(48000, 0), msb(48000, 0);
+    base[0] = 0x1F;
+    lsb[0] = 0x18;
+    msb[0] = 0x08;
+    d.display(bus, base.data(), nullptr, RefreshMode::Full, false);
+    d.setReaderRefresh(true);
+    assert(d.grayscaleCapabilities(GrayscaleMode::Overlay).base == GrayscaleBase::Combined);
+    bus.clear();
+    d.beginGrayscale(bus, base.data(), GrayscaleMode::Overlay, RefreshMode::Fast, false);
+    d.copyGrayscaleLsb(bus, lsb.data());
+    d.copyGrayscaleMsb(bus, msb.data());
+    assert(bus.writes.empty());
+    d.displayGray(bus, base.data(), true, nullptr, false);
+    assert(*lastData(bus, 0x32) == Bytes(lut_sticky_text, lut_sticky_text + 105));
+    assert(*lastData(bus, 0x2C) == Bytes({lut_sticky_text[109]}) && d._textAa.onPanel() && !d._isScreenOn);
+    d.cleanupGrayscaleBuffers(bus, base.data());
+    d.setReaderRefresh(false);
+    bus.clear();
+    d.display(bus, base.data(), nullptr, RefreshMode::Fast, false);
+    assert(*lastData(bus, 0x22) == Bytes({0xFF}) && "back to the vendor partial sequence");
+    std::puts("Sticky SSD1677: one-pass text AA passed");
+    return 0;
+  }
   if (originalPanel) {
     std::puts("Sticky SSD1677: detected controller identity passed");
     return 0;
@@ -55,8 +84,46 @@ int main(int argc, char** argv) {
   assert(s.busyPolarity() == BusyPolarity::ActiveLowReady);
 
   EpdBus bus;
-  fakeHeapCapsFail = argc > 1;
+  fakeHeapCapsFail = argc > 1 && !strcmp(argv[1], "no-old-plane");
   s.begin(bus);
+  if (argc > 1 && !strcmp(argv[1], "textaa")) {
+    auto& t = static_cast<Ssd2677Driver&>(s);
+    Bytes base(48000, 0xFF), lsb(48000, 0), msb(48000, 0), next(48000, 0xFF);
+    const size_t row0 = 479 * 200;  // rows go out bottom-to-top
+    base[0] = 0x1F;  // 3 px black
+    lsb[0] = 0x18;   // then 2 px gray
+    msb[0] = 0x08;
+    t.display(bus, base.data(), nullptr, RefreshMode::Full, false);
+    t.display(bus, base.data(), nullptr, RefreshMode::Fast, false);  // leaves an OTP waveform latched
+    t.setReaderRefresh(true);
+    assert(t.grayscaleCapabilities(GrayscaleMode::Overlay).base == GrayscaleBase::Combined);
+    for (int page = 0; page < 2; ++page) {
+      bus.clear();
+      t.beginGrayscale(bus, base.data(), GrayscaleMode::Overlay, RefreshMode::Fast, false);
+      t.copyGrayscaleLsb(bus, lsb.data());
+      t.copyGrayscaleMsb(bus, msb.data());
+      assert(bus.writes.empty() && "no separate B/W base");
+      t.displayGray(bus, base.data(), false, nullptr, false);
+      // Reset + init only when an OTP waveform was latched; never an OTP latch here.
+      assert(count(bus, 0x00) == (page == 0) && count(bus, 0xE6) == 0 && count(bus, 0x12) == 1);
+      assert(*lastData(bus, 0x20) == Bytes(lut_picco_se0400_text, lut_picco_se0400_text + 535));
+      assert(bus.writes.back().command == 0x02 && "text page powers off");
+      // 3 px black (00), 2 px gray (01), 3 px white: driven (11) on the first
+      // page, held (10) once the previous page left them white.
+      const Bytes* data = lastData(bus, 0x10);
+      const uint8_t white = page == 0 ? 0xFF : 0xAA;
+      assert(data && (*data)[row0] == 0x01 && (*data)[row0 + 1] == (0x40 | (white & 0x3F)) && (*data)[0] == white);
+    }
+    t.cleanupGrayscaleBuffers(bus, base.data());
+    t.setReaderRefresh(false);
+    bus.clear();
+    t.display(bus, next.data(), nullptr, RefreshMode::Fast, false);
+    assert(count(bus, 0x00) == 1 && *lastData(bus, 0xE6) == Bytes({0x19}) && "re-init, then the OTP partial");
+    const Bytes* data = lastData(bus, 0x10);
+    assert(data && (*data)[row0] == 0x55 && (*data)[row0 + 1] == 0x7F && "black and gray both driven white");
+    std::puts("Sticky SSD2677: one-pass text AA passed");
+    return 0;
+  }
   // Wait after reset, panel setting and the final E9 command, exactly once
   // each. A second wait after E9 looks for a new BUSY pulse for 100 ms even
   // though no command was sent. AA reinitializes twice per steady-state turn.

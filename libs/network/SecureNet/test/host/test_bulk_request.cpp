@@ -112,8 +112,8 @@ int main() {
 
   // A kept-alive connection that the server closed between requests: the
   // request is sent again once, on a fresh connection.
-  reset({"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nabcHTTP/1.1 2",
-         "HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\ndef"});
+  reset(
+      {"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nabcHTTP/1.1 2", "HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\ndef"});
   {
     freeink::SecureHttpClient http;
     assert(http.begin("https://a/one"));
@@ -152,9 +152,147 @@ int main() {
       return false;
     };
     const std::string payload = "pay once";
-    assert(http.sendRequest("POST", reinterpret_cast<const uint8_t*>(payload.data()), payload.size(),
-                            [](const uint8_t*, size_t) { return true; }, closeBeforeRequest) < 0);
+    assert(http.sendRequest(
+               "POST", reinterpret_cast<const uint8_t*>(payload.data()), payload.size(),
+               [](const uint8_t*, size_t) { return true; }, closeBeforeRequest) < 0);
     assert(FakeNet::hosts().size() == 2 && FakeNet::replies().size() == 1);
+  }
+  // GitHub release assets redirect with a >4KB Content-Security-Policy header.
+  // Discard that header without losing the Location (including signed query).
+  const std::string cspPrefix = "CoNtEnT-SeCuRiTy-PoLiCy: ";
+  const std::string longCsp = cspPrefix + std::string(4173 - cspPrefix.size(), 'x');
+  assert(longCsp.size() == 4173);
+  const std::string location = "https://cdn.example/asset?" + std::string(900, 'q');
+  const std::string redirect =
+      "HTTP/1.1 302 Found\r\n" + longCsp + "\r\nLocation: " + location + "\r\nContent-Length: 0\r\n\r\n";
+  reset({redirect.c_str(), "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"});
+  {
+    freeink::FetchSink fontSink;
+    std::string downloaded;
+    fontSink.write = [&](const uint8_t* data, size_t size) {
+      downloaded.append(reinterpret_cast<const char*>(data), size);
+      return true;
+    };
+    auto font = freeink::fetchResumable("https://github.com/fonts.json", {}, nullptr, fontSink);
+    assert(font.complete && font.status == 200 && downloaded == "ok");
+    assert(FakeNet::hosts().size() == 2 && FakeNet::hosts()[1] == "cdn.example");
+    assert(FakeNet::requests()[1].find("GET /asset?") == 0);
+    assert(liveReservations == 0);
+  }
+
+  // Oversized framing/redirect headers still fail rather than being discarded.
+  for (const char* name : {"Location", "Content-Length", "Transfer-Encoding"}) {
+    const std::string malformed =
+        std::string("HTTP/1.1 200 OK\r\n") + name + ": " + std::string(4200, 'x') + "\r\nContent-Length: 2\r\n\r\nok";
+    reset({malformed.c_str()});
+    freeink::SecureHttpClient http;
+    assert(http.begin("https://a/font"));
+    assert(http.GET() == -1);
+    assert(liveReservations == 0);
+  }
+  // Even discardable headers must fit within the total header budget.
+  const std::string tooLongCsp =
+      "HTTP/1.1 200 OK\r\n" + cspPrefix + std::string(8200, 'x') + "\r\nContent-Length: 2\r\n\r\nok";
+  reset({tooLongCsp.c_str()});
+  {
+    freeink::SecureHttpClient http;
+    assert(http.begin("https://a/font"));
+    assert(http.GET() == -1);
+    assert(liveReservations == 0);
+  }
+
+  // Streamed bodies are exact, bounded, and rewind on a stale-connection retry.
+  for (bool retry : {false, true}) {
+    if (retry)
+      reset({"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nabcHTTP/1.1 2",
+             "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"});
+    else
+      reset({"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"});
+    freeink::SecureHttpClient http;
+    assert(http.begin("https://a/upload"));
+    if (retry) assert(http.GET() == 200);
+    std::string payload(25000, 'x');
+    const auto reader = [](void* context, size_t offset, uint8_t* out, size_t length) -> size_t {
+      assert(length <= 256);
+      auto& body = *static_cast<std::string*>(context);
+      memcpy(out, body.data() + offset, length);
+      return length;
+    };
+    assert(http.sendRequestStream("PUT", payload.size(), reader, &payload,
+                                  [](const uint8_t*, size_t) { return true; }) == 200);
+    assert(http.responseComplete());
+    assert(FakeNet::requests().back().find("Content-Length: 25000\r\n") != std::string::npos);
+    assert(FakeNet::requests().back().substr(FakeNet::requests().back().size() - payload.size()) == payload);
+  }
+  reset({"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"});
+  {
+    freeink::SecureHttpClient http;
+    assert(http.begin("https://a/upload"));
+    assert(http.sendRequestStream(
+               "PUT", 1000, [](void*, size_t, uint8_t*, size_t) -> size_t { return 0; }, nullptr,
+               [](const uint8_t*, size_t) { return true; }) < 0);
+    assert(!http.responseComplete());
+  }
+
+  const auto uploadReader = [](void*, size_t, uint8_t* out, size_t length) -> size_t {
+    memset(out, 'x', length);
+    return length;
+  };
+  const auto acceptResponse = [](const uint8_t*, size_t) { return true; };
+
+  // A one-shot cancel after the first chunk must not replay a reused request.
+  reset({"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nokX", "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"});
+  {
+    freeink::SecureHttpClient http;
+    assert(http.begin("https://a/upload"));
+    assert(http.GET() == 200);
+    const size_t previousRequestSize = FakeNet::requests().back().size();
+    bool cancelled = false;
+    const auto cancel = [&] {
+      if (!cancelled && FakeNet::requests().back().size() >= previousRequestSize + 256) {
+        cancelled = true;
+        return true;
+      }
+      return false;
+    };
+    assert(http.sendRequestStream("PUT", 512, uploadReader, nullptr, acceptResponse, cancel) == -1);
+    assert(cancelled && http.aborted() && !http.responseComplete());
+    assert(FakeNet::hosts().size() == 1 && FakeNet::replies().size() == 1);
+    const auto& request = FakeNet::requests().back();
+    const size_t bodyStart = request.find("\r\n\r\n", previousRequestSize) + 4;
+    assert(request.substr(bodyStart) == std::string(256, 'x'));
+  }
+
+  // Streaming never follows redirects, even if ordinary requests are configured to.
+  for (int hops : {0, 3}) {
+    reset({"HTTP/1.1 307 Temporary Redirect\r\nLocation: https://b/upload\r\nContent-Length: 6\r\n\r\nreason"});
+    freeink::SecureHttpClient http;
+    http.setFollowRedirects(hops);
+    assert(http.begin("https://a/upload"));
+    std::string body;
+    assert(http.sendRequestStream("PUT", 1, uploadReader, nullptr, [&](const uint8_t* data, size_t length) {
+      body.append(reinterpret_cast<const char*>(data), length);
+      return true;
+    }) == 307);
+    assert(body == "reason" && http.responseComplete());
+    assert(http.getHeader("location") == "https://b/upload");
+    assert(FakeNet::hosts().size() == 1);
+  }
+
+  // Rejecting a missing source clears the previous response without sending anything.
+  reset({"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nX-Old: previous\r\n\r\nok"});
+  {
+    freeink::SecureHttpClient http;
+    assert(http.begin("https://a/upload"));
+    assert(http.GET() == 200 && http.responseComplete());
+    assert(http.getString() == "ok" && http.getHeader("x-old") == "previous");
+    const size_t requestSize = FakeNet::requests().back().size();
+    assert(http.sendRequestStream("PUT", 1, nullptr, nullptr, acceptResponse) == -1);
+    assert(http.getStatus() == 0 && !http.responseComplete());
+    assert(http.getString().empty() && http.getHeaders().empty());
+    assert(!http.hasContentLength() && http.getContentLength() == 0);
+    assert(!http.aborted() && !http.callbackAborted());
+    assert(FakeNet::hosts().size() == 1 && FakeNet::requests().back().size() == requestSize);
   }
   puts("bulk request timing, failure, cancellation and retry ok");
 }

@@ -25,13 +25,18 @@ constexpr uint8_t A4_UC8279C_LUT_24[A4_UC8279C_LUT_LENGTH] = {
 
 // Stock V1.0.3 production fast (DU) waveform, "DU-factory-previous": one
 // 36-frame phase per record (pixels changing to white or black are driven
-// there; pixels staying black are re-driven black; pixels staying white are
-// not driven). The rest of each 49-byte record is zero.
+// there, pixels staying black are driven black again, and pixels staying white
+// are not driven). The rest of each 49-byte record is zero. With the
+// staying-black record (0x24) set to hold instead, black pixels kept from the
+// previous screen showed lighter than newly driven ones in dithered areas.
 constexpr uint8_t A4_UC8279C_FAST_LUT_20[A4_UC8279C_LUT_LENGTH] = {0x01, 0x32, 0x00, 0x00, 0x00, 0x01, 0x01};
 constexpr uint8_t A4_UC8279C_FAST_LUT_21[A4_UC8279C_LUT_LENGTH] = {0x01, 0x24, 0x00, 0x00, 0x00, 0x01, 0x01};
 constexpr uint8_t A4_UC8279C_FAST_LUT_22[A4_UC8279C_LUT_LENGTH] = {0x01, 0xa4, 0x00, 0x00, 0x00, 0x01, 0x01};
 constexpr uint8_t A4_UC8279C_FAST_LUT_23[A4_UC8279C_LUT_LENGTH] = {0x01, 0x64, 0x00, 0x00, 0x00, 0x01, 0x01};
 constexpr uint8_t A4_UC8279C_FAST_LUT_24[A4_UC8279C_LUT_LENGTH] = {0x01, 0x64, 0x00, 0x00, 0x00, 0x01, 0x01};
+// Not stock: extra frames the to-black record (0x23) drives on the first book
+// page after another screen. At most 13 (the VCOM record's 6-bit frame count).
+constexpr uint8_t A4_UC8279C_FAST_AFTER_UI_EXTRA_FRAMES = 12;
 
 // Stock 4-gray image waveform: five 42-byte records loaded to 0x20-0x24, the
 // "Factory B" profile of stock V1.0.3 (byte-identical in v1.3.0). Absolute
@@ -74,9 +79,16 @@ constexpr uint8_t A4_UC8279C_GRAY3_TRANSITION_LUT[5][A4_UC8279C_GRAY3_RECORD_LEN
     {0x01, 0x45, 0x0d, 0x00, 0x00, 0x01, 0x01, 0x01, 0x02, 0x10, 0x00, 0x00, 0x01, 0x01},
     {0x01, 0x82, 0x96, 0x00, 0x00, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01}};
 // Stock's per-page patches: no white-clear pixels -> 0x24[2] = 0x90; no black
-// pixels -> 0x22[1] = 0x4e and 0x23[2] = 0x09.
+// pixels -> 0x22[1] = 0x4e.
 constexpr uint8_t A4_UC8279C_GRAY3_NO_WHITE_CLEAR = 0x90;
 constexpr uint8_t A4_UC8279C_GRAY3_NO_BLACK_DRIVE = 0x4e;
-constexpr uint8_t A4_UC8279C_GRAY3_NO_BLACK_GRAY = 0x09;
+// Not from stock: the gray record draws its pixels black with the rest of the
+// ink, then drives them white for these frames in the same refresh. More
+// frames are lighter; at most 14.
+constexpr uint8_t A4_UC8279C_GRAY3_GRAY_WHITE_FRAMES = 5;
+// Two-gray pages: a short second refresh drives the lighter gray's pixels
+// white for the extra frames, then holds for the settle frames.
+constexpr uint8_t A4_UC8279C_GRAY3_LIGHT_EXTRA_WHITE_FRAMES = 2;
+constexpr uint8_t A4_UC8279C_GRAY3_LIGHT_SETTLE_FRAMES = 4;
 
 }  // namespace freeink

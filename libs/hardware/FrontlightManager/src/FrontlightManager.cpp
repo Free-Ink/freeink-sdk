@@ -6,6 +6,7 @@
 #endif
 
 #if FREEINK_CAP_FRONTLIGHT
+#include <I2cBusLock.h>
 #include <M5Pm1.h>
 
 #include <algorithm>
@@ -29,7 +30,7 @@
 // to the firmware Serial and the crash-report ring buffer.
 #include <Logging.h>
 #if FREEINK_DEVICE_EEGO_A4
-#include <esp_mac.h>
+#include <EegoDeviceId.h>
 
 #include "EegoUnlitUnits.h"
 #endif
@@ -73,7 +74,8 @@ void pm1FrontlightAttach(uint32_t freqHz) {
 }
 
 void pm1FrontlightWrite(uint32_t pct) {
-  const uint32_t duty = (pct * pct * 4095u) / 10000u;  // 0-100% -> 12-bit, gamma ~2
+  uint32_t duty = (pct * pct * 4095u) / 10000u;  // 0-100% -> 12-bit, gamma ~2
+  if (pct && !duty) duty = 1;                    // 1% stays lit, as on the LEDC path
   const uint8_t data[2] = {static_cast<uint8_t>(duty & 0xFF),
                            static_cast<uint8_t>(((duty >> 8) & 0x0F) | (duty ? PM1_PWM_ENABLE : 0))};
   freeink::m5pm1::writeBytes(freeink::m5pm1::REG_PWM0_DUTY_L, data, sizeof(data));
@@ -188,6 +190,7 @@ void FrontlightManager::begin() {
   if (BoardConfig::ACTIVE.board == BoardConfig::Board::EegoA4 &&
       i2c.controller == BoardConfig::I2cFrontlightController::Lm3630a) {
     if (i2c.sda < 0 || i2c.scl < 0 || i2c.enable < 0 || i2c.address == 0) return;
+    const freeink::I2cBusLock busLock;  // the touch controller may still be booting on this bus
     Wire.begin(i2c.sda, i2c.scl, i2c.i2cHz);
     Wire.setTimeOut(256);
     pinMode(i2c.enable, OUTPUT);
@@ -204,9 +207,8 @@ void FrontlightManager::begin() {
     digitalWrite(i2c.enable, LOW);
     if (!detected) return;
     // The controller is fitted on some unlit units too; stock lists those.
-    uint8_t mac[6] = {};
-    if (esp_efuse_mac_get_default(mac) == ESP_OK &&
-        freeink::eegoA4UidHasNoFrontlight(static_cast<uint32_t>(mac[3]) << 16 | mac[4] << 8 | mac[5])) {
+    uint32_t uid = 0;
+    if (freeink::readEegoA4Uid(uid) && freeink::eegoA4UidHasNoFrontlight(uid)) {
       return;
     }
 
@@ -290,6 +292,7 @@ void FrontlightManager::begin() {
 #if FREEINK_CAP_FRONTLIGHT
 #if FREEINK_DEVICE_EEGO_A4
 bool FrontlightManager::lm3630aWrite(const uint8_t reg, const uint8_t value) {
+  const freeink::I2cBusLock busLock;
   const auto& cfg = BoardConfig::ACTIVE.i2cFrontlight;
   Wire.beginTransmission(cfg.address);
   Wire.write(reg);
@@ -298,6 +301,7 @@ bool FrontlightManager::lm3630aWrite(const uint8_t reg, const uint8_t value) {
 }
 
 bool FrontlightManager::lm3630aRead(const uint8_t reg, uint8_t& value) {
+  const freeink::I2cBusLock busLock;
   const auto& cfg = BoardConfig::ACTIVE.i2cFrontlight;
   Wire.beginTransmission(cfg.address);
   Wire.write(reg);
@@ -317,8 +321,13 @@ bool FrontlightManager::configureLm3630a() {
   const auto& cfg = BoardConfig::ACTIVE.i2cFrontlight;
   digitalWrite(cfg.enable, HIGH);
   delay(2);
-  Wire.beginTransmission(cfg.address);
-  if (Wire.endTransmission() != 0) {
+  bool present = false;
+  {
+    const freeink::I2cBusLock busLock;
+    Wire.beginTransmission(cfg.address);
+    present = Wire.endTransmission() == 0;
+  }
+  if (!present) {
     digitalWrite(cfg.enable, LOW);
     return false;
   }
@@ -355,8 +364,33 @@ void FrontlightManager::applyLm3630a() {
   if (!_i2cConfigured && !configureLm3630a()) return;
 
   const uint8_t level = static_cast<uint16_t>(_brightness) * 255 / 100;
-  uint8_t warm = static_cast<uint16_t>(level) * _warmPercent / 100;
-  uint8_t cool = static_cast<uint16_t>(level) * (100 - _warmPercent) / 100;
+  // Constant-brightness warm/cool mix. configureLm3630a() leaves both banks in
+  // the LM3630A's exponential mapping (REG_CTRL linear bits 0x10/0x08 clear),
+  // where light ~ 0.85^(44 - (code + 1) / 5.8): half the code is ~3% of the
+  // light, so splitting codes linearly made one colour vanish on each half of
+  // the slider. Split the requested *light* instead and convert each share
+  // back to a code, so total output stays at the brightness setting for any
+  // warmth and the two colours blend.
+  const auto codeToLight = [](const float code) { return powf(0.85f, 44.0f - (code + 1.0f) / 5.8f); };
+  const auto lightToCode = [](const float light) -> uint8_t {
+    if (light <= 0.0f) return 0;
+    const float code = 5.8f * (44.0f - logf(light) / logf(0.85f)) - 1.0f;
+    if (code < 4.0f) return 0;  // below the IC's lowest visible code
+    return code >= 255.0f ? 255 : static_cast<uint8_t>(code + 0.5f);
+  };
+  const float total = codeToLight(level);
+  const float warmShare = static_cast<float>(_warmPercent) / 100.0f;
+  uint8_t warm = _warmPercent == 0 ? 0 : lightToCode(total * warmShare);
+  uint8_t cool = _warmPercent == 100 ? 0 : lightToCode(total * (1.0f - warmShare));
+  // At low brightness a share can fall below the IC's lowest visible code.
+  // Give that light to the other channel so the total still matches.
+  if (warm == 0 && cool == 0) {
+    (_warmPercent >= 50 ? warm : cool) = std::max<uint8_t>(4, lightToCode(total));
+  } else if (warm == 0) {
+    cool = lightToCode(total);
+  } else if (cool == 0) {
+    warm = lightToCode(total);
+  }
   // The IC ignores brightness codes 1..3; preserve a visible nonzero request.
   if (warm != 0 && warm < 4) warm = 4;
   if (cool != 0 && cool < 4) cool = 4;
@@ -746,6 +780,7 @@ void FrontlightManager::setBrightnessLevel(uint8_t level) {
 #if FREEINK_CAP_FRONTLIGHT
   _brightnessLevel = level;
   _brightness = (static_cast<uint16_t>(level) * 100u) / 255u;
+  if (level && !_brightness) _brightness = 1;  // backends treat 0% as off
   _useLevel = true;
   apply();
 #else

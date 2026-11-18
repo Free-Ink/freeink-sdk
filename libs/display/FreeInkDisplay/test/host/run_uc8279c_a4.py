@@ -27,7 +27,8 @@ with tempfile.TemporaryDirectory(prefix="uc8279c-a4-test-") as directory:
 inline void digitalWrite(int, int) {}
 #define PROGMEM
 #define log_e(...) std::fprintf(stderr, __VA_ARGS__)
-inline unsigned long millis() { static unsigned long t; return ++t; }
+inline unsigned long& fakeMillis() { static unsigned long t; return t; }
+inline unsigned long millis() { return ++fakeMillis(); }
 inline void delay(unsigned long) {}
 inline int digitalRead(int) { return 0; }
 ''')
@@ -45,24 +46,35 @@ enum class BusyPolarity { ActiveLow };
 class EpdBus {
   uint8_t command=0;
 public:
-  unsigned refreshes=0, powerOffs=0;
-  uint8_t interval=0;
+  unsigned refreshes=0, powerOffs=0, powerOns=0, deepSleeps=0, panelSettings=0;
+  std::vector<uint8_t> commands, lut23, lut24;
+  uint8_t interval=0, vcom=0;
   size_t lutBytes=0;
   std::vector<std::vector<uint8_t>> lut20s;
-  std::vector<uint8_t> oldPlane, newPlane, oldAtRefresh, newAtRefresh;
+  std::vector<uint8_t> oldPlane, newPlane, oldAtRefresh, newAtRefresh, oldAtPrevRefresh, newAtPrevRefresh;
   void cmd(uint8_t c) {
     command=c;
+    commands.push_back(c);
+    if(c==0x00) ++panelSettings;
+    if(c==0x04) ++powerOns;
+    if(c==0x07) ++deepSleeps;
     if(c==0x10) oldPlane.clear();
     if(c==0x13) newPlane.clear();
     if(c==0x02) ++powerOffs;
     if(c==0x12) {
       ++refreshes;
+      oldAtPrevRefresh=oldAtRefresh;
+      newAtPrevRefresh=newAtRefresh;
+      busyPolls=busyPollsPerRefresh;
       oldAtRefresh=oldPlane;
       newAtRefresh=newPlane;
     }
   }
   void cmdData(uint8_t c, const uint8_t* p, size_t n) {
+    if(c==0x82 && n==1) vcom=*p;
     if(c==0x50 && n==1) interval=*p;
+    if(c==0x23) lut23.assign(p,p+n);
+    if(c==0x24) lut24.assign(p,p+n);
     if(c==0x20) { lutBytes=n; lut20s.emplace_back(p, p+n); }
     cmd(c);
   }
@@ -70,7 +82,11 @@ public:
     cmd(c);
     (c==0x10 ? oldPlane : newPlane).assign(size_t(height)*widthBytes,value);
   }
-  void waitBusy(const char*) {}
+  void waitBusy(const char*) { ++busyWaits; busyPolls=0; }
+  // BUSY reads asserted for this many polls after each refresh command.
+  unsigned busyPollsPerRefresh=0, busyWaits=0;
+  mutable unsigned busyPolls=0;
+  bool isBusy() const { if(busyPolls==0) return false; --busyPolls; return true; }
   struct Pins { int8_t rst=0; };
   Pins pins() const { return {}; }
   struct Txn { EpdBus* b; void writeBytes(const uint8_t* p, size_t n) { b->rawWriteBytes(p, n); } };
@@ -84,9 +100,19 @@ public:
 };
 }
 ''')
-    (root / "esp_heap_caps.h").write_text("#pragma once\n#include <cstdlib>\n#define MALLOC_CAP_SPIRAM 1\n#define MALLOC_CAP_8BIT 2\ninline void* heap_caps_malloc(size_t n, int) { return malloc(n); }\n")
+    (root / "esp_heap_caps.h").write_text("""#pragma once
+#include <cstdlib>
+#define MALLOC_CAP_SPIRAM 1
+#define MALLOC_CAP_8BIT 2
+inline int failOnAllocation = 0;
+inline void* heap_caps_malloc(size_t n, int) {
+  if (failOnAllocation > 0 && --failOnAllocation == 0) return nullptr;
+  return malloc(n);
+}
+""")
     exe = root / "test_uc8279c_a4"
     subprocess.run([os.environ.get("CXX", "c++"), "-std=c++17", "-Wall", "-Wextra",
                     "-Wno-unused-parameter", "-I"+str(root), str(HERE / "test_uc8279c_a4.cpp"),
                     str(root / "driver/Uc8279cA4Driver.cpp"), "-o", str(exe)], check=True)
-    subprocess.run([str(exe)], check=True)
+    for failed_buffer in (1, 2):
+        subprocess.run([str(exe), str(failed_buffer)], check=True)

@@ -10,6 +10,7 @@ namespace {
 
 constexpr uint32_t kTagLatn = uint32_t('l') << 24 | uint32_t('a') << 16 | uint32_t('t') << 8 | 'n';
 constexpr uint32_t kTagDflt = uint32_t('D') << 24 | uint32_t('F') << 16 | uint32_t('L') << 8 | 'T';
+constexpr unsigned kMaxWork = 4096;
 
 struct View {
   const uint8_t* data = nullptr;
@@ -29,9 +30,9 @@ struct View {
 };
 
 // CoverageTable lookup (identical layout to GSUB's): returns the coverage
-// index of `glyph`, or -1. Format 2's linear scan keeps its own cap for the
-// same reason as Gsub.cpp's: it isn't metered by the outer `work` budget.
-int coverageIndex(View view, unsigned glyph) {
+// index of `glyph`, or -1. GDEF callers also meter range scans against the
+// query budget; PairPos callers retain the per-table range cap.
+int coverageIndex(View view, unsigned glyph, unsigned* work = nullptr) {
   const unsigned format = view.u16(0);
   const unsigned rawCount = view.u16(2);
   const unsigned count = rawCount < 8192 ? rawCount : 8192;
@@ -49,6 +50,7 @@ int coverageIndex(View view, unsigned glyph) {
   }
   if (format == 2 && view.has(4, size_t(count) * 6)) {
     for (unsigned i = 0; i < count; ++i) {
+      if (work && ++*work > kMaxWork) return -1;
       const size_t position = 4 + i * 6;
       const unsigned start = view.u16(position);
       const unsigned end = view.u16(position + 2);
@@ -59,8 +61,8 @@ int coverageIndex(View view, unsigned glyph) {
 }
 
 // ClassDefTable lookup: the glyph's class, with 0 (the spec's catch-all
-// class) for any glyph the table doesn't list. Same self-cap as coverage.
-unsigned glyphClass(View view, unsigned glyph) {
+// class) for any glyph the table doesn't list. Same range limits as coverage.
+unsigned glyphClass(View view, unsigned glyph, unsigned* work = nullptr) {
   const unsigned format = view.u16(0);
   if (format == 1) {
     const unsigned start = view.u16(2);
@@ -74,6 +76,7 @@ unsigned glyphClass(View view, unsigned glyph) {
     const unsigned count = rawCount < 8192 ? rawCount : 8192;
     if (!view.has(4, size_t(count) * 6)) return 0;
     for (unsigned i = 0; i < count; ++i) {
+      if (work && ++*work > kMaxWork) return 0;
       const size_t position = 4 + i * 6;
       const unsigned start = view.u16(position);
       const unsigned end = view.u16(position + 2);
@@ -96,6 +99,69 @@ unsigned valueRecordSize(unsigned valueFormat) {
 }
 
 constexpr unsigned kXAdvanceBit = 0x0004;
+constexpr unsigned kIgnoreBaseGlyphs = 0x0002;
+constexpr unsigned kIgnoreLigatures = 0x0004;
+constexpr unsigned kIgnoreMarks = 0x0008;
+constexpr unsigned kUseMarkFilteringSet = 0x0010;
+constexpr unsigned kReservedFlags = 0x00E0;
+constexpr unsigned kMarkAttachmentType = 0xFF00;
+
+enum class GlyphClass : unsigned { Unclassified = 0, Base = 1, Ligature = 2, Mark = 3, Component = 4 };
+
+bool gdefClass(View gdef, unsigned field, unsigned glyph, unsigned& value, unsigned& work) {
+  value = 0;
+  if (gdef.data == nullptr) return true;
+  if (!gdef.has(0, 12) || gdef.u16(0) != 1) return false;
+  const unsigned offset = gdef.u16(field);
+  if (offset == 0) return true;
+  const View classes = gdef.sub(offset);
+  switch (classes.u16(0)) {
+    case 1:
+      if (!classes.has(0, 6) || classes.u16(4) > 8192 || !classes.has(6, size_t(classes.u16(4)) * 2)) return false;
+      break;
+    case 2:
+      if (!classes.has(0, 4) || classes.u16(2) > 8192 || !classes.has(4, size_t(classes.u16(2)) * 6)) return false;
+      break;
+    default:
+      return false;
+  }
+  value = glyphClass(classes, glyph, &work);
+  return work <= kMaxWork;
+}
+
+bool glyphAllowed(View gdef, unsigned glyph, unsigned flags, unsigned markSet, unsigned& work) {
+  if ((flags & (kIgnoreBaseGlyphs | kIgnoreLigatures | kIgnoreMarks | kUseMarkFilteringSet | kMarkAttachmentType)) == 0)
+    return true;
+  unsigned value = 0;
+  if (!gdefClass(gdef, 4, glyph, value, work)) return false;  // GlyphClassDef
+  switch (static_cast<GlyphClass>(value)) {
+    case GlyphClass::Unclassified:
+    case GlyphClass::Component:
+      return true;
+    case GlyphClass::Base:
+      return (flags & kIgnoreBaseGlyphs) == 0;
+    case GlyphClass::Ligature:
+      return (flags & kIgnoreLigatures) == 0;
+    case GlyphClass::Mark:
+      break;
+    default:
+      return false;  // Invalid GDEF glyph class.
+  }
+  if (flags & kIgnoreMarks) return false;
+  // UseMarkFilteringSet takes precedence over MarkAttachmentType.
+  if (flags & kUseMarkFilteringSet) {
+    if (!gdef.has(0, 14) || gdef.u16(2) < 2) return false;
+    const View sets = gdef.sub(gdef.u16(12));  // MarkGlyphSetsDef (GDEF 1.2+)
+    if (!sets.has(0, 4) || sets.u16(0) != 1 || markSet >= sets.u16(2) || !sets.has(4, size_t(sets.u16(2)) * 4))
+      return false;
+    return coverageIndex(sets.sub(sets.u32(4 + markSet * 4)), glyph, &work) >= 0;
+  }
+  if (flags & kMarkAttachmentType) {
+    unsigned attachment = 0;
+    return gdefClass(gdef, 10, glyph, attachment, work) && attachment == (flags >> 8);
+  }
+  return true;
+}
 
 // Byte offset of the XAdvance field inside a ValueRecord: one uint16 per set
 // bit below it (XPlacement 0x0001, YPlacement 0x0002).
@@ -165,8 +231,14 @@ int32_t pairAdjustment(View subtable, unsigned left, unsigned right, bool& found
 }  // namespace
 
 int32_t PairKernAdjustment(const uint8_t* gposBytes, size_t gposSize, uint32_t leftGlyph, uint32_t rightGlyph) {
+  return PairKernAdjustment(gposBytes, gposSize, leftGlyph, rightGlyph, nullptr, 0);
+}
+
+int32_t PairKernAdjustment(const uint8_t* gposBytes, size_t gposSize, uint32_t leftGlyph, uint32_t rightGlyph,
+                           const uint8_t* gdefBytes, size_t gdefSize) {
   if (gposBytes == nullptr || leftGlyph == 0 || rightGlyph == 0) return 0;
   View gpos{gposBytes, gposSize};
+  const View gdef{gdefBytes, gdefSize};
   if (!gpos.has(0, 10)) return 0;
   View scripts = gpos.sub(gpos.u16(4));
   View features = gpos.sub(gpos.u16(6));
@@ -194,7 +266,7 @@ int32_t PairKernAdjustment(const uint8_t* gposBytes, size_t gposSize, uint32_t l
     unsigned low = 0;
     unsigned high = scriptCount;
     while (low < high) {
-      if (++work > 4096) return View{};
+      if (++work > kMaxWork) return View{};
       const unsigned middle = low + (high - low) / 2;
       const size_t record = 2 + size_t(middle) * 6;
       const uint32_t tag = scripts.u32(record);
@@ -221,22 +293,35 @@ int32_t PairKernAdjustment(const uint8_t* gposBytes, size_t gposSize, uint32_t l
 
   auto processFeature = [&](unsigned featureIndex, bool& found) -> int32_t {
     found = false;
-    if (featureIndex >= featureCount || ++work > 4096) return 0;
+    if (featureIndex >= featureCount || ++work > kMaxWork) return 0;
     const size_t record = 2 + featureIndex * 6;
     if (memcmp(features.data + record, "kern", 4) != 0) return 0;
     View feature = features.sub(features.u16(record + 4));
     const unsigned count = feature.u16(2);
     if (!feature.has(4, size_t(count) * 2)) return 0;
     for (unsigned i = 0; i < count; ++i) {
-      if (++work > 4096) return 0;
+      if (++work > kMaxWork) return 0;
       const unsigned index = feature.u16(4 + i * 2);
       if (index >= lookupCount) continue;
       View lookup = lookups.sub(lookups.u16(2 + index * 2));
       const unsigned type = lookup.u16(0);
+      const unsigned flags = lookup.u16(2);
       const unsigned subtableCount = lookup.u16(4);
       if ((type != 2 && type != 9) || !lookup.has(6, size_t(subtableCount) * 2)) continue;
+      if (flags & kReservedFlags) continue;
+      unsigned markSet = 0;
+      if (flags & kUseMarkFilteringSet) {
+        const size_t markSetOffset = 6 + size_t(subtableCount) * 2;
+        if (!lookup.has(markSetOffset, 2)) continue;
+        markSet = lookup.u16(markSetOffset);
+      }
+      if (!glyphAllowed(gdef, leftGlyph, flags, markSet, work) ||
+          !glyphAllowed(gdef, rightGlyph, flags, markSet, work)) {
+        if (work > kMaxWork) return 0;
+        continue;
+      }
       for (unsigned j = 0; j < subtableCount; ++j) {
-        if (++work > 4096) return 0;
+        if (++work > kMaxWork) return 0;
         View subtable = lookup.sub(lookup.u16(6 + j * 2));
         if (type == 9) {
           // Extension Positioning: format 1 wraps another lookup type at a

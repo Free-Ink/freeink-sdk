@@ -421,13 +421,19 @@
 #endif
 
 // Place the facade framebuffer(s) in PSRAM (heap, MALLOC_CAP_SPIRAM) instead of
-// static DRAM .bss. Default on for M5Paper v1.1: the classic ESP32 has tight
-// internal DRAM but 8MB PSRAM, and the 63KB 540x960 framebuffer does not fit in
-// .bss alongside the firmware. Every other device keeps the static DRAM array.
+// internal DRAM on every build with PSRAM (BOARD_HAS_PSRAM). M5Paper v1.1, Paper
+// Mono and Picco always have it: M5Paper's 63KB 540x960 framebuffer does not fit
+// in the classic ESP32's internal DRAM alongside the firmware. Allocation falls
+// back to internal DRAM when PSRAM is unavailable. Every bus reads the
+// framebuffer with the CPU, so no transfer DMAs from PSRAM.
 // (The prebuilt Arduino-ESP32 libs disable BSS-in-PSRAM, so this is a runtime
 // heap allocation, not EXT_RAM_BSS_ATTR.)
 #ifndef FREEINK_FB_PSRAM
-#define FREEINK_FB_PSRAM (FREEINK_DEVICE_M5PAPER || FREEINK_DEVICE_PAPERMONO)
+#if defined(BOARD_HAS_PSRAM) || FREEINK_DEVICE_M5PAPER || FREEINK_DEVICE_PAPERMONO || FREEINK_DEVICE_PICCO
+#define FREEINK_FB_PSRAM 1
+#else
+#define FREEINK_FB_PSRAM 0
+#endif
 #endif
 
 // SD transport. Silkscreen (4-bit) and X4 Pro (1-bit) are wired for SDMMC; SdFat
@@ -1615,9 +1621,10 @@ constexpr BoardProfile EEGO_A4 = {
     11,      // batteryChargeStatus
     1.559f,  // divider
     PIN_UNASSIGNED,
-    // GSLX680: pollGslx680 applies the stock factory calibration and returns
-    // panel-native x=0..767, y=0..551, so the range here is the identity.
-    {TouchController::Gslx680, 2, 1, PIN_UNASSIGNED, 3, 0x40, 0, 767, 0, 551, false, 0, false, false,
+    // GSLX680: pollGslx680 maps the digitizer linearly to panel-native
+    // x=0..767, y=0..551; this range then trims and rescales it, least-squares
+    // fitted from hardware taps on known targets (residuals within ~7px).
+    {TouchController::Gslx680, 2, 1, PIN_UNASSIGNED, 3, 0x40, 12, 779, 28, 553, false, 0, false, false,
      PIN_UNASSIGNED, false, false, false, true, true},  // powerEnable, swapXY, flipX, flipY, hasHomeKey, pwrEnActiveHigh
     // The frontlight is an LM3630A driven via the i2cFrontlight field below, not
     // this LEDC/PWM FrontlightConfig — the frontlit variant's light is I2C only.
@@ -1647,7 +1654,7 @@ constexpr BoardProfile EEGO_A4 = {
     {},  // haptic: none
     6,    // headerOffsetY: header band top edge 6px lower
     24,   // cornerRadius
-    18,   // tabBarOffsetY
+    8,    // tabBarOffsetY
     80,   // tabBarHeightPct
     80,   // tabBarWidthPct
     60,    // wifiMaxTxPower: 15 dBm, the cap stock V1.0.3 applies
@@ -2522,6 +2529,25 @@ inline bool latchConflictsWithBus(int8_t pin) {
   return false;
 }
 
+// Release any pad hold left by deep sleep and drive `pin` to `level` as an output.
+// Picco: the level and mode are set while the hold still freezes the pad, so a
+// held pin goes straight to `level`. Releasing first lets it float and dip LOW
+// before reaching `level`, which drops the keep-alive latch and cuts power on wake.
+inline void driveReleasingHold(int8_t pin, uint8_t level) {
+  if (pin < 0) return;
+  const auto g = static_cast<gpio_num_t>(pin);
+#if FREEINK_DEVICE_PICCO
+  gpio_set_level(g, level);
+  pinMode(pin, OUTPUT);
+  digitalWrite(pin, level);
+  gpio_hold_dis(g);
+#else
+  gpio_hold_dis(g);
+  pinMode(pin, OUTPUT);
+  digitalWrite(pin, level);
+#endif
+}
+
 // Assert the board's power-rail latch pins. Battery-latched boards (e.g. the
 // Sticky) must call this first thing in setup() or the board powers off when
 // the user releases the power button. Releasing the pins (driving them LOW)
@@ -2544,23 +2570,17 @@ inline void holdPowerRails() {
 #endif
       continue;
     }
-    // A previous power-off may have latched the pin LOW with gpio_hold_en —
-    // a state that survives a reset and a USB-powered deep-sleep wake, and
-    // silently defeats the digitalWrite below. Release it first.
-    gpio_hold_dis(static_cast<gpio_num_t>(pin));
-    pinMode(pin, OUTPUT);
-    digitalWrite(pin, HIGH);
+    // A sleep or power-off hold survives a reset and a USB-powered deep-sleep
+    // wake; a latch held HIGH must not dip while that hold is released.
+    driveReleasingHold(pin, HIGH);
   }
   // Charger enable (see PowerConfig::chargeEnable). Held with gpio_hold_en so the
   // level survives esp_sleep_config_gpio_isolate() and deep sleep (PowerManager
   // calls gpio_deep_sleep_hold_en() before sleeping) — the charger must stay
   // enabled whether the firmware is awake or asleep.
   if (const int8_t ce = ACTIVE.power.chargeEnable; ce >= 0 && !latchConflictsWithBus(ce)) {
-    const auto g = static_cast<gpio_num_t>(ce);
-    gpio_hold_dis(g);
-    pinMode(ce, OUTPUT);
-    digitalWrite(ce, ACTIVE.power.chargeEnableActiveHigh ? HIGH : LOW);
-    gpio_hold_en(g);
+    driveReleasingHold(ce, ACTIVE.power.chargeEnableActiveHigh ? HIGH : LOW);
+    gpio_hold_en(static_cast<gpio_num_t>(ce));
   }
 #if FREEINK_DEVICE_PICCO
   // Picco: the GPIO0 enable carried as sd.powerEnable also feeds peripherals the
@@ -2579,13 +2599,9 @@ inline void holdPowerRails() {
 // SDCardManager::begin() does this itself; apps that skip SD should call this
 // once before display.begin(). No-op on boards without a switched SD rail.
 inline void releaseSdRail() {
-  if (ACTIVE.sd.powerEnable >= 0) {
-    gpio_hold_dis(static_cast<gpio_num_t>(ACTIVE.sd.powerEnable));
-    pinMode(ACTIVE.sd.powerEnable, OUTPUT);
-    // Drive the enable to its ON level: HIGH for active-high rails, LOW for the
-    // active-low ones (X4 Pro's GPIO5 powers the card while held LOW).
-    digitalWrite(ACTIVE.sd.powerEnable, ACTIVE.sd.powerActiveHigh ? HIGH : LOW);
-  }
+  // ON level: HIGH for active-high rails, LOW for the active-low ones (X4 Pro's
+  // GPIO5 powers the card while held LOW).
+  driveReleasingHold(ACTIVE.sd.powerEnable, ACTIVE.sd.powerActiveHigh ? HIGH : LOW);
   if (ACTIVE.sd.cs >= 0) {
     pinMode(ACTIVE.sd.cs, OUTPUT);
     digitalWrite(ACTIVE.sd.cs, HIGH);

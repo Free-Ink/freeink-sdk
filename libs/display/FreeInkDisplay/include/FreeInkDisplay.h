@@ -92,6 +92,9 @@ class FreeInkDisplay {
   // Selected controller/backend identity; nullptr until a driver is selected by begin().
   // Read-only: never probes hardware or substitutes the board profile default.
   const char* getControllerName() const;
+  // Panel part number when the board's probe identified one; nullptr otherwise.
+  // Read-only like getControllerName().
+  const char* getPanelName() const;
 
   // Runtime dimensions
   uint16_t getDisplayWidth() const { return displayWidth; }
@@ -286,6 +289,17 @@ class FreeInkDisplay {
 
   // Hint the X3 policy to run a one-shot full resync on next update.
   void requestResync(uint8_t settlePasses = 0);
+  // True while book pages are presented (see PanelDriver::setReaderRefresh).
+  void setReaderRefresh(bool reading);
+  // True asks overlay passes for every gray level (see PanelDriver::setOverlayFullTone).
+  void setOverlayFullTone(bool fullTone);
+  // One-shot work to run while the next display call's page-turn waveform
+  // drives the panel; it lasts for that one call. It must not touch the
+  // display or write its frame buffer, and runs with the caller's locks held
+  // (see PanelDriver::setRefreshIdleHook). Only drivers that support it run it.
+  void setRefreshIdleHook(void (*hook)(void* ctx), void* ctx);
+  // Physical-pixel rectangle; restore=true removes the overlay from the retained gray image.
+  bool displayRetainedGrayscaleOverlay(uint16_t x, uint16_t y, uint16_t w, uint16_t h, bool restore = false);
   void skipInitialResync();
   void beginDisplayWork();
   void abortPostRefresh();
@@ -486,6 +500,8 @@ class FreeInkDisplay {
   bool _singleBufferFastDiff = false;
   bool _fastGrayscaleLut = false;
   bool _inverted = false;
+  // Overlay grayscale passes are allowed in the current polarity.
+  bool grayAllowed() const;
   bool _inversionDirty = false;
 
   // Runtime display geometry (seeded from the driver at begin()).

@@ -71,6 +71,7 @@ class InputManager {
   unsigned long getHeldTime() const;
 
   // Duration of the current or most recent power-button hold.
+  // PMIC click pulses report zero, independent of the interval between updates.
   unsigned long getPowerButtonHeldTime() const;
 
   static constexpr uint8_t BTN_BACK = 0;
@@ -448,6 +449,10 @@ class InputManager {
   void beginFt6336u();
   void pollFt6336u(unsigned long now);
   void beginGslx680();
+  void gslInitBody();
+  static void gslInitTask(void* arg);
+  void waitForTouchInit() const;
+  bool gslInitRunning = false;  // GSLX680 boot task still running (EEGO A4)
   void pollGslx680(unsigned long now);
   static void gslCalibrate(uint16_t rawX, uint16_t rawY, int16_t& screenX, int16_t& screenY);
   bool gslWrite(uint8_t reg, const uint8_t* data, uint8_t len);
@@ -504,6 +509,10 @@ class InputManager {
   uint8_t twoButtonPhysicalState;
   unsigned long twoButtonPressStart;
   bool twoButtonLongPressActive;
+  bool twoButtonChordSeen = false;  // both buttons were down during this press
+#if FREEINK_DEVICE_PAPERMONO
+  bool powerButtonClick = false;  // Retained through release; polling latency is not click duration.
+#endif
 
   bool touchDataEnabled = false;         // I2C up, controller present
   bool touchWakeIrqUsable = false;       // INT held in a level mode (touchWakeIrqPin)

@@ -38,7 +38,7 @@ The original pin map and controller details came from stock-firmware analysis
 | Buttons | UP 5 and DOWN 7 active-low; POWER 8 active-high with INPUT_PULLDOWN |
 | Battery | **CW2015** fuel gauge at I²C 0x62 on SDA 2 / SCL 1 (shared with touch and RTC), probed at runtime; ADC GPIO 10 (divider ×1.559) when the gauge does not answer. Charge status GPIO 11 |
 | Touch | **GSLX680** — SDA 2, SCL 1, RST 3, addr 0x40. Firmware blob uploaded at boot (`gsl/EegoA4GslFirmware.h`, extracted + hash-verified); backend in InputManager, with a multi-touch snapshot mirroring the GT911 contract (track IDs from each record's high nibble, up to 4 stored / 5 reported contacts). |
-| Touch mapping | Calibration in `pollGslx680` returns panel-native X 0..767 / Y 0..551; profile swap/flip disabled |
+| Touch mapping | `pollGslx680` maps the digitizer (raw ~0..920 x 0..680) linearly to panel-native X 0..767 / Y 0..551; the profile range 12..779 / 28..553, fitted from hardware taps, trims it; profile swap/flip disabled |
 | Screen key | GSL sentinel `rawX=0x03a0, rawY=0x1020`; short press = Back, 700 ms hold = Home |
 | RTC | **PCF8563** at 0x51, on the **shared touch I2C bus** (SDA 2 / SCL 1), 400 kHz |
 | Power latch | GPIO 4 (held to stay powered) |
@@ -51,19 +51,38 @@ The original pin map and controller details came from stock-firmware analysis
 B/W refresh cadence is controlled by the caller. FAST requests remain fast,
 including after grayscale; HALF and FULL select the full waveform. The first
 B/W paint after initialization uses the full waveform to clear unknown glass state.
-After grayscale, the next B/W paint seeds the old plane with the inverse of the
-target so every pixel is driven with the requested waveform. Each B/W paint then
+After a four-gray image, the next B/W paint seeds the old plane with the inverse
+of the target so every pixel is driven with the requested waveform. A FAST paint
+straight after a Gray3 page seeds it with that page as the panel shows it, each
+gray pixel as the inverse of its target: gray pixels and pixels that change are
+driven, white that stays white is not. HALF and FULL
+paints instead seed the old plane with the target itself: in the full waveform
+the same-state records (white to white, black to black) flash the pixel through
+both states while the changing records drive one way only, so every pixel takes
+a flashing record and the previous screen does not carry into the new one. Each B/W paint then
 copies the displayed frame into the old plane for the next differential update.
+On the first book page (`setReaderRefresh(true)`) painted B/W after a paint that
+was not a book page, a FAST paint drives pixels turning black for 48 frames
+instead of 36.
 Anti-aliased (overlay) pages use stock V1.0.3's reader "Gray3" path. The B/W
-base is stashed undisplayed; with its gray masks it becomes one three-level
-frame (white / middle / black), sent as a per-pixel transition from the
-previous Gray3 frame in a single refresh: unchanged white and middle pixels
-hold, black is re-driven, and only changed pixels are cleared or nudged. A
-cleanup request (non-FAST base) shows the page with black and white swapped,
-then the page itself. After a B/W screen or four-gray image there is no
-Gray3 history: the next page shows its base with a normal B/W refresh, which
-fully clears the previous screen, and its grays follow as a Gray3 transition
-from that base.
+base is stashed undisplayed; with its gray mask it becomes one frame, sent
+as a per-pixel transition from the previous Gray3 frame in a single refresh:
+unchanged white and gray pixels hold, black is re-driven, a pixel turning
+white is cleared, and a new gray pixel takes the gray record. A page has
+white, one gray and black: the dark overlay level (both masks set) is drawn
+black. The gray record is not stock's. It is the black record's 18 frames
+followed by `A4_UC8279C_GRAY3_GRAY_WHITE_FRAMES` of white drive, so a gray
+pixel is drawn black with the rest of the ink and lightened in the same
+refresh, from any previous level; more frames are lighter. With
+`setOverlayFullTone(true)` both overlay levels are gray: the gray record draws
+every new gray pixel at the darker level, and a short second refresh drives
+the lighter level's pixels white for
+`A4_UC8279C_GRAY3_LIGHT_EXTRA_WHITE_FRAMES` more. A cleanup request
+(non-FAST base) shows the page with black and white swapped, then the page
+itself. After a B/W screen or four-gray image there is no Gray3 history: a
+stashed base is shown first with a full B/W refresh, which clears the previous
+screen (after a fast one it showed in the black areas of the gray pages that
+followed), and the Gray3 refresh follows from that base.
 
 Full images (absolute/direct planes) follow the stock V1.0.3 lockscreen
 sequence. First a pre-clear in the B/W session: black to DTM2, no DTM1 write,
@@ -73,18 +92,40 @@ LSB to DTM2, so black/dark/light/white are 00/01/10/11. The white record
 (0x21) has its last two white pulses lengthened to 6 frames (stock 0x81,
 0x82 become 0x86, 0x86). DTM1 is seeded white again before power-off.
 
-Every refresh powers the panel off afterwards. Leaving it powered between
-refreshes made later four-gray images show earlier screens as ghosts.
+B/W and Gray3 refreshes leave the panel powered, as stock V1.0.3 does: it
+boots with panel power hold on, skips POWER_OFF after every refresh while the
+hold is set, and clears the hold only around its lockscreen paint. The panel is
+powered off before a controller reset (switching between B/W and gray
+sessions), after a four-gray image, and before deep sleep. Builds that powered
+off after every refresh showed static screens fuzzing while idle; leaving the
+panel powered into a four-gray paint, without that reset, showed earlier
+screens as ghosts.
 
-Gray3 pages and four-gray images use the stock V1.0.3 gray session
-(PWR 03 00 72 72, VCOM_DC 0x32). B/W uses stronger rails
-(PWR 43 00 78 78 17) because UI screens change with fast refreshes, and
-VCOM_DC 0x26: at stock 0x32, gray content showed white cut-outs of earlier
-black; at 0x24 the image fuzzed while the panel sat idle. Every session uses gate/source 00 00 00 00 and seeds
+`controllerIdle()` ends the hold between frames, as stock V1.0.3 does: 500 ms
+after a refresh, with nothing further pending, stock sends POWER_OFF (logged
+"EPD reader idle POF") and enters light sleep; the next refresh powers the
+panel on again. `controllerIdle()` sends that POWER_OFF once 500 ms have passed
+since the last refresh (it returns without acting before that, so a host can
+call it on every idle loop), and the controller keeps its registers and RAM,
+so the next paint is a normal differential update. A
+panel left powered on a static screen fuzzed and showed earlier screens.
+Whether a static image stays clean once powered off this way needs hardware
+validation.
+
+Every session uses the stock V1.0.3 power and VCOM settings
+(PWR 03 00 72 72, VCOM_DC 0x32). B/W previously used stronger rails
+(PWR 43 00 78 78 17); with those, static screens fuzzed while idle at every B/W
+VCOM_DC tried (0x24, 0x26, 0x32) on different units. The stock rails need
+physical idle validation, plus a check that fast refreshes still clear and for
+the B/W-to-gray cut-outs and ghosting previously seen at 0x32.
+Every session uses gate/source 00 00 00 00 and seeds
 DTM1 white before power-on.
 Full refresh uses the stock GC waveform (0x50 = 0x97); fast refresh
 uses the stock production "DU-factory-previous" waveform (0x50 = 0xd7), both
-49-byte records. The planes are
+49-byte records. The fast waveform drives black pixels that stay black again
+on every fast repaint. With that record (0x24) set to hold, black pixels kept
+from the previous screen showed lighter than newly driven ones in dithered
+areas. The planes are
 lazily allocated, PSRAM first; if allocation fails the driver leaves the
 existing B/W image up.
 
@@ -97,8 +138,8 @@ Build with `-DFREEINK_DEVICE_EEGO_A4=1`; see the `eego_a4` environment in
   touch, PCF8563 RTC, dedicated HSPI SD bus, and GPIO4 power latch.
 - `Uc8279cA4Driver` uses the shared `PanelDriver` / `EpdBus` interfaces with
   external Full/Fast/Gray LUTs, bottom-up scan, and padding to 600 panel RAM rows.
-- `InputManager` uploads the GSLX680 firmware and applies calibration in
-  `pollGslx680`, returning panel-native coordinates without a second profile transform.
+- `InputManager` uploads the GSLX680 firmware and maps samples linearly to
+  panel-native coordinates in `pollGslx680`; the profile's raw range trims the result.
 - `BatteryMonitor` probes the CW2015 once. When it answers, a sleeping gauge is
   woken and the 64-byte BATINFO battery profile is compared with the stock
   3.7 V 2000 mAh profile; an empty or different profile is uploaded (profile

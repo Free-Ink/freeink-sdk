@@ -1,5 +1,7 @@
 #pragma once
 
+#include "X4ProTextAa.h"
+
 // UC8179 panel driver — Xteink X4 / X4 Pro, newer production run (800x480 B/W).
 // UltraChip UC8179 driven in KW mode (PSR KW/R=1): 1-bpp, DTM1 = OLD plane,
 // DTM2 = NEW plane, differential refresh — the same KW paradigm and command set
@@ -65,6 +67,7 @@ class Uc8179Driver : public PanelDriver {
   BusyPolarity busyPolarity() const override { return BusyPolarity::UcIdleHigh; }
   PanelGeometry geometry() const override;
 
+  void setReaderRefresh(bool reading) override { _readerRefresh = reading; }
   void begin(EpdBus& bus) override;
   void deepSleep(EpdBus& bus) override;
 
@@ -79,13 +82,15 @@ class Uc8179Driver : public PanelDriver {
   // --- 4-level grayscale (anti-aliasing) ---
   // CrossPoint supplies two full 1bpp overlay masks. The driver combines them
   // with the displayed B/W base to recover Factory.bin's absolute 2-bit planes,
-  // then sends plane0 -> DTM 0x10 and plane1 -> DTM 0x13. Full-buffer path only
-  // (supportsStripGrayscale stays false; conversion needs the complete base).
+  // then sends plane0 -> DTM 0x10 and plane1 -> DTM 0x13. X4 Pro reader text
+  // instead stages strips for the combined one-pass waveform.
   void displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, RefreshMode fallback, bool turnOff) override;
-  bool supportsDeferredGrayscaleBase() const override { return true; }
+  bool supportsDeferredGrayscaleBase() const override { return !(_readerRefresh && _textAa.ready()); }
   bool displayGrayscaleBaseStart(EpdBus& bus, const uint8_t* fb, RefreshMode fallback, bool turnOff) override;
   void preconditionGrayscale(EpdBus& bus, uint16_t x, uint16_t y, uint16_t w, uint16_t h) override;
   GrayscaleCapabilities grayscaleCapabilities(GrayscaleMode mode = GrayscaleMode::Overlay) const override {
+    if (mode == GrayscaleMode::Overlay && _readerRefresh && _textAa.ready())
+      return {GrayscaleEncoding::OverlayMasks, GrayscaleBase::Combined, true, false, false};
     if (mode == GrayscaleMode::Absolute || mode == GrayscaleMode::Direct)
       return {GrayscaleEncoding::AbsolutePlanes,
               mode == GrayscaleMode::Direct ? GrayscaleBase::Combined : GrayscaleBase::Separate, false, false, false};
@@ -95,10 +100,14 @@ class Uc8179Driver : public PanelDriver {
   void beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode mode, RefreshMode fallback, bool turnOff) override;
   void copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) override;
   void copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) override;
+  void writeGrayscalePlaneStrip(EpdBus& bus, GrayPlane plane, const uint8_t* rows,
+                                uint16_t yStart, uint16_t numRows) override;
   void displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut, bool factoryMode) override;
   void cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) override;
 
  private:
+  X4ProTextAa _textAa;
+  bool _readerRefresh = false;
   void initController(EpdBus& bus);
   void startBwRefresh(EpdBus& bus, bool fast);
   void configureDirectGrayscale(EpdBus& bus);

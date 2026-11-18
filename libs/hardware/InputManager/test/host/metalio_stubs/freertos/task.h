@@ -11,4 +11,7 @@ inline int xTaskCreate(void (*fn)(void*),const char*,int,void* arg,int,void**) {
   std::thread([=] { fn(arg); }).detach();
   return pdPASS;
 }
+// Runs the task body to completion before returning, so host tests see a
+// background start finish deterministically.
+inline int xTaskCreatePinnedToCore(void (*fn)(void*),const char*,int,void* arg,int,void**,int) { fn(arg); return pdPASS; }
 inline void vTaskDelete(void*) {}

@@ -48,6 +48,41 @@ struct KeyGridProps {
   bool inactiveSelection = false;
 };
 
+// Geometry shared by number pads with a readout and a separate delete button.
+// A wide body can place the readout beside the grid, reclaiming its full row
+// height for the keys without changing their familiar order or touch routing.
+// readoutWidth is the measured text width; the value and delete button share
+// a centered row in the side column.
+struct KeyGridReadoutLayout {
+  Rect readout;
+  Rect backspace;
+  Rect grid;
+};
+
+inline KeyGridReadoutLayout keyGridReadoutLayout(Rect body, int16_t readoutHeight, int16_t readoutWidth, int16_t gap,
+                                                 int16_t padding, bool beside) {
+  KeyGridReadoutLayout layout;
+  const int16_t groupWidth = static_cast<int16_t>(readoutWidth + gap + readoutHeight);
+  const int16_t sideWidth = body.width / 3 > groupWidth ? static_cast<int16_t>(body.width / 3) : groupWidth;
+  const int16_t gridWidth = static_cast<int16_t>(body.width - sideWidth - gap - padding);
+  if (beside && body.width > body.height && gridWidth >= readoutHeight * 3 + gap * 2 &&
+      body.height >= readoutHeight + padding) {
+    const int16_t top = static_cast<int16_t>(body.y + (body.height - padding - readoutHeight) / 2);
+    const int16_t left = static_cast<int16_t>(body.x + (sideWidth - groupWidth) / 2);
+    layout.readout = Rect{left, top, readoutWidth, readoutHeight};
+    layout.backspace = Rect{static_cast<int16_t>(layout.readout.right() + gap), top, readoutHeight, readoutHeight};
+    layout.grid = Rect{static_cast<int16_t>(body.x + sideWidth + gap), body.y, gridWidth,
+                       static_cast<int16_t>(body.height - padding)};
+  } else {
+    layout.readout = Rect{body.x, body.y, body.width, readoutHeight};
+    layout.backspace = Rect{static_cast<int16_t>(body.right() - readoutHeight), body.y, readoutHeight, readoutHeight};
+    layout.grid =
+        Rect{static_cast<int16_t>(body.x + padding), static_cast<int16_t>(body.y + readoutHeight + gap),
+             static_cast<int16_t>(body.width - padding * 2), clampI16(body.height - readoutHeight - gap - padding)};
+  }
+  return layout;
+}
+
 template <size_t MaxInteractions>
 void keyGrid(Frame<MaxInteractions>& frame, Rect rect, const KeyGridProps& props) {
   if (!props.keys || props.rows == 0 || props.cols == 0) return;

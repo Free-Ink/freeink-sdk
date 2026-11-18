@@ -1,5 +1,7 @@
 #pragma once
 
+#include "X4ProTextAa.h"
+
 // SSD1677 panel driver — Xteink X4 and the Silkscreen ESP32-S3 board (both drive
 // an 800x480 GDEQ0426T82 over the same controller). B/W with software 2-bit
 // grayscale via a custom LUT, dual-RAM (BW 0x24 / RED 0x26) differential fast
@@ -21,7 +23,7 @@ struct Ssd1677Config {
   uint8_t driverOutputScan;      // CMD 0x01 base scan byte (0x02); mirrorY ORs TB
   uint8_t borderWaveformInit;    // CMD 0x3C value written during controller init
   uint8_t halfRefreshTemp;       // temperature byte written for HALF refresh
-  const unsigned char* grayLut;  // 110-byte custom LUT for grayscale display
+  const unsigned char* grayLut;  // 110 bytes; stock Picco gray tables contain only 105 waveform bytes
   // Absolute Display Update Control 2 (0x22) sequence values, per refresh type.
   // 0 = use the driver's built-in X4 values (incremental, keeps the panel powered
   // between fast refreshes). A panel whose OTP waveform isn't selected by the X4
@@ -76,6 +78,13 @@ struct Ssd1677Config {
   // plane. Falls back to the bypass when RED holds no B/W frame (cold start,
   // just after grayscale).
   bool fullFromPrevious = false;
+  const unsigned char* readerFastLut = nullptr;  // FAST while reading; nullptr uses fastLut (stock YRD/OPM use OTP)
+  // 110-byte one-pass reader text waveform (LUT0 black, LUT1 held white, LUT2
+  // gray, LUT3 white), activated with 0xCC. Supplying one enables the combined
+  // text pass on an 800x480 PSRAM board; nullptr leaves it to the board default.
+  const unsigned char* textAaLut = nullptr;
+  bool piccoStockGrayscale = false;  // YRD/OPM: 105-byte gray tables and OTP reader waveform.
+  bool piccoWaveforms = false;  // BOOX panel-specific power sequences.
 };
 
 // Standard config (Xteink X4 / GDEQ0426T82). Panel mounting (mirror/180°) is NOT
@@ -107,12 +116,22 @@ class Ssd1677Driver : public PanelDriver {
   void displayWindow(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, uint16_t x, uint16_t y, uint16_t w,
                      uint16_t h, bool turnOff) override;
 
-  void requestResync(uint8_t) override { _needsGrayClear = true; _absoluteInput = false; }
+  void requestResync(uint8_t) override {
+    _textAa.invalidate();
+    if (_absoluteInput) _piccoAbsoluteRetained = false;
+    _needsGrayClear = true;
+    _absoluteInput = false;
+  }
+  void setBackgroundHint(bool dark) override { _darkBackground = dark; }
+  void setReaderRefresh(bool reading) override { _readerRefresh = reading; }
+  bool grayscaleWhileInverted() const override;
   void beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode mode, RefreshMode fallback, bool turnOff) override;
 
   void seedPreviousFrame(EpdBus& bus, const uint8_t* buf) override;
 
   GrayscaleCapabilities grayscaleCapabilities(GrayscaleMode mode = GrayscaleMode::Overlay) const override {
+    if (mode == GrayscaleMode::Overlay && _readerRefresh && _textAa.ready())
+      return {GrayscaleEncoding::OverlayMasks, GrayscaleBase::Combined, true, false, false};
     if (mode == GrayscaleMode::Absolute && _cfg.absoluteGrayscale)
       return {GrayscaleEncoding::AbsolutePlanes, GrayscaleBase::Combined, true, false, false};
     if (mode != GrayscaleMode::Overlay || !_cfg.overlayGrayscale) return {};
@@ -124,6 +143,8 @@ class Ssd1677Driver : public PanelDriver {
                                 uint16_t numRows) override;
   void displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut, bool factoryMode) override;
   void cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) override;
+  bool displayRetainedGrayscaleOverlay(EpdBus& bus, const uint8_t* fb, uint16_t x, uint16_t y,
+                                       uint16_t w, uint16_t h) override;
 
   // No grayscaleRevert override. Grayscale exits via cleanupGrayscaleBuffers
   // (RED resync) or a promoted single-pass HALF clean in displayImpl/displayWindow.
@@ -131,7 +152,16 @@ class Ssd1677Driver : public PanelDriver {
   void setCustomLut(EpdBus& bus, bool enabled, const unsigned char* data) override;
 
  private:
+  X4ProTextAa _textAa;
+  const unsigned char* _textLut = nullptr;
+  uint8_t* _piccoOld = nullptr;
+  uint8_t* _piccoGrayMask = nullptr;
+  bool _piccoGrayPending = false;
+  bool _piccoAbsoluteRetained = false;
   bool _pendingFrameSync = false;
+  bool _darkBackground = false;
+  bool _readerRefresh = false;
+  bool _afterReader = false;  // last refresh presented a book page
   bool _needsGrayClear = false;
   bool _absoluteInput = false;
   void writeGrayRam(EpdBus& bus, uint8_t command, const uint8_t* data, uint16_t len);
@@ -139,7 +169,7 @@ class Ssd1677Driver : public PanelDriver {
   void setRamArea(EpdBus& bus, uint16_t x, uint16_t y, uint16_t w, uint16_t h);
   void writeRam(EpdBus& bus, uint8_t ramCmd, const uint8_t* data, uint32_t size);
   // async: fire MASTER_ACTIVATION and return without waiting on BUSY.
-  void refresh(EpdBus& bus, RefreshMode mode, bool turnOff, bool async = false);
+  void refresh(EpdBus& bus, RefreshMode mode, bool turnOff, bool async = false, bool grayRecovery = false);
   // Blocking CLOCK_ON|ANALOG_ON activation; no-op when already powered.
   void powerOn(EpdBus& bus);
   // Documented SSD1677 analog/oscillator shutdown. Used after a 0xFC update
@@ -187,6 +217,8 @@ enum PiccoPanel : uint8_t {
   PiccoSe0400nqw47 = 4,  // the stock "SSD2677" driver path (Ssd2677Driver)
 };
 uint8_t piccoProbePanel();
+// Part number of the probed panel; nullptr before the probe or when unidentified.
+const char* piccoPanelName();
 #endif
 
 #if FREEINK_DEVICE_STICKY

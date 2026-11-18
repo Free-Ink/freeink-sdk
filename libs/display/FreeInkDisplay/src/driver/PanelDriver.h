@@ -262,6 +262,37 @@ class PanelDriver {
     (void)fast;
     return false;
   }
+  // 16-level text in two steps, so the page reads before its gray is done
+  // (after PR #220's UC8253 two-pass reader).
+  // beginGray16Text: `base` (1 bpp framebuffer layout, cleared bit = ink)
+  // holds the dark (deep-path) levels black. After a 16-level text page it
+  // goes up with one cross-dissolve from that page; otherwise with the B/W
+  // turn. Returns once the refresh has started, rails left on, so the caller
+  // can render `levels` while the panel draws. `soft` (optional, same layout)
+  // marks the lightest deep level's pixels, pulled back inside the turn so
+  // they are never black for long.
+  // finishGray16Text: the remaining 16-level passes bring `levels` (4 bpp,
+  // as displayGray16Image) to their tones; the next B/W frame clears them
+  // like any gray. finishGray16Text(nullptr) abandons the gray and powers off.
+  // False = unsupported; nothing sent.
+  virtual bool beginGray16Text(EpdBus& bus, const uint8_t* base, const uint8_t* soft = nullptr) {
+    (void)bus;
+    (void)base;
+    (void)soft;
+    return false;
+  }
+  // Tuning: frames of the in-turn pull-back on the `soft` pixels (0 = leave
+  // them to the pull pass). False = unsupported.
+  virtual bool setGray16TextSoftPull(uint8_t frames) {
+    (void)frames;
+    return false;
+  }
+  virtual bool finishGray16Text(EpdBus& bus, const uint8_t* levels, bool turnOff) {
+    (void)bus;
+    (void)levels;
+    (void)turnOff;
+    return false;
+  }
   // Fast turns: a full clean turn after every `scrubEvery` fast ones (0 = never fast).
   virtual bool setGray16Turn(uint8_t scrubEvery) {
     (void)scrubEvery;

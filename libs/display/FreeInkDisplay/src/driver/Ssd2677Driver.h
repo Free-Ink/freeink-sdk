@@ -83,6 +83,11 @@ class Ssd2677Driver : public PanelDriver {
   bool supportsGray16Image() const override { return BoardConfig::ACTIVE.board != BoardConfig::Board::Sticky; }
   bool displayGray16Image(EpdBus& bus, const uint8_t* levels, bool turnOff, bool fast = false) override;
   bool setGray16Turn(uint8_t scrubEvery) override;
+  // 16-level text: `levels` are the calibrated levels (as displayGray16Image);
+  // the base must hold exactly the deep-path levels black.
+  bool beginGray16Text(EpdBus& bus, const uint8_t* base, const uint8_t* soft = nullptr) override;
+  bool finishGray16Text(EpdBus& bus, const uint8_t* levels, bool turnOff) override;
+  bool setGray16TextSoftPull(uint8_t frames) override;
   // paths[l] = {black dose index 0..3, white dose index 0..3, deep 0/1}.
   bool setGray16Levels(EpdBus& bus, const uint8_t (*paths)[3]) override;
   bool setGray16Passes(EpdBus& bus, const uint8_t black[3], const uint8_t white[3], uint8_t erase) override;
@@ -95,6 +100,9 @@ class Ssd2677Driver : public PanelDriver {
   bool ensureLsb();
   void powerOn(EpdBus& bus);
   void powerAndRefresh(EpdBus& bus, bool turnOff);
+  void settle(EpdBus& bus);  // wait out a deferred refresh (no-op when none)
+  // Cross-dissolve codes from the old page's levels and the new base (1 bpp).
+  void sendCrossCodes(EpdBus& bus, const uint8_t* oldLevels, const uint8_t* base, const uint8_t* soft);
   void refreshWith(EpdBus& bus, const unsigned char* lut, bool turnOff);
   // Stream one 2-bit code per pixel: codes[level] for each 4-bit level, or
   // `solid` for every pixel when levels is null.
@@ -135,6 +143,15 @@ class Ssd2677Driver : public PanelDriver {
   // exitGray16's balance passes. Allocated on first use.
   uint8_t* _gray16 = nullptr;
   bool _gray16OnGlass = false;
+  bool _textBaseUp = false;  // beginGray16Text ran; finishGray16Text owes the passes
+  bool _textOnGlass = false;    // a 16-level text page is up; its levels are in _gray16
+  bool _textDissolved = false;  // this text turn's base was the cross-dissolve
+  uint8_t _textSoftLevel = 0xFF;  // deep level pulled back inside the dissolve (0xFF: none)
+  uint8_t _textSoftPull = 0xFF;   // its frames there; 0xFF = its calibrated pull-back, 0 = off
+  bool _holdPower = false;   // display() leaves the rails on (16-level text base)
+  bool _deferRefresh = false;    // powerAndRefresh returns without waiting (text base)
+  bool _refreshInFlight = false; // a deferred waveform may still run; settle() before any bus access
+  unsigned long _refreshStartMs = 0;
   uint8_t _g16ScrubEvery = 0;  // fast turns between full clean turns; 0 = always full
   uint8_t _g16FastTurns = 0;   // fast turns since the last full one
   bool _g16Ready = false;
@@ -143,6 +160,7 @@ class Ssd2677Driver : public PanelDriver {
   Gray16Codes _g16{};
   // Runtime draw tables (in the driver object: no heap, 4 x 535 bytes).
   uint8_t _lutDissolve[535] = {}, _lutDeep[535] = {}, _lutCoarse[535] = {}, _lutPull[535] = {};
+  uint8_t _lutCross[535] = {};  // text page turn: erase + deep at once
   uint8_t* _old = nullptr;  // retained old plane (last displayed frame); host is single-buffer
                             // so `prev` is always null — mirror stock's obj+0x1020, seeded white
 };

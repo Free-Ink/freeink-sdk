@@ -655,6 +655,82 @@ static void expectGray16Image(Ssd2677Driver& s) {
     assert(s.setGray16Turn(0));
   }
 
+  // Two-step 16-level text: base (dark levels black) first, then the passes;
+  // after a text page the base is one cross-dissolve from it.
+  {
+    auto planeOf = [&](const Bytes& img, bool (*want)(Ssd2677Driver&, uint8_t)) {
+      Bytes plane(48000, 0xFF);  // 1 bpp, cleared bit = marked
+      for (uint32_t y = 0; y < 480; ++y)
+        for (uint32_t x = 0; x < 800; ++x)
+          if (want(s, levelIn(img, y * 800 + x)))
+            plane[y * 100 + x / 8] &= static_cast<uint8_t>(~(0x80 >> (x & 7)));
+      return plane;
+    };
+    auto isDeep = [](Ssd2677Driver& d, uint8_t l) { return d._g16.deep[l] == 2; };
+    auto isSoft = [](Ssd2677Driver& d, uint8_t l) { return l == d._textSoftLevel; };
+    bus.clear();
+    s.display(bus, page.data(), nullptr, RefreshMode::Full, false);
+    assert(s.setGray16Turn(2));  // turns since the last clean one: B/W 1, dissolve 2, then clean
+    assert(s._textSoftLevel == 5);  // deep black, then the largest pull-back
+    // The dissolve: 01 erases, 10 lays deep black, 00 deep black then the
+    // in-turn pull-back, 11 undriven.
+    assert(ssd2677LutDose(s._lutCross, 2) == -kGray16DefaultErase);
+    assert(ssd2677LutDose(s._lutCross, 3) == kGray16Deep);
+    assert(ssd2677LutDose(s._lutCross, 1) == kGray16Deep - kGray16DefaultWhite[2]);
+    assert(ssd2677LutDose(s._lutCross, 4) == 0);
+
+    // Turn 1, nothing up yet: the B/W turn, returning while the panel draws.
+    const Bytes base1 = planeOf(levels, isDeep), soft1 = planeOf(levels, isSoft);
+    bus.clear();
+    assert(s.beginGray16Text(bus, base1.data(), soft1.data()));
+    assert(!s._textDissolved && s._refreshInFlight);
+    assert(framesOf(bus).size() == 1);
+    assert(s.finishGray16Text(bus, levels.data(), true));
+    assert(lutsOf(bus).size() == 4);  // base, deep, coarse, pull
+    assert(lutsOf(bus)[1] == asBytes(s._lutDeep) && lutsOf(bus)[3] == asBytes(s._lutPull));
+    assert(bus.writes.back().command == 0x02 && s._refreshInFlight);  // power-off not waited for
+    assert(s._textOnGlass);
+
+    // Turn 2: one cross-dissolve from turn 1's levels; no deep pass.
+    const Bytes base2 = planeOf(reversed, isDeep), soft2 = planeOf(reversed, isSoft);
+    bus.clear();
+    assert(s.beginGray16Text(bus, base2.data(), soft2.data()));
+    assert(bus.waits >= 1);  // turn 1's power-off settled before the upload
+    assert(s._textDissolved && lutsOf(bus) == std::vector<Bytes>({asBytes(s._lutCross)}));
+    {
+      const Bytes cross = framesOf(bus)[0];
+      for (uint32_t y : {0u, 479u})
+        for (uint32_t x = 0; x < 800; ++x) {
+          const uint32_t p = y * 800 + x;
+          const uint8_t oldL = levelIn(levels, p), newL = levelIn(reversed, p);
+          const bool deep = s._g16.deep[newL] == 2, soft = newL == s._textSoftLevel;
+          assert(codeAt(cross, p) == (deep ? (soft ? 0 : 2) : (oldL ? 1 : 3)));
+        }
+    }
+    assert(s.finishGray16Text(bus, reversed.data(), true));
+    assert(lutsOf(bus) == std::vector<Bytes>({asBytes(s._lutCross), asBytes(s._lutCoarse), asBytes(s._lutPull)}));
+    {
+      const Bytes pull = framesOf(bus)[2];
+      for (uint32_t x = 0; x < 800; ++x) {
+        const uint8_t l = levelIn(reversed, x);
+        assert(codeAt(pull, x) == (l == s._textSoftLevel ? 3 : s._g16.pull[l]));
+      }
+    }
+
+    // Turn 3: the clean turn (setGray16Turn(2)), full refresh then deep pass.
+    bus.clear();
+    assert(s.beginGray16Text(bus, base1.data(), soft1.data()));
+    assert(!s._textDissolved && lutsOf(bus)[0] == asBytes(lut_picco_se0400_full));
+    assert(s.finishGray16Text(bus, levels.data(), true));
+
+    // A B/W frame ends the text page; finishGray16Text without a base refuses.
+    bus.clear();
+    s.display(bus, page.data(), nullptr, RefreshMode::Fast, true);
+    assert(!s._textOnGlass && !s.finishGray16Text(bus, levels.data(), true));
+    assert(s.setGray16Turn(0));
+    assert(s.displayGray16Image(bus, levels.data(), true));  // the image the checks below start from
+  }
+
   // Runtime doses and paths: validated against the give-back range; an image
   // on the glass is balanced with the old table before anything changes.
   {

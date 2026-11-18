@@ -137,6 +137,7 @@ PanelGeometry Ssd2677Driver::geometry() const {
 }
 
 void Ssd2677Driver::initPanel(EpdBus& bus) {
+  settle(bus);
   if (isSticky()) {
     // Stock reset: RST low 20 ms, then 10 ms before talking to the panel.
     const int8_t rst = bus.pins().rst;
@@ -168,6 +169,7 @@ void Ssd2677Driver::initPanel(EpdBus& bus) {
 // ssd2677_latch_*_waveform). Stock re-runs reset + init whenever the waveform
 // changes, then latches it before the frame data.
 void Ssd2677Driver::latchOtpWaveform(EpdBus& bus, uint8_t code) {
+  settle(bus);
   if (_latchedWaveform != 0 && _latchedWaveform != code) initPanel(bus);
   bus.cmd(0xE0);
   bus.data(0x12);
@@ -200,6 +202,8 @@ void Ssd2677Driver::begin(EpdBus& bus) {
 void Ssd2677Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
   (void)prev;  // unused: single-buffer host passes null; we track our own old plane
   exitGray16(bus);
+  _textBaseUp = false;  // a frame between the text base and its gray replaces both
+  _textOnGlass = false;
   _textAa.invalidate();
   // First paint after init clears the panel with the full waveform (stock forces
   // mode 0 on the first frame).
@@ -257,13 +261,14 @@ void Ssd2677Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev,
   // Real old plane for every mode: old == new gives each pixel the no-change drive.
   sendPacked(bus, _old, fb);
   const auto* fastLut = redraw ? lut_picco_se0400_fast : lut_picco_se0400_mode3;
-  const bool keepPower = mode == RefreshMode::Fast && !redraw;
+  const bool keepPower = (mode == RefreshMode::Fast && !redraw) || _holdPower;
   refreshWith(bus, mode == RefreshMode::Fast ? fastLut : lut_picco_se0400_full, !keepPower);
   if (_old) memcpy(_old, fb, size);  // new becomes old for the next frame
   _needsInitialFull = false;
 }
 
 void Ssd2677Driver::sendPacked(EpdBus& bus, const uint8_t* hi, const uint8_t* lo, bool exclusive) {
+  settle(bus);
   const PanelGeometry g = geometry();
   uint8_t* const chunk = g_txChunk;
   // The Sticky panel scans rows bottom-to-top relative to the framebuffer
@@ -290,6 +295,7 @@ void Ssd2677Driver::sendPacked(EpdBus& bus, const uint8_t* hi, const uint8_t* lo
 }
 
 void Ssd2677Driver::powerOffBetweenFrames(EpdBus& bus) {
+  settle(bus);
   if (_needsPowerOn) return;
   bus.cmd(CMD_POWER_OFF);
   bus.data(0x00);
@@ -298,6 +304,7 @@ void Ssd2677Driver::powerOffBetweenFrames(EpdBus& bus) {
 }
 
 void Ssd2677Driver::powerOn(EpdBus& bus) {
+  settle(bus);
   if (_needsPowerOn) {
     bus.cmd(CMD_POWER_ON);
     bus.waitBusy(" SSD2677 power on");
@@ -305,15 +312,31 @@ void Ssd2677Driver::powerOn(EpdBus& bus) {
   }
 }
 
+void Ssd2677Driver::settle(EpdBus& bus) {
+  if (!_refreshInFlight) return;
+  _refreshInFlight = false;
+  // Still driving, or fired so recently that BUSY may not have asserted yet:
+  // the normal completion wait. Otherwise the waveform is long done.
+  if (bus.isBusy() || millis() - _refreshStartMs < 50) bus.waitRefreshComplete("refresh");
+}
+
 void Ssd2677Driver::powerAndRefresh(EpdBus& bus, bool turnOff) {
   powerOn(bus);
   bus.cmd(CMD_REFRESH);
   bus.data(0x00);
+  if (_deferRefresh && !turnOff) {
+    // The waveform runs on its own: return now and let the host work (render
+    // the text tones) until the next bus access settles it.
+    _refreshInFlight = true;
+    _refreshStartMs = millis();
+    return;
+  }
   bus.waitRefreshComplete("refresh");
   if (turnOff) powerOffBetweenFrames(bus);
 }
 
 void Ssd2677Driver::refreshWith(EpdBus& bus, const unsigned char* lut, bool turnOff) {
+  settle(bus);
   bus.cmd(CMD_LUT);
   bus.data(lut, LUT_LEN);
   powerAndRefresh(bus, turnOff);
@@ -470,6 +493,7 @@ void Ssd2677Driver::cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) {
 }
 
 void Ssd2677Driver::sendLevelCodes(EpdBus& bus, const uint8_t* levels, const uint8_t codes[16], uint8_t solid) {
+  settle(bus);
   const PanelGeometry g = geometry();
   const uint8_t solidByte = static_cast<uint8_t>((solid & 3) * 0x55);
   uint8_t* const chunk = g_txChunk;
@@ -571,6 +595,31 @@ void buildDissolve(uint8_t* out, uint8_t erase, uint8_t deep) {
   }
 }
 
+// Text page turn, after PR #220's single-pass cross-dissolve: erase and new
+// ink run at the same time instead of one group after the other. Code 01: old
+// ink to white, `erase` frames; code 10: new deep black, `deep` frames; code
+// 00: deep black then `pull` frames back toward white straight after, so the
+// lightest deep level is gray by the end of the turn instead of black until
+// the pull pass (the black flash); 11 undriven. Pixels with old ink that turn
+// deep go straight to black (no erase). One group.
+void buildCrossDissolve(uint8_t* out, uint8_t erase, uint8_t deep, uint8_t pull) {
+  startTable(out);
+  const uint8_t shortN = erase < deep ? erase : deep, longN = erase < deep ? deep : erase;
+  const uint8_t lens[8] = {shortN, static_cast<uint8_t>(longN - shortN), pull, 1, 0, 0, 0, 0};
+  const uint8_t* vcom = reinterpret_cast<const uint8_t*>(lut_picco_se0400_mode3) + kHeaderLen;
+  writeGroup(out, 0, 0, vcom[1], vcom[2], lens);
+  const bool eraseLong = erase > deep;
+  uint8_t white = static_cast<uint8_t>(0xFF & ~(1u << kWhiteBit[0]));
+  if (eraseLong) white = static_cast<uint8_t>(white & ~(1u << kWhiteBit[1]));
+  uint8_t black = static_cast<uint8_t>(0xFF & ~(1u << kBlackBit[0]));
+  if (!eraseLong) black = static_cast<uint8_t>(black & ~(1u << kBlackBit[1]));
+  const uint8_t blackThenPull = static_cast<uint8_t>(black & ~(1u << kWhiteBit[2]));
+  writeGroup(out, 1 + 1, 0, white, 0xFF, lens);          // 01
+  writeGroup(out, 1 + 2, 0, black, 0xFF, lens);          // 10
+  writeGroup(out, 1 + 0, 0, blackThenPull, 0xFF, lens);  // 00
+  writeGroup(out, 1 + 3, 0, 0xFF, 0xFF, lens);           // 11
+}
+
 constexpr uint8_t kLevelCode[4] = {3, 1, 2, 0};  // dose index -> pixel code; 11 undriven
 constexpr uint8_t kBalDeep[4] = {0, 8, 16, 24};    // give-back tables (Ssd2677Gray16Luts.h)
 
@@ -618,6 +667,13 @@ void Ssd2677Driver::buildGray16Tables() {
   buildDosePass(_lutPull, byCodeW, false);
   buildDissolve(_lutDissolve, _g16Erase, kGray16Deep);
   buildDissolve(_lutDeep, 0, kGray16Deep);
+  // The soft deep level: deep black, then the largest pull-back.
+  _textSoftLevel = 0xFF;
+  for (int l = 0; l < 16; ++l)
+    if (_g16Paths[l][2] && _g16Paths[l][1] == 3 && !_g16Paths[l][0]) _textSoftLevel = static_cast<uint8_t>(l);
+  if (_textSoftPull == 0xFF) _textSoftPull = _g16White[2];  // default: the level's own pull-back
+  if (!_textSoftPull) _textSoftLevel = 0xFF;  // 0: pulled back by the pull pass instead
+  buildCrossDissolve(_lutCross, _g16Erase, kGray16Deep, _textSoftLevel != 0xFF ? _textSoftPull : 0);
 }
 
 void Ssd2677Driver::ensureGray16Config() {
@@ -632,6 +688,7 @@ void Ssd2677Driver::ensureGray16Config() {
 }
 
 void Ssd2677Driver::sendDissolveCodes(EpdBus& bus, const uint8_t* oldLevels, const uint8_t* newLevels) {
+  settle(bus);
   const PanelGeometry g = geometry();
   uint8_t* const chunk = g_txChunk;
   auto code = [this](uint8_t o, uint8_t n) -> uint8_t {
@@ -759,13 +816,146 @@ bool Ssd2677Driver::displayGray16Image(EpdBus& bus, const uint8_t* levels, bool 
   refreshWith(bus, _lutPull, turnOff);
   memcpy(_gray16, levels, bytes);
   _gray16OnGlass = true;
+  _textOnGlass = false;
   // Anything that replaces the image goes through exitGray16 first, and the
   // B/W history is gone either way.
   _needsInitialFull = true;
   return true;
 }
 
+bool Ssd2677Driver::setGray16TextSoftPull(uint8_t frames) {
+  if (!supportsGray16Image() || frames > 63) return false;
+  ensureGray16Config();
+  _textSoftPull = frames;
+  buildGray16Tables();
+  return true;
+}
+
+bool Ssd2677Driver::beginGray16Text(EpdBus& bus, const uint8_t* base, const uint8_t* soft) {
+  if (!supportsGray16Image() || !base || !_old || !ensureLsb()) return false;
+  ensureGray16Config();
+  // The levels of the page on the glass, for the dissolve. 192 KB: PSRAM, kept
+  // (shared with displayGray16Image), as there.
+  const PanelGeometry g = geometry();
+  const uint32_t levelBytes = static_cast<uint32_t>(g.width / 2) * g.height;
+  if (!_gray16) _gray16 = static_cast<uint8_t*>(heap_caps_malloc(levelBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  const bool clean = _needsInitialFull || _g16FastTurns >= _g16ScrubEvery;
+  const bool dissolve = !clean && _textOnGlass && _gray16;
+  _textOnGlass = false;
+  // Returns as soon as the refresh starts (_deferRefresh): the caller renders
+  // the levels while the panel draws, and finishGray16Text's first upload
+  // waits out the waveform. The text is readable when it ends.
+  _holdPower = _deferRefresh = true;
+  if (dissolve) {
+    // After a 16-level text page: one cross-dissolve erases its ink and lays
+    // the new page's deep black together (PR #220), so no separate deep pass.
+    sendCrossCodes(bus, _gray16, base, _textSoftLevel != 0xFF ? soft : nullptr);
+    refreshWith(bus, _lutCross, false);
+    memcpy(_old, base, g.bufferSize);  // B/W history for a later stock frame
+    _grayPending = false;
+  } else {
+    // First page, or the clean one every _g16ScrubEvery turns: the stock B/W
+    // turn (the previous page's gray driven through _lsb), then a deep pass.
+    display(bus, base, nullptr, clean ? RefreshMode::Full : RefreshMode::Fast, false);
+  }
+  _holdPower = _deferRefresh = false;
+  _textDissolved = dissolve;
+  _g16FastTurns = clean ? 0 : static_cast<uint8_t>(_g16FastTurns + 1);
+  _textBaseUp = true;
+  return true;
+}
+
+bool Ssd2677Driver::finishGray16Text(EpdBus& bus, const uint8_t* levels, bool turnOff) {
+  if (!_textBaseUp) return false;
+  _textBaseUp = false;
+  if (!levels) {
+    if (turnOff) powerOffBetweenFrames(bus);
+    return true;
+  }
+  // The calibrated 16-level passes on top of the readable base: the deep
+  // black on the dark levels (black in the base already), then coarse black
+  // and the pull-back, as displayGray16Image draws from a clean page.
+  settle(bus);  // the base waveform
+  if (_g16.useDeep && !_textDissolved) {  // the dissolve laid it already
+    sendLevelCodes(bus, levels, _g16.deep);
+    refreshWith(bus, _lutDeep, false);
+  }
+  if (_g16.useCoarse) {
+    sendLevelCodes(bus, levels, _g16.coarse);
+    refreshWith(bus, _lutCoarse, false);
+  }
+  uint8_t pull[16];
+  memcpy(pull, _g16.pull, 16);
+  if (_textDissolved && _textSoftLevel != 0xFF) pull[_textSoftLevel] = 3;  // pulled back in the dissolve
+  sendLevelCodes(bus, levels, pull);
+  refreshWith(bus, _lutPull, false);
+  if (turnOff) {
+    // Power off without waiting for the rails to discharge (~230 ms): the
+    // page is complete, and the next bus access settles it.
+    bus.cmd(CMD_POWER_OFF);
+    bus.data(0x00);
+    _needsPowerOn = true;
+    _refreshInFlight = true;
+    _refreshStartMs = millis();
+  }
+  // B/W history: _old holds the base; every inked level has since moved off
+  // it, so flag them in _lsb and the next stock B/W frame drives each to its
+  // target, as after the 4-shade text pass.
+  const PanelGeometry g = geometry();
+  const uint32_t pairs = static_cast<uint32_t>(g.width / 2) * g.height;
+  for (uint32_t i = 0, o = 0; i < pairs; i += 4, ++o) {
+    uint8_t m = 0;
+    for (int k = 0; k < 4; ++k) {
+      const uint8_t b = levels[i + k];
+      const uint8_t hi = b >> 4, lo = b & 15;
+      // Any inked level was driven: the next B/W frame drives it to its target.
+      if (hi) m |= static_cast<uint8_t>(0x80 >> (2 * k));
+      if (lo) m |= static_cast<uint8_t>(0x40 >> (2 * k));
+    }
+    _lsb[o] = m;
+  }
+  _grayPending = true;
+  _grayMaskReady = false;
+  if (_gray16) {  // the next text turn dissolves from these levels
+    memcpy(_gray16, levels, pairs);
+    _textOnGlass = true;
+  }
+  return true;
+}
+
+void Ssd2677Driver::sendCrossCodes(EpdBus& bus, const uint8_t* oldLevels, const uint8_t* base, const uint8_t* soft) {
+  settle(bus);
+  const PanelGeometry g = geometry();
+  uint8_t* const chunk = g_txChunk;
+  bus.cmd(CMD_DATA);
+  auto txn = bus.beginTxn();
+  uint16_t n = 0;
+  // Four pixels per wire byte: two level bytes, half a base byte.
+  const uint32_t bytes = static_cast<uint32_t>(g.width / 2) * g.height;
+  for (uint32_t i = 0; i < bytes; i += 2) {
+    const uint8_t ink = static_cast<uint8_t>(~base[i / 4]);
+    const uint8_t softInk = soft ? static_cast<uint8_t>(~soft[i / 4]) : 0;
+    const int shift = (i & 2) ? 0 : 4;  // high nibble of the base byte = first four pixels
+    uint8_t out = 0;
+    for (int k = 0; k < 4; ++k) {
+      const uint8_t lv = oldLevels[i + k / 2];
+      const uint8_t old = (k & 1) ? (lv & 15) : (lv >> 4);
+      const bool wasInk = old != 0, deep = (ink >> (shift + 3 - k)) & 1;
+      const bool isSoft = (softInk >> (shift + 3 - k)) & 1;
+      const uint8_t code = deep ? (isSoft ? 0 : 2) : (wasInk ? 1 : 3);
+      out = static_cast<uint8_t>(out | code << (6 - 2 * k));
+    }
+    chunk[n++] = out;
+    if (n == sizeof(g_txChunk)) {
+      txn.writeBytes(chunk, n);
+      n = 0;
+    }
+  }
+  if (n) txn.writeBytes(chunk, n);
+}
+
 void Ssd2677Driver::deepSleep(EpdBus& bus) {
+  settle(bus);
   _textAa.invalidate();
   powerOffBetweenFrames(bus);
   // Stock (FUN_4200b608): 0x07 with the 0xA5 check code.

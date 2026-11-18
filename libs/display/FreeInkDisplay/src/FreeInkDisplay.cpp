@@ -1331,6 +1331,28 @@ bool FreeInkDisplay::displayGray16Image(const uint8_t* levels, bool turnOffScree
   return _driver->displayGray16Image(_bus, levels, turnOffScreen, fast);
 }
 
+bool FreeInkDisplay::beginGray16Text(const uint8_t* base, const uint8_t* soft) {
+  IdleHookScope idleHookScope{_driver};
+  if (!base || !supportsGray16Image()) return false;
+  cancelGrayscalePass();
+  DisplayPmLock pmLock;
+  syncPendingAsync();
+  _shadowValid = false;
+  _redRamSynced = false;
+  return _driver->beginGray16Text(_bus, base, soft);
+}
+
+bool FreeInkDisplay::finishGray16Text(const uint8_t* levels, bool turnOffScreen) {
+  IdleHookScope idleHookScope{_driver};
+  if (!supportsGray16Image()) return false;
+  DisplayPmLock pmLock;
+  return _driver->finishGray16Text(_bus, levels, turnOffScreen);
+}
+
+bool FreeInkDisplay::setGray16TextSoftPull(uint8_t frames) {
+  return supportsGray16Image() && _driver->setGray16TextSoftPull(frames);
+}
+
 bool FreeInkDisplay::setGray16Turn(uint8_t scrubEvery) {
   return supportsGray16Image() && _driver->setGray16Turn(scrubEvery);
 }

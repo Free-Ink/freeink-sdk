@@ -183,6 +183,11 @@ class FreeInkDisplay {
   // PanelDriver::displayGray16Image); ignored when none is up.
   bool displayGray16Image(const uint8_t* levels, bool turnOffScreen = true, bool fast = false);
   bool setGray16Turn(uint8_t scrubEvery);
+  // 16-level text in two steps (PanelDriver::beginGray16Text): the full-ink
+  // base first, then the edge tones. `base` is a 1 bpp frame.
+  bool beginGray16Text(const uint8_t* base, const uint8_t* soft = nullptr);
+  bool finishGray16Text(const uint8_t* levels, bool turnOffScreen = true);
+  bool setGray16TextSoftPull(uint8_t frames);
   // Calibration: coarse-black and pull-back doses and the fast-turn erase, in frames.
   bool setGray16Passes(const uint8_t black[3], const uint8_t white[3], uint8_t erase);
   // Calibration hook: paths[l] = {black dose index 0..3, white dose index 0..3, deep 0/1}.

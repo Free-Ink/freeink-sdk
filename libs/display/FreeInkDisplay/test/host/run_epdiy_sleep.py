@@ -15,7 +15,7 @@ code=r"""
 #include <string>
 using EpdWaveform=int;
 static int g_hl,MY_WAVEFORM,fastWave;
-static bool g_started=true,g_glassMatchesFront=true,g_resyncPending,powerGood=true;
+static bool g_started=true,g_glassMatchesFront=true,g_resyncPending,g_deepInk,powerGood=true;
 static std::string calls;
 static const EpdWaveform* selected;
 enum EpdDrawError {EPD_DRAW_SUCCESS=0, EPD_DRAW_EMPTY_LINE_QUEUE=1, FAILED=2};

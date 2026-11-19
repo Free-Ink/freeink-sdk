@@ -462,7 +462,8 @@ FreeInkUI draws through a `DrawTarget` — an interface of primitives (`fill`,
   bit is white and a clear bit is black ink. After a frame, push the buffer with
   the display's normal refresh call.
 
-  **16-level panels.** On a display whose `supportsGray16Image()` is true,
+  **16-level panels.** (Covered by host tests only; this path has not been run
+  on a device.) On a display whose `supportsGray16Image()` is true,
   build with `-DFREEINK_UI_GRAY16=1` and the target can also draw into a 4-bpp
   frame in `displayGray16Image()`'s layout: gray paints become a flat level and
   anti-aliased glyphs (4-bpp fonts and runtime TTF glyphs) blend their coverage

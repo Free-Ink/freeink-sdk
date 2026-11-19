@@ -136,6 +136,10 @@ constexpr uint8_t kInkLevel[16] = {15, 13, 10, 9, 8, 8, 7, 6, 6, 5, 4, 4, 3, 2, 
 // built from these numbers.
 bool g_tuned = false;
 uint8_t g_tunedPaths[16][3] = {};
+// The glass holds ink from an every-pixel pass of the built-in table (the boot
+// image, a Half or Full frame). It is driven deeper than the calibration
+// table's clearing reaches, so the next calibrated frame starts from a clear.
+bool g_deepInk = false;
 
 // How a frame reaches the glass.
 enum class Draw : uint8_t {
@@ -143,6 +147,7 @@ enum class Draw : uint8_t {
   Gc16All,      // every pixel, unchanged ones included: cleans residue, flashes
   Clean,        // black/white clear cycles, then every pixel from white (vendor's deep clean)
   Tuned,        // calibration table: changed pixels cleared to white, then driven to their level
+  TunedClean,   // clear cycles, then every pixel from white with the calibration table
 };
 
 void drawFront(Draw how) {
@@ -159,13 +164,17 @@ void drawFront(Draw how) {
   const EpdWaveform* fast = my_waveform_fast();
   const EpdWaveform* waveform = how == Draw::Gc16Reinforced && fast ? fast : &MY_WAVEFORM;
 #ifdef MY_WAVEFORM_HAS_TUNED
-  if (how == Draw::Tuned && my_waveform_tuned()) waveform = my_waveform_tuned();
+  if ((how == Draw::Tuned || how == Draw::TunedClean) && my_waveform_tuned()) waveform = my_waveform_tuned();
 #endif
   epd_hl_waveform(&g_hl, waveform);
   const auto run = [&]() -> enum EpdDrawError {
     switch (how) {
       case Draw::Tuned:
         return epd_hl_update_screen_full(&g_hl, MODE_GC16, temperature);
+      case Draw::TunedClean: {
+        const enum EpdDrawError cleared = epd_clear_checked();
+        return cleared == EPD_DRAW_SUCCESS ? epd_hl_update_screen_from_white(&g_hl, MODE_GC16, temperature) : cleared;
+      }
       case Draw::Gc16Reinforced:
         // Only the trimmed table has gentle diagonals; retain differential fallback on allocation failure.
         return fast ? epd_hl_update_screen_full(&g_hl, MODE_GC16, temperature)
@@ -192,13 +201,14 @@ void drawFront(Draw how) {
   // Leaving the TPS65185 rails up between frames holds VCOM on the glass, which
   // EPDiy advises against, so they are dropped after every frame.
   epd_poweroff();
-  static const char* const kDrawNames[] = {"GC16 reinforced", "GC16 all", "clean", "tuned"};
+  static const char* const kDrawNames[] = {"GC16 reinforced", "GC16 all", "clean", "tuned", "tuned clean"};
   LOG_INF(TAG, "%s frame: %lld ms waveform=%s skipped=%d result=0x%x",
           kDrawNames[static_cast<uint8_t>(how)],
           static_cast<long long>((esp_timer_get_time() - startUs) / 1000),
           how == Draw::Gc16Reinforced && fast ? "trimmed" : "full", epd_last_leading_skip(),
           static_cast<unsigned>(err));
   g_glassMatchesFront = err == EPD_DRAW_SUCCESS;
+  if (err == EPD_DRAW_SUCCESS) g_deepInk = how == Draw::Gc16All || how == Draw::Clean;
   if (err != EPD_DRAW_SUCCESS) LOG_ERR(TAG, "EPDiy update failed: 0x%x", static_cast<unsigned>(err));
 }
 
@@ -393,14 +403,15 @@ bool EpdiyDriver::displayGray16Image(EpdBus& bus, const uint8_t* levels, bool tu
     front[i] = next;
   }
   g_basePending = false;  // the image replaces any staged grayscale base
-  // The calibration table drives only what changes, so a frame that must reach
-  // every pixel (not fast, or the first after begin()) uses the built-in GC16
-  // either way; the two tables agree on black and white.
-  Draw how = !fast ? Draw::Gc16All : g_tuned ? Draw::Tuned : Draw::Gc16Reinforced;
+  // With the calibration table a clean (not fast) image is drawn from a
+  // cleared screen, so its levels are the table's own.
+  Draw how = g_tuned ? (fast ? Draw::Tuned : Draw::TunedClean) : (fast ? Draw::Gc16Reinforced : Draw::Gc16All);
   if (g_resyncPending || g_firstFrameAllPixels) {
     how = Draw::Gc16All;
     g_resyncPending = false;
     g_firstFrameAllPixels = false;
+  } else if (g_tuned && g_deepInk) {
+    how = Draw::TunedClean;
   } else if (fast && changed == 0 && g_glassMatchesFront) {
     return true;  // already on the glass
   }

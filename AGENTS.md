@@ -47,3 +47,43 @@ xtensa-esp32s3-elf-size probe.o
 
 Growth for non-users needs a reason in the PR; "the feature needs it" is not
 one when a pointer or a shared function would avoid it.
+
+## 16-level images and gray calibration (EPDiy panels)
+
+`displayGray16Image()` and the calibration hooks `setGray16Levels()` /
+`getGray16Levels()` are implemented by `EpdiyDriver` only, and have been checked
+on one device: the Metalio E-Ink4-Plus. On every other driver they return
+false. Do not describe them as working elsewhere, and do not enable a consumer's
+use of them for another board, until that panel has been measured.
+
+How the calibration works, and what its three numbers per level mean, is in
+[docs/metalio-eink4-plus-support.md](docs/metalio-eink4-plus-support.md)
+("Calibrating the 16 levels"). In short: the panel's own table reaches every
+gray by way of black and pushes a gray toward black again before clearing it; a
+calibration table replaces that with numbers measured on the glass, so a level
+is cleared with white frames alone.
+
+Tuning is a loop between the device and a camera, so an agent can only run it
+with a person:
+
+1. The consumer firmware needs a way to set the numbers and draw bars of chosen
+   levels on a running device (a serial command is enough).
+2. Draw a grid of candidate levels beside black and white references, and ask
+   for a photo taken straight on, in even light, with no reflection on the glass.
+3. Measure each stripe's lightness between the two references. Compare a stripe
+   with what is beside it, not with a distant part of the photo: the lighting
+   changes across the screen by more than the differences being measured.
+4. Pick the levels nearest an even ramp, load them, and photograph the ramp.
+5. Have the person judge screen changes by eye, and ask whether anything left
+   behind is lighter or darker than its surroundings. Those need opposite
+   corrections.
+
+To ask an agent for this: say which device, that it may use the serial port,
+and that you will send a photo after each pattern. The agent must hold one
+serial connection for the session (opening the port resets the device) and
+release it before any flash. Numbers set this way are lost on reboot; the final
+ones belong in the consumer's source.
+
+When a draw is started from a task other than the one that normally renders,
+hold the CPU at full speed for it: at the idle clock the panel's line feed
+underruns and the frame fails.

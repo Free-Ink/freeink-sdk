@@ -62,8 +62,9 @@ class EpdiyDriver : public PanelDriver {
   // (0: a level is drawn only after the clearing has ended; nonzero: a pixel
   // that was white is drawn while the others clear). While set, 16-level images are
   // drawn with a table built from these: a changed pixel is cleared to white,
-  // then driven to its level. A clean (not fast) image still uses the built-in
-  // GC16 on every pixel.
+  // then driven to its level. A clean (not fast) image, and the first one after
+  // an every-pixel frame of the built-in table (the boot image, a Half or Full
+  // B/W frame), is drawn from a cleared white screen.
   bool setGray16Levels(EpdBus& bus, const uint8_t (*paths)[3]) override;
   bool getGray16Levels(uint8_t (*paths)[3]) const override;
 

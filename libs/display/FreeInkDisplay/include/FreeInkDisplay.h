@@ -108,7 +108,8 @@ class FreeInkDisplay {
   // asks for less than a full redraw; what that is depends on the panel.
   // Under setInverted(true) every level is shown complemented, so `levels`
   // must be writable: it is inverted in place for the call and restored.
-  // False when the panel does not take 16-level images.
+  // False when the panel does not take 16-level images. Implemented by the
+  // EPDiy driver and checked on the Metalio E-Ink4-Plus only.
   // FREEINK_HAS_GRAY16 lets a consumer test for these two calls.
 #define FREEINK_HAS_GRAY16 1
   bool supportsGray16Image() const;

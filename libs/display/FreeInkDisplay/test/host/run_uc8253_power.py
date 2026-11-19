@@ -304,7 +304,7 @@ int main() {
  static_assert(freeink::Uc8253X3Driver::kIdlePowerOffMs == 1200u);
  static_assert(freeink::x3_lut16::kVcomDcStandard == 0x24u);
  static_assert(freeink::x3_lut16::kVcomDcIdle == 0x00u);
- assert(d.supportsGray16());
+ assert(d.supportsGray16Planes());
  assert(d.spiHz() == 16000000u);
  const auto& defCfg = freeink::uc8253X3DefaultConfig();
  assert(defCfg.gc.bw[0] == 0x80 && defCfg.gc.bw[1] == 0x03 && defCfg.gc.bw[2] == 0x02 && defCfg.gc.bw[3] == 0x00);
@@ -725,7 +725,7 @@ int main() {
  freeink::Uc8253X3Config noLut16Cfg = freeink::uc8253X3DefaultConfig();
  noLut16Cfg.lut16 = {};
  freeink::Uc8253X3Driver noLut16Driver(noLut16Cfg);
- assert(!noLut16Driver.supportsGray16());
+ assert(!noLut16Driver.supportsGray16Planes());
  noLut16Driver.begin(bus);
  noLut16Driver.skipInitialResync();
  noLut16Driver.displayGrayscaleBase(bus, fb.data(), freeink::RefreshMode::Fast, false);

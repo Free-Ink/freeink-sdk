@@ -162,7 +162,7 @@ class FreeInkDisplay {
   // `*Async` variants return true while DRF runs; drain via waitRefreshComplete()
   // or the next display/upload call. Pass nullptr to beginGray16Cleanup() when
   // streaming both DTM2 and DTM1 directly before finishGray16Cleanup().
-  bool supportsGray16() const;
+  bool supportsGray16Planes() const;
   bool supportsDeferredGray16Base() const;
   void displayGray16Base(RefreshMode fallback = FAST_REFRESH, bool turnOffScreen = false);
   bool displayGray16BaseAsync(RefreshMode fallback = FAST_REFRESH);

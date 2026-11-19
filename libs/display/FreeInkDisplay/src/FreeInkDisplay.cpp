@@ -1045,7 +1045,7 @@ bool FreeInkDisplay::displayGrayscaleBase(GrayscaleMode mode, RefreshMode fallba
 void FreeInkDisplay::displayGrayscaleBase(RefreshMode fallback, bool turnOffScreen) {
   cancelGrayscalePass();
   _grayPassFailed = false;
-  if (_inverted || (_inversionDirty && (!_driver || !_driver->supportsGray16()))) {
+  if (_inverted || (_inversionDirty && (!_driver || !_driver->supportsGray16Planes()))) {
     displayBuffer(fallback, turnOffScreen);
     return;
   }
@@ -1185,7 +1185,9 @@ void FreeInkDisplay::cleanupGrayscaleBuffers(const uint8_t* bwBuffer) {
   if (frameBuffer && bwBuffer && frameBuffer != bwBuffer) memcpy(frameBuffer, bwBuffer, bufferSize);
 }
 
-bool FreeInkDisplay::supportsGray16() const { return !_inverted && _driver != nullptr && _driver->supportsGray16(); }
+bool FreeInkDisplay::supportsGray16Planes() const {
+  return !_inverted && _driver != nullptr && _driver->supportsGray16Planes();
+}
 
 bool FreeInkDisplay::supportsDeferredGray16Base() const {
 #ifdef EINK_DISPLAY_SINGLE_BUFFER_MODE
@@ -1200,7 +1202,7 @@ void FreeInkDisplay::displayGray16Base(RefreshMode fallback, bool turnOffScreen)
   cancelGrayscalePass();
   _grayPassFailed = false;
   if (!frameBuffer) return;
-  if (_inverted || !supportsGray16()) {
+  if (_inverted || !supportsGray16Planes()) {
     displayGrayscaleBase(fallback, turnOffScreen);
     return;
   }

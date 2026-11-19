@@ -78,7 +78,7 @@ Overlay with the same input bytes.
 
 ## Two-pass 16-gray (UC8253 X3)
 
-Panels whose `supportsGray16()` returns true expose a two-pass split-plane
+Panels whose `supportsGray16Planes()` returns true expose a two-pass split-plane
 16-level pipeline over 1-bpp controller RAM (`supportsDeferredGray16Base()`
 indicates whether `displayGray16BaseAsync()` overlaps CPU work with the base
 waveform):

@@ -66,10 +66,10 @@ class Uc8253X3Driver : public PanelDriver {
   bool writeGrayscalePlaneGateStream(EpdBus& bus, GrayPlane plane, void* ctx,
                                      size_t (*nextChunk)(void* ctx, const uint8_t** outChunk)) override;
   void displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut, bool factoryMode) override;
-  bool supportsGray16() const override {
+  bool supportsGray16Planes() const override {
     return hasLutBank(_cfg.lut16.preBwMid) && hasLutBank(_cfg.lut16.pass1Coarse) && hasLutBank(_cfg.lut16.pass2Fine);
   }
-  bool supportsDeferredGray16Base() const override { return supportsGray16(); }
+  bool supportsDeferredGray16Base() const override { return supportsGray16Planes(); }
   void displayGray16Base(EpdBus& bus, const uint8_t* fb, RefreshMode fallback, bool turnOff = false) override;
   bool displayGray16BaseStart(EpdBus& bus, const uint8_t* fb, RefreshMode fallback, bool turnOff = false) override;
   void displayGray16Pass1(EpdBus& bus) override;

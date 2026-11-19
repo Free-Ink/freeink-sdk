@@ -221,7 +221,7 @@ class PanelDriver {
     display(bus, fb, nullptr, RefreshMode::Fast, turnOff);
   }
   // Two-pass 16-gray refresh and differential DTM1 cleanup (UC8253 X3).
-  virtual bool supportsGray16() const { return false; }
+  virtual bool supportsGray16Planes() const { return false; }
   virtual bool supportsDeferredGray16Base() const { return false; }
   virtual void displayGray16Base(EpdBus& bus, const uint8_t* fb, RefreshMode fallback, bool turnOff = false) {
     displayGrayscaleBase(bus, fb, fallback, turnOff);

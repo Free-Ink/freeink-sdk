@@ -613,7 +613,7 @@ bool Uc8253X3Driver::displayGrayscaleBaseImpl(EpdBus& bus, const uint8_t* fb, Re
   drainPendingRefresh(bus);
   _absoluteInput = false;
   _directGrayPass = false;
-  const bool useLut16 = gray16Pass && supportsGray16();
+  const bool useLut16 = gray16Pass && supportsGray16Planes();
   const uint8_t pllStd = x3_lut16::kPllStandard;
   const uint8_t vcomStd = x3_lut16::kVcomDcStandard;
   const uint8_t pllBase = static_cast<uint8_t>(_cfg.lut16.pllBase & 0x0Fu);
@@ -938,7 +938,7 @@ bool Uc8253X3Driver::displayGray16Pass1Start(EpdBus& bus) { return displayGray16
 
 bool Uc8253X3Driver::displayGray16Pass1Impl(EpdBus& bus, bool allowDefer) {
   drainPendingRefresh(bus);
-  if (!supportsGray16() || !_grayState.lsbValid) return false;
+  if (!supportsGray16Planes() || !_grayState.lsbValid) return false;
   const uint8_t pllPass1 = static_cast<uint8_t>(_cfg.lut16.pllPass1 & 0x0Fu);
   const uint8_t vcomPass1 = static_cast<uint8_t>(_cfg.lut16.vcomPass1 & 0x7Fu);
   const uint8_t pllStd = x3_lut16::kPllStandard;
@@ -971,7 +971,7 @@ bool Uc8253X3Driver::displayGray16Pass2Start(EpdBus& bus, bool turnOff) {
 
 bool Uc8253X3Driver::displayGray16Pass2Impl(EpdBus& bus, bool turnOff, bool allowDefer) {
   drainPendingRefresh(bus);
-  if (!supportsGray16() || !_grayState.lsbValid) return false;
+  if (!supportsGray16Planes() || !_grayState.lsbValid) return false;
   const uint8_t pllPass2 = static_cast<uint8_t>(_cfg.lut16.pllPass2 & 0x0Fu);
   const uint8_t vdlPass2 = static_cast<uint8_t>(_cfg.lut16.vdlPass2 & 0x3Fu);
   const uint8_t vcomPass2 = static_cast<uint8_t>(_cfg.lut16.vcomPass2 & 0x7Fu);
@@ -1042,7 +1042,7 @@ void Uc8253X3Driver::finishGray16Cleanup(EpdBus& bus) {
   _grayState.lsbValid = false;
   _inGrayscaleMode = false;
   _redRamSynced = true;
-  _gray16CleanupActive = supportsGray16();
+  _gray16CleanupActive = supportsGray16Planes();
   _forceFullSyncNext = false;
   _forcedConditionPassesNext = 0;
   if (_isScreenOn) {

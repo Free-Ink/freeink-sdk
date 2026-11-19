@@ -5,7 +5,7 @@
 #include <Arduino.h>
 struct WireStub {
   std::array<uint8_t,8> expander{255,255,255,255,0,0,255,255};
-  std::array<uint8_t,5> touch{};
+  std::array<uint8_t,11> touch{};
   std::vector<std::vector<uint8_t>> writes;
   std::vector<uint8_t> tx,rx;
   uint8_t address=0,reg=0;
@@ -22,7 +22,7 @@ struct WireStub {
   void write(uint8_t v) { tx.push_back(v); }
   void write(const uint8_t* v,size_t n) { tx.insert(tx.end(),v,v+n); }
   int endTransmission(bool=true) {
-    if ((address==0x20 && expanderDown()) || (address==0x15 && failTouch)) return 1;
+    if ((address==0x20 && expanderDown()) || ((address==0x15 || address==0x38) && failTouch)) return 1;
     if (!tx.empty()) reg=tx[0];
     if (address==0x20 && tx.size()>1) {
       writes.push_back(tx);
@@ -33,7 +33,7 @@ struct WireStub {
   int requestFrom(uint8_t a,uint8_t n,uint8_t) {
     rx.clear(); offset=0;
     if(a==0x20 && !expanderDown()) for(unsigned i=0;i<n;++i) rx.push_back(expander.at(reg+i));
-    if(a==0x15 && !failTouch && reg==2) rx.assign(touch.begin(),touch.end());
+    if((a==0x15 || a==0x38) && !failTouch && reg==2) rx.assign(touch.begin(),touch.begin()+n);
     return rx.size();
   }
   int available() { return rx.size()-offset; }

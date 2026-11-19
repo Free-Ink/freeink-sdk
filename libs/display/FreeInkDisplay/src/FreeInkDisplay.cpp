@@ -60,6 +60,9 @@
 #if FREEINK_DRIVER_IT8951
 #include "driver/It8951Driver.h"
 #endif
+#if FREEINK_DRIVER_EPDIY
+#include "driver/EpdiyDriver.h"
+#endif
 #if FREEINK_DRIVER_PAPER_MONO
 #include "driver/PaperMonoDriver.h"
 #endif
@@ -244,6 +247,8 @@ void FreeInkDisplay::selectDriver() {
       _driver = &lgfxEpdDriver();
 #elif FREEINK_DRIVER_IT8951
       _driver = &it8951Driver();
+#elif FREEINK_DRIVER_EPDIY
+      _driver = &epdiyDriver();
 #endif
       break;
   }
@@ -979,6 +984,39 @@ void FreeInkDisplay::copyGrayscaleBuffers(const uint8_t* lsbBuffer, const uint8_
   _driver->copyGrayscaleLsb(_bus, lsbBuffer);
   if (!acceptGrayscaleRows(1, msbBuffer, 0, getDisplayHeight())) return;
   _driver->copyGrayscaleMsb(_bus, msbBuffer);
+}
+
+bool FreeInkDisplay::supportsGray16Image() const { return _driver != nullptr && _driver->supportsGray16Image(); }
+
+bool FreeInkDisplay::displayGray16Image(const uint8_t* levels, bool turnOffScreen, bool fast) {
+  if (!levels || !supportsGray16Image()) return false;
+  cancelGrayscalePass();
+  DisplayPmLock pmLock;
+  syncPendingAsync();
+  // The glass no longer shows a B/W frame, so no stored baseline matches it.
+  _shadowValid = false;
+  _redRamSynced = false;
+  // As with a B/W frame, the first refresh after a polarity change drives every pixel.
+  if (_inversionDirty) fast = false;
+  _inversionDirty = false;
+  // Inverted output: every level is complemented for the call, like the
+  // framebuffer bits of a B/W frame, and the caller's image is put back after.
+  const uint32_t imageBytes = static_cast<uint32_t>(getDisplayWidth() / 2) * getDisplayHeight();
+  if (_inverted) invertBytes(const_cast<uint8_t*>(levels), imageBytes);
+  const bool shown = _driver->displayGray16Image(_bus, levels, turnOffScreen, fast);
+  if (_inverted) invertBytes(const_cast<uint8_t*>(levels), imageBytes);
+  return shown;
+}
+
+bool FreeInkDisplay::setGray16Levels(const uint8_t (*paths)[3]) {
+  if (!_driver || !_driver->supportsGray16Image()) return false;
+  cancelGrayscalePass();
+  syncPendingAsync();  // never rebuild a table under a running refresh
+  return _driver->setGray16Levels(_bus, paths);
+}
+
+bool FreeInkDisplay::getGray16Levels(uint8_t (*paths)[3]) const {
+  return paths && _driver && _driver->supportsGray16Image() && _driver->getGray16Levels(paths);
 }
 
 void FreeInkDisplay::cancelGrayscalePass() {

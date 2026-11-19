@@ -107,6 +107,8 @@ class FreeInkDisplay {
   // (getDisplayWidth() / 2 bytes each). The framebuffer is not used. `fast`
   // asks for less than a full redraw; what that is depends on the panel.
   // False when unsupported (other panels, inverted output).
+  // FREEINK_HAS_GRAY16 lets a consumer test for these two calls.
+#define FREEINK_HAS_GRAY16 1
   bool supportsGray16Image() const;
   bool displayGray16Image(const uint8_t* levels, bool turnOffScreen = true, bool fast = false);
 

@@ -1008,6 +1008,17 @@ bool FreeInkDisplay::displayGray16Image(const uint8_t* levels, bool turnOffScree
   return shown;
 }
 
+bool FreeInkDisplay::setGray16Levels(const uint8_t (*paths)[3]) {
+  if (!_driver || !_driver->supportsGray16Image()) return false;
+  cancelGrayscalePass();
+  syncPendingAsync();  // never rebuild a table under a running refresh
+  return _driver->setGray16Levels(_bus, paths);
+}
+
+bool FreeInkDisplay::getGray16Levels(uint8_t (*paths)[3]) const {
+  return paths && _driver && _driver->supportsGray16Image() && _driver->getGray16Levels(paths);
+}
+
 void FreeInkDisplay::cancelGrayscalePass() {
   if (_grayscaleMode == GrayscaleMode::Overlay) return;
   if (_driver) _driver->requestResync(1);

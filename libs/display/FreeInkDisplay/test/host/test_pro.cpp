@@ -1077,6 +1077,8 @@ static void testGray16Image() {
     display._driver = &plain;
     display.begin();
     assert(!display.supportsGray16Image() && !display.displayGray16Image(image));
+    uint8_t paths[16][3] = {};
+    assert(!display.setGray16Levels(paths) && !display.getGray16Levels(paths));
   }
   Gray16Driver driver;
   FreeInkDisplay display(12, 11, 13, 18, 14, 6);

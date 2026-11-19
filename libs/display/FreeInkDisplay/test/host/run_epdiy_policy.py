@@ -17,7 +17,7 @@ code=r'''
 #include <cstring>
 struct EpdBus {};
 enum class RefreshMode {Full,Half,Fast};
-enum class Draw {Gc16Reinforced,Gc16All,Clean};
+enum class Draw {Gc16Reinforced,Gc16All,Clean,Tuned};
 static bool g_started=true,g_basePending,g_resyncPending,g_firstFrameAllPixels,g_glassMatchesFront=true;
 static unsigned changed,calls;
 static Draw last;
@@ -62,6 +62,14 @@ int main() {
  g_glassMatchesFront=false;calls=0;assert(driver.displayGray16Image(bus,image,true,true) && calls==1);
  g_resyncPending=true;assert(driver.displayGray16Image(bus,image,true,true) && last==Draw::Gc16All && !g_resyncPending);
  drawOk=false;assert(!driver.displayGray16Image(bus,image,true,false));drawOk=true;
+ // Calibration table in use: ink i is level 15 - i and fast is the tuned draw;
+ // a clean frame is still the built-in GC16 on every pixel.
+ g_tuned=true;uint8_t direct[8]={0xB1,0xF0};
+ calls=0;assert(driver.displayGray16Image(bus,direct,true,true) && calls==1 && last==Draw::Tuned);
+ assert(frontFb[0]==0xE4 && frontFb[1]==0xF0 && frontFb[2]==0xFF);
+ assert(driver.displayGray16Image(bus,direct,true,false) && last==Draw::Gc16All);
+ g_resyncPending=true;assert(driver.displayGray16Image(bus,direct,true,true) && last==Draw::Gc16All && !g_resyncPending);
+ g_tuned=false;
  puts("EPDiy refresh policy: small/large changes, no-op, invalid baseline, cleanup, startup and 16-level image passed");
 }
 '''

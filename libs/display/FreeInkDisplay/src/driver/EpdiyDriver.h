@@ -54,6 +54,18 @@ class EpdiyDriver : public PanelDriver {
   // fast drives the changed pixels; otherwise every pixel (as Half).
   bool supportsGray16Image() const override { return true; }
   bool displayGray16Image(EpdBus& bus, const uint8_t* levels, bool turnOff, bool fast = false) override;
+  // Calibration. paths[l] = {frames toward black from white, frames back
+  // toward white after them, frames toward white that clear the level};
+  // paths[0] (white) holds the top-up for unchanged pixels instead: its first
+  // number is the black frames a pixel that stays black gets, its second the
+  // white frames one that stays white gets, and its third chooses the timing
+  // (0: a level is drawn only after the clearing has ended; nonzero: a pixel
+  // that was white is drawn while the others clear). While set, 16-level images are
+  // drawn with a table built from these: a changed pixel is cleared to white,
+  // then driven to its level. A clean (not fast) image still uses the built-in
+  // GC16 on every pixel.
+  bool setGray16Levels(EpdBus& bus, const uint8_t (*paths)[3]) override;
+  bool getGray16Levels(uint8_t (*paths)[3]) const override;
 
   // The next frame drives every pixel with GC16 (as Half).
   void requestResync(uint8_t settlePasses) override;

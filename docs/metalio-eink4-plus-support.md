@@ -137,6 +137,35 @@ scan above (`kInkLevel` in `EpdiyDriver.cpp`). A fast turn to the image already
 on the glass draws nothing. 16-level images have not been checked on a physical
 unit.
 
+### Calibrating the 16 levels
+
+`setGray16Levels()` replaces the table 16-level images are drawn with by one
+built from three numbers per level (level 0 = white .. 15 = darkest):
+
+| Number | Meaning |
+|---|---|
+| first | frames pushed toward black, starting from white |
+| second | frames pushed back toward white after those |
+| third | frames pushed toward white to clear a pixel at this level |
+
+Level 0 (white) holds the top-up for unchanged pixels instead: its first number
+is the black frames a pixel that stays black gets on every update, its second
+the white frames one that stays white gets, and its third the timing: 0 draws
+new ink only after old ink has cleared, nonzero draws a pixel that was white
+while the others clear, the two ending together. Freshly driven white is brighter
+than white left alone, so without a top-up the areas a screen change clears
+stand out against the rest. With the table in use a changed pixel is cleared
+to white and then driven to its level and unchanged grays are not driven, so each level's
+appearance depends on its own numbers alone. A clean (not fast) image, and the
+first frame after `begin()`, still use the built-in GC16 on every pixel. A table longer than 64 frames is
+refused.
+`getGray16Levels()` returns the numbers in use, or, before any are set, the
+ones read out of the balanced GC table: its pushes from white to each level and
+the white pushes of its transition back to white (that table also pushes toward
+black before clearing, which this one does not). `setGray16Levels(nullptr)` returns to the built-in table. The
+tuned table does not return each pixel's net drive, so it is a calibration aid
+until its numbers have been checked on the glass.
+
 Three things the S31 needs:
 
 - **CPU at 320 MHz while drawing.** Arduino boots the S31 at 240 MHz, where the

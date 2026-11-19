@@ -133,6 +133,21 @@ class PanelDriver {
     return false;
   }
 
+  // Calibration: choose how each level of a 16-level image is driven.
+  // paths[l] holds three numbers for level l (0 = white .. 15 = darkest);
+  // what they mean is the driver's (see each driver). nullptr goes back to the
+  // driver's built-in levels. False = unsupported or out of range; nothing changed.
+  virtual bool setGray16Levels(EpdBus& bus, const uint8_t (*paths)[3]) {
+    (void)bus;
+    (void)paths;
+    return false;
+  }
+  // The numbers in use, or the driver's starting point when none were set.
+  virtual bool getGray16Levels(uint8_t (*paths)[3]) const {
+    (void)paths;
+    return false;
+  }
+
   // --- grayscale (dual-plane LSB/MSB) ---
   virtual GrayscaleCapabilities grayscaleCapabilities(GrayscaleMode mode = GrayscaleMode::Overlay) const {
     (void)mode;

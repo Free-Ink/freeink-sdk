@@ -132,11 +132,17 @@ bool overlayGray() {
 // at 22/40/62/86% of the way from black to the paper).
 constexpr uint8_t kInkLevel[16] = {15, 13, 10, 9, 8, 8, 7, 6, 6, 5, 4, 4, 3, 2, 1, 0};
 
+// 16-level images are drawn with the calibration table (setGray16Levels),
+// built from these numbers.
+bool g_tuned = false;
+uint8_t g_tunedPaths[16][3] = {};
+
 // How a frame reaches the glass.
 enum class Draw : uint8_t {
   Gc16Reinforced,  // trimmed transitions with gentle black/white same-color reinforcement
   Gc16All,      // every pixel, unchanged ones included: cleans residue, flashes
   Clean,        // black/white clear cycles, then every pixel from white (vendor's deep clean)
+  Tuned,        // calibration table: changed pixels cleared to white, then driven to their level
 };
 
 void drawFront(Draw how) {
@@ -151,9 +157,15 @@ void drawFront(Draw how) {
   const int temperature = static_cast<int>(epd_ambient_temperature());
   // The trimmed table reinforces same-color endpoints; cleanup keeps the full erase/redraw table.
   const EpdWaveform* fast = my_waveform_fast();
-  epd_hl_waveform(&g_hl, how == Draw::Gc16Reinforced && fast ? fast : &MY_WAVEFORM);
+  const EpdWaveform* waveform = how == Draw::Gc16Reinforced && fast ? fast : &MY_WAVEFORM;
+#ifdef MY_WAVEFORM_HAS_TUNED
+  if (how == Draw::Tuned && my_waveform_tuned()) waveform = my_waveform_tuned();
+#endif
+  epd_hl_waveform(&g_hl, waveform);
   const auto run = [&]() -> enum EpdDrawError {
     switch (how) {
+      case Draw::Tuned:
+        return epd_hl_update_screen_full(&g_hl, MODE_GC16, temperature);
       case Draw::Gc16Reinforced:
         // Only the trimmed table has gentle diagonals; retain differential fallback on allocation failure.
         return fast ? epd_hl_update_screen_full(&g_hl, MODE_GC16, temperature)
@@ -180,7 +192,7 @@ void drawFront(Draw how) {
   // Leaving the TPS65185 rails up between frames holds VCOM on the glass, which
   // EPDiy advises against, so they are dropped after every frame.
   epd_poweroff();
-  static const char* const kDrawNames[] = {"GC16 reinforced", "GC16 all", "clean"};
+  static const char* const kDrawNames[] = {"GC16 reinforced", "GC16 all", "clean", "tuned"};
   LOG_INF(TAG, "%s frame: %lld ms waveform=%s skipped=%d result=0x%x",
           kDrawNames[static_cast<uint8_t>(how)],
           static_cast<long long>((esp_timer_get_time() - startUs) / 1000),
@@ -322,6 +334,48 @@ void EpdiyDriver::displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, RefreshMo
   g_glassMatchesFront = false;
 }
 
+bool EpdiyDriver::setGray16Levels(EpdBus& bus, const uint8_t (*paths)[3]) {
+  (void)bus;
+#ifdef MY_WAVEFORM_HAS_TUNED
+  if (!g_started) return false;
+  if (!paths) {
+    g_tuned = false;
+    return true;
+  }
+  // The image's level l is EPDiy level 15 - l.
+  my_tuned_level_t levels[16];
+  for (int ink = 0; ink < 16; ++ink) levels[15 - ink] = {paths[ink][0], paths[ink][1], paths[ink][2]};
+  if (my_waveform_tuned_set(levels) == 0) return false;
+  memcpy(g_tunedPaths, paths, sizeof(g_tunedPaths));
+  g_tuned = true;
+  return true;
+#else
+  (void)paths;
+  return false;
+#endif
+}
+
+bool EpdiyDriver::getGray16Levels(uint8_t (*paths)[3]) const {
+#ifdef MY_WAVEFORM_HAS_TUNED
+  if (!g_started || !paths) return false;
+  if (!g_tuned) {
+    my_tuned_level_t levels[16];
+    my_waveform_tuned_defaults(levels);
+    for (int ink = 0; ink < 16; ++ink) {
+      paths[ink][0] = levels[15 - ink].black;
+      paths[ink][1] = levels[15 - ink].pull;
+      paths[ink][2] = levels[15 - ink].clear;
+    }
+    return true;
+  }
+  memcpy(paths, g_tunedPaths, sizeof(g_tunedPaths));
+  return true;
+#else
+  (void)paths;
+  return false;
+#endif
+}
+
 bool EpdiyDriver::displayGray16Image(EpdBus& bus, const uint8_t* levels, bool turnOff, bool fast) {
   (void)bus;
   (void)turnOff;  // the rails are always dropped after a frame
@@ -331,12 +385,18 @@ bool EpdiyDriver::displayGray16Image(EpdBus& bus, const uint8_t* levels, bool tu
   const uint32_t total = geometry().bufferSize * 4;
   uint32_t changed = 0;
   for (uint32_t i = 0; i < total; ++i) {
-    const uint8_t next = static_cast<uint8_t>(kInkLevel[levels[i] >> 4] | (kInkLevel[levels[i] & 0x0F] << 4));
+    // The calibration table defines every level itself: ink i is level 15 - i.
+    const uint8_t left = levels[i] >> 4, right = levels[i] & 0x0F;
+    const uint8_t next = g_tuned ? static_cast<uint8_t>((15 - left) | ((15 - right) << 4))
+                                 : static_cast<uint8_t>(kInkLevel[left] | (kInkLevel[right] << 4));
     changed += front[i] != next;
     front[i] = next;
   }
   g_basePending = false;  // the image replaces any staged grayscale base
-  Draw how = fast ? Draw::Gc16Reinforced : Draw::Gc16All;
+  // The calibration table drives only what changes, so a frame that must reach
+  // every pixel (not fast, or the first after begin()) uses the built-in GC16
+  // either way; the two tables agree on black and white.
+  Draw how = !fast ? Draw::Gc16All : g_tuned ? Draw::Tuned : Draw::Gc16Reinforced;
   if (g_resyncPending || g_firstFrameAllPixels) {
     how = Draw::Gc16All;
     g_resyncPending = false;

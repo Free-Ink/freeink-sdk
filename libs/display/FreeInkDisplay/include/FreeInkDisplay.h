@@ -113,6 +113,12 @@ class FreeInkDisplay {
 #define FREEINK_HAS_GRAY16 1
   bool supportsGray16Image() const;
   bool displayGray16Image(const uint8_t* levels, bool turnOffScreen = true, bool fast = false);
+  // Calibration hooks: three numbers per level (0 = white .. 15 = darkest),
+  // 16 rows, whose meaning is the panel driver's. setGray16Levels(nullptr)
+  // returns to the built-in levels; getGray16Levels() reads the ones in use,
+  // or the driver's starting point. False when the driver has no such tuning.
+  bool setGray16Levels(const uint8_t (*paths)[3]);
+  bool getGray16Levels(uint8_t (*paths)[3]) const;
 
   // Frame buffer operations
   void clearScreen(uint8_t color = 0xFF) const;

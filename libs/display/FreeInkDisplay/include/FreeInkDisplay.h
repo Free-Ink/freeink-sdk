@@ -102,6 +102,14 @@ class FreeInkDisplay {
   uint16_t getDisplayWidthBytes() const { return displayWidthBytes; }
   uint32_t getBufferSize() const { return bufferSize; }
 
+  // Absolute 16-level image: `levels` is 4 bpp, 0 = white .. 15 = darkest, two
+  // pixels per byte (high nibble = left pixel), panel-native rows
+  // (getDisplayWidth() / 2 bytes each). The framebuffer is not used. `fast`
+  // asks for less than a full redraw; what that is depends on the panel.
+  // False when unsupported (other panels, inverted output).
+  bool supportsGray16Image() const;
+  bool displayGray16Image(const uint8_t* levels, bool turnOffScreen = true, bool fast = false);
+
   // Frame buffer operations
   void clearScreen(uint8_t color = 0xFF) const;
   void drawImage(const uint8_t* imageData, uint16_t x, uint16_t y, uint16_t w, uint16_t h,

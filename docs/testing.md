@@ -29,7 +29,7 @@ expander read or mode write must not leave the touch controller in reset.
 ## UI, books, credentials, and input
 
 ```sh
-sh libs/ui/FreeInkUI/test/host/run.sh
+sh libs/ui/FreeInkUI/test/host/run.sh  # runs twice: without and with FREEINK_UI_GRAY16
 sh libs/book/FreeInkBook/test/host/run.sh
 sh libs/book/ContentProtection/test/host/run.sh
 sh libs/hardware/InputManager/test/host/run.sh

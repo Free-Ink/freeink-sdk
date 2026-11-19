@@ -109,6 +109,7 @@ libs/display/epdiy`.
 | Half | GC16 on every pixel, unchanged ones included, which cleans the residue DU leaves |
 | Fast | DU on changed pixels; a change over a quarter of the screen runs GC16 on the changed pixels, because DU leaves a ghost |
 | Grayscale overlay | Two extra grey levels (EPDiy levels 3 and 5) written into the front buffer, drawn with GC16 on the changed pixels |
+| 16-level image | `displayGray16Image()`: GC16 on every pixel, or on the changed pixels when `fast` |
 
 At `begin()` the driver clears the glass with three black/white cycles, as the
 vendor firmware does, and the first frame after that drives every pixel with
@@ -128,6 +129,13 @@ greys are not linear. A flatbed scan of a 16-level ramp put level 3 at about
 looked aliased. Levels 3 and 5 give slightly bold anti-aliasing; 4 and 7 would
 split the range evenly, but the difference needs a magnifier to see. VCOM at
 1200 and 1700 mV gave the same ramp within a few percent.
+
+`supportsGray16Image()` is true. `displayGray16Image()` takes a 4-bpp image
+(0 = white .. 15 = darkest in even steps, left pixel in the high nibble) and
+maps each level to a waveform level through a table interpolated from the ramp
+scan above (`kInkLevel` in `EpdiyDriver.cpp`). A fast turn to the image already
+on the glass draws nothing. 16-level images have not been checked on a physical
+unit.
 
 Three things the S31 needs:
 

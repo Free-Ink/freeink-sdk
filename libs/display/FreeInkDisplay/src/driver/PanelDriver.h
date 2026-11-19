@@ -118,6 +118,21 @@ class PanelDriver {
   virtual bool displayRetainedGrayscaleOverlay(EpdBus& bus, const uint8_t* fb, uint16_t x, uint16_t y,
                                                uint16_t w, uint16_t h) { return false; }
 
+  // --- 16-level image ---
+  // Absolute 16-level image in one call. `levels` holds one 4-bit level per
+  // pixel, 0 = white .. 15 = darkest, two pixels per byte (high nibble = left
+  // pixel), panel-native rows like the framebuffer. False = not supported
+  // here; nothing was sent.
+  virtual bool supportsGray16Image() const { return false; }
+  // fast: drive less than a full redraw where the driver can (see each driver).
+  virtual bool displayGray16Image(EpdBus& bus, const uint8_t* levels, bool turnOff, bool fast = false) {
+    (void)bus;
+    (void)levels;
+    (void)turnOff;
+    (void)fast;
+    return false;
+  }
+
   // --- grayscale (dual-plane LSB/MSB) ---
   virtual GrayscaleCapabilities grayscaleCapabilities(GrayscaleMode mode = GrayscaleMode::Overlay) const {
     (void)mode;

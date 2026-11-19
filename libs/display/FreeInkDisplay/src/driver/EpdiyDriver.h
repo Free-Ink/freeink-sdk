@@ -13,7 +13,8 @@
 // DU on changed pixels unless it changes over a quarter of the screen, which
 // then runs GC16 on the changed pixels because DU leaves a ghost of the old screen. Grayscale overlays
 // (text anti-aliasing, images) are painted into the same front buffer as two
-// extra grey levels and drawn with GC16 over the B/W base.
+// extra grey levels and drawn with GC16 over the B/W base. A 16-level image
+// (displayGray16Image) is mapped into the front buffer and drawn with GC16.
 //
 // Selection: linked only when FREEINK_DRIVER_EPDIY (derived from
 // FREEINK_DEVICE_METALIO_EINK4_PLUS), which also needs the Epdiy and
@@ -49,6 +50,10 @@ class EpdiyDriver : public PanelDriver {
   void writeGrayscalePlaneStrip(EpdBus& bus, GrayPlane plane, const uint8_t* rows, uint16_t yStart,
                                 uint16_t numRows) override;
   void displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut, bool factoryMode) override;
+
+  // fast drives the changed pixels; otherwise every pixel (as Half).
+  bool supportsGray16Image() const override { return true; }
+  bool displayGray16Image(EpdBus& bus, const uint8_t* levels, bool turnOff, bool fast = false) override;
 
   // The next frame drives every pixel with GC16 (as Half).
   void requestResync(uint8_t settlePasses) override;

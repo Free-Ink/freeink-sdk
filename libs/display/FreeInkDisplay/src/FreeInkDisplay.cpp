@@ -986,6 +986,21 @@ void FreeInkDisplay::copyGrayscaleBuffers(const uint8_t* lsbBuffer, const uint8_
   _driver->copyGrayscaleMsb(_bus, msbBuffer);
 }
 
+bool FreeInkDisplay::supportsGray16Image() const {
+  return !_inverted && _driver != nullptr && _driver->supportsGray16Image();
+}
+
+bool FreeInkDisplay::displayGray16Image(const uint8_t* levels, bool turnOffScreen, bool fast) {
+  if (!levels || !supportsGray16Image()) return false;
+  cancelGrayscalePass();
+  DisplayPmLock pmLock;
+  syncPendingAsync();
+  // The glass no longer shows a B/W frame, so no stored baseline matches it.
+  _shadowValid = false;
+  _redRamSynced = false;
+  return _driver->displayGray16Image(_bus, levels, turnOffScreen, fast);
+}
+
 void FreeInkDisplay::cancelGrayscalePass() {
   if (_grayscaleMode == GrayscaleMode::Overlay) return;
   if (_driver) _driver->requestResync(1);

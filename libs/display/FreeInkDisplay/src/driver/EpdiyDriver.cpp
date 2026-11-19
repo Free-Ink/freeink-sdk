@@ -127,6 +127,11 @@ bool overlayGray() {
   return any;
 }
 
+// A 16-level image's ink (0 white .. 15 darkest, even steps) to the waveform
+// level that shows it, interpolated from the ramp scan above (levels 3/5/7/10
+// at 22/40/62/86% of the way from black to the paper).
+constexpr uint8_t kInkLevel[16] = {15, 13, 10, 9, 8, 8, 7, 6, 6, 5, 4, 4, 3, 2, 1, 0};
+
 // How a frame reaches the glass.
 enum class Draw : uint8_t {
   Gc16Reinforced,  // trimmed transitions with gentle black/white same-color reinforcement
@@ -315,6 +320,32 @@ void EpdiyDriver::displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, RefreshMo
   g_baseMode = fallback;
   // Until displayGray() draws it, the glass no longer matches the front buffer.
   g_glassMatchesFront = false;
+}
+
+bool EpdiyDriver::displayGray16Image(EpdBus& bus, const uint8_t* levels, bool turnOff, bool fast) {
+  (void)bus;
+  (void)turnOff;  // the rails are always dropped after a frame
+  if (!g_started || !levels) return false;
+  // The image has the left pixel in the high nibble; EPDiy in the low one.
+  uint8_t* front = epd_hl_get_framebuffer(&g_hl);
+  const uint32_t total = geometry().bufferSize * 4;
+  uint32_t changed = 0;
+  for (uint32_t i = 0; i < total; ++i) {
+    const uint8_t next = static_cast<uint8_t>(kInkLevel[levels[i] >> 4] | (kInkLevel[levels[i] & 0x0F] << 4));
+    changed += front[i] != next;
+    front[i] = next;
+  }
+  g_basePending = false;  // the image replaces any staged grayscale base
+  Draw how = fast ? Draw::Gc16Reinforced : Draw::Gc16All;
+  if (g_resyncPending || g_firstFrameAllPixels) {
+    how = Draw::Gc16All;
+    g_resyncPending = false;
+    g_firstFrameAllPixels = false;
+  } else if (fast && changed == 0 && g_glassMatchesFront) {
+    return true;  // already on the glass
+  }
+  drawFront(how);
+  return g_glassMatchesFront;
 }
 
 PanelDriver& epdiyDriver() {

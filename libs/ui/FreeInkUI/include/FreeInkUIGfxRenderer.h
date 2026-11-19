@@ -367,6 +367,32 @@ class GfxRendererTarget final : public DrawTarget {
     // this contract; convert such assets before wrapping them in a BitmapRef.
     if (bitmap.format != BitmapFormat::BW1 && bitmap.format != BitmapFormat::Mask1) return;
     const bool black = foreground.color != Color::White;
+#ifdef GFX_RENDERER_HAS_DRAW_MASK
+    // A renderer with drawMask() scales the bitmap itself, which stays smooth
+    // under a UI scale where per-pixel plotting would repeat each source pixel
+    // as a block. Same placement as forEachBitmapPixel; tiles, rotations and
+    // Cover overflow keep the per-pixel path.
+    if (rotation == Rotation::None && mode != BitmapMode::Tile && mode != BitmapMode::TileX &&
+        mode != BitmapMode::TileY) {
+      int dstW = bitmap.width;
+      int dstH = bitmap.height;
+      if (mode == BitmapMode::Stretch) {
+        dstW = rect.width;
+        dstH = rect.height;
+      } else if (mode == BitmapMode::Contain || mode == BitmapMode::Cover) {
+        const int32_t byW = (static_cast<int32_t>(rect.width) << 8) / bitmap.width;
+        const int32_t byH = (static_cast<int32_t>(rect.height) << 8) / bitmap.height;
+        const int32_t scale = mode == BitmapMode::Contain ? (byW < byH ? byW : byH) : (byW > byH ? byW : byH);
+        dstW = static_cast<int>((bitmap.width * scale) >> 8);
+        dstH = static_cast<int>((bitmap.height * scale) >> 8);
+      }
+      if (dstW > 0 && dstH > 0 && dstW <= rect.width && dstH <= rect.height) {
+        renderer.drawMask(bitmap.data, bitmap.width, bitmap.height, bitmap.format == BitmapFormat::Mask1,
+                          rect.x + (rect.width - dstW) / 2, rect.y + (rect.height - dstH) / 2, dstW, dstH, black);
+        return;
+      }
+    }
+#endif
     forEachBitmapPixel(
         rect, bitmap, mode, [&](const int16_t px, const int16_t py) { renderer.drawPixel(px, py, black); },
         rotation);

@@ -1058,11 +1058,13 @@ static void testGray16Image() {
   struct Gray16Driver : Ssd1677Driver {
     int draws = 0;
     const uint8_t* levels = nullptr;
-    bool turnOff = false, fast = false;
+    bool turnOff = false, fast = false, captureFirst = false;
+    uint8_t first = 0;
     bool supportsGray16Image() const override { return true; }
     bool displayGray16Image(EpdBus&, const uint8_t* l, bool off, bool f) override {
       ++draws;
       levels = l;
+      if (captureFirst) first = l[0];
       turnOff = off;
       fast = f;
       return true;
@@ -1084,10 +1086,18 @@ static void testGray16Image() {
   assert(!display.displayGray16Image(nullptr) && driver.draws == 0);
   assert(display.displayGray16Image(image) && driver.levels == image && driver.turnOff && !driver.fast);
   assert(display.displayGray16Image(image, false, true) && !driver.turnOff && driver.fast && driver.draws == 2);
+  // Inverted output: levels reach the driver complemented, every pixel is
+  // driven on the first frame after the change, and the caller's image is restored.
+  const size_t imageBytes = static_cast<size_t>(display.getDisplayWidth() / 2) * display.getDisplayHeight();
+  std::vector<uint8_t> big(imageBytes, 0x1E);
+  driver.captureFirst = true;
   display.setInverted(true);
-  assert(!display.supportsGray16Image() && !display.displayGray16Image(image) && driver.draws == 2);
+  assert(display.supportsGray16Image());
+  assert(display.displayGray16Image(big.data(), true, true) && driver.draws == 3);
+  assert(driver.first == 0xE1 && !driver.fast && big[0] == 0x1E && big[imageBytes - 1] == 0x1E);
+  assert(display.displayGray16Image(big.data(), true, true) && driver.fast && driver.first == 0xE1);
   display.setInverted(false);
-  assert(display.displayGray16Image(image) && driver.draws == 3);
+  assert(display.displayGray16Image(big.data(), true, true) && driver.first == 0x1E && !driver.fast);
 }
 
 int main(int argc, char** argv) {

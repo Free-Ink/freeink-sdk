@@ -81,7 +81,7 @@ class Ssd2677Driver : public PanelDriver {
   // coarse black, pull-back white) built at runtime from the doses; defaults
   // and the give-back tables in lut/Ssd2677Gray16Luts.h.
   bool supportsGray16Image() const override { return BoardConfig::ACTIVE.board != BoardConfig::Board::Sticky; }
-  bool displayGray16Image(EpdBus& bus, const uint8_t* levels, bool turnOff, bool fast = false) override;
+  bool displayGray16Image(EpdBus& bus, const uint8_t* levels, RefreshMode mode, bool turnOff) override;
   bool setGray16Turn(uint8_t scrubEvery) override;
   // 16-level text: `levels` are the calibrated levels (as displayGray16Image);
   // the base must hold exactly the deep-path levels black.

@@ -252,14 +252,18 @@ class PanelDriver {
   // owns the sequence, including giving the drive back before the next frame.
   // False = not supported here; nothing was sent.
   virtual bool supportsGray16Image() const { return false; }
-  // fast: when a 16-level image is already up, turn to this one without the
-  // full clears (give the old drive back, then draw); every Nth fast turn still
-  // takes the full path (setGray16Turn).
-  virtual bool displayGray16Image(EpdBus& bus, const uint8_t* levels, bool turnOff, bool fast = false) {
+  // mode picks the turn, as for displayGray16Base(): Fast asks for the panel's
+  // fast turn, Half for a clean draw, Full for a third behaviour where a
+  // driver has one. Each driver defines what its fast turn does and when it
+  // applies. SSD2677 (Picco): Fast only applies when a 16-level image is
+  // already up (one dissolve, no full clears; every setGray16Turn()-th fast
+  // turn still draws clean); from anything else, and for Half and Full, it
+  // draws clean.
+  virtual bool displayGray16Image(EpdBus& bus, const uint8_t* levels, RefreshMode mode, bool turnOff) {
     (void)bus;
     (void)levels;
+    (void)mode;
     (void)turnOff;
-    (void)fast;
     return false;
   }
   // 16-level text in two steps, so the page reads before its gray is done

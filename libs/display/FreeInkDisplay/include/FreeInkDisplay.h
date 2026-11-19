@@ -179,9 +179,11 @@ class FreeInkDisplay {
   // display call first returns the image's drive, then clears with a full
   // refresh. False when unsupported (other panels, inverted output).
   bool supportsGray16Image() const;
-  // fast: turn from a 16-level image already up without the full clears (see
-  // PanelDriver::displayGray16Image); ignored when none is up.
-  bool displayGray16Image(const uint8_t* levels, bool turnOffScreen = true, bool fast = false);
+  // mode: as displayGray16Base() picks its turn. FAST_REFRESH asks for the
+  // panel's fast turn and HALF_REFRESH for a clean draw; FULL_REFRESH is free
+  // for a driver with a third behaviour. What each does is panel-defined (see
+  // PanelDriver::displayGray16Image).
+  bool displayGray16Image(const uint8_t* levels, RefreshMode mode = HALF_REFRESH, bool turnOffScreen = true);
   bool setGray16Turn(uint8_t scrubEvery);
   // 16-level text in two steps (PanelDriver::beginGray16Text): the full-ink
   // base first, then the edge tones. `base` is a 1 bpp frame.

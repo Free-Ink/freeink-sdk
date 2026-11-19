@@ -770,7 +770,7 @@ bool Ssd2677Driver::setGray16Levels(EpdBus& bus, const uint8_t (*paths)[3]) {
   return true;
 }
 
-bool Ssd2677Driver::displayGray16Image(EpdBus& bus, const uint8_t* levels, bool turnOff, bool fast) {
+bool Ssd2677Driver::displayGray16Image(EpdBus& bus, const uint8_t* levels, RefreshMode mode, bool turnOff) {
   if (!supportsGray16Image() || !levels) return false;
   const PanelGeometry g = geometry();
   const uint32_t bytes = static_cast<uint32_t>(g.width / 2) * g.height;
@@ -786,6 +786,9 @@ bool Ssd2677Driver::displayGray16Image(EpdBus& bus, const uint8_t* levels, bool 
   ensureGray16Config();
   _textAa.invalidate();
   _grayPending = _grayMaskReady = _absoluteGray = false;
+  // Fast is the dissolve turn, and only from a 16-level image already up;
+  // Half and Full both draw clean.
+  const bool fast = mode == RefreshMode::Fast;
   if (fast && _gray16OnGlass && _g16FastTurns < _g16ScrubEvery) {
     // Fast turn: one dissolve erases the old image's ink and lays the new deep
     // blacks, no full clears. The fixed erase does not return each pixel's

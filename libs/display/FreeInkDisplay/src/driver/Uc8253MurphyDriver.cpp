@@ -178,7 +178,10 @@ void Uc8253MurphyDriver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* 
 
   // FAST (DU) ghosts over time. A board with a ghostClearInterval promotes to a full (GC) refresh
   // every that many refreshes. The default has none: the host decides when a page needs a clean one.
-  bool useFast = (mode == RefreshMode::Fast);
+  // FAST also needs the previous frame: with the new one in both planes the panel sees nothing to
+  // change, so the old screen stays up with the new one faint over it. Only a full refresh can draw
+  // a page then, which is the case on a single-buffer build or with the secondary buffer released.
+  bool useFast = (mode == RefreshMode::Fast) && prev != nullptr;
   if (useFast) {
     if (_cfg.ghostClearInterval != 0 && _fastRefreshCount >= _cfg.ghostClearInterval) {
       useFast = false;
@@ -196,8 +199,7 @@ void Uc8253MurphyDriver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* 
   // every pixel is fully driven to its target — clean, no half-flipped pixels.
   // FAST (DU) refresh is differential: old frame -> DTM1, new -> DTM2, so unchanged
   // pixels take WW/BB and changed pixels take the quick BW/WB transition kicks.
-  // Without a previous frame (single-buffer builds) fall back to both-planes-new.
-  const uint8_t* old = useFast && prev != nullptr ? prev : fb;
+  const uint8_t* old = useFast ? prev : fb;
   if (useFast && _grayOnGlass) {
     writeOldPlane(bus, old, fb);
   } else {

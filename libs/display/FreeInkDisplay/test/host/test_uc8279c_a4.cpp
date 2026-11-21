@@ -49,11 +49,11 @@ int main(int argc, char** argv) {
   driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, false);
   assert(bus.interval == 0xd7 && bus.lut20s.back()[1] == 0x32);
   driver.setReaderRefresh(false);
-  // Dark page: staying black holds (no level bits), turning black ends with
-  // two white frames. Light pages send the stock records.
+  // Dark page: staying black gets 8 black frames, turning black ends with one
+  // white frame. Light pages send the stock records.
   driver.setBackgroundHint(true);
   driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, false);
-  assert(bus.lut24[1] == 0x24 && bus.lut23[1] == 0x64 && bus.lut23[2] == 0x82);
+  assert(bus.lut24[1] == (0x40 | 8) && bus.lut23[1] == 0x64 && bus.lut23[2] == 0x81);
   driver.setBackgroundHint(false);
   driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, false);
   assert(bus.lut24[1] == 0x64 && bus.lut23[1] == 0x64 && bus.lut23[2] == 0x00);

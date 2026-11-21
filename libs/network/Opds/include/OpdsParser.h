@@ -151,6 +151,11 @@ class OpdsParser final : public Print {
   bool summaryIsContent = false;  // <content> overwrites, <summary> only fills
   bool descInMarkup = false;
 
+  // Element nesting depth; past MAX_DEPTH the parse stops (expat keeps a
+  // heap record per open element).
+  static constexpr int MAX_DEPTH = 32;
+  int depth = 0;
+
   bool errorOccured = false;
   bool feedTruncated = false;
 };

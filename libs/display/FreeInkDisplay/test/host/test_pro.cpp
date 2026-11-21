@@ -684,6 +684,9 @@ static void testStickyAbsolute() {
   display.displayGrayBuffer(false);
   assert(lastRegister(display._bus, 0x22) == 0xCC);
   assert(driver._isScreenOn);
+  display._bus.clear();
+  display.powerOffBetweenFrames();  // Sticky is not Picco: facade powerOffBetweenFrames() stays a no-op
+  assert(display._bus.writes.empty() && driver._isScreenOn);
   display.cleanupGrayscaleBuffers(bw.data());
   display._bus.clear();
   display.displayBuffer(FreeInkDisplay::FAST_REFRESH);
@@ -1030,6 +1033,66 @@ static void testTextAaAllocationFailure() {
   if constexpr (!std::is_same_v<Driver, Ssd1677Driver>) free(d._grayBase);
 }
 
+template<class Driver>
+static void testNonX3FacadeParity() {
+  Driver driver;
+  FreeInkDisplay display(1, 2, 3, 4, 5, 6);
+  display._driver = &driver;
+  display.begin();
+  const auto bw = frame(51), lsb = frame(17), msb = frame(29);
+  std::memcpy(display.getFrameBuffer(), bw.data(), bw.size());
+  display.displayBuffer(FreeInkDisplay::FAST_REFRESH, false);  // initial Full
+  display.displayBuffer(FreeInkDisplay::FAST_REFRESH, false);  // steady-state Fast keeps rails on
+  assert(driver._isScreenOn);
+
+  // 1. Non-Picco powerOffBetweenFrames() is a no-op across all X4/Pro drivers.
+  display._bus.clear();
+  display.powerOffBetweenFrames();
+  assert(display._bus.writes.empty() && driver._isScreenOn);
+
+  // 2. Dark -> Light displayGrayscaleBase(FAST_REFRESH, /*turnOffScreen=*/true) honors turnOffScreen.
+  display.setInverted(true);
+  display.displayBuffer(FreeInkDisplay::FAST_REFRESH, false);
+  display.setInverted(false);
+  display._bus.clear();
+  display.displayGrayscaleBase(FreeInkDisplay::FAST_REFRESH, /*turnOffScreen=*/true);
+  assert(!display._inversionDirty && !driver._isScreenOn);
+  if constexpr (std::is_same_v<Driver, Ssd1677Driver>) {
+    assert(lastRegister(display._bus, 0x22) == 0xD7);
+  } else {
+    assert(std::any_of(display._bus.writes.begin(), display._bus.writes.end(),
+                       [](const auto& w) { return w.command == 0x02; }));
+  }
+
+  // 3. Absolute-mode writeGrayscalePlaneGateStream() returns false without advancing _grayRows or
+  //    setting _grayPassFailed, so fallback to writeGrayscalePlaneStrip() / copyGrayscaleBuffers() succeeds.
+  assert(display.displayGrayscaleBase(GrayscaleMode::Absolute));
+  display._bus.clear();
+  auto dummyChunk = [](void*, const uint8_t** out) -> size_t {
+    static const uint8_t kByte = 0xFF;
+    *out = &kByte;
+    return 1;
+  };
+  assert(!display.writeGrayscalePlaneGateStream(FreeInkDisplay::GRAY_PLANE_LSB, nullptr, +dummyChunk));
+  assert(display._bus.writes.empty());
+  assert(display._grayRows[0] == 0 && display._grayRows[1] == 0 && !display._grayPassFailed);
+  if (display.grayscaleCapabilities(GrayscaleMode::Absolute).stripUploads) {
+    for (uint16_t y = 0; y < 480; y += 80) {
+      display.writeGrayscalePlaneStrip(FreeInkDisplay::GRAY_PLANE_LSB, lsb.data() + size_t(y) * 100, y, 80);
+      display.writeGrayscalePlaneStrip(FreeInkDisplay::GRAY_PLANE_MSB, msb.data() + size_t(y) * 100, y, 80);
+    }
+  } else {
+    display.copyGrayscaleBuffers(lsb.data(), msb.data());
+  }
+  display.displayGrayBuffer(true);
+  const uint8_t grayTrig = std::is_same_v<Driver, Ssd1677Driver> ? 0x20 : 0x12;
+  assert(std::any_of(display._bus.writes.begin(), display._bus.writes.end(),
+                     [grayTrig](const auto& w) { return w.command == grayTrig; }));
+  assert(!driver._isScreenOn);
+  display.releaseBuffers();
+  if constexpr (!std::is_same_v<Driver, Ssd1677Driver>) free(driver._grayBase);
+}
+
 int main(int argc, char** argv) {
   if (argc > 1 && std::strcmp(argv[1], "metalio") == 0) {
     testMetalio();
@@ -1076,6 +1139,9 @@ int main(int argc, char** argv) {
   testSsd();
   testAsyncFrame<Uc8179Driver>();
   testAsyncFrame<Uc8279X4Driver>();
+  testNonX3FacadeParity<Ssd1677Driver>();
+  testNonX3FacadeParity<Uc8179Driver>();
+  testNonX3FacadeParity<Uc8279X4Driver>();
 #ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
   testGrayCleanupBaseline();
 #endif

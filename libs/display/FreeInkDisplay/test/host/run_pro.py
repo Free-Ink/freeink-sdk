@@ -18,10 +18,9 @@ with tempfile.TemporaryDirectory(prefix="freeink-pro-test-") as directory:
             shutil.copy2(LIB / f"src/driver/{name}Driver.{ext}", root / f"src/driver/{name}Driver.{ext}")
     for header in (LIB / "src/driver").glob("*.h"):
         shutil.copy2(header, root / "src/driver" / header.name)
-    shutil.copy2(LIB / "include/LgfxEpdConfig.h", root / "include/LgfxEpdConfig.h")
+    for inc_header in (LIB / "include").glob("*.h"):
+        shutil.copy2(inc_header, root / "include" / inc_header.name)
     shutil.copy2(LIB / "src/FreeInkDisplay.cpp", root / "src/FreeInkDisplay.cpp")
-    shutil.copy2(LIB / "include/FreeInkDisplay.h", root / "include/FreeInkDisplay.h")
-    shutil.copy2(LIB / "include/GrayscaleCapabilities.h", root / "include/GrayscaleCapabilities.h")
     for name in ("Ssd1677Luts.h", "Uc8279X3Luts.h", "UltraChipDirectGrayLuts.h", "X4ProTextAaLuts.h", "X4ProImageLuts.h"):
         shutil.copy2(LIB / f"src/lut/{name}", root / f"src/lut/{name}")
     for name in ("Arduino.h", "BoardConfig.h", "SPI.h", "esp_heap_caps.h", "sdkconfig.h"):

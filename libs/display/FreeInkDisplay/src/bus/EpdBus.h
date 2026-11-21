@@ -9,6 +9,9 @@
 
 #include <Arduino.h>
 #include <SPI.h>
+
+#include <cstddef>
+#include <cstdint>
 #include <utility>
 #if defined(ARDUINO) && defined(CONFIG_PM_ENABLE) && CONFIG_PM_ENABLE
 #include <esp_pm.h>
@@ -126,15 +129,19 @@ class EpdBus {
     Transaction& operator=(Transaction&& other) noexcept;
 
     void end();
+    bool isActive() const { return _active; }
     void cmd(uint8_t c);
     void data(uint8_t d);
     uint8_t transfer(uint8_t d);
     void writeBytes(const uint8_t* d, uint16_t len);
+    void writeDataChunk(const uint8_t* d, size_t len);
 
    private:
+    friend class EpdBus;
     EpdBus* _bus = nullptr;
     SpiApbLockGuard _pmLock;
     bool _active = false;
+    bool _dcHigh = false;
   };
 
   // coCs: a co-resident chip-select (e.g. the SD card sharing the SPI bus on
@@ -156,6 +163,17 @@ class EpdBus {
 
   // Scoped SPI/APB transaction that selects the panel and de-selects it on exit.
   [[nodiscard]] Transaction beginTxn();
+
+  // Send `ramCmd` (own CS pulse, matching OEM UC8253 DTM framing), then open a
+  // continuous CS-low, DC-high data burst for multi-chunk plane streaming.
+  [[nodiscard]] Transaction beginDataTxn(uint8_t ramCmd);
+
+  using StreamChunkCallback = size_t (*)(void* ctx, const uint8_t** outChunk);
+
+  // Send `ramCmd` (own CS pulse), then stream contiguous chunks yielded by
+  // `nextChunk(ctx, &chunk)` inside one stack-scoped CS-low, DC-high SPI transaction
+  // until `nextChunk` returns 0 (or yields a null chunk). Returns total bytes written.
+  size_t sendStream(uint8_t ramCmd, StreamChunkCallback nextChunk, void* ctx);
 
   // Wait for a refresh/operation to finish using the configured (or given) polarity.
   void waitBusy(const char* tag = nullptr);

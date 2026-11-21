@@ -246,6 +246,14 @@ int main(int argc, char** argv) {
   bus.clear();
   s.deepSleep(bus);
   assert(bus.writes.size() >= 2 && bus.writes.front().command == 0x02 && *lastData(bus, 0x07) == Bytes({0xA5}));
+  // Sticky is not Picco: FreeInkDisplay::powerOffBetweenFrames() remains a no-op.
+  display.begin();
+  std::memcpy(display.getFrameBuffer(), white.data(), white.size());
+  display.displayBuffer(FreeInkDisplay::FAST_REFRESH, false);
+  display._bus.clear();
+  display.powerOffBetweenFrames();
+  assert(display._bus.writes.empty());
+  display.releaseBuffers();
   std::printf("Sticky SSD2677: probe, init, OTP latch, packing, row order, power, gray4 and AA passed\n");
   return 0;
 }

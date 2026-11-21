@@ -54,7 +54,19 @@ class PanelDriver {
   virtual void deepSleep(EpdBus& bus) = 0;
   // Called only after the host's complete frame (including grayscale) finishes.
   // Retain controller RAM and the partial-refresh baseline; never reset/sleep.
+  virtual bool supportsBetweenFramePowerOff() const { return false; }
   virtual void powerOffBetweenFrames(EpdBus& bus) { (void)bus; }
+  // Non-blocking HV rail pre-warm before page render while idle-powered-off.
+  virtual bool prewarmPowerOn(EpdBus& bus) {
+    (void)bus;
+    return false;
+  }
+  // Post-settle idle HV rail auto-power-off check; never blocks an active refresh.
+  virtual bool hasIdlePowerWork() const { return false; }
+  virtual bool serviceIdlePower(EpdBus& bus) {
+    (void)bus;
+    return false;
+  }
 
   // --- core paint path (load RAM + refresh) ---
   virtual void display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) = 0;
@@ -188,12 +200,52 @@ class PanelDriver {
     (void)yStart;
     (void)numRows;
   }
+  // Stream an entire grayscale plane inside a single scoped SPI transaction
+  // (UC8253 DTM1/DTM2 without PTIN/PTL/PTOUT). `nextChunk(ctx, &outChunk)` must
+  // emit contiguous bytes in bottom-up gate order (gate 0 = logical row H - 1
+  // up to gate H - 1 = logical row 0, `H * widthBytes` bytes total) purely from
+  // RAM without performing any SPI/storage I/O, returning 0 at end-of-plane.
+  virtual bool supportsGrayscaleGateStream() const { return false; }
+  virtual bool writeGrayscalePlaneGateStream(EpdBus& bus, GrayPlane plane, void* ctx,
+                                             size_t (*nextChunk)(void* ctx, const uint8_t** outChunk)) {
+    (void)bus;
+    (void)plane;
+    (void)ctx;
+    (void)nextChunk;
+    return false;
+  }
   virtual void prepareGrayscaleTarget(const uint8_t* bw) { (void)bw; }
   virtual void displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut, bool factoryMode) {
     (void)lut;
     (void)factoryMode;
     display(bus, fb, nullptr, RefreshMode::Fast, turnOff);
   }
+  // Two-pass 16-gray refresh and differential DTM1 cleanup (UC8253 X3).
+  virtual bool supportsGray16Planes() const { return false; }
+  virtual bool supportsDeferredGray16Base() const { return false; }
+  virtual void displayGray16Base(EpdBus& bus, const uint8_t* fb, RefreshMode fallback, bool turnOff = false) {
+    displayGrayscaleBase(bus, fb, fallback, turnOff);
+  }
+  virtual bool displayGray16BaseStart(EpdBus& bus, const uint8_t* fb, RefreshMode fallback, bool turnOff = false) {
+    displayGray16Base(bus, fb, fallback, turnOff);
+    return false;
+  }
+  virtual void displayGray16Pass1(EpdBus& bus) { (void)bus; }
+  virtual bool displayGray16Pass1Start(EpdBus& bus) {
+    displayGray16Pass1(bus);
+    return false;
+  }
+  virtual void displayGray16Pass2(EpdBus& bus, bool turnOff) {
+    (void)bus;
+    (void)turnOff;
+  }
+  virtual bool displayGray16Pass2Start(EpdBus& bus, bool turnOff) {
+    displayGray16Pass2(bus, turnOff);
+    return false;
+  }
+  virtual void beginGray16Cleanup(EpdBus& bus, const uint8_t* bw) { cleanupGrayscaleBuffers(bus, bw); }
+  virtual void finishGray16Cleanup(EpdBus& bus) { (void)bus; }
+  virtual bool isGray16CleanupActive() const { return false; }
   // Diagnostic four-gray comparison. The full frame is first rendered with
   // the controller's flashing OTP waveform; `custom*` is then rebuilt with the
   // driver's non-flashing grayscale path. Default drivers keep the OTP frame.

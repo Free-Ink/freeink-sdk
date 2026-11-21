@@ -1,8 +1,12 @@
 #include <cassert>
+#include <cstring>
 #include <iostream>
 #include <vector>
-#include "driver/Uc8279Driver.h"
-#include "lut/Uc8279X3Luts.h"
+#define private public
+#include "FreeInkDisplay.h"
+#include "src/driver/Uc8279Driver.h"
+#undef private
+#include "src/lut/Uc8279X3Luts.h"
 
 int main() {
   using namespace freeink;
@@ -58,5 +62,45 @@ int main() {
   driver.begin(bus);
   driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, false);
   assert(bus.oldPlane == bw && bus.newPlane == bw);
+
+  // Facade parity on UC8279: powerOffBetweenFrames() is a no-op, Dark->Light
+  // displayGrayscaleBase(FAST_REFRESH, true) honors turnOffScreen, and Absolute
+  // writeGrayscalePlaneGateStream() returns false cleanly so strip fallback works.
+  FreeInkDisplay facade(0, 0, 0, 0, 0, 0);
+  Uc8279Driver facDriver;
+  facade.setDisplayX3();
+  facade.begin();
+  facade._driver = &facDriver;
+  facDriver.begin(facade._bus);
+  std::memcpy(facade.getFrameBuffer(), bw.data(), bw.size());
+  facade.displayBuffer(FreeInkDisplay::FAST_REFRESH, false);
+  const unsigned pofBeforeNoop = facade._bus.powerOffs;
+  facade.powerOffBetweenFrames();
+  assert(facade._bus.powerOffs == pofBeforeNoop);
+
+  facade.setInverted(true);
+  facade.displayBuffer(FreeInkDisplay::FAST_REFRESH, false);
+  facade.setInverted(false);
+  const unsigned pofBeforeDarkExit = facade._bus.powerOffs;
+  facade.displayGrayscaleBase(FreeInkDisplay::FAST_REFRESH, /*turnOffScreen=*/true);
+  assert(facade._bus.powerOffs == pofBeforeDarkExit + 1);
+  assert(!facade._inversionDirty);
+
+  assert(facade.displayGrayscaleBase(GrayscaleMode::Absolute));
+  auto dummyCb = [](void*, const uint8_t** out) -> size_t {
+    static const uint8_t kByte = 0xAA;
+    *out = &kByte;
+    return 1;
+  };
+  assert(!facade.writeGrayscalePlaneGateStream(FreeInkDisplay::GRAY_PLANE_LSB, nullptr, +dummyCb));
+  assert(facade._grayRows[0] == 0 && facade._grayRows[1] == 0 && !facade._grayPassFailed);
+  for (uint16_t y = 0; y < 528; y += 88) {
+    facade.writeGrayscalePlaneStrip(FreeInkDisplay::GRAY_PLANE_LSB, lsb.data() + size_t(y) * 99, y, 88);
+    facade.writeGrayscalePlaneStrip(FreeInkDisplay::GRAY_PLANE_MSB, msb.data() + size_t(y) * 99, y, 88);
+  }
+  const unsigned refBeforeAbs = facade._bus.refreshes;
+  facade.displayGrayBuffer(true);
+  assert(facade._bus.refreshes == refBeforeAbs + 1);
+  facade.releaseBuffers();
   std::cout << "PASS: UC8279 overlay/absolute LUT mapping, unchanged planes, cleanup and wake\n";
 }

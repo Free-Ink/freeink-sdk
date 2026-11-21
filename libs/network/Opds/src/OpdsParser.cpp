@@ -170,6 +170,10 @@ void OpdsParser::appendBounded(std::string& target, const char* value, const siz
 
 void XMLCALL OpdsParser::startElement(void* userData, const XML_Char* name, const XML_Char** atts) {
   auto* self = static_cast<OpdsParser*>(userData);
+  if (++self->depth > MAX_DEPTH) {
+    XML_StopParser(self->parser, XML_FALSE);
+    return;
+  }
 
   if (strcmp(name, "entry") == 0 || strstr(name, ":entry") != nullptr) {
     self->inEntry = true;
@@ -335,6 +339,7 @@ void XMLCALL OpdsParser::startElement(void* userData, const XML_Char* name, cons
 
 void XMLCALL OpdsParser::endElement(void* userData, const XML_Char* name) {
   auto* self = static_cast<OpdsParser*>(userData);
+  self->depth--;
 
   if (strcmp(name, "entry") == 0 || strstr(name, ":entry") != nullptr) {
     if (self->collectCurrentEntry && !self->currentEntry.title.empty() && !self->currentEntry.href.empty()) {

@@ -1,4 +1,5 @@
 #include "OpdsClient.h"
+#include "OpdsParser.h"
 
 #include <cassert>
 #include <cstdio>
@@ -144,6 +145,20 @@ int main() {
     assert(client.authenticateDownload(ROOT));
     assert(client.useBasicAuth());
     assert(client.accessToken().empty() && client.refreshToken().empty());
+  }
+  // Atom feeds nested deeper than 32 elements stop parsing.
+  {
+    const auto parse = [](int levels) {
+      std::string xml;
+      for (int i = 0; i < levels; ++i) xml += "<a>";
+      for (int i = 0; i < levels; ++i) xml += "</a>";
+      OpdsParser parser;
+      parser.write(reinterpret_cast<const uint8_t*>(xml.data()), xml.size());
+      parser.flush();
+      return !parser.error();
+    };
+    assert(parse(32));
+    assert(!parse(33));
   }
   std::puts("OPDS client authentication tests passed");
 }

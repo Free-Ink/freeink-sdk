@@ -135,6 +135,12 @@ void Uc8279cA4Driver::loadFastLut(EpdBus& bus, const bool longToBlack) {
     memcpy(record, lut[i], sizeof(record));
     // The to-black record (0x23) and the VCOM record gain the extra frames.
     if (longToBlack && (i == 0 || i == 3)) record[1] = static_cast<uint8_t>(record[1] + A4_UC8279C_FAST_AFTER_UI_EXTRA_FRAMES);
+    if (_darkBackground) {
+      // Dark page: black that stays black is held, not driven again, and a
+      // pixel turning black ends with a short white phase.
+      if (i == 4) record[1] &= 0x3f;
+      if (i == 3) record[2] = static_cast<uint8_t>(0x80 | A4_UC8279C_FAST_DARK_END_WHITE_FRAMES);
+    }
     bus.cmdData(static_cast<uint8_t>(CMD_LUT_VCOM + i), record, sizeof(record));
   }
 }

@@ -37,6 +37,9 @@ constexpr uint8_t A4_UC8279C_FAST_LUT_24[A4_UC8279C_LUT_LENGTH] = {0x01, 0x64, 0
 // Not stock: extra frames the to-black record (0x23) drives on the first book
 // page after another screen. At most 13 (the VCOM record's 6-bit frame count).
 constexpr uint8_t A4_UC8279C_FAST_AFTER_UI_EXTRA_FRAMES = 12;
+// Not stock, dark pages: the staying-black record (0x24) holds, and the
+// to-black record (0x23) drives white for these frames after its black ones.
+constexpr uint8_t A4_UC8279C_FAST_DARK_END_WHITE_FRAMES = 2;
 
 // Stock 4-gray image waveform: five 42-byte records loaded to 0x20-0x24, the
 // "Factory B" profile of stock V1.0.3 (byte-identical in v1.3.0). Absolute

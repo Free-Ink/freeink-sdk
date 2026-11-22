@@ -723,17 +723,103 @@ void Ssd2677Driver::exitGray16(EpdBus& bus) {
 void Ssd2677Driver::balanceGray16(EpdBus& bus) {
   if (!_gray16OnGlass) return;
   _gray16OnGlass = false;
+  // An image imported across a sleep is balanced with the codes it was drawn with.
+  const bool imported = _useImportedBalance;
+  _useImportedBalance = false;
+  const uint8_t* const deep = imported ? _importedBalance.deep : _g16.balanceDeep;
+  const uint8_t* const coarse = imported ? _importedBalance.coarse : _g16.balanceCoarse;
+  const uint8_t* const fine = imported ? _importedBalance.fine : _g16.balanceFine;
   // Each level got deep + coarse frames toward black and pull-back frames to
   // white; give the net back toward white (deep 0/8/16/24, coarse 0/4/8/12,
   // fine 0/1/2/3) so the pixels end balanced.
-  if (_g16.useBalanceDeep) {
-    sendLevelCodes(bus, _gray16, _g16.balanceDeep);
+  if (imported ? _importedBalance.useDeep : _g16.useBalanceDeep) {
+    sendLevelCodes(bus, _gray16, deep);
     refreshWith(bus, lut_picco_se0400_gray16_deep_balance, false);
   }
-  sendLevelCodes(bus, _gray16, _g16.balanceCoarse);
+  sendLevelCodes(bus, _gray16, coarse);
   refreshWith(bus, lut_picco_se0400_gray16_balance, false);
-  sendLevelCodes(bus, _gray16, _g16.balanceFine);
+  sendLevelCodes(bus, _gray16, fine);
   refreshWith(bus, lut_picco_se0400_gray16_balance_fine, false);
+}
+
+namespace {
+// L* x10 of each default level drawn clean (0 = white .. 15 = darkest), from
+// photos of the reader (picco-gray-cal design-turn.json). One unit, uncalibrated
+// camera: callers dithering onto real tones should prefer their own measurement
+// of the unit where they have one.
+constexpr int16_t kGray16DefaultLstar[16] = {999, 903, 824, 801, 753, 697, 646, 621,
+                                             555, 529, 446, 420, 416, 369, 301, 265};
+
+// exportGray16State layout, little-endian: magic "G16S", version, width,
+// height, give-back codes (useDeep, deep[16], coarse[16], fine[16]), then the
+// levels (width/2 * height bytes, as displayGray16Image takes them).
+constexpr uint8_t kStateMagic[4] = {'G', '1', '6', 'S'};
+constexpr uint8_t kStateVersion = 1;
+constexpr size_t kStateHeader = 4 + 1 + 2 + 2 + 1 + 3 * 16;  // 58
+
+void putU16(uint8_t* p, uint16_t v) {
+  p[0] = static_cast<uint8_t>(v);
+  p[1] = static_cast<uint8_t>(v >> 8);
+}
+uint16_t getU16(const uint8_t* p) { return static_cast<uint16_t>(p[0] | p[1] << 8); }
+}  // namespace
+
+const int16_t* Ssd2677Driver::gray16LevelLstar() const {
+  return supportsGray16Image() && !_g16CustomPaths ? kGray16DefaultLstar : nullptr;
+}
+
+size_t Ssd2677Driver::gray16StateSize() const {
+  if (!supportsGray16Image()) return 0;
+  const PanelGeometry g = geometry();
+  return kStateHeader + static_cast<size_t>(g.width / 2) * g.height;
+}
+
+size_t Ssd2677Driver::exportGray16State(uint8_t* out, size_t len) const {
+  const size_t size = gray16StateSize();
+  if (!out || !size || len < size || !_gray16OnGlass || !_gray16) return 0;
+  const PanelGeometry g = geometry();
+  const bool imported = _useImportedBalance;  // never redrawn since the last wake: still owed with those codes
+  uint8_t* p = out;
+  memcpy(p, kStateMagic, 4);
+  p += 4;
+  *p++ = kStateVersion;
+  putU16(p, static_cast<uint16_t>(g.width));
+  p += 2;
+  putU16(p, static_cast<uint16_t>(g.height));
+  p += 2;
+  *p++ = (imported ? _importedBalance.useDeep : _g16.useBalanceDeep) ? 1 : 0;
+  memcpy(p, imported ? _importedBalance.deep : _g16.balanceDeep, 16);
+  p += 16;
+  memcpy(p, imported ? _importedBalance.coarse : _g16.balanceCoarse, 16);
+  p += 16;
+  memcpy(p, imported ? _importedBalance.fine : _g16.balanceFine, 16);
+  p += 16;
+  memcpy(p, _gray16, size - kStateHeader);
+  return size;
+}
+
+bool Ssd2677Driver::importGray16State(const uint8_t* in, size_t len) {
+  const size_t size = gray16StateSize();
+  if (!in || !size || len != size || memcmp(in, kStateMagic, 4) != 0 || in[4] != kStateVersion) return false;
+  const PanelGeometry g = geometry();
+  if (getU16(in + 5) != g.width || getU16(in + 7) != g.height || in[9] > 1) return false;
+  // Codes are 2-bit pixel codes (sendLevelCodes); anything else is not our state.
+  for (size_t i = 10; i < kStateHeader; ++i)
+    if (in[i] > 3) return false;
+  const size_t bytes = size - kStateHeader;
+  if (!_gray16) _gray16 = static_cast<uint8_t*>(heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (!_gray16) return false;
+  ensureGray16Config();
+  _importedBalance.useDeep = in[9] != 0;
+  memcpy(_importedBalance.deep, in + 10, 16);
+  memcpy(_importedBalance.coarse, in + 26, 16);
+  memcpy(_importedBalance.fine, in + 42, 16);
+  memcpy(_gray16, in + kStateHeader, bytes);
+  _useImportedBalance = true;
+  _gray16OnGlass = true;  // the next frame's exitGray16 gives the drive back, then clears
+  _textOnGlass = false;
+  _needsInitialFull = true;
+  return true;
 }
 
 bool Ssd2677Driver::setGray16Turn(uint8_t scrubEvery) {
@@ -767,6 +853,7 @@ bool Ssd2677Driver::setGray16Levels(EpdBus& bus, const uint8_t (*paths)[3]) {
   exitGray16(bus);  // the image on the glass is balanced with the table it was drawn with
   memcpy(_g16Paths, paths, sizeof(_g16Paths));
   _g16 = c;
+  _g16CustomPaths = memcmp(_g16Paths, kGray16DefaultPaths, sizeof(_g16Paths)) != 0;  // the measured L* no longer apply
   return true;
 }
 

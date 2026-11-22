@@ -184,6 +184,15 @@ class FreeInkDisplay {
   // for a driver with a third behaviour. What each does is panel-defined (see
   // PanelDriver::displayGray16Image).
   bool displayGray16Image(const uint8_t* levels, RefreshMode mode = HALF_REFRESH, bool turnOffScreen = true);
+  // Measured L* x10 per level (0 = white .. 15 = darkest) of a clean 16-level
+  // draw, or nullptr (PanelDriver::gray16LevelLstar).
+  const int16_t* gray16LevelLstar() const;
+  // Carry a 16-level image's owed drive across deep sleep
+  // (PanelDriver::exportGray16State): export before sleeping, import after
+  // begin() on wake, and the next display call gives the drive back.
+  size_t gray16StateSize() const;
+  size_t exportGray16State(uint8_t* out, size_t len) const;
+  bool importGray16State(const uint8_t* in, size_t len);
   bool setGray16Turn(uint8_t scrubEvery);
   // 16-level text in two steps (PanelDriver::beginGray16Text): the full-ink
   // base first, then the edge tones. `base` is a 1 bpp frame.

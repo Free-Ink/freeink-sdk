@@ -91,6 +91,15 @@ class Ssd2677Driver : public PanelDriver {
   // paths[l] = {black dose index 0..3, white dose index 0..3, deep 0/1}.
   bool setGray16Levels(EpdBus& bus, const uint8_t (*paths)[3]) override;
   bool setGray16Passes(EpdBus& bus, const uint8_t black[3], const uint8_t white[3], uint8_t erase) override;
+  // Measured L* x10 of the default paths drawn clean; nullptr once
+  // setGray16Levels replaced them.
+  const int16_t* gray16LevelLstar() const override;
+  // Sleep carry-over of an image's owed drive (PanelDriver::exportGray16State).
+  // Only a displayGray16Image image is carried: a fast-turn image is erased
+  // with the fixed dose, and a text page is cleared by the next B/W frame.
+  size_t gray16StateSize() const override;
+  size_t exportGray16State(uint8_t* out, size_t len) const override;
+  bool importGray16State(const uint8_t* in, size_t len) override;
 
  private:
   void initPanel(EpdBus& bus);
@@ -143,6 +152,15 @@ class Ssd2677Driver : public PanelDriver {
   // exitGray16's balance passes. Allocated on first use.
   uint8_t* _gray16 = nullptr;
   bool _gray16OnGlass = false;
+  // Give-back codes of an image imported across a sleep: its drive is returned
+  // with the codes it was drawn with, which the current config may not match.
+  struct Gray16Balance {
+    uint8_t deep[16], coarse[16], fine[16];
+    bool useDeep;
+  };
+  Gray16Balance _importedBalance{};
+  bool _useImportedBalance = false;
+  bool _g16CustomPaths = false;  // setGray16Levels replaced the measured default paths
   bool _textBaseUp = false;  // beginGray16Text ran; finishGray16Text owes the passes
   bool _textOnGlass = false;    // a 16-level text page is up; its levels are in _gray16
   bool _textDissolved = false;  // this text turn's base was the cross-dissolve

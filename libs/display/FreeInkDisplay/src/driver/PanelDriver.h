@@ -266,6 +266,31 @@ class PanelDriver {
     (void)turnOff;
     return false;
   }
+  // Measured tone of each level, for callers that dither onto the panel's real
+  // tones rather than a linear ramp: L* x10 (0..1000) per level, 0 = white ..
+  // 15 = darkest, as a clean displayGray16Image draws it. nullptr when the panel
+  // has no measured table, or a calibration hook replaced the paths it was
+  // measured with.
+  virtual const int16_t* gray16LevelLstar() const { return nullptr; }
+  // Deep sleep loses the driver's copy of a 16-level image still on the glass,
+  // so its drive is never given back, and it accumulates sleep after sleep.
+  // exportGray16State() packs that image's levels and the give-back codes it was
+  // drawn with into `out` (gray16StateSize() bytes; 0 = nothing owed, or `len`
+  // too small); the caller keeps it across the sleep (on SD, say). After begin()
+  // on wake, importGray16State() hands it back: the next frame gives the drive
+  // back exactly as it would have without the sleep. False = rejected (wrong
+  // size, panel or format); nothing changed.
+  virtual size_t gray16StateSize() const { return 0; }
+  virtual size_t exportGray16State(uint8_t* out, size_t len) const {
+    (void)out;
+    (void)len;
+    return 0;
+  }
+  virtual bool importGray16State(const uint8_t* in, size_t len) {
+    (void)in;
+    (void)len;
+    return false;
+  }
   // 16-level text in two steps, so the page reads before its gray is done
   // (after PR #220's UC8253 two-pass reader).
   // beginGray16Text: `base` (1 bpp framebuffer layout, cleared bit = ink)

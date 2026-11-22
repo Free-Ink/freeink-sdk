@@ -1331,6 +1331,20 @@ bool FreeInkDisplay::displayGray16Image(const uint8_t* levels, RefreshMode mode,
   return _driver->displayGray16Image(_bus, levels, toInternal(mode), turnOffScreen);
 }
 
+const int16_t* FreeInkDisplay::gray16LevelLstar() const {
+  return supportsGray16Image() ? _driver->gray16LevelLstar() : nullptr;
+}
+
+size_t FreeInkDisplay::gray16StateSize() const { return supportsGray16Image() ? _driver->gray16StateSize() : 0; }
+
+size_t FreeInkDisplay::exportGray16State(uint8_t* out, size_t len) const {
+  return out && supportsGray16Image() ? _driver->exportGray16State(out, len) : 0;
+}
+
+bool FreeInkDisplay::importGray16State(const uint8_t* in, size_t len) {
+  return in && supportsGray16Image() && _driver->importGray16State(in, len);
+}
+
 bool FreeInkDisplay::beginGray16Text(const uint8_t* base, const uint8_t* soft) {
   IdleHookScope idleHookScope{_driver};
   if (!base || !supportsGray16Image()) return false;

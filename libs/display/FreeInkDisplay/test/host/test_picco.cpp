@@ -766,6 +766,99 @@ static void expectGray16Image(Ssd2677Driver& s) {
   assert(bus.writes.empty());
 }
 
+// Measured tones as data, and a 16-level image's owed drive carried across a
+// deep sleep: exported before, imported into a fresh driver after begin(), the
+// next frame gives it back with the codes it was drawn with even when the woken
+// driver's config differs.
+static void expectGray16SleepCarry() {
+  auto lutsOf = [](const EpdBus& bus) {
+    std::vector<Bytes> out;
+    for (const auto& w : bus.writes)
+      if (w.command == 0x20) out.push_back(w.bytes);
+    return out;
+  };
+  auto framesOf = [](const EpdBus& bus) {
+    std::vector<Bytes> out;
+    for (const auto& w : bus.writes)
+      if (w.command == 0x10) out.push_back(w.bytes);
+    return out;
+  };
+  auto codeAt = [](const Bytes& frame, uint32_t pixel) { return (frame[pixel / 4] >> (6 - 2 * (pixel % 4))) & 3; };
+  auto levelAt = [](int x) { return static_cast<uint8_t>((x / 50) % 16); };
+  Bytes levels(400 * 480);
+  for (int y = 0; y < 480; ++y)
+    for (int x = 0; x < 800; x += 2) levels[y * 400 + x / 2] = static_cast<uint8_t>(levelAt(x) << 4 | levelAt(x + 1));
+  const Bytes page(48000, 0xFF);
+  EpdBus bus;
+
+  // L*: measured for the default paths, white lightest and darkest last, gone once the paths change.
+  Ssd2677Driver s;
+  s.begin(bus);
+  const int16_t* lstar = s.gray16LevelLstar();
+  assert(lstar && lstar[0] > lstar[15] && lstar[0] <= 1000 && lstar[15] > 0);
+  for (int l = 1; l < 16; ++l) assert(lstar[l] >= 0 && lstar[l] <= 1000);
+  uint8_t paths[16][3];
+  memcpy(paths, kGray16DefaultPaths, sizeof(paths));
+  paths[5][0] = 0, paths[5][1] = 0, paths[5][2] = 1;  // deep black alone (as expectGray16Image)
+  assert(s.setGray16Levels(bus, paths));
+  assert(s.gray16LevelLstar() == nullptr);
+
+  // Nothing on the glass: nothing to carry.
+  const size_t size = s.gray16StateSize();
+  assert(size == 58 + levels.size());
+  Bytes state(size);
+  assert(s.exportGray16State(state.data(), size) == 0);
+
+  // Draw with the custom paths, export, and keep the codes it was drawn with.
+  assert(s.displayGray16Image(bus, levels.data(), RefreshMode::Half, true));
+  assert(s.exportGray16State(state.data(), size - 1) == 0);  // too small
+  assert(s.exportGray16State(state.data(), size) == size);
+  const auto drawn = s._g16;
+
+  // Wake: a fresh driver on the defaults; bad states are refused untouched.
+  Ssd2677Driver woken;
+  woken.begin(bus);
+  assert(woken.gray16LevelLstar() != nullptr);
+  assert(!woken.importGray16State(state.data(), size - 1));
+  Bytes bad = state;
+  bad[0] = 'X';
+  assert(!woken.importGray16State(bad.data(), size));
+  bad = state;
+  bad[5] ^= 1;  // width
+  assert(!woken.importGray16State(bad.data(), size));
+  bad = state;
+  bad[20] = 7;  // not a 2-bit code
+  assert(!woken.importGray16State(bad.data(), size));
+  assert(!woken._gray16OnGlass);
+  assert(woken.importGray16State(state.data(), size));
+  assert(woken._gray16OnGlass);
+
+  // Never redrawn: exporting again (another sleep) carries the same owed drive.
+  Bytes again(size);
+  assert(woken.exportGray16State(again.data(), size) == size && again == state);
+
+  // First frame after wake: the give-back with the draw-time codes, then the full clear.
+  bus.clear();
+  woken.display(bus, page.data(), nullptr, RefreshMode::Fast, false);
+  {
+    std::vector<Bytes> want;
+    if (drawn.useBalanceDeep) want.push_back(Bytes(lut_picco_se0400_gray16_deep_balance, lut_picco_se0400_gray16_deep_balance + 535));
+    want.push_back(Bytes(lut_picco_se0400_gray16_balance, lut_picco_se0400_gray16_balance + 535));
+    want.push_back(Bytes(lut_picco_se0400_gray16_balance_fine, lut_picco_se0400_gray16_balance_fine + 535));
+    want.push_back(Bytes(lut_picco_se0400_full, lut_picco_se0400_full + 535));
+    assert(lutsOf(bus) == want);
+    const auto f = framesOf(bus);
+    const size_t base = drawn.useBalanceDeep ? 1 : 0;
+    for (uint32_t x = 0; x < 800; ++x) {
+      const uint8_t l = levelAt(x);
+      if (drawn.useBalanceDeep) assert(codeAt(f[0], x) == drawn.balanceDeep[l]);
+      assert(codeAt(f[base], x) == drawn.balanceCoarse[l] && codeAt(f[base + 1], x) == drawn.balanceFine[l]);
+    }
+  }
+  assert(!woken._gray16OnGlass && !woken._useImportedBalance);
+  assert(woken.exportGray16State(again.data(), size) == 0);  // given back: nothing owed any more
+}
+
 static void expectPackedPairs(Ssd2677Driver& driver) {
   const size_t size = driver.geometry().bufferSize;
   Bytes high(size), low(size);
@@ -1041,7 +1134,8 @@ int main(int argc, char** argv) {
     expectNightGray2677(s);
     expectDarkGray2677(s);
     expectGray16Image(s);
-    std::printf("Picco se0400: probe, init, packing, refresh and 16-level image passed\n");
+    expectGray16SleepCarry();
+    std::printf("Picco se0400: probe, init, packing, refresh, 16-level image and sleep carry passed\n");
     return 0;
   }
   checkController("SSD1677");

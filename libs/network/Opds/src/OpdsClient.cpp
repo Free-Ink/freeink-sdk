@@ -79,9 +79,10 @@ void OpdsClient::resetAuthState() {
   credentialsMissingFlag = false;
 }
 
-HttpAuth OpdsClient::currentAuth() const {
+HttpAuth OpdsClient::currentAuth(const std::string& url) const {
   HttpAuth a;
-  if (basicAuthLatched) {
+  // The configured login belongs to the configured server only.
+  if (basicAuthLatched && freeink::fetchOrigin(url) == freeink::fetchOrigin(serverUrl)) {
     a.username = username;
     a.password = password;
   }
@@ -90,7 +91,7 @@ HttpAuth OpdsClient::currentAuth() const {
   return a;
 }
 
-HttpAuth OpdsClient::downloadAuth() const { return currentAuth(); }
+HttpAuth OpdsClient::downloadAuth(const std::string& url) const { return currentAuth(url); }
 
 bool OpdsClient::authenticateDownload(const std::string& url) {
   authDirty = false;
@@ -130,7 +131,7 @@ OpdsClient::FetchStatus OpdsClient::fetchFeed(const std::string& url, OpdsFeedPa
       freeink::fetchOrigin(url) == freeink::fetchOrigin(serverUrl))
     basicAuthLatched = true;
   for (int authAttempt = 0;; ++authAttempt) {
-    const HttpResult res = http.get(url, currentAuth(), FEED_ACCEPT, orNull(acceptLang), false,
+    const HttpResult res = http.get(url, currentAuth(url), FEED_ACCEPT, orNull(acceptLang), false,
                                     [&parser](const uint8_t* data, const size_t len) {
                                       parser.write(data, len);
                                       return !parser.error();  // abort the transfer on a parse error
@@ -154,7 +155,7 @@ OpdsClient::FetchStatus OpdsClient::fetchFeed(const std::string& url, OpdsFeedPa
 bool OpdsClient::fetchPublication(const std::string& docUrl, OpdsPublication& out) {
   std::string doc;
   doc.reserve(4096);
-  http.get(docUrl, currentAuth(), PUB_ACCEPT, orNull(acceptLang), false,
+  http.get(docUrl, currentAuth(docUrl), PUB_ACCEPT, orNull(acceptLang), false,
            [&doc](const uint8_t* data, const size_t len) {
              const size_t room = doc.size() < MAX_PUB_DOC_BYTES ? MAX_PUB_DOC_BYTES - doc.size() : 0;
              doc.append(reinterpret_cast<const char*>(data), len < room ? len : room);
@@ -167,7 +168,7 @@ bool OpdsClient::fetchPublication(const std::string& docUrl, OpdsPublication& ou
 bool OpdsClient::resolveIndirect(const std::string& docUrl, std::string& outDownloadUrl, bool& outIsEpub) {
   std::string doc;
   doc.reserve(4096);
-  const bool fetched = http.get(docUrl, currentAuth(), nullptr, nullptr, false,
+  const bool fetched = http.get(docUrl, currentAuth(docUrl), nullptr, nullptr, false,
                                 [&doc](const uint8_t* data, const size_t len) {
                                   const size_t room = doc.size() < MAX_PUB_DOC_BYTES ? MAX_PUB_DOC_BYTES - doc.size() : 0;
                                   doc.append(reinterpret_cast<const char*>(data), len < room ? len : room);
@@ -187,7 +188,7 @@ bool OpdsClient::resolveIndirect(const std::string& docUrl, std::string& outDown
 bool OpdsClient::fetchSearchTemplate(const std::string& descUrl, std::string& outTemplate) {
   LOG_DBG("OPDS", "Fetching OpenSearch description: %s", descUrl.c_str());
   OpenSearchDescParser parser;
-  const bool fetched = http.get(descUrl, currentAuth(), nullptr, nullptr, false,
+  const bool fetched = http.get(descUrl, currentAuth(descUrl), nullptr, nullptr, false,
                                 [&parser](const uint8_t* data, const size_t len) {
                                   parser.write(data, len);
                                   return !parser.error();

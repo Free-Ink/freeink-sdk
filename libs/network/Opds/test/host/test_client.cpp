@@ -61,8 +61,14 @@ int main() {
     OpdsFeedParser parser;
     assert(client.fetchFeed(ROOT + "/opds", parser) == OpdsClient::FetchStatus::Ok);
     assert(http.requests.back().username == "reader" && http.requests.back().password == "secret");
-    assert(client.downloadAuth().username == "reader");
+    assert(client.downloadAuth(ROOT + "/book.epub").username == "reader");
     assert(!client.tokensDirty());
+    // Once latched, Basic still stays with the server's origin.
+    assert(client.downloadAuth("http://cdn.test/cover.jpg").username.empty());
+    http.replies.push_back({200, FEED, ""});
+    OpdsFeedParser other;
+    assert(client.fetchFeed("https://other.test/opds", other) == OpdsClient::FetchStatus::Ok);
+    assert(http.requests.back().username.empty() && http.requests.back().password.empty());
   }
   // The login is never offered to another origin or over a stored token.
   {
@@ -105,8 +111,9 @@ int main() {
     configure(client);
     http.replies.push_back({401, "<html>Login required</html>", "Basic realm=books"});
     assert(client.authenticateDownload(ROOT + "/book.epub"));
-    const auto auth = client.downloadAuth();
+    const auto auth = client.downloadAuth(ROOT + "/book.epub");
     assert(auth.username == "reader" && auth.password == "secret" && auth.bearer.empty());
+    assert(client.downloadAuth("https://other.test/book.epub").username.empty());
     assert(auth.headers.size() == 1);
     assert(http.requests.back().username.empty());
   }
@@ -172,8 +179,8 @@ int main() {
     http.replies = {{401, OAUTH_DOC, "Basic realm=books"}};
     http.posts = {{200, R"({"access_token":"access","refresh_token":"refresh"})", ""}};
     assert(client.authenticateDownload(ROOT));
-    assert(client.downloadAuth().bearer == "access");
-    assert(client.downloadAuth().username.empty());
+    assert(client.downloadAuth(ROOT).bearer == "access");
+    assert(client.downloadAuth(ROOT).username.empty());
     assert(client.tokensDirty());
     assert(http.forms.front().find("grant_type=password") == 0);
     http.posts = {{200, R"({"access_token":"renewed"})", ""}};

@@ -572,9 +572,7 @@ static void expectGray16Image(Ssd2677Driver& s) {
   EpdBus bus;
   assert(s.supportsGray16Image());
   assert(s.displayGray16Image(bus, levels.data(), RefreshMode::Half, true));
-  // The runtime builder reproduces picco-gray-cal's tables for the defaults.
-  assert(Bytes(s._lutCoarse, s._lutCoarse + 535) == asBytes(lut_picco_se0400_gray16_ref_coarse));
-  assert(Bytes(s._lutPull, s._lutPull + 535) == asBytes(lut_picco_se0400_gray16_ref_pull));
+  // The erase and deep drives match picco-gray-cal's tables (its doses: below, under runtime doses).
   assert(Bytes(s._lutDissolve, s._lutDissolve + 535) == asBytes(lut_picco_se0400_gray16_ref_dissolve));
   assert(Bytes(s._lutDeep, s._lutDeep + 535) == asBytes(lut_picco_se0400_gray16_ref_deep));
   // Clean image: two clears, deep, coarse, pull.
@@ -671,12 +669,14 @@ static void expectGray16Image(Ssd2677Driver& s) {
     bus.clear();
     s.display(bus, page.data(), nullptr, RefreshMode::Full, false);
     assert(s.setGray16Turn(2));  // turns since the last clean one: B/W 1, dissolve 2, then clean
-    assert(s._textSoftLevel == 5);  // deep black, then the largest pull-back
+    // The defaults have no soft level (no path is deep black then the largest
+    // pull-back), so the pull pass pulls every deep level back.
+    assert(s._textSoftLevel == 0xFF && s.gray16TextSoftLevel() == -1);
     // The dissolve: 01 erases, 10 lays deep black, 00 deep black then the
-    // in-turn pull-back, 11 undriven.
+    // in-turn pull-back (none here, so plain deep black), 11 undriven.
     assert(ssd2677LutDose(s._lutCross, 2) == -kGray16DefaultErase);
     assert(ssd2677LutDose(s._lutCross, 3) == kGray16Deep);
-    assert(ssd2677LutDose(s._lutCross, 1) == kGray16Deep - kGray16DefaultWhite[2]);
+    assert(ssd2677LutDose(s._lutCross, 1) == kGray16Deep);
     assert(ssd2677LutDose(s._lutCross, 4) == 0);
 
     // Turn 1, nothing up yet: the B/W turn, returning while the panel draws.
@@ -727,6 +727,53 @@ static void expectGray16Image(Ssd2677Driver& s) {
     bus.clear();
     s.display(bus, page.data(), nullptr, RefreshMode::Fast, true);
     assert(!s._textOnGlass && !s.finishGray16Text(bus, levels.data(), true));
+
+    // The soft level, under picco-gray-cal's design doses and paths (level 5:
+    // deep black, then the largest pull-back). It is pulled back inside the
+    // dissolve, so it is gray by the end of the turn, and the pull pass leaves
+    // it alone. Doses first: the design's paths do not fit the default doses.
+    assert(s.setGray16Passes(bus, kGray16DesignBlack, kGray16DesignWhite, kGray16DefaultErase));
+    assert(s.setGray16Levels(bus, kGray16DesignPaths));
+    assert(s._textSoftLevel == 5 && s.gray16TextSoftLevel() == 5);
+    assert(ssd2677LutDose(s._lutCross, 1) == kGray16Deep - kGray16DesignWhite[2]);
+    assert(s.gray16DeepLevels() == ((1u << 5) | (1u << 9) | (1u << 13) | (1u << 15)));
+    assert(s.setGray16Turn(2));
+    const Bytes base3 = planeOf(levels, isDeep), soft3 = planeOf(levels, isSoft);
+    bus.clear();
+    assert(s.beginGray16Text(bus, base3.data(), soft3.data()));  // B/W turn: nothing up
+    assert(!s._textDissolved);
+    assert(s.finishGray16Text(bus, levels.data(), true));
+    const Bytes base4 = planeOf(reversed, isDeep), soft4 = planeOf(reversed, isSoft);
+    bus.clear();
+    assert(s.beginGray16Text(bus, base4.data(), soft4.data()));
+    assert(s._textDissolved);
+    {
+      const Bytes cross = framesOf(bus)[0];
+      int softPixels = 0;
+      for (uint32_t x = 0; x < 800; ++x) {
+        const uint8_t oldL = levelIn(levels, x), newL = levelIn(reversed, x);
+        const bool deep = s._g16.deep[newL] == 2, soft = newL == 5;
+        softPixels += soft;
+        assert(codeAt(cross, x) == (deep ? (soft ? 0 : 2) : (oldL ? 1 : 3)));
+      }
+      assert(softPixels == 50);  // one band of the 16
+    }
+    assert(s.finishGray16Text(bus, reversed.data(), true));
+    {
+      const Bytes pull = framesOf(bus)[2];
+      assert(s._g16.pull[5] != 3);  // the path's own pull-back would run it again
+      for (uint32_t x = 0; x < 800; ++x) {
+        const uint8_t l = levelIn(reversed, x);
+        assert(codeAt(pull, x) == (l == 5 ? 3 : s._g16.pull[l]));
+      }
+    }
+    bus.clear();
+    s.display(bus, page.data(), nullptr, RefreshMode::Fast, true);  // ends the text page
+    // Back to the defaults (paths first: the default paths fit the design's doses, not the other way round).
+    assert(s.setGray16Levels(bus, kGray16DefaultPaths));
+    assert(s.setGray16Passes(bus, kGray16DefaultBlack, kGray16DefaultWhite, kGray16DefaultErase));
+    assert(s._textSoftLevel == 0xFF);
+
     assert(s.setGray16Turn(0));
     assert(s.displayGray16Image(bus, levels.data(), RefreshMode::Half, true));  // the image the checks below start from
   }
@@ -735,7 +782,7 @@ static void expectGray16Image(Ssd2677Driver& s) {
   // on the glass is balanced with the old table before anything changes.
   {
     const uint8_t black[3] = {3, 6, 10}, white[3] = {1, 2, 3};
-    const uint8_t whiteTooStrong[3] = {1, 2, 4};  // level 1 (black 3, white 4) would net below zero
+    const uint8_t whiteTooStrong[3] = {1, 2, 11};  // level 1 (black 10, white 11) would net below zero
     assert(!s.setGray16Passes(bus, black, whiteTooStrong, 16));
     assert(s._gray16OnGlass);  // refused before touching the glass
     bus.clear();
@@ -752,9 +799,22 @@ static void expectGray16Image(Ssd2677Driver& s) {
     paths[5][1] = 0, paths[5][2] = 1;  // deep black alone
     assert(s.setGray16Levels(bus, paths));
     assert(s._g16.deep[5] == 2 && s._g16.coarse[5] == 3 && s._g16.pull[5] == 3);
-    assert(s.setGray16Passes(bus, kGray16DefaultBlack, kGray16DefaultWhite, kGray16DefaultErase));
-    assert(s.setGray16Levels(bus, kGray16DefaultPaths));
+    assert(s._textSoftLevel == 0xFF);  // text's soft level follows: no level is deep black plus the largest pull-back
+    // The runtime builder reproduces picco-gray-cal's tables for its design doses and paths.
+    assert(s.setGray16Levels(bus, kGray16DesignPaths));
+    assert(s.setGray16Passes(bus, kGray16DesignBlack, kGray16DesignWhite, kGray16DefaultErase));
     assert(Bytes(s._lutCoarse, s._lutCoarse + 535) == asBytes(lut_picco_se0400_gray16_ref_coarse));
+    assert(Bytes(s._lutPull, s._lutPull + 535) == asBytes(lut_picco_se0400_gray16_ref_pull));
+    assert(s._textSoftLevel == 5);  // the design's paths have one: deep black, then the largest pull-back
+    // Back to the defaults; paths first, as the defaults' doses do not fit the design's paths.
+    assert(s.setGray16Levels(bus, kGray16DefaultPaths));
+    assert(s.setGray16Passes(bus, kGray16DefaultBlack, kGray16DefaultWhite, kGray16DefaultErase));
+    assert(s._textSoftLevel == 0xFF);  // the defaults have none: the pull pass pulls every deep level back
+    assert(s.gray16TextSoftLevel() == -1);
+    uint16_t deep = 0;
+    for (int l = 0; l < 16; ++l)
+      if (kGray16DefaultPaths[l][2]) deep = static_cast<uint16_t>(deep | (1u << l));
+    assert(s.gray16DeepLevels() == deep && (deep >> 15) & 1);  // the darkest level is always deep black
   }
 
   // No PSRAM for the level copy: refused before anything reaches the panel.

@@ -1335,6 +1335,12 @@ const int16_t* FreeInkDisplay::gray16LevelLstar() const {
   return supportsGray16Image() ? _driver->gray16LevelLstar() : nullptr;
 }
 
+uint16_t FreeInkDisplay::gray16DeepLevels() const {
+  return supportsGray16Image() ? _driver->gray16DeepLevels() : 0;
+}
+
+int FreeInkDisplay::gray16TextSoftLevel() const { return supportsGray16Image() ? _driver->gray16TextSoftLevel() : -1; }
+
 size_t FreeInkDisplay::gray16StateSize() const { return supportsGray16Image() ? _driver->gray16StateSize() : 0; }
 
 size_t FreeInkDisplay::exportGray16State(uint8_t* out, size_t len) const {

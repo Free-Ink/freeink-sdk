@@ -94,6 +94,8 @@ class Ssd2677Driver : public PanelDriver {
   // Measured L* x10 of the default paths drawn clean; nullptr once
   // setGray16Levels replaced them.
   const int16_t* gray16LevelLstar() const override;
+  uint16_t gray16DeepLevels() const override;
+  int gray16TextSoftLevel() const override;
   // Sleep carry-over of an image's owed drive (PanelDriver::exportGray16State).
   // Only a displayGray16Image image is carried: a fast-turn image is erased
   // with the fixed dose, and a text page is cleared by the next B/W frame.

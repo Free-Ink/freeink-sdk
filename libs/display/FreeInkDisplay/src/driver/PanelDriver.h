@@ -272,6 +272,12 @@ class PanelDriver {
   // has no measured table, or a calibration hook replaced the paths it was
   // measured with.
   virtual const int16_t* gray16LevelLstar() const { return nullptr; }
+  // 16-level text (beginGray16Text): bit l set when level l's path starts with
+  // the deep black, i.e. the levels the text base must draw black. 0 = none or
+  // unsupported. gray16TextSoftLevel(): the deep level pulled back inside the
+  // turn (beginGray16Text's `soft` plane), or -1 when the paths have none.
+  virtual uint16_t gray16DeepLevels() const { return 0; }
+  virtual int gray16TextSoftLevel() const { return -1; }
   // Deep sleep loses the driver's copy of a 16-level image still on the glass,
   // so its drive is never given back, and it accumulates sleep after sleep.
   // exportGray16State() packs that image's levels and the give-back codes it was

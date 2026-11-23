@@ -187,6 +187,10 @@ class FreeInkDisplay {
   // Measured L* x10 per level (0 = white .. 15 = darkest) of a clean 16-level
   // draw, or nullptr (PanelDriver::gray16LevelLstar).
   const int16_t* gray16LevelLstar() const;
+  // The levels 16-level text's base draws black, and the one pulled back
+  // inside the turn (-1: none) (PanelDriver::gray16DeepLevels).
+  uint16_t gray16DeepLevels() const;
+  int gray16TextSoftLevel() const;
   // Carry a 16-level image's owed drive across deep sleep
   // (PanelDriver::exportGray16State): export before sleeping, import after
   // begin() on wake, and the next display call gives the drive back.

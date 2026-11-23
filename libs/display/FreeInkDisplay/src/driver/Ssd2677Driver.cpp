@@ -671,9 +671,10 @@ void Ssd2677Driver::buildGray16Tables() {
   _textSoftLevel = 0xFF;
   for (int l = 0; l < 16; ++l)
     if (_g16Paths[l][2] && _g16Paths[l][1] == 3 && !_g16Paths[l][0]) _textSoftLevel = static_cast<uint8_t>(l);
-  if (_textSoftPull == 0xFF) _textSoftPull = _g16White[2];  // default: the level's own pull-back
-  if (!_textSoftPull) _textSoftLevel = 0xFF;  // 0: pulled back by the pull pass instead
-  buildCrossDissolve(_lutCross, _g16Erase, kGray16Deep, _textSoftLevel != 0xFF ? _textSoftPull : 0);
+  // 0xFF: the level's own pull-back under the doses in force (resolved here, so new doses move it too).
+  const uint8_t softPull = _textSoftPull == 0xFF ? _g16White[2] : _textSoftPull;
+  if (!softPull) _textSoftLevel = 0xFF;  // 0: pulled back by the pull pass instead
+  buildCrossDissolve(_lutCross, _g16Erase, kGray16Deep, _textSoftLevel != 0xFF ? softPull : 0);
 }
 
 void Ssd2677Driver::ensureGray16Config() {
@@ -743,12 +744,15 @@ void Ssd2677Driver::balanceGray16(EpdBus& bus) {
 }
 
 namespace {
-// L* x10 of each default level drawn clean (0 = white .. 15 = darkest), from
-// photos of the reader (picco-gray-cal design-turn.json). One unit, uncalibrated
-// camera: callers dithering onto real tones should prefer their own measurement
-// of the unit where they have one.
-constexpr int16_t kGray16DefaultLstar[16] = {999, 903, 824, 801, 753, 697, 646, 621,
-                                             555, 529, 446, 420, 416, 369, 301, 265};
+// L* x10 of each level with the default doses and paths drawn clean (0 = white
+// .. 15 = darkest). jpirnay's measurement (witchhunt freeink-sdk 9fa6f3a): the
+// gray lab's stand against a reference card's gray ramp, each level filling the
+// screen inside the defaults' full pass sequence, room temperature, lamp light.
+// The ends move with glare on the glossy panel (76.5 / 15.7 in daylight for
+// white / black, 70.6 / 7.9 here); this is the low-glare reading. Measure again
+// when the doses or paths change.
+constexpr int16_t kGray16DefaultLstar[16] = {706, 649, 614, 572, 544, 491, 426, 383,
+                                             336, 258, 238, 187, 160, 134, 116, 79};
 
 // exportGray16State layout, little-endian: magic "G16S", version, width,
 // height, give-back codes (useDeep, deep[16], coarse[16], fine[16]), then the
@@ -766,6 +770,27 @@ uint16_t getU16(const uint8_t* p) { return static_cast<uint16_t>(p[0] | p[1] << 
 
 const int16_t* Ssd2677Driver::gray16LevelLstar() const {
   return supportsGray16Image() && !_g16CustomPaths ? kGray16DefaultLstar : nullptr;
+}
+
+uint16_t Ssd2677Driver::gray16DeepLevels() const {
+  if (!supportsGray16Image()) return 0;
+  const auto& paths = _g16Ready ? _g16Paths : kGray16DefaultPaths;
+  uint16_t mask = 0;
+  for (int l = 0; l < 16; ++l)
+    if (paths[l][2]) mask = static_cast<uint16_t>(mask | (1u << l));
+  return mask;
+}
+
+int Ssd2677Driver::gray16TextSoftLevel() const {
+  if (!supportsGray16Image()) return -1;
+  if (_g16Ready) return _textSoftLevel == 0xFF ? -1 : _textSoftLevel;
+  // Before first use: what buildGray16Tables() will pick from the defaults.
+  const uint8_t softPull = _textSoftPull == 0xFF ? kGray16DefaultWhite[2] : _textSoftPull;
+  if (!softPull) return -1;
+  int level = -1;
+  for (int l = 0; l < 16; ++l)
+    if (kGray16DefaultPaths[l][2] && kGray16DefaultPaths[l][1] == 3 && !kGray16DefaultPaths[l][0]) level = l;
+  return level;
 }
 
 size_t Ssd2677Driver::gray16StateSize() const {
@@ -854,6 +879,7 @@ bool Ssd2677Driver::setGray16Levels(EpdBus& bus, const uint8_t (*paths)[3]) {
   memcpy(_g16Paths, paths, sizeof(_g16Paths));
   _g16 = c;
   _g16CustomPaths = memcmp(_g16Paths, kGray16DefaultPaths, sizeof(_g16Paths)) != 0;  // the measured L* no longer apply
+  buildGray16Tables();  // text's soft level, and with it the cross-dissolve, follow the paths
   return true;
 }
 

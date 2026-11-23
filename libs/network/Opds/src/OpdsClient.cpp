@@ -3,6 +3,7 @@
 #include <string_view>
 #include <utility>
 
+#include "FetchOrigin.h"
 #include "OpdsAuthDoc.h"
 #include "OpdsImplicitAuth.h"
 #include "OpdsLog.h"
@@ -122,6 +123,12 @@ OpdsClient::FetchStatus OpdsClient::fetchFeed(const std::string& url, OpdsFeedPa
   // Resolve localized (language-map) titles to the UI language.
   parser.setPreferredLanguage(primarySubtag(acceptLang).c_str());
   authDirty = false;
+  // A catalog with a guest view answers 200 without credentials, so no 401
+  // would ever ask for the login. Offer the configured login to the server's
+  // own origin first; a 401 still runs the handshake, which drops Basic.
+  if (!basicAuthLatched && bearerToken.empty() && !username.empty() && !password.empty() &&
+      freeink::fetchOrigin(url) == freeink::fetchOrigin(serverUrl))
+    basicAuthLatched = true;
   for (int authAttempt = 0;; ++authAttempt) {
     const HttpResult res = http.get(url, currentAuth(), FEED_ACCEPT, orNull(acceptLang), false,
                                     [&parser](const uint8_t* data, const size_t len) {

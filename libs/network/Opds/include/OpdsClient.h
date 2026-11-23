@@ -97,8 +97,9 @@ class OpdsClient {
   std::string bearerToken;
   std::string refreshTokenValue;
   std::string tokenRefreshUrl;
-  // Latched only after a 401 whose auth document offers Basic (or a bare Basic
-  // challenge): sending Basic preemptively breaks OAuth-only servers.
+  // Latched by a Basic challenge, or by fetchFeed() for the configured server
+  // when no token exists. Any 401 clears it before the handshake, so OAuth-only
+  // servers still reach their auth document.
   bool basicAuthLatched = false;
   bool credentialsMissingFlag = false;
   bool authDirty = false;

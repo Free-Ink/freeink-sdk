@@ -51,15 +51,58 @@ struct Transport : OpdsTransport {
 void configure(OpdsClient& client) { client.setServer(ROOT, "reader", "secret", {{"X-Proxy", "value"}}); }
 
 int main() {
-  // Public Atom catalog, followed by an acquisition-only Basic challenge.
+  // A guest-view catalog answers 200 without credentials (#4566): send the
+  // configured login on the first feed request.
   {
     Transport http;
     OpdsClient client(http);
     configure(client);
     http.replies.push_back({200, FEED, ""});
     OpdsFeedParser parser;
+    assert(client.fetchFeed(ROOT + "/opds", parser) == OpdsClient::FetchStatus::Ok);
+    assert(http.requests.back().username == "reader" && http.requests.back().password == "secret");
+    assert(client.downloadAuth().username == "reader");
+    assert(!client.tokensDirty());
+  }
+  // The login is never offered to another origin or over a stored token.
+  {
+    Transport http;
+    OpdsClient client(http);
+    configure(client);
+    http.replies.push_back({200, FEED, ""});
+    OpdsFeedParser parser;
+    assert(client.fetchFeed("https://other.test/opds", parser) == OpdsClient::FetchStatus::Ok);
+    assert(http.requests.back().username.empty());
+  }
+  {
+    Transport http;
+    OpdsClient client(http);
+    configure(client);
+    client.setTokens("token", "", "");
+    http.replies.push_back({200, FEED, ""});
+    OpdsFeedParser parser;
     assert(client.fetchFeed(ROOT, parser) == OpdsClient::FetchStatus::Ok);
-    assert(client.downloadAuth().username.empty());
+    assert(http.requests.back().username.empty() && http.requests.back().bearer == "token");
+  }
+  // An OAuth-only server that rejects the offered Basic still gets its handshake.
+  {
+    Transport http;
+    OpdsClient client(http);
+    configure(client);
+    http.replies = {{401, "", ""}, {401, OAUTH_DOC, ""}, {200, FEED, ""}};
+    http.posts = {{200, R"({"access_token":"access"})", ""}};
+    OpdsFeedParser parser;
+    assert(client.fetchFeed(ROOT, parser) == OpdsClient::FetchStatus::Ok);
+    assert(http.requests[0].username == "reader");
+    assert(http.requests[1].username.empty());
+    assert(http.requests[2].bearer == "access" && http.requests[2].username.empty());
+    assert(!client.useBasicAuth());
+  }
+  // Acquisition-only Basic challenge on a download.
+  {
+    Transport http;
+    OpdsClient client(http);
+    configure(client);
     http.replies.push_back({401, "<html>Login required</html>", "Basic realm=books"});
     assert(client.authenticateDownload(ROOT + "/book.epub"));
     const auto auth = client.downloadAuth();

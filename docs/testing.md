@@ -223,7 +223,8 @@ sh libs/network/Opds/test/host/run.sh
 ```
 
 Requires host Expat headers and library. Runs the production OPDS client and
-parsers with a scripted transport under ASan/UBSan. Covers public Atom browsing
-with protected acquisitions, Basic challenge headers and OPDS documents, rejected
-credentials, OAuth login/refresh, and cross-origin challenge rejection. Device
+parsers with a scripted transport under ASan/UBSan. Covers guest-view catalogs
+that need the login sent first, protected acquisitions, Basic challenge headers
+and OPDS documents, rejected credentials, OAuth login/refresh (including after
+a rejected first Basic), and cross-origin challenge rejection. Device
 tests must still verify the consumer's download retry, cancellation, and heap.

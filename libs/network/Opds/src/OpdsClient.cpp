@@ -81,8 +81,9 @@ void OpdsClient::resetAuthState() {
 
 HttpAuth OpdsClient::currentAuth(const std::string& url) const {
   HttpAuth a;
-  // The configured login belongs to the configured server only.
-  if (basicAuthLatched && freeink::fetchOrigin(url) == freeink::fetchOrigin(serverUrl)) {
+  // Login, token and custom headers belong to the configured server only.
+  if (freeink::fetchOrigin(url) != freeink::fetchOrigin(serverUrl)) return a;
+  if (basicAuthLatched) {
     a.username = username;
     a.password = password;
   }
@@ -100,6 +101,9 @@ bool OpdsClient::authenticateDownload(const std::string& url) {
 
 bool OpdsClient::handleUnauthorized(const std::string& url, const int attempt) {
   credentialsMissingFlag = false;
+  // Only the configured server may ask for the login: a 401 from another
+  // origin must not start a handshake that sends it the credentials.
+  if (freeink::fetchOrigin(url) != freeink::fetchOrigin(serverUrl)) return false;
   authDirty = true;  // token state may change or be cleared this attempt
   notify(ClientPhase::SigningIn);
   bool advanced = false;

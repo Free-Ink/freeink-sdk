@@ -89,8 +89,25 @@ int main() {
     OpdsFeedParser parser;
     assert(client.fetchFeed(ROOT, parser) == OpdsClient::FetchStatus::Ok);
     assert(http.requests.back().username.empty() && http.requests.back().bearer == "token");
+    // The token and custom headers stay with the server's origin too.
+    const auto foreign = client.downloadAuth("https://other.test/book.epub");
+    assert(foreign.bearer.empty() && foreign.headers.empty());
+    assert(client.downloadAuth(ROOT + "/book.epub").headers.size() == 1);
   }
-  // An OAuth-only server that rejects the offered Basic still gets its handshake.
+  // A 401 from another origin never starts a login handshake.
+  {
+    Transport http;
+    OpdsClient client(http);
+    configure(client);
+    client.setTokens("token", "refresh", ROOT + "/refresh");
+    http.replies = {{401, OAUTH_DOC, ""}};
+    OpdsFeedParser parser;
+    assert(client.fetchFeed("https://other.test/opds", parser) == OpdsClient::FetchStatus::AuthFailed);
+    assert(http.requests.size() == 1 && http.forms.empty());
+    assert(!client.tokensDirty() && client.accessToken() == "token");
+    assert(!client.authenticateDownload("https://other.test/book.epub"));
+    assert(http.requests.size() == 1 && http.forms.empty());
+  }
   {
     Transport http;
     OpdsClient client(http);
@@ -158,6 +175,7 @@ int main() {
   {
     Transport http;
     OpdsClient client(http);
+    client.setServer(ROOT, "", "", {});
     http.replies = {{401, "", "Basic realm=books"}};
     assert(!client.authenticateDownload(ROOT));
     assert(client.credentialsMissing());

@@ -1403,7 +1403,8 @@ constexpr BoardProfile LILYGO_T5S3 = {
     NO_LEDS,
     NO_FLIP,
     NO_SDMMC,
-    {39, 40, 400000, 0x55, 0x6B},  // BQ27220 gauge (0x55) + BQ25896 charger (0x6B) on SDA39/SCL40
+    // BQ27220 gauge (0x55) + BQ25896 charger (0x6B) on SDA39/SCL40, 1500 mAh cell.
+    {39, 40, 400000, 0x55, 0x6B, 0, GaugeType::Bq27220, 1500},
     NO_MIC,
     // Battery-backed RTC on the shared main I2C bus. The vendor schematic
     // (hardware/T5 E-paper S3 Pro V1.0 24-12-24.pdf, page 3 / U3) shows a

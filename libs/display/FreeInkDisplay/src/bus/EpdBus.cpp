@@ -2,6 +2,8 @@
 
 #include <BoardConfig.h>
 #include <driver/gpio.h>
+
+#include <cstring>
 #if defined(ARDUINO) && defined(CONFIG_PM_ENABLE) && CONFIG_PM_ENABLE
 #include <esp_pm.h>
 #endif
@@ -87,9 +89,10 @@ EpdBus::Transaction::Transaction(EpdBus& bus) : _bus(&bus), _pmLock(bus), _activ
 EpdBus::Transaction::~Transaction() { end(); }
 
 EpdBus::Transaction::Transaction(Transaction&& other) noexcept
-    : _bus(other._bus), _pmLock(std::move(other._pmLock)), _active(other._active) {
+    : _bus(other._bus), _pmLock(std::move(other._pmLock)), _active(other._active), _dcHigh(other._dcHigh) {
   other._bus = nullptr;
   other._active = false;
+  other._dcHigh = false;
 }
 
 EpdBus::Transaction& EpdBus::Transaction::operator=(Transaction&& other) noexcept {
@@ -98,8 +101,10 @@ EpdBus::Transaction& EpdBus::Transaction::operator=(Transaction&& other) noexcep
     _bus = other._bus;
     _pmLock = std::move(other._pmLock);
     _active = other._active;
+    _dcHigh = other._dcHigh;
     other._bus = nullptr;
     other._active = false;
+    other._dcHigh = false;
   }
   return *this;
 }
@@ -112,6 +117,7 @@ void EpdBus::Transaction::end() {
   SPI.endTransaction();
   _pmLock.release();
   _active = false;
+  _dcHigh = false;
 }
 
 uint8_t EpdBus::Transaction::transfer(uint8_t d) { return SPI.transfer(d); }
@@ -120,16 +126,42 @@ void EpdBus::Transaction::cmd(uint8_t c) {
   digitalWrite(_bus->_pins.dc, LOW);
   SPI.transfer(c);
   digitalWrite(_bus->_pins.dc, HIGH);
+  _dcHigh = true;
 }
 
 void EpdBus::Transaction::data(uint8_t d) {
-  digitalWrite(_bus->_pins.dc, HIGH);
+  if (!_dcHigh) {
+    digitalWrite(_bus->_pins.dc, HIGH);
+    _dcHigh = true;
+  }
   SPI.transfer(d);
 }
 
 void EpdBus::Transaction::writeBytes(const uint8_t* d, uint16_t len) {
-  digitalWrite(_bus->_pins.dc, HIGH);
+  if (!_dcHigh) {
+    digitalWrite(_bus->_pins.dc, HIGH);
+    _dcHigh = true;
+  }
   SPI.writeBytes(d, len);
+}
+
+void EpdBus::Transaction::writeDataChunk(const uint8_t* d, size_t len) {
+  if (!_active || _bus == nullptr || d == nullptr || len == 0) {
+    return;
+  }
+  if (!_dcHigh) {
+    digitalWrite(_bus->_pins.dc, HIGH);
+    _dcHigh = true;
+  }
+  // 32 KB is an exact multiple of ESP32's 64-byte SPI FIFO (512 FIFOs), keeps
+  // `d` 4-byte aligned across splits, and fits uint16_t host FakeSPI shims.
+  static constexpr size_t MAX_SPI_WRITE_CHUNK = 32768u;
+  while (len > 0) {
+    const uint16_t chunk = static_cast<uint16_t>(len < MAX_SPI_WRITE_CHUNK ? len : MAX_SPI_WRITE_CHUNK);
+    SPI.writeBytes(d, chunk);
+    d += chunk;
+    len -= chunk;
+  }
 }
 
 EpdBus::~EpdBus() {
@@ -238,6 +270,32 @@ EpdBus::Transaction EpdBus::beginTxn() {
   auto txn = transaction();
   digitalWrite(_pins.cs, LOW);
   return txn;
+}
+
+EpdBus::Transaction EpdBus::beginDataTxn(uint8_t ramCmd) {
+  cmd(ramCmd);  // own CS pulse, matching OEM UC8253 DTM framing
+  auto txn = beginTxn();
+  digitalWrite(_pins.dc, HIGH);
+  txn._dcHigh = true;
+  return txn;
+}
+
+size_t EpdBus::sendStream(uint8_t ramCmd, StreamChunkCallback nextChunk, void* ctx) {
+  if (!nextChunk) {
+    return 0;
+  }
+  auto txn = beginDataTxn(ramCmd);
+  size_t totalBytes = 0;
+  for (;;) {
+    const uint8_t* chunk = nullptr;
+    const size_t len = nextChunk(ctx, &chunk);
+    if (len == 0 || !chunk) {
+      break;
+    }
+    txn.writeDataChunk(chunk, len);
+    totalBytes += len;
+  }
+  return totalBytes;
 }
 
 void EpdBus::cmd(uint8_t c) {
@@ -423,6 +481,16 @@ void EpdBus::waitRefreshComplete(const char* tag) {
       while (digitalRead(_pins.busy) != HIGH && millis() - graceStart < 20) {
         delayMicroseconds(200);
       }
+    } else if (refreshPolarity == BusyPolarity::X3TwoPhase) {
+      const unsigned long graceStart = millis();
+      while (digitalRead(_pins.busy) == HIGH && millis() - graceStart < 20) {
+        delayMicroseconds(200);
+      }
+      if (digitalRead(_pins.busy) == HIGH) {
+        return;
+      }
+      waitBusy(BusyPolarity::ActiveLowReady, tag);
+      return;
     }
     waitBusy(refreshPolarity, tag);
     return;
@@ -474,50 +542,154 @@ void EpdBus::waitRefreshComplete(const char* tag) {
   }
 }
 
+namespace {
+// 256-byte (4 x 64-byte ESP32-C3 SPI FIFO) 4-byte-aligned bounce/fill chunks so
+// esp32-hal-spi.c's spiWriteNL() issues aligned 32-bit word loads without partial-FIFO stalls.
+constexpr size_t PLANE_BOUNCE_BYTES = 256u;
+constexpr size_t FILL_CHUNK_BYTES = 256u;
+
+void invertBytesInPlace(uint8_t* buf, const size_t len) {
+  size_t i = 0;
+  for (; i + sizeof(uint32_t) <= len; i += sizeof(uint32_t)) {
+    uint32_t word;
+    std::memcpy(&word, buf + i, sizeof(word));
+    word = ~word;
+    std::memcpy(buf + i, &word, sizeof(word));
+  }
+  for (; i < len; ++i) {
+    buf[i] = static_cast<uint8_t>(~buf[i]);
+  }
+}
+}  // namespace
+
 void EpdBus::sendPlaneFlipped(uint8_t ramCmd, const uint8_t* plane, uint16_t height, uint16_t widthBytes) {
-  cmd(ramCmd);  // own CS pulse
-  auto txn = beginTxn();  // single CS-low burst for the whole plane
-  for (int y = static_cast<int>(height) - 1; y >= 0; y--) {
-    txn.writeBytes(plane + static_cast<uint32_t>(y) * widthBytes, widthBytes);
+  auto txn = beginDataTxn(ramCmd);  // ramCmd pulse, then single CS-low data burst
+  if (plane == nullptr || height == 0 || widthBytes == 0) {
+    return;
+  }
+  alignas(4) uint8_t bounce[PLANE_BOUNCE_BYTES];
+  const size_t wb = widthBytes;
+  size_t buffered = 0;
+  if (wb <= sizeof(bounce)) {
+    const uint8_t* src = plane + static_cast<size_t>(height) * wb;
+    for (size_t y = height; y > 0; --y) {
+      src -= wb;
+      const size_t space = sizeof(bounce) - buffered;
+      if (wb <= space) {
+        std::memcpy(bounce + buffered, src, wb);
+        buffered += wb;
+        if (buffered == sizeof(bounce)) {
+          txn.writeDataChunk(bounce, sizeof(bounce));
+          buffered = 0;
+        }
+      } else {
+        std::memcpy(bounce + buffered, src, space);
+        txn.writeDataChunk(bounce, sizeof(bounce));
+        buffered = wb - space;
+        std::memcpy(bounce, src + space, buffered);
+      }
+    }
+    if (buffered > 0) {
+      txn.writeDataChunk(bounce, buffered);
+    }
+    return;
+  }
+  for (size_t y = height; y > 0; --y) {
+    const uint8_t* src = plane + (y - 1u) * wb;
+    size_t rem = wb;
+    while (rem > 0) {
+      const size_t space = sizeof(bounce) - buffered;
+      const size_t copyLen = rem < space ? rem : space;
+      std::memcpy(bounce + buffered, src, copyLen);
+      src += copyLen;
+      rem -= copyLen;
+      buffered += copyLen;
+      if (buffered == sizeof(bounce)) {
+        txn.writeDataChunk(bounce, sizeof(bounce));
+        buffered = 0;
+      }
+    }
+  }
+  if (buffered > 0) {
+    txn.writeDataChunk(bounce, buffered);
   }
 }
 
-void EpdBus::sendPlaneFlippedInverted(uint8_t ramCmd, const uint8_t* plane, uint16_t height,
-                                      uint16_t widthBytes) {
+void EpdBus::sendPlaneFlippedInverted(uint8_t ramCmd, const uint8_t* plane, uint16_t height, uint16_t widthBytes) {
   // Streams ~plane[i] row-reversed without a host-side copy of the inverted
   // frame (the C3 boards have no RAM to spare for one). Same single CS-low
-  // burst contract as sendPlaneFlipped().
-  uint8_t chunk[128];
-  cmd(ramCmd);
-  auto txn = beginTxn();
-  for (int y = static_cast<int>(height) - 1; y >= 0; y--) {
-    const uint8_t* row = plane + static_cast<uint32_t>(y) * widthBytes;
-    uint16_t offset = 0;
-    while (offset < widthBytes) {
-      const uint16_t n = static_cast<uint16_t>(widthBytes - offset) < sizeof(chunk)
-                             ? static_cast<uint16_t>(widthBytes - offset)
-                             : static_cast<uint16_t>(sizeof(chunk));
-      for (uint16_t i = 0; i < n; ++i) chunk[i] = static_cast<uint8_t>(~row[offset + i]);
-      txn.writeBytes(chunk, n);
-      offset = static_cast<uint16_t>(offset + n);
+  // burst contract as sendPlaneFlipped(), packed into 256-byte chunks.
+  auto txn = beginDataTxn(ramCmd);
+  if (plane == nullptr || height == 0 || widthBytes == 0) {
+    return;
+  }
+  alignas(4) uint8_t bounce[PLANE_BOUNCE_BYTES];
+  const size_t wb = widthBytes;
+  size_t buffered = 0;
+  if (wb <= sizeof(bounce)) {
+    const uint8_t* src = plane + static_cast<size_t>(height) * wb;
+    for (size_t y = height; y > 0; --y) {
+      src -= wb;
+      const size_t space = sizeof(bounce) - buffered;
+      if (wb <= space) {
+        std::memcpy(bounce + buffered, src, wb);
+        buffered += wb;
+        if (buffered == sizeof(bounce)) {
+          invertBytesInPlace(bounce, sizeof(bounce));
+          txn.writeDataChunk(bounce, sizeof(bounce));
+          buffered = 0;
+        }
+      } else {
+        std::memcpy(bounce + buffered, src, space);
+        invertBytesInPlace(bounce, sizeof(bounce));
+        txn.writeDataChunk(bounce, sizeof(bounce));
+        buffered = wb - space;
+        std::memcpy(bounce, src + space, buffered);
+      }
     }
+    if (buffered > 0) {
+      invertBytesInPlace(bounce, buffered);
+      txn.writeDataChunk(bounce, buffered);
+    }
+    return;
+  }
+  for (size_t y = height; y > 0; --y) {
+    const uint8_t* src = plane + (y - 1u) * wb;
+    size_t rem = wb;
+    while (rem > 0) {
+      const size_t space = sizeof(bounce) - buffered;
+      const size_t copyLen = rem < space ? rem : space;
+      std::memcpy(bounce + buffered, src, copyLen);
+      src += copyLen;
+      rem -= copyLen;
+      buffered += copyLen;
+      if (buffered == sizeof(bounce)) {
+        invertBytesInPlace(bounce, sizeof(bounce));
+        txn.writeDataChunk(bounce, sizeof(bounce));
+        buffered = 0;
+      }
+    }
+  }
+  if (buffered > 0) {
+    invertBytesInPlace(bounce, buffered);
+    txn.writeDataChunk(bounce, buffered);
   }
 }
 
 void EpdBus::fillPlane(uint8_t ramCmd, uint8_t fillByte, uint16_t height, uint16_t widthBytes) {
-  // Reusable constant-fill chunk; wide rows are written in multiple bursts so a
-  // widthBytes larger than the chunk is streamed in full (no silent truncation).
-  uint8_t chunk[128];
-  memset(chunk, fillByte, sizeof(chunk));
-  cmd(ramCmd);
-  auto txn = beginTxn();
-  for (uint16_t y = 0; y < height; y++) {
-    uint16_t remaining = widthBytes;
-    while (remaining) {
-      const uint16_t n = remaining < sizeof(chunk) ? remaining : static_cast<uint16_t>(sizeof(chunk));
-      txn.writeBytes(chunk, n);
-      remaining = static_cast<uint16_t>(remaining - n);
-    }
+  // Stream height * widthBytes constant bytes as 256-byte (4 x 64 B FIFO) bursts
+  // inside one CS-low transaction; handles any widthBytes without truncation.
+  auto txn = beginDataTxn(ramCmd);
+  size_t remaining = static_cast<size_t>(height) * widthBytes;
+  if (remaining == 0) {
+    return;
+  }
+  alignas(4) uint8_t chunk[FILL_CHUNK_BYTES];
+  std::memset(chunk, fillByte, sizeof(chunk));
+  while (remaining > 0) {
+    const size_t n = remaining < sizeof(chunk) ? remaining : sizeof(chunk);
+    txn.writeDataChunk(chunk, n);
+    remaining -= n;
   }
 }
 

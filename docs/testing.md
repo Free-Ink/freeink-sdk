@@ -157,6 +157,7 @@ python3 libs/display/FreeInkDisplay/test/host/run_pro.py
 python3 libs/display/FreeInkDisplay/test/host/run_uc8279.py
 python3 libs/display/FreeInkDisplay/test/host/run_uc8279c_a4.py
 python3 libs/display/FreeInkDisplay/test/host/run_uc8253_power.py
+python3 libs/display/FreeInkDisplay/test/host/run_uc8253_murphy.py
 python3 libs/display/FreeInkDisplay/test/host/run_picco.py
 python3 libs/display/FreeInkDisplay/test/host/run_e1001.py
 ```
@@ -168,7 +169,9 @@ independently of board metadata. The Picco suite builds the
 SSD1677/SSD2677 drivers as a Picco and as a Sticky, including each board's
 bit-banged panel probe. The checks cover transfer
 sequences, grayscale uploads, refresh lifecycle, and power-state behavior for
-the drivers included in each harness.
+the drivers included in each harness, including UC8253 X3 two-pass 16-gray, PTL
+sub-window sync, idle HV power-off, gate-order plane streaming, and 256-byte bus
+plane flips.
 
 For the board-profile and display-probe regression test, follow the
 [XteinkDetect host instructions](../libs/hardware/XteinkDetect/test/host/README.md).

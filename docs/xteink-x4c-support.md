@@ -54,8 +54,8 @@ defines it).
 **not** a display pin — it is the SD card's power enable (see Storage). No custom
 LUT, drive voltages, or external PMIC are needed; the panel runs the same UC8279
 command stream and OTP waveform as the X4 Pro. The X4C omits the UC8279 PLL (0x30)
-command that the X4 Pro programs. `displaySpiHz` defaults to 10 MHz, like all
-Xteink board profiles.
+command that the X4 Pro programs. `displaySpiHz` defaults to 10 MHz, like the
+other Xteink profiles (except `XTEINK_X3` UC8253 at 16 MHz).
 
 ## Input — eight discrete buttons, no touch
 

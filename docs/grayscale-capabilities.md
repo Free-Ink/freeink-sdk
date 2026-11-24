@@ -76,6 +76,33 @@ An unsupported mode returns the default descriptor: `supported()` is false and
 all upload/overlap flags are false. Do not silently fall back from Absolute to
 Overlay with the same input bytes.
 
+## Two-pass 16-gray (UC8253 X3)
+
+Panels whose `supportsGray16Planes()` returns true expose a two-pass split-plane
+16-level pipeline over 1-bpp controller RAM (`supportsDeferredGray16Base()`
+indicates whether `displayGray16BaseAsync()` overlaps CPU work with the base
+waveform):
+
+1. `displayGray16Base()` or `displayGray16BaseAsync()` activates the B/W base
+   (single-pass cross-dissolve on `FAST_REFRESH`, history-independent scrub on
+   `HALF_REFRESH`). Call `waitRefreshComplete()` before touching the framebuffer
+   after an `*Async` start, or let the next plane upload drain it.
+2. Upload Pass 1 coarse LSB and MSB planes (`writeGrayscalePlaneGateStream()`,
+   `writeGrayscalePlaneStrip()`, or `copyGrayscale*Buffers()`), then call
+   `displayGray16Pass1()` or `displayGray16Pass1Async()`.
+3. Upload Pass 2 fine LSB and MSB planes, then call `displayGray16Pass2()` or
+   `displayGray16Pass2Async()`.
+4. Call `beginGray16Cleanup(bwBuffer)` (passing `nullptr` when streaming DTM2
+   and DTM1 directly), upload the `kMaskCleanupBlack` (`0xFFFE`) DTM1 plane, and
+   call `finishGray16Cleanup()` so the next turn can cross-dissolve in one pass.
+
+`writeGrayscalePlaneGateStream(plane, ctx, nextChunk)` streams a complete plane
+(`H * widthBytes` bytes) in bottom-up controller gate order (`gate 0` = logical
+row `H - 1`) inside one CS-low SPI transaction without `PTIN`/`PTL`/`PTOUT`.
+Drivers or modes that do not support gate streaming return `false` before bus
+I/O without advancing row state, so callers can fall back to
+`writeGrayscalePlaneStrip()`.
+
 ## Execution properties
 
 | Field | Meaning |

@@ -126,7 +126,7 @@ so the SD manager itself stays device-agnostic.
 | Device | MCU | Controller | Panel | FreeInk support |
 |---|---|---|---|---|
 | **Xteink X4** | ESP32-C3 | SSD1677 | 800×480 | B/W + 4-level grayscale |
-| **Xteink X3** | ESP32-C3 | UC8253 | 792×528 | B/W + 4-level grayscale; BQ27220 I²C battery gauge; shares the C3 binary with X4 |
+| **Xteink X3** | ESP32-C3 | UC8253 | 792×528 | B/W + 4- and 16-level grayscale; BQ27220 I²C battery gauge; shares the C3 binary with X4 |
 | **OnePage** | ESP32-C61 | SSD1677 | 800×480 | B/W + 4-level grayscale, 4-key front resistor ADC ladder + 3 side keys, shared SPI MicroSD with power gating, Wi-Fi 6 + BLE 5.4 wireless page-turner remote host |
 | **[Silkscreen](https://github.com/iandchasse/silkscreen-pcb)** (formerly de-link) | ESP32-S3 | SSD1677 | 800×480 | B/W + grayscale, PWM frontlight, native 4-bit SDMMC SD |
 | **M5Stack PaperColor** | ESP32-S3 | ED2208 | 400×600 Spectra-6 color | native interrupted-refresh driver, optional M5GFX backend, built-in speaker (ES8311 codec + AW8737A amp), 2x RGB LEDs |

@@ -105,8 +105,8 @@ public:
     const auto nextCharge = [&](int previous, unsigned code) __attribute__((always_inline)) {
       int v = 0;
       if (_chargeValid) {
-        v = (previous - _median) * 998;
-        v = v >= 0 ? v / 1024 : -((-v + 1023) / 1024);
+        // Rounds to nearest, as firmware 26110201 does (0x421877f6: +512, >>10).
+        v = ((previous - _median) * 998 + 512) >> 10;
       }
       v += doses[code];
       return v < -127 ? -127 : v > 127 ? 127 : v;

@@ -39,8 +39,7 @@ struct Reference {
         const unsigned code = ((hi[i] >> shift) & 1) * 2 + ((lo[i] >> shift) & 1);
         int v = 0;
         if (valid) {
-          v = (static_cast<int>(charge[i * 8 + bit]) - median) * 998;
-          v = v >= 0 ? v / 1024 : -((-v + 1023) / 1024);
+          v = ((static_cast<int>(charge[i * 8 + bit]) - median) * 998 + 512) >> 10;
         }
         v += doses[code];
         v = v < -127 ? -127 : v > 127 ? 127 : v;

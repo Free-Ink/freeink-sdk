@@ -5,6 +5,7 @@
 #include <Arduino.h>
 #include <USB.h>
 #include <USBMSC.h>
+#include <tusb.h>
 
 #include <algorithm>
 #include <atomic>
@@ -145,6 +146,22 @@ bool UsbMassStorage::begin(FsBlockDeviceInterface* dev) {
     _state.store(UsbMassStorageState::Idle);
     return false;
   }
+  // Give the bulk IN endpoint two packets of FIFO. TinyUSB's default is one (64 bytes), and with
+  // only one the next packet cannot go out until the TX-empty interrupt has refilled it: measured
+  // on a Murphy M3, a 4 KB chunk took 17.9 ms on the wire against 1.3 ms to read off the card, for
+  // 217 KB/s. Two packets gave 712 KB/s.
+  //
+  // That is not only a matter of speed. gvfs auto-mounts a volume only if it appears within 5 s of
+  // its media (older than that reads as a repartition), and udev's probing is what fills that gap:
+  // on a card with two partitions it took 5.65 s, so the drive enumerated, could be mounted by hand,
+  // and never appeared on a GNOME desktop. With this it takes 1.9 s.
+  //
+  // Every IN endpoint is named because the MSC one is picked inside USB.begin(); TinyUSB applies
+  // the flag to bulk endpoints only, and two 64-byte packets per bulk IN fit the FIFO. Must precede
+  // USB.begin(), which initialises the device stack.
+  tud_configure_param_t usbConfig = {.dwc2 = CFG_TUD_CONFIGURE_DWC2_DEFAULT};
+  usbConfig.dwc2.bm_double_buffered = 0xFFFE;
+  tud_configure(0, TUD_CFGID_DWC2, &usbConfig);
   if (!USB.begin()) {
     gMsc.end();
     gOwner.store(nullptr);

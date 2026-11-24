@@ -158,6 +158,7 @@ python3 libs/display/FreeInkDisplay/test/host/run_uc8279.py
 python3 libs/display/FreeInkDisplay/test/host/run_uc8279c_a4.py
 python3 libs/display/FreeInkDisplay/test/host/run_uc8253_power.py
 python3 libs/display/FreeInkDisplay/test/host/run_picco.py
+python3 libs/display/FreeInkDisplay/test/host/run_e1001.py
 ```
 
 These compile production drivers against recording buses. The Pro suite also

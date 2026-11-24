@@ -6,8 +6,10 @@
 #include <vector>
 
 #include "driver/Uc8279cA4Driver.h"
+#include "esp_heap_caps.h"
 
-int main() {
+int main(int argc, char** argv) {
+  assert(argc == 2);
   using namespace freeink;
   constexpr size_t bytes = 768 / 8 * 552;
   std::vector<uint8_t> bw(bytes, 0xff), gray(bytes, 0xaa);
@@ -49,6 +51,14 @@ int main() {
   driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, false);
   assert(bus.interval == 0xd7 && bus.lut20s.back()[1] == 0x32);
   driver.setReaderRefresh(false);
+  // Dark page: staying black gets 8 black frames, turning black ends with one
+  // white frame. Light pages send the stock records.
+  driver.setBackgroundHint(true);
+  driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, false);
+  assert(bus.lut24[1] == (0x40 | 8) && bus.lut23[1] == 0x64 && bus.lut23[2] == 0x81);
+  driver.setBackgroundHint(false);
+  driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, false);
+  assert(bus.lut24[1] == 0x64 && bus.lut23[1] == 0x64 && bus.lut23[2] == 0x00);
   driver.begin(bus);
 
   // Unknown glass after boot still gets a full first paint.
@@ -162,16 +172,6 @@ int main() {
     assert(bus.lut23.size() == 49 && bus.lut23[1] == 0x52 && bus.lut23[8] == 0x85 && bus.lut23[9] == 13);
   }
   {
-    driver.setOverlayFullTone(true);
-    allocationsBeforeFailure = 1;  // Keep the light history buffer, fail the lightening plane.
-    const auto before = bus.refreshes;
-    gray3Page(page.data(), RefreshMode::Fast);
-    assert(allocationsBeforeFailure == -1);
-    assert(bus.refreshes == before + 1 && "partial allocation must fall back to one gray level");
-    assert(bus.oldAtRefresh[physical0] == 0b01100000 && bus.newAtRefresh[physical0] == 0x00);
-    driver.setOverlayFullTone(false);
-  }
-  {
     // Idle retains Gray3 history/session. The same page again must resume with
     // one power-on and one refresh, with no register reinitialization.
     fakeMillis() += 500;
@@ -184,6 +184,17 @@ int main() {
     assert(bus.oldAtRefresh[physical0] == 0b01100000 && bus.newAtRefresh[physical0] == 0x00 &&
            "unchanged white/gray must hold, black re-driven");
     assert(bus.oldAtRefresh[physical0 + 1] == 0x00 && bus.newAtRefresh[physical0 + 1] == 0x00);
+
+    // Either optional allocation may fail. The single-gray page still reaches
+    // the panel, and the full-tone test below retries the missing buffer.
+    driver.setOverlayFullTone(true);
+    failOnAllocation = std::atoi(argv[1]);
+    assert(failOnAllocation == 1 || failOnAllocation == 2);
+    const auto beforeFallback = bus.refreshes;
+    gray3Page(page.data(), RefreshMode::Fast);
+    assert(failOnAllocation == 0 && bus.refreshes == beforeFallback + 1);
+    assert(bus.oldAtRefresh[physical0] == 0b01100000 && bus.newAtRefresh[physical0] == 0x00);
+    driver.setOverlayFullTone(false);
   }
   {
     // A page where those pixels change: gray -> white is cleared, white ->

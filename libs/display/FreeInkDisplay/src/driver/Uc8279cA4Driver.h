@@ -42,6 +42,7 @@ class Uc8279cA4Driver : public PanelDriver {
   void cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) override;
   void setReaderRefresh(bool reading) override { _readerRefresh = reading; }
   void setOverlayFullTone(bool fullTone) override { _fullTone = fullTone; }
+  void setBackgroundHint(bool darkBackground) override { _darkBackground = darkBackground; }
   // Runs during a Gray3 page-turn waveform, where the CPU otherwise only
   // polls BUSY for about 0.6 s. Cleared by every display() and displayGray().
   void setRefreshIdleHook(void (*hook)(void* ctx), void* ctx) override {
@@ -89,6 +90,7 @@ class Uc8279cA4Driver : public PanelDriver {
   bool _grayControllerMode = false;
   bool _readerRefresh = false;  // the host is presenting book pages
   bool _fullTone = false;       // overlay pages keep both gray levels
+  bool _darkBackground = false;  // the facade renders inverted frames
   bool _uiShown = false;        // a B/W paint that was not a book page is on the panel
   bool _redriveAfterGray = false;  // re-drive all target pixels after AA, using the requested waveform
   // begin() seeds DTM1 white, but after a reflash/reset the glass holds the

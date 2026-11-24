@@ -100,22 +100,19 @@ public:
 };
 }
 ''')
-    (root / "esp_heap_caps.h").write_text('''#pragma once
+    (root / "esp_heap_caps.h").write_text("""#pragma once
 #include <cstdlib>
 #define MALLOC_CAP_SPIRAM 1
 #define MALLOC_CAP_8BIT 2
-inline int allocationsBeforeFailure = -1;
+inline int failOnAllocation = 0;
 inline void* heap_caps_malloc(size_t n, int) {
-  if (allocationsBeforeFailure == 0) {
-    allocationsBeforeFailure = -1;
-    return nullptr;
-  }
-  if (allocationsBeforeFailure > 0) --allocationsBeforeFailure;
+  if (failOnAllocation > 0 && --failOnAllocation == 0) return nullptr;
   return malloc(n);
 }
-''')
+""")
     exe = root / "test_uc8279c_a4"
     subprocess.run([os.environ.get("CXX", "c++"), "-std=c++17", "-Wall", "-Wextra",
                     "-Wno-unused-parameter", "-I"+str(root), str(HERE / "test_uc8279c_a4.cpp"),
                     str(root / "driver/Uc8279cA4Driver.cpp"), "-o", str(exe)], check=True)
-    subprocess.run([str(exe)], check=True)
+    for failed_buffer in (1, 2):
+        subprocess.run([str(exe), str(failed_buffer)], check=True)

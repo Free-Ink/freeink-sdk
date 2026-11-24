@@ -19,6 +19,7 @@
 #include <SdFat.h>
 #include <WString.h>
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -30,8 +31,21 @@ class SdmmcBlockDevice;  // native esp-idf SDMMC block device (src/SdmmcBlockDev
 
 class SDCardManager {
  public:
+  enum class StartupError : uint8_t {
+    None,
+    // The card did not answer its reset/initialization command.
+    CardNotDetected,
+    // A sector read or other card communication failed.
+    CardCommunicationFailure,
+    // The card was readable, but no supported FAT/exFAT volume mounted.
+    VolumeMountFailed,
+    // Initialization failed without enough evidence to classify the cause.
+    Unknown,
+  };
+
   SDCardManager();
   bool begin();
+  StartupError startupError() const { return startupError_; }
   bool ready() const;
   // Returns the total card capacity in bytes. Cached at begin(); 0 if not mounted.
   uint64_t sdTotalBytes() const;
@@ -128,6 +142,7 @@ class SDCardManager {
   static SDCardManager instance;
 
   bool initialized = false;
+  StartupError startupError_ = StartupError::Unknown;
   PowerHook _powerHook = nullptr;
 
   static constexpr uint32_t USED_BYTES_CACHE_TTL_MS = 20000;

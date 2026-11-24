@@ -8,12 +8,20 @@
 
 namespace {
 unsigned deviceEnds = 0;
-}
+bool failDeviceBegin = false;
+freeink::SdmmcBlockDevice::BeginError deviceBeginError = freeink::SdmmcBlockDevice::BeginError::Unknown;
+}  // namespace
 
 // Only the physical ESP-IDF transport is faked. Compile the production SDMMC
 // manager's mount, sync, shutdown and detach paths against the actual API.
 namespace freeink {
 bool SdmmcBlockDevice::begin(const BoardConfig::SdmmcPins&) {
+  if (failDeviceBegin) {
+    _beginError = deviceBeginError;
+    return false;
+  }
+  _beginError = BeginError::None;
+  _readError = false;
   _card = this;
   _dmaBuffer = nullptr;
   return true;
@@ -23,7 +31,13 @@ void SdmmcBlockDevice::end() {
   _dmaBuffer = nullptr;
   ++deviceEnds;
 }
-bool SdmmcBlockDevice::readSectors(Sector_t, uint8_t*, size_t) { return false; }
+bool SdmmcBlockDevice::readSectors(Sector_t, uint8_t*, size_t) {
+  if (fakeSd::blockReadFails) {
+    _readError = true;
+    return false;
+  }
+  return true;
+}
 bool SdmmcBlockDevice::writeSectors(Sector_t, const uint8_t*, size_t) { return false; }
 Sector_t SdmmcBlockDevice::sectorCount() { return _card && !_dmaBuffer ? 1024 : 0; }
 }  // namespace freeink
@@ -31,7 +45,14 @@ Sector_t SdmmcBlockDevice::sectorCount() { return _card && !_dmaBuffer ? 1024 : 
 int main() {
   auto& manager = SDCardManager::getInstance();
   assert(manager.shutdown());  // never-mounted shutdown is harmless
+  failDeviceBegin = true;
+  deviceBeginError = freeink::SdmmcBlockDevice::BeginError::CardNotDetected;
+  assert(!manager.begin());
+  assert(manager.startupError() == SDCardManager::StartupError::CardNotDetected);
+  failDeviceBegin = false;
   assert(manager.begin());
+  assert(manager.startupError() == SDCardManager::StartupError::None);
+  const auto startupDeviceEnds = deviceEnds;
   for (int fault = 0; fault < 3; ++fault) {
     fakeSd::rootOpenFails = fault == 0;
     fakeSd::rootSyncFails = fault == 1;
@@ -42,15 +63,27 @@ int main() {
     assert(!manager.shutdown());
     assert(manager.detachFilesystemForRawAccess() == nullptr);
     assert(manager.ready());
-    assert(fakeSd::volumeEnds == 0 && deviceEnds == 0 && floatedPins == 0);
+    assert(fakeSd::volumeEnds == 0 && deviceEnds == startupDeviceEnds && floatedPins == 0);
   }
   fakeSd::rootOpenFails = fakeSd::rootSyncFails = fakeSd::rootCloseFails = false;
   assert(manager.shutdown());
   assert(!manager.ready());
-  assert(fakeSd::volumeEnds == 1 && deviceEnds == 1 && floatedPins == 6);
+  assert(fakeSd::volumeEnds == 1 && deviceEnds == startupDeviceEnds + 1 && floatedPins == 6);
   assert(manager.shutdown());
-  assert(deviceEnds == 1);
+  assert(deviceEnds == startupDeviceEnds + 1);
+
+  fakeSd::volumeBeginFails = true;
+  fakeSd::blockReadFails = false;
+  assert(!manager.begin());
+  assert(manager.startupError() == SDCardManager::StartupError::VolumeMountFailed);
+
+  fakeSd::blockReadFails = true;
+  assert(!manager.begin());
+  assert(manager.startupError() == SDCardManager::StartupError::CardCommunicationFailure);
+  fakeSd::volumeBeginFails = false;
+  fakeSd::blockReadFails = false;
   assert(manager.begin());
+  assert(manager.startupError() == SDCardManager::StartupError::None);
   const auto stopped = deviceEnds;
   assert(manager.detachFilesystemForRawAccess() != nullptr);
   assert(!manager.ready() && fakeSd::volumeEnds == 2);

@@ -13,6 +13,13 @@
 using oflag_t = int;
 constexpr oflag_t O_RDONLY = 0, O_RDWR = 1, O_CREAT = 2, O_TRUNC = 4;
 using Sector_t = uint32_t;
+constexpr uint8_t SHARED_SPI = 0;
+constexpr uint8_t USER_SPI_BEGIN = 1;
+constexpr uint8_t SD_CARD_ERROR_CMD0 = 1;
+struct SdSpiConfig {
+  SdSpiConfig(uint8_t, uint8_t, uint32_t) {}
+  SdSpiConfig(uint8_t, uint8_t, uint32_t, void*) {}
+};
 class FsBlockDeviceInterface {
  public:
   virtual ~FsBlockDeviceInterface() = default;
@@ -53,6 +60,9 @@ inline bool rootOpenFails = false, rootSyncFails = false, rootCloseFails = false
 inline unsigned rootSyncs = 0, volumeEnds = 0;
 inline std::vector<std::pair<std::string, std::string>> renameFailures;
 inline std::vector<std::string> removeFailures;
+inline bool cardBeginFails = false, volumeBeginFails = false;
+inline uint8_t cardErrorCode = 0;
+inline bool blockReadFails = false;
 }  // namespace fakeSd
 
 class FsVolume;
@@ -129,7 +139,13 @@ class FsFile {
 
 class FsVolume {
  public:
-  bool begin(FsBlockDeviceInterface*) { return true; }
+  bool begin(FsBlockDeviceInterface* device) {
+    if (fakeSd::volumeBeginFails && fakeSd::blockReadFails) {
+      uint8_t sector[512];
+      device->readSector(0, sector);
+    }
+    return !fakeSd::volumeBeginFails;
+  }
   void end() { ++fakeSd::volumeEnds; }
   FsFile open(const char* path, oflag_t flags = O_RDONLY) {
     if (!fakeSd::filesMode) return FsFile(!fakeSd::openFails);
@@ -181,7 +197,9 @@ class SdFat : public FsVolume {
  public:
   FsBlockDeviceInterface* card() { return &card_; }
   bool begin(uint8_t, uint32_t) { return true; }
-  int sdErrorCode() const { return 0; }
+  bool cardBegin(SdSpiConfig) { return !fakeSd::cardBeginFails; }
+  bool volumeBegin() { return !fakeSd::volumeBeginFails; }
+  int sdErrorCode() const { return fakeSd::cardErrorCode; }
   int sdErrorData() const { return 0; }
 
  private:

@@ -6,15 +6,16 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "esp_heap_caps.h"
-
 #include "driver/gpio.h"
 #include "driver/sdmmc_host.h"
+#include "esp_heap_caps.h"
 #include "sdmmc_cmd.h"
 
 namespace freeink {
 
 bool SdmmcBlockDevice::begin(const BoardConfig::SdmmcPins& pins) {
+  _readError = false;
+  _beginError = BeginError::Unknown;
   if (pins.busWidth == 0) return false;
   // The sleep path may hold the bus pads (Picco); a held pad ignores the slot setup.
   for (const int8_t pin : {pins.clk, pins.cmd, pins.d0, pins.d1, pins.d2, pins.d3}) {
@@ -39,8 +40,9 @@ bool SdmmcBlockDevice::begin(const BoardConfig::SdmmcPins& pins) {
       return false;
     }
     delay(1);
-    if (Serial) Serial.printf("[%lu] [SD] Metalio DAT3/CD GPIO46=%d (expected 1)\n", millis(),
-                              gpio_get_level(static_cast<gpio_num_t>(metalio::SD_DAT3_GPIO)));
+    if (Serial)
+      Serial.printf("[%lu] [SD] Metalio DAT3/CD GPIO46=%d (expected 1)\n", millis(),
+                    gpio_get_level(static_cast<gpio_num_t>(metalio::SD_DAT3_GPIO)));
   }
 #endif
 
@@ -95,8 +97,8 @@ bool SdmmcBlockDevice::begin(const BoardConfig::SdmmcPins& pins) {
   // live in PSRAM / at an unaligned address, while native SDMMC requires an
   // internal-RAM DMA buffer. Limiting each transfer to eight sectors keeps the
   // buffer bounded at 4 KiB and avoids heap churn in the USB-MSC callbacks.
-  _dmaBuffer = static_cast<uint8_t*>(heap_caps_malloc(kSectorSize * kMaxTransferSectors,
-                                                      MALLOC_CAP_DMA | MALLOC_CAP_8BIT));
+  _dmaBuffer =
+      static_cast<uint8_t*>(heap_caps_malloc(kSectorSize * kMaxTransferSectors, MALLOC_CAP_DMA | MALLOC_CAP_8BIT));
   if (!_dmaBuffer) {
     free(card);
     sdmmc_host_deinit();
@@ -110,6 +112,7 @@ bool SdmmcBlockDevice::begin(const BoardConfig::SdmmcPins& pins) {
   // 0x107; validating a real read here means _card is only published once genuine
   // block I/O works, and the gate is left in the exact LOW state that read succeeded under.
   esp_err_t mountErr = ESP_FAIL;
+  bool lastFailureWasCardInit = false;
   for (int attempt = 0; attempt < 4; attempt++) {
     if (sdPwr >= 0 && BoardConfig::ACTIVE.sd.powerCycleOnMount) {
       digitalWrite(sdPwr, HIGH);
@@ -122,16 +125,18 @@ bool SdmmcBlockDevice::begin(const BoardConfig::SdmmcPins& pins) {
     esp_err_t e = sdmmc_card_init(&host, card);
     if (e != ESP_OK && card->csd.capacity == 0) {
       mountErr = e;  // failed before CSD — nothing to read; power-cycle and retry
+      lastFailureWasCardInit = true;
       continue;
     }
     // CSD is valid (capacity known); prove real block I/O before committing.
     e = sdmmc_read_sectors(card, _dmaBuffer, 0, 1);
     mountErr = e;
+    lastFailureWasCardInit = false;
     if (e == ESP_OK) break;
   }
   if (mountErr != ESP_OK) {
-    if (Serial)
-      Serial.printf("[%lu] [SD] SDMMC mount failed after retries: %s\n", millis(), esp_err_to_name(mountErr));
+    _beginError = lastFailureWasCardInit ? BeginError::CardNotDetected : BeginError::CardCommunicationFailure;
+    if (Serial) Serial.printf("[%lu] [SD] SDMMC mount failed after retries: %s\n", millis(), esp_err_to_name(mountErr));
     heap_caps_free(_dmaBuffer);
     _dmaBuffer = nullptr;
     free(card);
@@ -163,7 +168,10 @@ bool SdmmcBlockDevice::readSectors(Sector_t sector, uint8_t* dst, size_t ns) {
   while (ns > 0) {
     const size_t count = ns > kMaxTransferSectors ? kMaxTransferSectors : ns;
     const size_t bytes = count * kSectorSize;
-    if (sdmmc_read_sectors(static_cast<sdmmc_card_t*>(_card), _dmaBuffer, sector, count) != ESP_OK) return false;
+    if (sdmmc_read_sectors(static_cast<sdmmc_card_t*>(_card), _dmaBuffer, sector, count) != ESP_OK) {
+      _readError = true;
+      return false;
+    }
     memcpy(dst, _dmaBuffer, bytes);
     sector += count;
     dst += bytes;

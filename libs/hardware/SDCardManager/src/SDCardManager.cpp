@@ -23,7 +23,11 @@ SDCardManager SDCardManager::instance;
 SDCardManager::SDCardManager() {}
 
 bool SDCardManager::begin() {
-  if (initialized) return true;
+  if (initialized) {
+    startupError_ = StartupError::None;
+    return true;
+  }
+  startupError_ = StartupError::Unknown;
 #if FREEINK_DEVICE_METALIO_EINK4
   if (BoardConfig::isMetalioEInk4() && !freeink::metalio::ensureBooted()) return false;
 #endif
@@ -56,11 +60,26 @@ bool SDCardManager::begin() {
   if (!_dev->begin(BoardConfig::ACTIVE.sdmmc)) {
     if (Serial) Serial.printf("[%lu] [SD] SDMMC init failed\n", millis());
     initialized = false;
+    switch (_dev->beginError()) {
+      case freeink::SdmmcBlockDevice::BeginError::CardNotDetected:
+        startupError_ = StartupError::CardNotDetected;
+        break;
+      case freeink::SdmmcBlockDevice::BeginError::CardCommunicationFailure:
+        startupError_ = StartupError::CardCommunicationFailure;
+        break;
+      case freeink::SdmmcBlockDevice::BeginError::None:
+      case freeink::SdmmcBlockDevice::BeginError::Unknown:
+      default:
+        startupError_ = StartupError::Unknown;
+        break;
+    }
     cachedTotalBytes = 0;
     cachedUsedBytesValid = false;
     return false;
   }
+  _dev->clearReadError();
   if (!_vol.begin(_dev)) {
+    startupError_ = _dev->hadReadError() ? StartupError::CardCommunicationFailure : StartupError::VolumeMountFailed;
     if (Serial) {
       // Which read failed: the MBR, or the first partition's boot sector.
       static uint8_t sec[512];
@@ -77,6 +96,7 @@ bool SDCardManager::begin() {
     cachedUsedBytesValid = false;
     return false;
   }
+  startupError_ = StartupError::None;
   if (Serial) Serial.printf("[%lu] [SD] SDMMC card mounted\n", millis());
   initialized = true;
   cachedTotalBytes = static_cast<uint64_t>(vol().clusterCount()) * vol().bytesPerCluster();
@@ -127,6 +147,7 @@ bool SDCardManager::shutdown() {
 SDCardManager::SDCardManager() : sd() {}
 
 bool SDCardManager::begin() {
+  startupError_ = StartupError::Unknown;
   // Profiles whose SD CS is not yet known leave it unassigned so the card stays
   // dormant — bail out before any pin is touched, or SdFat drives "pin 255" and
   // floods the log. (Native-SDMMC boards like the X4 Pro take the #if branch above.)
@@ -209,12 +230,28 @@ bool SDCardManager::begin() {
   // SPI.begin() won't remap its pins, so the panel would end up transmitting on
   // the SD pins. Give SD its own HSPI instance and leave the global SPI for the
   // display. Other boards keep sharing the global SPI as before.
+  const auto classifyCardInitFailure = [this]() {
+    if (!sd.card()) return StartupError::Unknown;
+    const uint8_t errorCode = sd.sdErrorCode();
+    if (errorCode == SD_CARD_ERROR_CMD0) return StartupError::CardNotDetected;
+    return errorCode ? StartupError::CardCommunicationFailure : StartupError::Unknown;
+  };
   bool cardReady = false;
+  bool volumeReady = false;
 #if FREEINK_MCU_S3 || FREEINK_MCU_ESP32
   if (BoardConfig::ACTIVE.sd.separateSpi && SD_SCLK >= 0 && SD_MOSI >= 0 && SD_MISO >= 0) {
     static SPIClass dedicatedSdSpi(HSPI);
-    cardReady = dedicatedSdSpi.begin(SD_SCLK, SD_MISO, SD_MOSI, SD_CS) &&
-                sd.begin(SdSpiConfig(SD_CS, SHARED_SPI | USER_SPI_BEGIN, SPI_FQ, &dedicatedSdSpi));
+    if (dedicatedSdSpi.begin(SD_SCLK, SD_MISO, SD_MOSI, SD_CS)) {
+      cardReady = sd.cardBegin(SdSpiConfig(SD_CS, SHARED_SPI | USER_SPI_BEGIN, SPI_FQ, &dedicatedSdSpi));
+      if (cardReady) {
+        volumeReady = sd.volumeBegin();
+        if (!volumeReady) {
+          startupError_ = sd.sdErrorCode() ? StartupError::CardCommunicationFailure : StartupError::VolumeMountFailed;
+        }
+      } else {
+        startupError_ = classifyCardInitFailure();
+      }
+    }
   } else {
 #endif
     if (SD_SCLK >= 0 && SD_MOSI >= 0 && SD_MISO >= 0) {
@@ -223,23 +260,49 @@ bool SDCardManager::begin() {
     // Other boards keep the single attempt so a missing card fails fast.
     const int attempts = BoardConfig::isOnePage() ? 5 : 1;
     for (int attempt = 0; attempt < attempts; ++attempt) {
-      cardReady = sd.begin(SD_CS, SPI_FQ);
-      if (cardReady || attempt + 1 == attempts) break;
+      cardReady = sd.cardBegin(SdSpiConfig(SD_CS, SHARED_SPI, SPI_FQ));
+      if (cardReady) {
+        volumeReady = sd.volumeBegin();
+        if (!volumeReady) {
+          startupError_ = sd.sdErrorCode() ? StartupError::CardCommunicationFailure : StartupError::VolumeMountFailed;
+        }
+      } else {
+        startupError_ = classifyCardInitFailure();
+      }
+      if (volumeReady || attempt + 1 == attempts) break;
       delay(80);
     }
 #if FREEINK_MCU_S3 || FREEINK_MCU_ESP32
   }
 #endif
 
-  if (!cardReady) {
-    if (Serial)
-      Serial.printf(
-          "[%lu] [SD] SD card not detected (err=0x%02X data=0x%02X cs=%d sclk=%d miso=%d mosi=%d clk=%luHz)\n",
-          millis(), sd.sdErrorCode(), sd.sdErrorData(), SD_CS, SD_SCLK, SD_MISO, SD_MOSI, (unsigned long)SPI_FQ);
+  if (!volumeReady) {
+    if (Serial) {
+      const char* reason = "SD initialization failed";
+      switch (startupError_) {
+        case StartupError::CardNotDetected:
+          reason = "card did not respond";
+          break;
+        case StartupError::CardCommunicationFailure:
+          reason = "card communication failed";
+          break;
+        case StartupError::VolumeMountFailed:
+          reason = "volume mount failed";
+          break;
+        case StartupError::None:
+        case StartupError::Unknown:
+        default:
+          break;
+      }
+      Serial.printf("[%lu] [SD] %s (err=0x%02X data=0x%02X cs=%d sclk=%d miso=%d mosi=%d clk=%luHz)\n", millis(),
+                    reason, sd.sdErrorCode(), sd.sdErrorData(), SD_CS, SD_SCLK, SD_MISO, SD_MOSI,
+                    (unsigned long)SPI_FQ);
+    }
     initialized = false;
     cachedTotalBytes = 0;
     cachedUsedBytesValid = false;
   } else {
+    startupError_ = StartupError::None;
     if (Serial) Serial.printf("[%lu] [SD] SD card detected\n", millis());
     initialized = true;
     cachedTotalBytes = static_cast<uint64_t>(vol().clusterCount()) * vol().bytesPerCluster();

@@ -59,6 +59,18 @@ const char* InputManager::BUTTON_NAMES[] = {"Back", "Confirm", "Left", "Right", 
 namespace {
 int absInt(const int value) { return value < 0 ? -value : value; }
 
+#if FREEINK_DEVICE_ONEPAGE
+uint8_t readOnePageFrontButtons(const int8_t pin) {
+  if (pin < 0) return 0;
+  const int mv = analogReadMilliVolts(pin);
+  if (mv >= 2400 && mv <= 2800) return 1 << InputManager::BTN_BACK;
+  if (mv >= 1780 && mv <= 2140) return 1 << InputManager::BTN_LEFT;
+  if (mv >= 1140 && mv <= 1500) return 1 << InputManager::BTN_RIGHT;
+  if (mv >= 0 && mv <= 250) return 1 << InputManager::BTN_CONFIRM;
+  return 0;
+}
+#endif
+
 #if defined(TOUCH_PROBE_DEBUG)
 void touchDebugPrintf(const char* format, ...) {
   char buf[192];
@@ -188,17 +200,25 @@ void InputManager::readButtonAdc(ButtonAdcSample& group1, ButtonAdcSample& group
   group2.button = b2 >= 0 ? b2 + 4 : -1;  // map group-2 local 0/1 to BTN_UP / BTN_DOWN
 }
 
+bool InputManager::isAdcLadderPhysicallyPressed() {
+#if FREEINK_DEVICE_ONEPAGE
+  if (BoardConfig::ACTIVE.inputStyle == BoardConfig::InputStyle::OnePageAdcLadder) {
+    return readOnePageFrontButtons(BoardConfig::ACTIVE.input.adcLadderPin) != 0;
+  }
+#endif
+  ButtonAdcSample group1{}, group2{};
+  readButtonAdc(group1, group2);
+  // The Xteink ladder idles near 4095. Every button band sits below 3900.
+  constexpr int kIdleRailMin = 4000;
+  return (group1.raw >= 0 && group1.raw < kIdleRailMin) || (group2.raw >= 0 && group2.raw < kIdleRailMin);
+}
+
 uint8_t InputManager::getState() {
   uint8_t state = 0;
 
+#if FREEINK_DEVICE_ONEPAGE
   if (BoardConfig::ACTIVE.inputStyle == BoardConfig::InputStyle::OnePageAdcLadder) {
-    if (BoardConfig::ACTIVE.input.adcLadderPin >= 0) {
-      const int mv = analogReadMilliVolts(BoardConfig::ACTIVE.input.adcLadderPin);
-      if (mv >= 2400 && mv <= 2800)      state |= (1 << BTN_BACK);    // ~2592 mV
-      else if (mv >= 1780 && mv <= 2140) state |= (1 << BTN_LEFT);    // ~1956 mV
-      else if (mv >= 1140 && mv <= 1500) state |= (1 << BTN_RIGHT);   // ~1316 mV
-      else if (mv >= 0 && mv <= 250)     state |= (1 << BTN_CONFIRM); // ~0 mV (ENTER)
-    }
+    state = readOnePageFrontButtons(BoardConfig::ACTIVE.input.adcLadderPin);
     if (BoardConfig::ACTIVE.input.up >= 0 && digitalRead(BoardConfig::ACTIVE.input.up) == LOW) {
       state |= (1 << BTN_UP);
     }
@@ -215,6 +235,7 @@ uint8_t InputManager::getState() {
     if (s_buttonHook) state |= s_buttonHook();
     return state;
   }
+#endif
 
   if (BoardConfig::ACTIVE.inputStyle != BoardConfig::InputStyle::XteinkAdcLadder) {
     state = getDigitalState();

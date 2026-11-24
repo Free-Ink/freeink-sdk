@@ -88,6 +88,20 @@ const Ssd1677Config& ssd1677DefaultConfig() {
   return cfg;
 }
 
+#if FREEINK_DEVICE_ONEPAGE
+// Osptek EPD0426A02 reference: Level 2 booster and temperature-loaded partial updates.
+static const Ssd1677Config& ssd1677OnePageConfig() {
+  static const Ssd1677Config cfg = [] {
+    Ssd1677Config config = {{0xAE, 0xC7, 0xC3, 0xC0, 0x80}, DRIVER_OUTPUT_SCAN, 0x01, 0x5A, lut_grayscale};
+    config.fastSeqOverride = 0xFC;
+    config.absoluteGrayscale = true;
+    config.initialHalfRefresh = true;
+    return config;
+  }();
+  return cfg;
+}
+#endif
+
 // Seeed Sticky. Same SSD1677 controller, resolution, and RAM polarity as the X4
 // (Seeed's driver uses "1bpp MSB, 0xFF=white", bit1=white — identical to the SDK
 // framebuffer). The one real difference is the waveform: the X4's fast update
@@ -521,7 +535,7 @@ void Ssd1677Driver::initController(EpdBus& bus) {
   // Override boards can't use _isScreenOn to detect a cold start (their fast
   // sequence powers down after every page), so arm an explicit one-shot full
   // refresh for the first paint — it clears the boot screen and seeds the baseline.
-  _needsInitialFull = (_cfg.fullSeqOverride != 0);
+  _needsInitialFull = (_cfg.fullSeqOverride != 0 || _cfg.initialHalfRefresh);
 }
 
 void Ssd1677Driver::setRamArea(EpdBus& bus, uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
@@ -848,7 +862,7 @@ void Ssd1677Driver::displayImpl(EpdBus& bus, const uint8_t* fb, const uint8_t* p
     // refresh (CrossPoint's sunlight fading fix) would otherwise never reach this
     // one-shot at all, leaving the sleep screen on the glass after every wake.
     if (mode == RefreshMode::Fast) {
-      mode = (_cfg.halfSeqOverride != 0) ? RefreshMode::Half : RefreshMode::Full;
+      mode = (_cfg.halfSeqOverride != 0 || _cfg.initialHalfRefresh) ? RefreshMode::Half : RefreshMode::Full;
     }
     _needsInitialFull = false;
   } else if (!turnOff && !_isScreenOn && _cfg.fullSeqOverride == 0) {
@@ -1341,6 +1355,9 @@ static const Ssd1677Config& ssd1677ActiveConfig() { return FREEINK_SSD1677_CONFI
 // use the X4/GDEQ0426T82 defaults.
 static const Ssd1677Config& ssd1677ActiveConfig() {
   switch (BoardConfig::ACTIVE.board) {
+#if FREEINK_DEVICE_ONEPAGE
+    case BoardConfig::Board::OnePage: return ssd1677OnePageConfig();
+#endif
 #if FREEINK_DEVICE_METALIO_EINK4
     case BoardConfig::Board::MetalioEInk4: return ssd1677MetalioConfig();
 #endif

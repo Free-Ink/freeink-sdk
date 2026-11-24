@@ -1,3 +1,5 @@
+#include <esp_heap_caps.h>
+
 #include <algorithm>
 #include <cassert>
 #include <iostream>

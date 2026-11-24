@@ -126,6 +126,8 @@ class Uc8279X4Driver : public PanelDriver {
  private:
   X4ProTextAa _textAa;
   bool _readerRefresh = false;
+  // The one-pass text voltage block (ids 0x02/0x03) is in the controller.
+  bool _textVoltsSet = false;
   void initController(EpdBus& bus);
   void startBwRefresh(EpdBus& bus, bool fast);
   // Stream a framebuffer into a RAM plane: 0xFF padding for gates before the

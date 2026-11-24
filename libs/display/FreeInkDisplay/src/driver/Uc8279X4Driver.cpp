@@ -286,6 +286,7 @@ void Uc8279X4Driver::initController(EpdBus& bus) {
 
   _isScreenOn = false;
   _grayRefreshedOnce = false;
+  _textVoltsSet = false;
 }
 
 void Uc8279X4Driver::begin(EpdBus& bus) {
@@ -714,16 +715,27 @@ void Uc8279X4Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, c
     if (!_textAa.compose()) { _textAa.invalidate(); _needFullClear = true; return; }
     bus.waitBusy("8279 text ready");
     const uint8_t variant = BoardConfig::ACTIVE.displayControllerVariant;
-    if (variant == 2 || variant == 3) {
+    // Firmware 26110201/26112401 write this block once, with the panel powered
+    // off, before the first one-pass refresh.
+    if ((variant == 2 || variant == 3) && !_textVoltsSet) {
+      if (_isScreenOn) {
+        bus.cmd(CMD_POWER_OFF);
+        bus.waitBusy("8279 text volts POF");
+        _isScreenOn = false;
+      }
+      _textVoltsSet = true;
       bus.cmd(0x01);
       const uint8_t volts[] = {0x43, 0, 0x78, 0x78, 0x17};
       bus.data(volts, sizeof(volts));
       bus.cmd(0x82);
       bus.data(0x26);
     }
+    // Firmware 26110201 writes PSR byte 1 = 0x48 on this path (0x4D on its B/W
+    // paths); 26112401 writes 0x48 on every UC8279 refresh.
+    const uint8_t textPsr1 = 0x48;
     bus.cmd(CMD_PANEL_SETTING);
     bus.data(_cfg.psr0);
-    bus.data(_cfg.psr1);
+    bus.data(textPsr1);
     bus.cmd(CMD_PFS);
     bus.data(0x20);
     bus.cmd(CMD_GATE_SCAN);
@@ -747,7 +759,7 @@ void Uc8279X4Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, c
     powerOnIfNeeded(bus, "8279 text power");
     bus.cmd(CMD_PANEL_SETTING);
     bus.data(_cfg.psr0);
-    bus.data(_cfg.psr1);
+    bus.data(textPsr1);
     bus.cmd(CMD_DISPLAY_REFRESH);
     bus.waitRefreshComplete("UC8279 one-pass text AA");
     if (bus.isBusy()) { _textAa.invalidate(); _needFullClear = true; return; }
@@ -790,6 +802,7 @@ void Uc8279X4Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, c
     bus.data(imagePacket + 6, 3);
     bus.cmd(0x82);
     bus.data(imagePacket[5]);
+    _textVoltsSet = false;  // the image packet replaced the text voltage block
     for (unsigned i = 0; i < 5; ++i) {
       bus.cmd(kQualityLutReg[i]);
       bus.data(imagePacket + 9 + i * GRAY_LUT_LEN, GRAY_LUT_LEN);

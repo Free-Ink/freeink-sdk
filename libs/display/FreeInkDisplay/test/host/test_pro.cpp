@@ -1057,10 +1057,16 @@ static void testOnePassText() {
         unsigned panelSettings = 0;
         for (const auto& w : bus.writes) {
           if (w.command != 0x00) continue;
-          assert(w.bytes == Bytes({d._cfg.psr0, d._cfg.psr1}));
+          assert(w.bytes == Bytes({d._cfg.psr0, 0x48}));  // stock one-pass PSR byte 1
           ++panelSettings;
         }
         assert(panelSettings == 2);
+        // ids 0x02/0x03: voltage block once, written with the panel powered off.
+        const bool qy = BoardConfig::ACTIVE.displayControllerVariant == 2 || BoardConfig::ACTIVE.displayControllerVariant == 3;
+        unsigned volts = 0;
+        for (size_t i = 0; i < bus.writes.size(); ++i)
+          if (bus.writes[i].command == 0x01) { ++volts; assert(i > 0 && bus.writes[i - 1].command == 0x02); }
+        assert(volts == (qy && !off ? 1u : 0u));
       }
     }
     bus.clear();

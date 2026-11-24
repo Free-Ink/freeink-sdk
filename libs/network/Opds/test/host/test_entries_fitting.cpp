@@ -34,8 +34,7 @@ int main() {
   const size_t smallPsram = kHeadroom + (kMin / kEntry) * kEntry;  // holds kMin/kEntry entries
   expect("small psram request stays internal", entriesFitting(64, 2000, smallPsram, kMin, kHeadroom), 0);
   const size_t bigEnough = kHeadroom + (kMin / kEntry + 2) * kEntry;  // clears the threshold
-  expect("psram above threshold counts", entriesFitting(64, 2000, bigEnough, kMin, kHeadroom),
-         kMin / kEntry + 2);
+  expect("psram above threshold counts", entriesFitting(64, 2000, bigEnough, kMin, kHeadroom), kMin / kEntry + 2);
 
   // A threshold of 0 (every malloc may use PSRAM) is a valid setting, not "off".
   expect("threshold zero uses psram", entriesFitting(64, 2000, kPsramBig, 0, kHeadroom), 64);

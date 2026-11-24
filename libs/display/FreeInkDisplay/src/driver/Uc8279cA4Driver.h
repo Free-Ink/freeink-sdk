@@ -40,6 +40,8 @@ class Uc8279cA4Driver : public PanelDriver {
   void copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) override;
   void displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut, bool factoryMode) override;
   void cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) override;
+  bool canUpdateGrayscaleWindow() const override { return _gray3HistoryValid && _gray3Session && !_basePending; }
+  bool displayGrayscaleWindow(EpdBus& bus, const uint8_t* fb, uint16_t x, uint16_t y, uint16_t w, uint16_t h) override;
   void setReaderRefresh(bool reading) override { _readerRefresh = reading; }
   void setOverlayFullTone(bool fullTone) override { _fullTone = fullTone; }
   void setBackgroundHint(bool darkBackground) override { _darkBackground = darkBackground; }

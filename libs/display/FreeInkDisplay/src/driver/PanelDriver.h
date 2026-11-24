@@ -113,6 +113,11 @@ class PanelDriver {
     (void)buf;
   }
 
+  // Replace this rectangle and keep all existing grayscale outside it.
+  // FreeInkDisplay validates the rectangle against the panel before calling.
+  virtual bool canUpdateGrayscaleWindow() const { return false; }
+  virtual bool displayGrayscaleWindow(EpdBus&, const uint8_t*, uint16_t, uint16_t, uint16_t, uint16_t) { return false; }
+
   // Paint a B/W rectangle over the last absolute gray image, or restore it (fb == nullptr).
   // Returns false without painting when no retained image is available. May repaint the full panel.
   virtual bool displayRetainedGrayscaleOverlay(EpdBus& bus, const uint8_t* fb, uint16_t x, uint16_t y,

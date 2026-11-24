@@ -44,11 +44,13 @@ public:
   const uint8_t *high() const { return _storage + _size * 2; }
   void invalidate() {
     _active = _onPanel = _history = _chargeValid = false;
+    _window = {};
     _median = 0;
     _rows[0] = _rows[1] = 0;
     _failed = false;
   }
   void begin(const uint8_t *bw) {
+    _window = {};
     _active = ready() && bw;
     _rows[0] = _rows[1] = 0;
     _failed = false;
@@ -73,7 +75,46 @@ public:
   bool planeComplete(unsigned plane) const {
     return !_failed && _rows[plane] == _h;
   }
+  bool canUpdateWindow() const { return _onPanel && !_active; }
+
+  bool beginWindow(const uint8_t* bw, uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
+    if (!canUpdateWindow() || !bw) return false;
+    const uint16_t lastPixel = x + w - 1;
+    _window = {y,
+               static_cast<uint16_t>(y + h),
+               static_cast<uint16_t>(x / 8),
+               static_cast<uint16_t>(lastPixel / 8),
+               static_cast<uint8_t>(0xff >> (x % 8)),
+               static_cast<uint8_t>(0xff << (7 - lastPixel % 8))};
+    _active = true;
+    auto* lo = _storage + _size;
+    auto* hi = _storage + _size * 2;
+    auto* ink = _storage + _size * 3;
+    // High/low = 10 holds pixels that are outside the window or already match.
+    memset(lo, 0, _size);
+    memset(hi, 0xff, _size);
+    forEachWindowByte([&](uint32_t i, uint8_t mask) {
+      const uint8_t white = bw[i] & mask;
+      const uint8_t toBlack = mask & ~white & _storage[i];
+      lo[i] = white & ink[i];
+      hi[i] = ~toBlack;
+      _storage[i] = (_storage[i] & ~mask) | white;
+      ink[i] = (ink[i] & ~mask) | (~white & mask);
+    });
+    return true;
+  }
+
+  void writeGrayMask(uint8_t* output) const {
+    if (_window.endRow != 0) {
+      // A window contains only B/W; the previous gray mask elsewhere stays valid.
+      forEachWindowByte([&](uint32_t i, uint8_t mask) { output[i] &= ~mask; });
+      return;
+    }
+    for (uint32_t i = 0; i < _size; ++i) output[i] = low()[i] & ~high()[i];
+  }
+
   bool compose() {
+    if (_window.endRow != 0) return _active;
     if (!_active || _failed || _rows[0] != _h || _rows[1] != _h)
       return false;
     auto *lo = _storage + _size;
@@ -98,6 +139,7 @@ public:
   }
   void finish(int blackDose, int grayDose, int holdDose, int whiteDose) {
     auto* ink = _storage + _size * 3;
+    auto* whitePlane = _storage + _size * 2;
     auto* charge = reinterpret_cast<int8_t*>(_storage + _size * 4);
     const int doses[4] = {blackDose, grayDose, holdDose, whiteDose};
     uint32_t histogram[256] = {};
@@ -113,7 +155,14 @@ public:
     };
     for (uint32_t i = 0; i < _size; ++i) {
       const auto lo = low()[i], hi = high()[i];
-      ink[i] = ~hi;
+      if (_window.endRow == 0) {
+        ink[i] = ~hi;
+        // The B/W baseline treats gray as white, while ink includes gray.
+        // Together they distinguish gray from both solid colors in later windows.
+        _storage[i] = hi | lo;
+      } else {
+        whitePlane[i] = ~ink[i];  // B/W cleanup needs the whole shown baseline.
+      }
       // Blank paper and solid strokes commonly have eight equal transitions
       // and charges. Update those pixels together, including their histogram
       // weight. memcpy keeps this safe on unaligned PSRAM addresses.
@@ -152,6 +201,24 @@ public:
   }
 
 private:
+ struct Window {
+   uint16_t firstRow = 0, endRow = 0;
+   uint16_t firstByte = 0, lastByte = 0;
+   uint8_t headMask = 0, tailMask = 0;
+ } _window;
+
+ template <typename Visit>
+ void forEachWindowByte(Visit visit) const {
+   for (uint16_t row = _window.firstRow; row < _window.endRow; ++row) {
+     for (uint16_t byte = _window.firstByte; byte <= _window.lastByte; ++byte) {
+       uint8_t mask = 0xff;
+       if (byte == _window.firstByte) mask &= _window.headMask;
+       if (byte == _window.lastByte) mask &= _window.tailMask;
+       visit(static_cast<uint32_t>(row) * _wb + byte, mask);
+     }
+   }
+ }
+
   uint8_t *_storage = nullptr;
   uint32_t _size = 0;
   uint16_t _wb = 0, _h = 0;

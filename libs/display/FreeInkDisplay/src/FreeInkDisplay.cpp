@@ -919,6 +919,22 @@ void FreeInkDisplay::displayWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t 
 #endif
 }
 
+bool FreeInkDisplay::canUpdateGrayscaleWindow() const {
+  return _driver && !_inverted && !_inversionDirty && frameBuffer && _driver->canUpdateGrayscaleWindow();
+}
+
+bool FreeInkDisplay::displayGrayscaleWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
+  if (!canUpdateGrayscaleWindow() || !w || !h || x >= getDisplayWidth() || y >= getDisplayHeight() ||
+      w > getDisplayWidth() - x || h > getDisplayHeight() - y)
+    return false;
+  DisplayPmLock pmLock;
+  syncPendingAsync();
+  if (!_driver->displayGrayscaleWindow(_bus, frameBuffer, x, y, w, h)) return false;
+  _shadowValid = false;
+  _redRamSynced = false;
+  return true;
+}
+
 void FreeInkDisplay::displayGrayBuffer(bool turnOffScreen, const unsigned char* lut, bool factoryMode) {
 #if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
   Serial.printf("[EPD] displayGrayBuffer\n");

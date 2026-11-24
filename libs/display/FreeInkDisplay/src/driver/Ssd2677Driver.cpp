@@ -407,6 +407,13 @@ void Ssd2677Driver::copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
   }
 }
 
+bool Ssd2677Driver::displayGrayscaleWindow(EpdBus& bus, const uint8_t* fb, uint16_t x, uint16_t y, uint16_t w,
+                                           uint16_t h) {
+  if (!canUpdateGrayscaleWindow() || !_textAa.beginWindow(fb, x, y, w, h)) return false;
+  displayGray(bus, fb, /*turnOff=*/true, nullptr, /*factoryMode=*/false);
+  return _textAa.onPanel();
+}
+
 void Ssd2677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut,
                                 bool factoryMode) {
   (void)lut;
@@ -428,7 +435,7 @@ void Ssd2677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
     const uint32_t size = geometry().bufferSize;
     if (_old) memcpy(_old, _textAa.base(), size);
     if (_old && ensureLsb()) {
-      for (uint32_t i = 0; i < size; ++i) _lsb[i] = static_cast<uint8_t>(_textAa.low()[i] & ~_textAa.high()[i]);
+      _textAa.writeGrayMask(_lsb);
       _grayPending = true;
     } else {
       _needsInitialFull = true;

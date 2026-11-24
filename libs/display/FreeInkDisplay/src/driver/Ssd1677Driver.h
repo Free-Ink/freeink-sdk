@@ -140,6 +140,8 @@ class Ssd1677Driver : public PanelDriver {
                                 uint16_t numRows) override;
   void displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut, bool factoryMode) override;
   void cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) override;
+  bool canUpdateGrayscaleWindow() const override { return _textAa.canUpdateWindow(); }
+  bool displayGrayscaleWindow(EpdBus& bus, const uint8_t* fb, uint16_t x, uint16_t y, uint16_t w, uint16_t h) override;
   bool displayRetainedGrayscaleOverlay(EpdBus& bus, const uint8_t* fb, uint16_t x, uint16_t y,
                                        uint16_t w, uint16_t h) override;
 

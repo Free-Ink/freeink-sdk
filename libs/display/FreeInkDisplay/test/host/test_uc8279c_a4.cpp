@@ -280,6 +280,28 @@ int main(int argc, char** argv) {
   }
 
   {
+    // A status strip replaces only its exact pixels, including at unaligned byte
+    // edges, and retains Gray3 history for the next ordinary page turn.
+    driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, false);
+    assert(!driver.displayGrayscaleWindow(bus, page.data(), 0, 0, 8, 1));
+    gray3Page(page.data(), RefreshMode::Fast);
+    auto stripUpdate = page;
+    stripUpdate[0] = 0b11000111;
+    const auto beforeStrip = bus.refreshes;
+    assert(driver.displayGrayscaleWindow(bus, stripUpdate.data(), 1, 0, 4, 1));
+    assert(bus.refreshes == beforeStrip + 1);
+    assert(bus.oldAtRefresh[physical0] == 0b01011000 && bus.newAtRefresh[physical0] == 0b01000000);
+    for (size_t i = 0; i < bus.oldAtRefresh.size(); ++i) {
+      if (i != physical0) assert(bus.oldAtRefresh[i] == 0 && bus.newAtRefresh[i] == 0);
+    }
+    assert(driver.displayGrayscaleWindow(bus, stripUpdate.data(), 1, 0, 4, 1));
+    assert(bus.refreshes == beforeStrip + 1 && "unchanged strip must not activate the panel");
+    gray3Page(page.data(), RefreshMode::Fast);
+    assert(bus.refreshes == beforeStrip + 2);
+    assert(bus.newAtRefresh[physical0] == 0b00011000 && "subsequent page must diff from the updated strip");
+  }
+
+  {
     // Gray3 page turns keep the panel powered, as stock's power hold does. The
     // next B/W refresh powers the held panel off only to reset the controller.
     const auto offs = bus.powerOffs;

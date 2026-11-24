@@ -706,6 +706,13 @@ void Uc8179Driver::writeGrayscalePlaneStrip(EpdBus& bus, GrayPlane plane, const 
   }
 }
 
+bool Uc8179Driver::displayGrayscaleWindow(EpdBus& bus, const uint8_t* fb, uint16_t x, uint16_t y, uint16_t w,
+                                          uint16_t h) {
+  if (!_textAa.beginWindow(fb, x, y, w, h)) return false;
+  displayGray(bus, fb, /*turnOff=*/true, nullptr, /*factoryMode=*/false);
+  return _textAa.onPanel();
+}
+
 void Uc8179Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut,
                                bool factoryMode) {
   if (_textAa.active()) {

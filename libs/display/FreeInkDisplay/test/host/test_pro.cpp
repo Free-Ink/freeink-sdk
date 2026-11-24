@@ -896,6 +896,24 @@ static void testDeferredGrayFacadeUsesCurrentDrawFrame() {
   free(driver._grayBase);
 }
 
+static void testGrayscaleWindowBounds() {
+  Uc8179Driver driver;
+  FreeInkDisplay display(12, 11, 13, 18, 14, 6);
+  display._driver = &driver;
+  display.begin();
+  driver._textAa._onPanel = true;
+  assert(display.canUpdateGrayscaleWindow());
+
+  display._bus.clear();
+  assert(!display.displayGrayscaleWindow(0, 0, 0, 1));
+  assert(!display.displayGrayscaleWindow(0, 0, 1, 0));
+  assert(!display.displayGrayscaleWindow(display.getDisplayWidth(), 0, 1, 1));
+  assert(!display.displayGrayscaleWindow(0, display.getDisplayHeight(), 1, 1));
+  assert(!display.displayGrayscaleWindow(1, 0, UINT16_MAX, 1));
+  assert(!display.displayGrayscaleWindow(0, 1, 1, UINT16_MAX));
+  assert(display._bus.writes.empty());
+  display.releaseBuffers();
+}
 
 
 static void testTextWaveforms() {
@@ -1069,6 +1087,30 @@ static void testOnePassText() {
         assert(volts == (qy && !off ? 1u : 0u));
       }
     }
+    // Change three white pixels across a byte boundary on the second row.
+    // Every pixel outside the window, including the first row's AA ink, must hold.
+    {
+      auto update = base;
+      update[100] = 0x00;
+      update[101] = 0x7f;
+      bus.clear();
+      assert(d.canUpdateGrayscaleWindow());
+      assert(d.displayGrayscaleWindow(bus, update.data(), 6, 1, 3, 1));
+      const auto high = lastPlane(bus, std::is_same_v<Driver, Ssd1677Driver> ? 0x24 : 0x13);
+      const auto low = lastPlane(bus, std::is_same_v<Driver, Ssd1677Driver> ? 0x26 : 0x10);
+      const size_t wireRow = std::is_same_v<Driver, Ssd1677Driver>  ? 1
+                             : std::is_same_v<Driver, Uc8179Driver> ? 478
+                                                                    : 121;
+      const size_t offset = wireRow * 100;
+      assert(high[offset] == 0xfc && high[offset + 1] == 0x7f);
+      assert(low[offset] == 0 && low[offset + 1] == 0);
+      assert(d._textAa.high()[0] == 0x1f && d._textAa.high()[100] == 0xfc && d._textAa.high()[101] == 0x7f);
+      assert(d._textAa.base()[100] == 0xfc && d._textAa.base()[101] == 0x7f);
+      const size_t firstVisibleRow = std::is_same_v<Driver, Uc8279X4Driver> ? 120 * 100 : 0;
+      for (size_t i = firstVisibleRow; i < firstVisibleRow + 48000; ++i) {
+        if (i != offset && i != offset + 1) assert(high[i] == 0xff && low[i] == 0);
+      }
+    }
     bus.clear();
     d.cleanupGrayscaleBuffers(bus, base.data());
     for (const auto& w : bus.writes) assert(w.command != 0x12 && w.command != 0x20);
@@ -1141,6 +1183,7 @@ int main(int argc, char** argv) {
   BoardConfig::ACTIVE.board = BoardConfig::Board::XteinkX4Pro;
   testDeferredGrayBase();
   testDeferredGrayFacadeUsesCurrentDrawFrame();
+  testGrayscaleWindowBounds();
   testUc8179GrayShadeSplit();
   testUc8279X4WaveformSelection();
   testDirectSleep<Uc8179Driver>();

@@ -282,6 +282,10 @@ class FreeInkDisplay {
 
   // EXPERIMENTAL: Windowed update - display only a rectangular region
   void displayWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t h, bool turnOffScreen = false);
+  // Replace the rectangle with B/W framebuffer pixels while retaining the grayscale outside it.
+  // Returns false without repainting when the driver cannot preserve the visible frame.
+  bool canUpdateGrayscaleWindow() const;
+  bool displayGrayscaleWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t h);
   void displayGrayBuffer(bool turnOffScreen = false, const unsigned char* lut = nullptr, bool factoryMode = false);
   void displayGrayCalibration(uint16_t customX, uint16_t customY, uint16_t customW, uint16_t customH);
 

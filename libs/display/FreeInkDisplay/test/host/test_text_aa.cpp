@@ -118,7 +118,42 @@ static void testHistory() {
   }
 }
 
+static void testWindowTransitions() {
+  freeink::X4ProTextAa aa;
+  aa.allocate(true, 1, 1);
+  const uint8_t base = 0x58;
+  const uint8_t gray = 0x31;
+  const uint8_t empty = 0;
+  aa.begin(&base);
+  aa.stage(0, &gray, 0, 1);
+  aa.stage(1, &empty, 0, 1);
+  assert(aa.compose());
+  aa.finish(24, 15, -1, -24);
+
+  // Keep black at x=0 and white at x=1. Replace gray with black at x=2
+  // and with white at x=3. Keep the gray at x=7 outside the window.
+  uint8_t grayMask = 0;
+  aa.writeGrayMask(&grayMask);
+  const uint8_t update = 0x58;
+  for (uint8_t expectedHigh : {0xdf, 0xff}) {
+    assert(aa.beginWindow(&update, 0, 0, 4, 1));
+    assert(aa.high()[0] == expectedHigh);
+    assert(aa.low()[0] == (expectedHigh == 0xdf ? 0x10 : 0));
+    aa.finish(24, 15, -1, -24);
+    aa.writeGrayMask(&grayMask);
+    assert(grayMask == 0x01);
+  }
+
+  // Later windows still recognize the untouched gray, even over a black base.
+  assert(aa.beginWindow(&update, 7, 0, 1, 1));
+  assert(aa.high()[0] == 0xfe && aa.low()[0] == 0);
+  aa.finish(24, 15, -1, -24);
+  aa.writeGrayMask(&grayMask);
+  assert(grayMask == 0);
+}
+
 int main() {
   testHistory();
+  testWindowTransitions();
   puts("Text AA: scalar parity across 400 pages and all charge/median/code combinations passed");
 }

@@ -42,19 +42,24 @@ class SDCardManager {
   // Checked form: false if unmounted or the FAT scan failed; usedBytes is then 0.
   bool sdUsedBytes(uint64_t& usedBytes);
   std::vector<String> listFiles(const char* path = "/", int maxFiles = 200);
-  // Read the entire file at `path` into a String. Returns an empty string on failure,
-  // which includes a file larger than 50,000 bytes: it is never returned cut short.
+  // Read the entire file at `path` into a String. If the main path is missing,
+  // convenience reads fall back to the reserved `.bak` sibling without changing
+  // either file. An existing main file always takes precedence. Returns an empty
+  // string on failure, including when the file is larger than 50,000 bytes.
   String readFile(const char* path);
   // Low-memory helpers:
   // Stream the file contents to a `Print` (e.g. `Serial`, or any `Print`-derived object).
   // Returns true only when every byte is accepted by `out`. Retries positive
   // short writes; returns false on a stalled write, read error, or premature EOF.
+  // Uses the `.bak` fallback described by readFile() when the main path is missing.
   // On failure, `out` may already contain a prefix of the file.
   bool readFileToStream(const char* path, Print& out, size_t chunkSize = 256);
   // Read up to `bufferSize-1` bytes into `buffer`, null-terminating it. Returns bytes read.
+  // Uses the `.bak` fallback described by readFile() when the main path is missing.
   size_t readFileToBuffer(const char* path, char* buffer, size_t bufferSize, size_t maxBytes = 0);
   // Write a string to `path` on the SD card, replacing any existing file only
-  // once the new content is fully written. Returns true on success.
+  // once the new content is fully written. The .tmp and .bak siblings are
+  // reserved for this API. Returns true on success.
   bool writeFile(const char* path, const String& content);
   // Ensure a directory exists, creating it if necessary. Returns true on success.
   bool ensureDirectoryExists(const char* path);
@@ -65,12 +70,14 @@ class SDCardManager {
   bool remove(const char* path) { return vol().remove(path); }
   bool rmdir(const char* path) { return vol().rmdir(path); }
   bool rename(const char* path, const char* newPath) { return vol().rename(path, newPath); }
-  // Move a fully written temp file over `path`. FAT rename does not replace an
-  // existing file, so the old one is removed first.
-  bool replaceFile(const char* tmpPath, const char* path) {
-    return (!vol().exists(path) || vol().remove(path)) && vol().rename(tmpPath, path);
-  }
+  // Restore the previous complete write after interrupted publication.
+  // Use only for paths owned by writeFile(), whose sidecars are reserved.
+  bool recoverWrittenFile(const char* path);
+  // Publish a closed, complete caller-owned temporary using the reserved .bak sibling.
+  // The caller retains ownership of the temporary if publication fails.
+  bool replaceFile(const char* tmpPath, const char* path);
 
+  // Opens exactly `path`; it does not apply the convenience-read .bak fallback.
   bool openFileForRead(const char* moduleName, const char* path, FsFile& file);
   bool openFileForRead(const char* moduleName, const std::string& path, FsFile& file);
   bool openFileForRead(const char* moduleName, const String& path, FsFile& file);
@@ -129,6 +136,8 @@ class SDCardManager {
   uint32_t cachedUsedBytesAt = 0;
   bool cachedUsedBytesValid = false;
   bool cachedUsedBytesAvailable = false;
+
+  bool openFileForReadWithBackup(const char* path, FsFile& file);
 
   // All filesystem ops route through one FsVolume& so the backend is swappable.
   // SPI boards: `sd` (SdFs is-a FsVolume). SDMMC boards: a bare FsVolume mounted

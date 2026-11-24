@@ -228,3 +228,36 @@ that need the login sent first, protected acquisitions, Basic challenge headers
 and OPDS documents, rejected credentials, OAuth login/refresh (including after
 a rejected first Basic), and cross-origin challenge rejection. Device
 tests must still verify the consumer's download retry, cancellation, and heap.
+
+## SD save recovery and USB Drive
+
+```sh
+sh libs/hardware/SDCardManager/test/host/run.sh
+sh libs/hardware/UsbMassStorage/test/host/run.sh
+```
+
+The SD suite interrupts every save mutation and injects short writes, failed
+sync/close, failed publication and failed recovery. It checks the previous
+contents, unrelated files and successful retry. Its in-memory filesystem models
+individual operations, so power interruption inside FAT sector updates still
+requires device validation.
+
+The USB suite runs production callbacks with a model card and USB stack. It
+checks partial-sector writes and one multi-sector device call plus one checked
+sync for each aligned write buffer. Invalid ranges and read/write/sync failures
+latch `IoError` and reject subsequent I/O until a successful end/begin cycle.
+It also checks failed-eject and shutdown retry, host suspend, teardown concurrent
+with an active write, and rejection of a changed card capacity with restart
+guidance followed by successful matching-capacity retry. Late callbacks must be
+rejected before touching the card.
+
+The checked write sync is retained because Arduino USBMSC exposes no
+SYNCHRONIZE CACHE callback. Current SDCardManager transports use shared SPI
+(which already stops each multi-sector write) or synchronous SDMMC, making this
+sync a no-op. A future dedicated-SPI or buffered block device must finish each
+USB write buffer before acknowledging it; deferring sync until eject would
+weaken the write-through contract. Eject and teardown also check sync before
+releasing storage ownership.
+
+Real-device checks must include host sleep/resume, clean eject, slow writes and
+SPI/SDMMC card flush failures.

@@ -9,18 +9,23 @@
 #include <algorithm>
 #include <atomic>
 #include <cstring>
+#include <mutex>
 
 extern "C" bool tud_mounted(void);
 extern "C" bool tud_suspended(void);
 extern "C" bool tud_disconnect(void);
-extern "C" bool tud_suspended(void);
 
 namespace freeink {
 namespace {
 
 USBMSC gMsc;
-std::atomic<UsbMassStorage*> gOwner{nullptr};
-std::atomic<FsBlockDeviceInterface*> gDev{nullptr};
+// The mutex covers admission checks, shared scratch space and every block call.
+// Teardown waits here until the last accepted operation has actually finished.
+std::mutex gIoMutex;
+std::atomic<bool> gAccepting{false};
+UsbMassStorage* gOwner = nullptr;
+FsBlockDeviceInterface* gDev = nullptr;
+uint32_t gConfiguredSectors = 0;
 constexpr uint16_t kBlockSize = 512;
 uint8_t gSectorScratch[kBlockSize];
 
@@ -33,8 +38,10 @@ bool isRangeValid(FsBlockDeviceInterface* dev, const uint32_t lba, const uint32_
 }
 
 int32_t mscRead(uint32_t lba, uint32_t offset, void* buffer, uint32_t bufsize) {
-  auto* const dev = gDev.load();
-  auto* const owner = gOwner.load();
+  std::lock_guard<std::mutex> lock(gIoMutex);
+  if (!gAccepting.load()) return -1;
+  auto* const dev = gDev;
+  auto* const owner = gOwner;
   if (!buffer || !isRangeValid(dev, lba, offset, bufsize)) {
     if (owner) owner->markIoError();
     return -1;
@@ -72,8 +79,10 @@ int32_t mscRead(uint32_t lba, uint32_t offset, void* buffer, uint32_t bufsize) {
 }
 
 int32_t mscWrite(uint32_t lba, uint32_t offset, uint8_t* buffer, uint32_t bufsize) {
-  auto* const dev = gDev.load();
-  auto* const owner = gOwner.load();
+  std::lock_guard<std::mutex> lock(gIoMutex);
+  if (!gAccepting.load()) return -1;
+  auto* const dev = gDev;
+  auto* const owner = gOwner;
   if (!buffer || !isRangeValid(dev, lba, offset, bufsize)) {
     if (owner) owner->markIoError();
     return -1;
@@ -110,13 +119,30 @@ int32_t mscWrite(uint32_t lba, uint32_t offset, uint8_t* buffer, uint32_t bufsiz
     }
   }
 
+  // One checked sync per USB buffer, not per sector. SDCardManager uses shared
+  // SPI (writeSectors already stops the transfer) or synchronous SDMMC, so
+  // their sync is a no-op here. Keep it for other block devices: Arduino USBMSC
+  // has no SYNCHRONIZE CACHE hook. Dedicated SPI must stop its stream before we
+  // can acknowledge a checked write; deferring that until eject would weaken
+  // it.
+  if (!dev->syncDevice()) {
+    if (owner) owner->markIoError();
+    return -1;
+  }
   if (owner) owner->markAccessed();
   return static_cast<int32_t>(bufsize);
 }
 
 bool mscStartStop(uint8_t /*power_condition*/, bool start, bool load_eject) {
+  std::lock_guard<std::mutex> lock(gIoMutex);
+  if (!gAccepting.load() || !gDev || !gOwner) return false;
   if (load_eject && !start) {
-    if (auto* const owner = gOwner.load()) owner->markEjected();
+    if (!gDev->syncDevice()) {
+      gOwner->markIoError();
+      return false;
+    }
+    gAccepting.store(false);
+    gOwner->markEjected();
   }
   return true;
 }
@@ -124,60 +150,61 @@ bool mscStartStop(uint8_t /*power_condition*/, bool start, bool load_eject) {
 }  // namespace
 
 bool UsbMassStorage::begin(FsBlockDeviceInterface* dev) {
-  if (_active || !dev || dev->sectorCount() == 0) return false;
-
-  gDev.store(dev);
-  gOwner.store(this);
+  std::lock_guard<std::mutex> lock(gIoMutex);
+  if (_active || gOwner || !dev || dev->sectorCount() == 0) return false;
+  const uint32_t sectors = dev->sectorCount();
+  // Arduino reads its callback table outside our mutex. Configure it once and
+  // keep it stable for the process lifetime, including failed startup/retries.
+  if (gConfiguredSectors && gConfiguredSectors != sectors) {
+    if (Serial) {
+      Serial.printf(
+          "USB MSC capacity changed (%lu -> %lu sectors); restart "
+          "before using a different-sized card\n",
+          static_cast<unsigned long>(gConfiguredSectors), static_cast<unsigned long>(sectors));
+    }
+    return false;
+  }
+  if (!gConfiguredSectors) {
+    gMsc.vendorID("FreeInk");
+    gMsc.productID("SD Card");
+    gMsc.productRevision("1.0");
+    gMsc.mediaPresent(true);
+    gMsc.isWritable(true);
+    gMsc.onStartStop(mscStartStop);
+    gMsc.onRead(mscRead);
+    gMsc.onWrite(mscWrite);
+    if (!gMsc.begin(sectors, kBlockSize)) return false;
+    gConfiguredSectors = sectors;
+  }
+  if (!USB.begin()) return false;
+  gDev = dev;
+  gOwner = this;
   _state.store(UsbMassStorageState::WaitingForHost);
   _hostSeen.store(false);
-  gMsc.vendorID("FreeInk");
-  gMsc.productID("SD Card");
-  gMsc.productRevision("1.0");
-  gMsc.mediaPresent(true);
-  gMsc.isWritable(true);
-  gMsc.onStartStop(mscStartStop);
-  gMsc.onRead(mscRead);
-  gMsc.onWrite(mscWrite);
-  if (!gMsc.begin(dev->sectorCount(), kBlockSize)) {
-    gMsc.end();
-    gOwner.store(nullptr);
-    gDev.store(nullptr);
-    _state.store(UsbMassStorageState::Idle);
-    return false;
-  }
-  if (!USB.begin()) {
-    gMsc.end();
-    gOwner.store(nullptr);
-    gDev.store(nullptr);
-    _state.store(UsbMassStorageState::Idle);
-    return false;
-  }
   _active = true;
+  gAccepting.store(true);
   return true;
 }
 
-void UsbMassStorage::end() {
-  if (!_active) return;
-  // Signal the host to release the device BEFORE tearing down callback state.
-  // tud_disconnect() disables the D+/D- pull-up so the host ejects the media;
-  // we then wait for tud_mounted() to go false so no in-flight MSC callback
-  // can fire after gMsc.end() zeroes the callback pointers or gDev/gOwner clear.
-  // On the dual-core S3 the TinyUSB task runs on the other core — without this
-  // drain, a callback can dereference null gDev/gOwner (or the zeroed msc_luns
-  // function pointers) and hard-fault during the subsequent ESP.restart().
+bool UsbMassStorage::end() {
+  if (!_active) return true;
+  gAccepting.store(false);
   tud_disconnect();
-  for (uint32_t i = 0; i < 50; i++) {  // ~500ms timeout at 10ms ticks
-    if (!tud_mounted()) break;
-    delay(10);
+  std::lock_guard<std::mutex> lock(gIoMutex);
+  // An operation that passed admission has returned before we can take this
+  // lock. Queued callbacks see admission closed and never touch the card.
+  if (!gDev || !gDev->syncDevice()) {
+    markIoError();
+    return false;
   }
-  // Mark inactive first so any callback already dispatched bails out instead
-  // of dereferencing the globals that we clear below.
   _active = false;
-  gOwner.store(nullptr);
-  gDev.store(nullptr);
-  gMsc.end();
+  gOwner = nullptr;
+  gDev = nullptr;
+  // Leave Arduino's callback pointers intact. A callback already dispatched
+  // inside its USBMSC wrapper must remain callable after disconnect.
   _state.store(UsbMassStorageState::Idle);
   _hostSeen.store(false);
+  return true;
 }
 
 UsbMassStorageState UsbMassStorage::state() const {
@@ -204,7 +231,11 @@ bool UsbMassStorage::hostConnected() const {
   return current == UsbMassStorageState::Connected || current == UsbMassStorageState::Accessed;
 }
 
-bool UsbMassStorage::disconnectHost() const { return _active && tud_disconnect(); }
+bool UsbMassStorage::disconnectHost() const {
+  if (!_active) return false;
+  gAccepting.store(false);
+  return tud_disconnect();
+}
 
 bool UsbMassStorage::hostSuspended() const { return _active && tud_mounted() && tud_suspended(); }
 
@@ -218,6 +249,7 @@ void UsbMassStorage::markAccessed() const {
 void UsbMassStorage::markEjected() const { _state.store(UsbMassStorageState::Ejected); }
 
 void UsbMassStorage::markIoError() const {
+  gAccepting.store(false);
   _hostSeen.store(true);
   _state.store(UsbMassStorageState::IoError);
 }

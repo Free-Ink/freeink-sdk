@@ -39,6 +39,9 @@
 #if FREEINK_DRIVER_UC8179
 #include "driver/Uc8179Driver.h"
 #endif
+#if FREEINK_DRIVER_UC8179_E1001
+#include "driver/Uc8179E1001Driver.h"
+#endif
 #if FREEINK_DRIVER_UC8279_X4
 #include "driver/Uc8279X4Driver.h"
 #endif
@@ -229,7 +232,9 @@ void FreeInkDisplay::selectDriver() {
         break;
       }
 #endif
-#if FREEINK_DRIVER_UC8279C
+#if FREEINK_DRIVER_UC8179_E1001
+      _driver = &uc8179E1001Driver();
+#elif FREEINK_DRIVER_UC8279C
       _driver = &uc8279cA4Driver();
 #elif FREEINK_DRIVER_SSD1677
       _driver = &ssd1677Driver();
@@ -917,6 +922,22 @@ void FreeInkDisplay::displayWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t 
 #else
   _driver->displayWindow(_bus, frameBuffer, frameBufferActive, x, y, w, h, turnOffScreen);
 #endif
+}
+
+bool FreeInkDisplay::canUpdateGrayscaleWindow() const {
+  return _driver && !_inverted && !_inversionDirty && frameBuffer && _driver->canUpdateGrayscaleWindow();
+}
+
+bool FreeInkDisplay::displayGrayscaleWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
+  if (!canUpdateGrayscaleWindow() || !w || !h || x >= getDisplayWidth() || y >= getDisplayHeight() ||
+      w > getDisplayWidth() - x || h > getDisplayHeight() - y)
+    return false;
+  DisplayPmLock pmLock;
+  syncPendingAsync();
+  if (!_driver->displayGrayscaleWindow(_bus, frameBuffer, x, y, w, h)) return false;
+  _shadowValid = false;
+  _redRamSynced = false;
+  return true;
 }
 
 void FreeInkDisplay::displayGrayBuffer(bool turnOffScreen, const unsigned char* lut, bool factoryMode) {

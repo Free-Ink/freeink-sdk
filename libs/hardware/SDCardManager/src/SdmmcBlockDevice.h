@@ -25,10 +25,15 @@ namespace freeink {
 
 class SdmmcBlockDevice : public FsBlockDeviceInterface {
  public:
+  enum class BeginError : uint8_t { None, CardNotDetected, CardCommunicationFailure, Unknown };
+
   // Bring up the SDMMC host + slot from the board's pin map and initialise the
   // card. Returns false (and leaves the device unusable) on any failure.
   bool begin(const BoardConfig::SdmmcPins& pins);
+  BeginError beginError() const { return _beginError; }
   void end() override;
+  bool hadReadError() const { return _readError; }
+  void clearReadError() { _readError = false; }
 
   bool isBusy() override { return false; }
   bool readSector(Sector_t sector, uint8_t* dst) override { return readSectors(sector, dst, 1); }
@@ -47,6 +52,8 @@ class SdmmcBlockDevice : public FsBlockDeviceInterface {
   // type). Hold it opaquely and cast in the .cpp, where the esp-idf header is included.
   void* _card = nullptr;
   uint8_t* _dmaBuffer = nullptr;
+  bool _readError = false;
+  BeginError _beginError = BeginError::Unknown;
 };
 
 }  // namespace freeink

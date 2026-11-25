@@ -80,9 +80,10 @@ class OpdsClient {
   // True when fetchFeed() or authenticateDownload() changed or cleared token
   // state during a 401 handshake; persist it before the next operation.
   bool tokensDirty() const { return authDirty; }
-  // Auth block for an app-side request (e.g. the file download) that must carry
-  // the same credentials the client negotiated.
-  HttpAuth downloadAuth() const;
+  // Auth block for an app-side request to `url` (e.g. the file download) that
+  // must carry the same credentials the client negotiated. Basic is only given
+  // for the configured server's origin.
+  HttpAuth downloadAuth(const std::string& url) const;
   // After a same-origin download 401, renew/login once. The caller must check
   // the URL belongs to its configured server and bound retries to one.
   bool authenticateDownload(const std::string& url);
@@ -97,15 +98,16 @@ class OpdsClient {
   std::string bearerToken;
   std::string refreshTokenValue;
   std::string tokenRefreshUrl;
-  // Latched only after a 401 whose auth document offers Basic (or a bare Basic
-  // challenge): sending Basic preemptively breaks OAuth-only servers.
+  // Latched by a Basic challenge, or by fetchFeed() for the configured server
+  // when no token exists. Any 401 clears it before the handshake, so OAuth-only
+  // servers still reach their auth document.
   bool basicAuthLatched = false;
   bool credentialsMissingFlag = false;
   bool authDirty = false;
   ClientStatusFn statusFn = nullptr;
   void* statusCtx = nullptr;
 
-  HttpAuth currentAuth() const;
+  HttpAuth currentAuth(const std::string& url) const;
   bool handleUnauthorized(const std::string& url, int attempt);
   void notify(ClientPhase phase) const {
     if (statusFn) statusFn(statusCtx, phase);

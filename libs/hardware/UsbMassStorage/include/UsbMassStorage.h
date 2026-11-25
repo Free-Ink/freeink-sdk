@@ -29,8 +29,13 @@ namespace freeink {
 
 class UsbMassStorage {
  public:
+  // Arduino's callback table and capacity stay fixed until reboot. A later
+  // different-sized device is rejected with restart guidance; same-size retry
+  // remains supported after end() succeeds.
   bool begin(FsBlockDeviceInterface* dev);
-  void end();
+  // Drain accepted callbacks and flush the card. A failed flush retains the
+  // session for a retry; the caller must keep the device alive and avoid reset.
+  bool end();
 
   bool active() const { return _active; }
   UsbMassStorageState state() const;
@@ -46,14 +51,16 @@ class UsbMassStorage {
   // and is unaffected.
   //
   // A host suspending an idle bus looks identical, so this is a HINT, not a
-  // verdict: callers must require it to persist before acting on it, and should
-  // prefer a physical VBUS reading where the board has one.
+  // verdict. Suspend must not end a mounted session; prefer a physical VBUS
+  // reading where the board has one.
   bool hostSuspended() const;
   // Soft-disconnect the USB device from the host. Call from application/task
   // context, never from an MSC callback; end() still owns final teardown.
   bool disconnectHost() const;
 
   // Called by the TinyUSB callbacks to publish the most recent host event.
+  // Any invalid request or I/O failure latches IoError and blocks further I/O
+  // until a successful end()/begin() cycle; it is not a per-command warning.
   void markAccessed() const;
   void markEjected() const;
   void markIoError() const;

@@ -787,6 +787,76 @@ static void testMetalio() {
   assert(lastRegister(bus, 0x10) == 0x03);
 }
 
+static void testOnePage() {
+  BoardConfig::ACTIVE.board = BoardConfig::Board::OnePage;
+  auto& driver = static_cast<Ssd1677Driver&>(ssd1677Driver());
+  EpdBus bus;
+  driver.begin(bus);
+  assert(lastPlane(bus, 0x0C) == Bytes({0xAE, 0xC7, 0xC3, 0xC0, 0x80}));
+  assert(lastRegister(bus, 0x3C) == 0x01);
+  const auto bw = frame(42), next = frame(67);
+  // Quick Resume can paint first with sunlight compensation already enabled.
+  bus.clear();
+  driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, true);
+  assert(lastRegister(bus, 0x22) == 0xD7);
+  assert(!driver._isScreenOn);
+  bus.clear();
+  driver.display(bus, next.data(), nullptr, RefreshMode::Fast, true);
+  assert(lastRegister(bus, 0x22) == 0x03);
+  assert(!driver._isScreenOn);
+  driver.begin(bus);
+  // A cold paint clears the old screen; warm turns use Osptek's 0xFC.
+  bus.clear();
+  driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, false);
+  assert(lastRegister(bus, 0x22) == 0xD4);
+  assert(lastRegister(bus, 0x1A) == 0x5A);
+  bus.clear();
+  driver.display(bus, next.data(), nullptr, RefreshMode::Fast, false);
+  assert(lastRegister(bus, 0x22) == 0xFC);
+  assert(lastPlane(bus, 0x26) == next);
+  assert(driver._isScreenOn);
+  for (auto mode : {RefreshMode::Half, RefreshMode::Full}) {
+    bus.clear();
+    driver.display(bus, bw.data(), nullptr, mode, false);
+    assert(lastRegister(bus, 0x22) == (mode == RefreshMode::Half ? 0xD4 : 0x34));
+  }
+  // The partial sequence keeps power on; sunlight compensation powers off separately.
+  bus.clear();
+  driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, true);
+  assert(lastRegister(bus, 0x22) == 0x03);
+  assert(!driver._isScreenOn);
+  assert(std::count_if(bus.writes.begin(), bus.writes.end(), [](const auto& w) { return w.command == 0x20; }) == 2);
+  bus.clear();
+  driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, true);
+  assert(lastRegister(bus, 0x22) == 0x03);
+  assert(!driver._isScreenOn);
+  // Keep the facade's deferred-refresh and grayscale cleanup contracts.
+  bus.clear();
+  driver.displayStart(bus, next.data(), bw.data(), RefreshMode::Fast, false);
+  assert(lastRegister(bus, 0x22) == 0xD4);
+  assert(bus.waits == 0);
+  driver.displayFinish(bus, next.data());
+  assert(bus.waits == 1);
+  bus.clear();
+  driver.displayGray(bus, next.data(), false, nullptr, false);
+  assert(lastPlane(bus, 0x32) == Bytes(lut_grayscale, lut_grayscale + 105));
+  assert(lastRegister(bus, 0x2C) == 0x30);
+  driver.cleanupGrayscaleBuffers(bus, next.data());
+  bus.clear();
+  driver.displayStart(bus, bw.data(), next.data(), RefreshMode::Fast, false);
+  assert(lastRegister(bus, 0x22) == 0xFC);
+  driver.displayFinish(bus, bw.data());
+  // Power-off waits for the deferred partial update to finish.
+  bus.clear();
+  driver.displayStart(bus, next.data(), bw.data(), RefreshMode::Fast, true);
+  assert(lastRegister(bus, 0x22) == 0xFC);
+  assert(bus.waits == 0);
+  assert(driver._isScreenOn && driver._pendingPowerOff);
+  driver.displayFinish(bus, next.data());
+  assert(lastRegister(bus, 0x22) == 0x03);
+  assert(!driver._isScreenOn && !driver._pendingPowerOff);
+}
+
 static void testDeferredGrayBase() {
   Uc8179Driver blocking, deferred;
   EpdBus first, second;
@@ -849,6 +919,24 @@ static void testDeferredGrayFacadeUsesCurrentDrawFrame() {
   free(driver._grayBase);
 }
 
+static void testGrayscaleWindowBounds() {
+  Uc8179Driver driver;
+  FreeInkDisplay display(12, 11, 13, 18, 14, 6);
+  display._driver = &driver;
+  display.begin();
+  driver._textAa._onPanel = true;
+  assert(display.canUpdateGrayscaleWindow());
+
+  display._bus.clear();
+  assert(!display.displayGrayscaleWindow(0, 0, 0, 1));
+  assert(!display.displayGrayscaleWindow(0, 0, 1, 0));
+  assert(!display.displayGrayscaleWindow(display.getDisplayWidth(), 0, 1, 1));
+  assert(!display.displayGrayscaleWindow(0, display.getDisplayHeight(), 1, 1));
+  assert(!display.displayGrayscaleWindow(1, 0, UINT16_MAX, 1));
+  assert(!display.displayGrayscaleWindow(0, 1, 1, UINT16_MAX));
+  assert(display._bus.writes.empty());
+  display.releaseBuffers();
+}
 
 
 static void testTextWaveforms() {
@@ -1010,10 +1098,40 @@ static void testOnePassText() {
         unsigned panelSettings = 0;
         for (const auto& w : bus.writes) {
           if (w.command != 0x00) continue;
-          assert(w.bytes == Bytes({d._cfg.psr0, d._cfg.psr1}));
+          assert(w.bytes == Bytes({d._cfg.psr0, 0x48}));  // stock one-pass PSR byte 1
           ++panelSettings;
         }
         assert(panelSettings == 2);
+        // ids 0x02/0x03: voltage block once, written with the panel powered off.
+        const bool qy = BoardConfig::ACTIVE.displayControllerVariant == 2 || BoardConfig::ACTIVE.displayControllerVariant == 3;
+        unsigned volts = 0;
+        for (size_t i = 0; i < bus.writes.size(); ++i)
+          if (bus.writes[i].command == 0x01) { ++volts; assert(i > 0 && bus.writes[i - 1].command == 0x02); }
+        assert(volts == (qy && !off ? 1u : 0u));
+      }
+    }
+    // Change three white pixels across a byte boundary on the second row.
+    // Every pixel outside the window, including the first row's AA ink, must hold.
+    {
+      auto update = base;
+      update[100] = 0x00;
+      update[101] = 0x7f;
+      bus.clear();
+      assert(d.canUpdateGrayscaleWindow());
+      assert(d.displayGrayscaleWindow(bus, update.data(), 6, 1, 3, 1));
+      const auto high = lastPlane(bus, std::is_same_v<Driver, Ssd1677Driver> ? 0x24 : 0x13);
+      const auto low = lastPlane(bus, std::is_same_v<Driver, Ssd1677Driver> ? 0x26 : 0x10);
+      const size_t wireRow = std::is_same_v<Driver, Ssd1677Driver>  ? 1
+                             : std::is_same_v<Driver, Uc8179Driver> ? 478
+                                                                    : 121;
+      const size_t offset = wireRow * 100;
+      assert(high[offset] == 0xfc && high[offset + 1] == 0x7f);
+      assert(low[offset] == 0 && low[offset + 1] == 0);
+      assert(d._textAa.high()[0] == 0x1f && d._textAa.high()[100] == 0xfc && d._textAa.high()[101] == 0x7f);
+      assert(d._textAa.base()[100] == 0xfc && d._textAa.base()[101] == 0x7f);
+      const size_t firstVisibleRow = std::is_same_v<Driver, Uc8279X4Driver> ? 120 * 100 : 0;
+      for (size_t i = firstVisibleRow; i < firstVisibleRow + 48000; ++i) {
+        if (i != offset && i != offset + 1) assert(high[i] == 0xff && low[i] == 0);
       }
     }
     bus.clear();
@@ -1103,6 +1221,11 @@ static void testGray16Image() {
 }
 
 int main(int argc, char** argv) {
+  if (argc > 1 && std::strcmp(argv[1], "onepage") == 0) {
+    testOnePage();
+    std::puts("OnePage Osptek init, partial refresh, power state and grayscale cleanup passed");
+    return 0;
+  }
   if (argc > 1 && std::strcmp(argv[1], "metalio") == 0) {
     testMetalio();
     std::puts("Metalio refresh, temperature, grayscale fallback and async power-down passed");
@@ -1133,6 +1256,7 @@ int main(int argc, char** argv) {
   BoardConfig::ACTIVE.board = BoardConfig::Board::XteinkX4Pro;
   testDeferredGrayBase();
   testDeferredGrayFacadeUsesCurrentDrawFrame();
+  testGrayscaleWindowBounds();
   testUc8179GrayShadeSplit();
   testUc8279X4WaveformSelection();
   testDirectSleep<Uc8179Driver>();

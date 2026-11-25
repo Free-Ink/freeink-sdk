@@ -12,7 +12,7 @@ This document describes the FreeInk SDK board support profile for OnePage (`FREE
 | Subsystem | Specification / Pinout |
 |:---|:---|
 | **SoC** | ESP32-C61 (ESP32-C61HR2, 160MHz RISC-V, Wi-Fi 6, BLE 5.4, 16MB Flash, 2MB PSRAM @ 40MHz) |
-| **Display** | 4.26" E-Ink Display (GDEQ0426T82), **SSD1677** controller, **800 × 480** resolution, 4-level grayscale |
+| **Display** | 4.26" E-Ink Display, **SSD1677** controller, **800 × 480** resolution, 4-level grayscale |
 | **Display SPI** | SCLK: `GPIO22`, MOSI: `GPIO23`, CS: `GPIO25`, DC: `GPIO8`, RST: `GPIO27`, BUSY: `GPIO29` · **20 MHz** |
 | **MicroSD Card** | SPI mode (shared SPI bus with EPD): SCLK: `GPIO22`, MISO: `GPIO24`, MOSI: `GPIO23`, CS: `GPIO26` · **20 MHz** |
 | **Buttons (Front 4-Key)** | Single resistor ADC ladder on `GPIO4` (ADC1_CH2):<br>• `BACK`: 2400..2800 mV (~2592 mV)<br>• `LEFT`: 1780..2140 mV (~1956 mV)<br>• `RIGHT`: 1140..1500 mV (~1316 mV)<br>• `CONFIRM` (ENTER): 0..250 mV (~0 mV) |
@@ -23,40 +23,38 @@ This document describes the FreeInk SDK board support profile for OnePage (`FREE
 
 ## FreeInk SDK Profile
 
-In FreeInk SDK (`BoardConfig.h`):
+The [OnePage board profile](../libs/hardware/BoardConfig/include/BoardConfig.h)
+defines the pinout. Enable the pull-up on GPIO11 before checking for a USB
+cable. The profile sets `usbDetectActiveHigh` to `false` because GPIO11 goes
+low when a cable is connected.
 
-```cpp
-constexpr BoardProfile ONEPAGE = {
-    Board::OnePage,
-    "onepage",
-    InputStyle::OnePageAdcLadder,
-    DisplayController::SSD1677,
-    800,
-    480,
-    {22, 23, 25, 8, 27, 29, PIN_UNASSIGNED},  // display SPI
-    20000000,                                 // 20 MHz
-    {22, 24, 23, 26, PIN_UNASSIGNED, false, 20000000, true}, // microSD
-    {PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, 6, 9, 2, false, 4}, // input
-    5,                                         // batteryAdc (GPIO5)
-    11,                                        // batteryChargeStatus (GPIO11)
-    2.0f,                                      // batteryDividerMultiplier
-    11,                                        // usbDetect (GPIO11)
-    NO_TOUCH,
-    NO_FRONTLIGHT,
-    NO_AUDIO,
-    NO_LEDS,
-    NO_FLIP,
-    NO_SDMMC,
-    NO_GAUGE,
-    NO_MIC,
-    NO_SENSORS,
-    1.0f,                                      // uiScale
-    {PIN_UNASSIGNED, PIN_UNASSIGNED, 10, true},// chargeEnable (GPIO10)
-    0,
-    {9, 3, 3, 3},
-    false                                      // batteryChargeStatusActiveHigh: false
-};
-```
+## Display configuration
+
+OnePage uses the Level 2 booster `AE C7 C3 C0 80` and B/W partial update
+sequence `0xFC` from the
+[Osptek EPD0426A02 reference driver](https://github.com/osptek/display-epd-4.26inch-480x800/blob/4dda8930794924713c0def9d492cc7b91464139f/examples/esp32s3-ssd1677-spi-bringup/main/app_init/epd_ssd1677.c).
+Partial updates load temperature and keep the panel powered; sunlight fading
+compensation powers it off separately after the update. Contrast and edge
+quality with these settings still require hardware validation.
+
+Display SPI runs at 20 MHz, the write limit in the
+[SSD1677 timing table](https://github.com/osptek/display-epd-4.26inch-480x800/blob/4dda8930794924713c0def9d492cc7b91464139f/versions/EPD0426A02/datasheets/SSD_1677_447731c055.pdf).
+This increases transfer time compared with 40 MHz; the panel waveform timing
+is unchanged. Border remains `0x01`. A cold paint uses the warmed
+HALF waveform, including when sunlight fading compensation requests power-off.
+Grayscale retains the existing SDK tables; Osptek's absolute four-tone table
+is not a replacement for the SDK's text anti-aliasing overlay.
+
+These settings use the shared SSD1677 driver through a OnePage-specific
+configuration. The FreeInk HAL, deferred refresh, buffer cleanup, and sleep/wake
+lifecycle remain in use. The SD card shares the bus at its own 20 MHz rate.
+Other boards keep their existing display configuration.
+
+On hardware, compare page turns and the background tone with the same book and
+settings. Check text anti-aliasing on and off, periodic clean refreshes, sunlight
+fading compensation, all four orientations, and repeated sleep/wake. Watch for
+ghosting, a dark border, incomplete refreshes, or SD read failures. The vendor
+settings alone do not establish a speed or contrast improvement on every panel.
 
 ## Build Configuration
 

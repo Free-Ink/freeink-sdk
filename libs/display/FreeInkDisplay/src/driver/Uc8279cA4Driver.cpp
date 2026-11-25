@@ -135,6 +135,13 @@ void Uc8279cA4Driver::loadFastLut(EpdBus& bus, const bool longToBlack) {
     memcpy(record, lut[i], sizeof(record));
     // The to-black record (0x23) and the VCOM record gain the extra frames.
     if (longToBlack && (i == 0 || i == 3)) record[1] = static_cast<uint8_t>(record[1] + A4_UC8279C_FAST_AFTER_UI_EXTRA_FRAMES);
+    if (_darkBackground) {
+      // Dark page: black that stays black gets a short black drive in place
+      // of the full one, and a pixel turning black ends with a short white
+      // phase.
+      if (i == 4) record[1] = static_cast<uint8_t>((record[1] & 0xc0) | A4_UC8279C_FAST_DARK_HELD_BLACK_FRAMES);
+      if (i == 3) record[2] = static_cast<uint8_t>(0x80 | A4_UC8279C_FAST_DARK_END_WHITE_FRAMES);
+    }
     bus.cmdData(static_cast<uint8_t>(CMD_LUT_VCOM + i), record, sizeof(record));
   }
 }
@@ -482,6 +489,60 @@ void Uc8279cA4Driver::showGray3(EpdBus& bus, const bool inverted, const bool two
   _firstRefreshPending = false;
   _redriveAfterGray = true;
   _uiShown = false;
+}
+
+bool Uc8279cA4Driver::displayGrayscaleWindow(EpdBus& bus, const uint8_t* fb, const uint16_t x, const uint16_t y,
+                                             const uint16_t w, const uint16_t h) {
+  if (!canUpdateGrayscaleWindow() || !fb) return false;
+
+  // Gray3 code 00 holds the existing ink. Send hold codes everywhere
+  // outside the rectangle, including the controller's unused rows.
+  const uint16_t right = x + w - 1;
+  const uint16_t firstByte = x / 8;
+  const uint16_t lastByte = right / 8;
+  const auto headMask = static_cast<uint8_t>(0xff >> (x % 8));
+  const auto tailMask = static_cast<uint8_t>(0xff << (7 - right % 8));
+  uint8_t anyBlack = 0, anyWhite = 0;
+  ensurePowerOn(bus);
+  bus.cmd(CMD_DTM1);
+  {
+    auto txn = bus.beginTxn();
+    uint8_t high[96];
+    for (uint16_t wireY = 0; wireY < _height; ++wireY) {
+      const uint16_t rowY = _height - 1 - wireY;
+      const size_t row = static_cast<size_t>(rowY) * _widthBytes;
+      uint8_t* low = _gray3Code + static_cast<size_t>(wireY) * _widthBytes;
+      memset(high, 0, _widthBytes);
+      memset(low, 0, _widthBytes);
+      if (rowY >= y && rowY < y + h) {
+        for (uint16_t byte = firstByte; byte <= lastByte; ++byte) {
+          uint8_t mask = 0xff;
+          if (byte == firstByte) mask &= headMask;
+          if (byte == lastByte) mask &= tailMask;
+          const size_t i = row + byte;
+          const uint8_t white = fb[i] & mask;
+          const uint8_t toWhite = white & ~_gray3White[i];
+          const uint8_t toBlack = ~fb[i] & mask & (_gray3White[i] | _gray3Middle[i]);
+          high[byte] = toBlack | toWhite;
+          low[byte] = toWhite;
+          anyBlack |= toBlack;
+          anyWhite |= toWhite;
+          _gray3White[i] = (_gray3White[i] & ~mask) | white;
+          _gray3Middle[i] &= ~mask;
+          if (_gray3Light) _gray3Light[i] &= ~mask;
+        }
+      }
+      txn.writeBytes(high, _widthBytes);
+    }
+    memset(high, 0, sizeof(high));
+    for (uint16_t row = 0; row < PADDING_ROWS; ++row) txn.writeBytes(high, _widthBytes);
+  }
+  if (anyBlack || anyWhite) {
+    sendGray3Plane(bus, false, _gray3Code);
+    loadGray3Lut(bus, anyBlack != 0, anyWhite != 0);
+    refresh(bus);
+  }
+  return true;
 }
 
 void Uc8279cA4Driver::displayGray(EpdBus& bus, const uint8_t* fb, const bool turnOff, const unsigned char* lut,

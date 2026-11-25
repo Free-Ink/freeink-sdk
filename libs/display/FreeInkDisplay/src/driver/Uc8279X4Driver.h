@@ -115,6 +115,8 @@ class Uc8279X4Driver : public PanelDriver {
                                 uint16_t yStart, uint16_t numRows) override;
   void displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut, bool factoryMode) override;
   void cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) override;
+  bool canUpdateGrayscaleWindow() const override { return _textAa.canUpdateWindow(); }
+  bool displayGrayscaleWindow(EpdBus& bus, const uint8_t* fb, uint16_t x, uint16_t y, uint16_t w, uint16_t h) override;
   // Base frame for a grayscale overlay. The periodic clean the reader asks for
   // via a Half fallback must be a TRUE Full GC on this path — the Half is a B/W
   // invert-seed scrub that cannot clear the panel's gray edge charge and leaves
@@ -126,6 +128,8 @@ class Uc8279X4Driver : public PanelDriver {
  private:
   X4ProTextAa _textAa;
   bool _readerRefresh = false;
+  // The one-pass text voltage block (ids 0x02/0x03) is in the controller.
+  bool _textVoltsSet = false;
   void initController(EpdBus& bus);
   void startBwRefresh(EpdBus& bus, bool fast);
   // Stream a framebuffer into a RAM plane: 0xFF padding for gates before the

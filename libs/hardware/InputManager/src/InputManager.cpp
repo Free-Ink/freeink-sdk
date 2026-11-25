@@ -67,6 +67,18 @@ volatile bool cstInterrupt = false;
 void IRAM_ATTR cstTouchInterrupt() { cstInterrupt = true; }
 #endif
 
+#if FREEINK_DEVICE_ONEPAGE
+uint8_t readOnePageFrontButtons(const int8_t pin) {
+  if (pin < 0) return 0;
+  const int mv = analogReadMilliVolts(pin);
+  if (mv >= 2400 && mv <= 2800) return 1 << InputManager::BTN_BACK;
+  if (mv >= 1780 && mv <= 2140) return 1 << InputManager::BTN_LEFT;
+  if (mv >= 1140 && mv <= 1500) return 1 << InputManager::BTN_RIGHT;
+  if (mv >= 0 && mv <= 250) return 1 << InputManager::BTN_CONFIRM;
+  return 0;
+}
+#endif
+
 #if defined(TOUCH_PROBE_DEBUG)
 void touchDebugPrintf(const char* format, ...) {
   char buf[192];
@@ -199,17 +211,25 @@ void InputManager::readButtonAdc(ButtonAdcSample& group1, ButtonAdcSample& group
   group2.button = b2 >= 0 ? b2 + 4 : -1;  // map group-2 local 0/1 to BTN_UP / BTN_DOWN
 }
 
+bool InputManager::isAdcLadderPhysicallyPressed() {
+#if FREEINK_DEVICE_ONEPAGE
+  if (BoardConfig::ACTIVE.inputStyle == BoardConfig::InputStyle::OnePageAdcLadder) {
+    return readOnePageFrontButtons(BoardConfig::ACTIVE.input.adcLadderPin) != 0;
+  }
+#endif
+  ButtonAdcSample group1{}, group2{};
+  readButtonAdc(group1, group2);
+  // The Xteink ladder idles near 4095. Every button band sits below 3900.
+  constexpr int kIdleRailMin = 4000;
+  return (group1.raw >= 0 && group1.raw < kIdleRailMin) || (group2.raw >= 0 && group2.raw < kIdleRailMin);
+}
+
 uint8_t InputManager::getState() {
   uint8_t state = 0;
 
+#if FREEINK_DEVICE_ONEPAGE
   if (BoardConfig::ACTIVE.inputStyle == BoardConfig::InputStyle::OnePageAdcLadder) {
-    if (BoardConfig::ACTIVE.input.adcLadderPin >= 0) {
-      const int mv = analogReadMilliVolts(BoardConfig::ACTIVE.input.adcLadderPin);
-      if (mv >= 2400 && mv <= 2800)      state |= (1 << BTN_BACK);    // ~2592 mV
-      else if (mv >= 1780 && mv <= 2140) state |= (1 << BTN_LEFT);    // ~1956 mV
-      else if (mv >= 1140 && mv <= 1500) state |= (1 << BTN_RIGHT);   // ~1316 mV
-      else if (mv >= 0 && mv <= 250)     state |= (1 << BTN_CONFIRM); // ~0 mV (ENTER)
-    }
+    state = readOnePageFrontButtons(BoardConfig::ACTIVE.input.adcLadderPin);
     if (BoardConfig::ACTIVE.input.up >= 0 && digitalRead(BoardConfig::ACTIVE.input.up) == LOW) {
       state |= (1 << BTN_UP);
     }
@@ -226,6 +246,7 @@ uint8_t InputManager::getState() {
     if (s_buttonHook) state |= s_buttonHook();
     return state;
   }
+#endif
 
   if (BoardConfig::ACTIVE.inputStyle != BoardConfig::InputStyle::XteinkAdcLadder) {
     state = getDigitalState();
@@ -2629,6 +2650,31 @@ void InputManager::beginTma525c() {
   }
   touchDataEnabled = (mode == PICCO_MODE_APP);
   if (touchDataEnabled) {
+    // Explicitly leave HID sleep mode even when the controller already runs its app.
+    // Reuse the report buffer: touch/command reports may precede the power reply.
+    static constexpr uint8_t wakeCommand[] = {0x05, 0x00, 0x00, 0x08};
+    Wire.beginTransmission(t.i2cAddress);
+    Wire.write(wakeCommand, sizeof(wakeCommand));
+    const auto wakeStatus = Wire.endTransmission();
+    bool wakeAcknowledged = false;
+    const unsigned long wakeStartedAt = millis();
+    while (wakeStatus == 0 && millis() - wakeStartedAt < 500) {
+      const unsigned long elapsed = millis() - wakeStartedAt;
+      if (elapsed >= 500 || !piccoWaitInt(t.irq, 500 - elapsed)) break;
+      const uint16_t len = piccoReadReport(t.i2cAddress, buf, sizeof(buf));
+      if (len >= 5 && buf[2] == 0xF0 && (buf[3] & 0x03) == 0 && (buf[4] & 0x0F) == 0x08) {
+        wakeAcknowledged = true;
+        break;
+      }
+      delay(1);  // A stuck-low IRQ must not spin while waiting for the reply.
+    }
+    if (wakeStatus != 0)
+      LOG_ERR("INPUT", "Picco touch power-on write failed: %u", wakeStatus);
+    else if (!wakeAcknowledged)
+      LOG_ERR("INPUT", "Picco touch power-on acknowledgment missing; continuing touch probe");
+    else
+      LOG_INF("INPUT", "Picco touch power-on acknowledged");
+
     // PIP GET_SYSINFO (as documented by Linux cyttsp5): sensing data starts at
     // byte 33; byte 50 is max_num_of_tch_per_refresh_cycle. Query the panel's
     // configuration rather than assuming the controller family's finger limit.

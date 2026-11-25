@@ -64,6 +64,10 @@ copies the displayed frame into the old plane for the next differential update.
 On the first book page (`setReaderRefresh(true)`) painted B/W after a paint that
 was not a book page, a FAST paint drives pixels turning black for 48 frames
 instead of 36.
+On a dark (inverted) page, a FAST paint drives black that stays black for
+`A4_UC8279C_FAST_DARK_HELD_BLACK_FRAMES` instead of the stock 36, and a pixel
+turning black gets `A4_UC8279C_FAST_DARK_END_WHITE_FRAMES` of white drive after
+its black frames.
 Anti-aliased (overlay) pages use stock V1.0.3's reader "Gray3" path. The B/W
 base is stashed undisplayed; with its gray mask it becomes one frame, sent
 as a per-pixel transition from the previous Gray3 frame in a single refresh:

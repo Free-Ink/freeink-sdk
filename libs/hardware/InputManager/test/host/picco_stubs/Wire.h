@@ -15,6 +15,12 @@ struct WireStub {
   bool replySysinfo = true;
   uint8_t sysinfoLength = 51;
   uint8_t sysinfoCommand = 2;
+  bool touchAwake = false;
+  bool wakeWriteFails = false;
+  bool forceIrqLow = false;
+  unsigned wakeCommands = 0;
+  std::vector<uint8_t> wakeReply = {5, 0, 0xF0, 0, 8};
+  std::vector<std::vector<uint8_t>> beforeWakeReply;
   bool begin(int, int, uint32_t) { return true; }
   void setTimeOut(int) {}
   void beginTransmission(uint8_t a) {
@@ -23,15 +29,25 @@ struct WireStub {
   }
   void write(uint8_t v) { tx.push_back(v); }
   void write(const uint8_t* v, size_t n) { tx.insert(tx.end(), v, v + n); }
-  void sync() { gpioLevels[11] = reports.empty() ? 1 : 0; }
+  void sync() { gpioLevels[11] = reports.empty() && !forceIrqLow ? 1 : 0; }
   void push(std::vector<uint8_t> r) {
+    if (r.size() >= 3 && r[2] == 1 && !touchAwake) return;
     reports.push_back(r);
     sync();
   }
   int endTransmission(bool = true) {
     if (address != 0x24) return 2;
     writes.push_back(tx);
-    if (tx == std::vector<uint8_t>{0x01, 0x00})
+    if (tx == std::vector<uint8_t>{5, 0, 0, 8}) {
+      ++wakeCommands;
+      if (wakeWriteFails) return 2;
+      touchAwake = true;
+      for (const auto& report : beforeWakeReply) push(report);
+      if (!wakeReply.empty()) push(wakeReply);
+    } else if (tx == std::vector<uint8_t>{5, 0, 1, 8}) {
+      touchAwake = false;
+      push({5, 0, 0xF0, 1, 8});
+    } else if (tx == std::vector<uint8_t>{0x01, 0x00})
       push({0x20, 0x00, mode, 0x00});  // HID descriptor reply
     else if (tx.size() == 13 && tx[7] == 0x3B) {
       mode = 0xF7;

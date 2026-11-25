@@ -1,3 +1,5 @@
+#include <esp_heap_caps.h>
+
 #include <algorithm>
 #include <cassert>
 #include <iostream>
@@ -49,6 +51,14 @@ int main(int argc, char** argv) {
   driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, false);
   assert(bus.interval == 0xd7 && bus.lut20s.back()[1] == 0x32);
   driver.setReaderRefresh(false);
+  // Dark page: staying black gets 8 black frames, turning black ends with one
+  // white frame. Light pages send the stock records.
+  driver.setBackgroundHint(true);
+  driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, false);
+  assert(bus.lut24[1] == (0x40 | 8) && bus.lut23[1] == 0x64 && bus.lut23[2] == 0x81);
+  driver.setBackgroundHint(false);
+  driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, false);
+  assert(bus.lut24[1] == 0x64 && bus.lut23[1] == 0x64 && bus.lut23[2] == 0x00);
   driver.begin(bus);
 
   // Unknown glass after boot still gets a full first paint.
@@ -267,6 +277,28 @@ int main(int argc, char** argv) {
     driver.displayGray(bus, page.data(), false, nullptr, false);
     assert(bus.refreshes == before + 1 && bus.interval == 0x00 && bus.oldAtRefresh[physical0] == 0b01100000 &&
            bus.newAtRefresh[physical0] == 0b00010000 && "unannounced overlay: one Gray3 refresh on the shown base");
+  }
+
+  {
+    // A status strip replaces only its exact pixels, including at unaligned byte
+    // edges, and retains Gray3 history for the next ordinary page turn.
+    driver.display(bus, bw.data(), nullptr, RefreshMode::Fast, false);
+    assert(!driver.displayGrayscaleWindow(bus, page.data(), 0, 0, 8, 1));
+    gray3Page(page.data(), RefreshMode::Fast);
+    auto stripUpdate = page;
+    stripUpdate[0] = 0b11000111;
+    const auto beforeStrip = bus.refreshes;
+    assert(driver.displayGrayscaleWindow(bus, stripUpdate.data(), 1, 0, 4, 1));
+    assert(bus.refreshes == beforeStrip + 1);
+    assert(bus.oldAtRefresh[physical0] == 0b01011000 && bus.newAtRefresh[physical0] == 0b01000000);
+    for (size_t i = 0; i < bus.oldAtRefresh.size(); ++i) {
+      if (i != physical0) assert(bus.oldAtRefresh[i] == 0 && bus.newAtRefresh[i] == 0);
+    }
+    assert(driver.displayGrayscaleWindow(bus, stripUpdate.data(), 1, 0, 4, 1));
+    assert(bus.refreshes == beforeStrip + 1 && "unchanged strip must not activate the panel");
+    gray3Page(page.data(), RefreshMode::Fast);
+    assert(bus.refreshes == beforeStrip + 2);
+    assert(bus.newAtRefresh[physical0] == 0b00011000 && "subsequent page must diff from the updated strip");
   }
 
   {

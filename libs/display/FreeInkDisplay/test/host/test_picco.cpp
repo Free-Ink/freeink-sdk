@@ -477,6 +477,19 @@ static void expectOnePassTextAa2677(Ssd2677Driver& s) {
   // 3 px black (00), 2 px gray (01), 3 px white (11); then all white.
   assert(refreshes == 1 && packed && (*packed)[0] == 0x01 && (*packed)[1] == 0x7F && (*packed)[2] == 0xFF);
   assert(s._textAa.onPanel() && s._needsPowerOn);
+  {
+    auto update = base;
+    update[0] = 0x1c;
+    bus.clear();
+    assert(s.canUpdateGrayscaleWindow());
+    assert(s.displayGrayscaleWindow(bus, update.data(), 6, 0, 2, 1));
+    packed = nullptr;
+    for (const auto& w : bus.writes)
+      if (w.command == 0x10) packed = &w.bytes;
+    assert(packed && (*packed)[0] == 0xaa && (*packed)[1] == 0xa0 && (*packed)[2] == 0xaa);
+    assert((s._lsb[0] & 0x18) == 0x18 && s._old[0] == 0x1c);
+    assert(s.displayGrayscaleWindow(bus, base.data(), 6, 0, 2, 1));
+  }
   s.cleanupGrayscaleBuffers(bus, base.data());
   s.setReaderRefresh(false);
   bus.clear();

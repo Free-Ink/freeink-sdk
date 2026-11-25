@@ -1,5 +1,6 @@
 // Picco TMA525C (Parade PIP): mode check, bootloader launch, touch decode, lift-off.
 #include <InputManager.h>
+#include <Logging.h>
 #include <Wire.h>
 
 #include <cassert>
@@ -70,6 +71,7 @@ int main() {
   assert(!powerInterruptEnabled);
   gpioLevels[2] = 1;
   assert(in.hasTouch() && in.supportsMultiTouch());
+  assert(Wire.touchAwake && Wire.wakeCommands == 1);
   bool launched = false;
   for (const auto& w : Wire.writes)
     if (w.size() == 13 && w[7] == 0x3B) {
@@ -188,5 +190,67 @@ int main() {
     send(single, contacts({}));
     assert(single.wasTouchTap(cx, cy));
   }
-  std::puts("Picco TMA525C touch passed");
+  // Ordinary touch reports and unrelated replies must not hide the power ACK.
+  Wire = WireStub{};
+  Wire.beforeWakeReply = {touchReport(100, 200, 0), {5, 0, 0xF0, 1, 8}, {5, 0, 0xF0, 0, 9}};
+  Wire.sync();
+  InputManager interleaved;
+  const auto errorsBeforeWake = loggedErrors;
+  interleaved.begin();
+  assert(Wire.touchAwake && Wire.wakeCommands == 1);
+  assert(loggedErrors == errorsBeforeWake && interleaved.supportsMultiTouch());
+  assert(!interleaved.wasTouchPressed());  // Startup reports never become UI input.
+  send(interleaved, touchReport(100, 200, 0));
+  assert(interleaved.wasTouchPressed());
+
+  // A missing/bad ACK is bounded and logged, but an already-awake panel stays usable.
+  for (unsigned fault = 0; fault < 8; ++fault) {
+    Wire = WireStub{};
+    Wire.touchAwake = true;
+    if (fault == 0) Wire.wakeWriteFails = true;
+    if (fault == 1 || fault == 7) Wire.wakeReply.clear();
+    if (fault == 2) Wire.wakeReply = {4, 0, 0xF0, 0};
+    if (fault == 3) Wire.wakeReply = {5, 0, 0x1F, 0, 8};
+    if (fault == 4) Wire.wakeReply = {5, 0, 0xF0, 1, 8};
+    if (fault == 5) Wire.wakeReply = {5, 0, 0xF0, 0, 9};
+    if (fault == 6) {
+      Wire.wakeReply.assign(129, 0);  // An oversized pending report cannot spin forever.
+      Wire.wakeReply[0] = 129;
+    }
+    Wire.forceIrqLow = fault == 7;
+    Wire.sync();
+    InputManager fallback;
+    const auto start = fakeNow;
+    const auto errors = loggedErrors;
+    fallback.begin();
+    assert(fakeNow - start < 1200 && loggedErrors > errors);
+    assert(Wire.wakeCommands == 1 && fallback.hasTouch());
+    // Drop the intentionally malformed oversized report before normal input.
+    Wire.reports.clear();
+    Wire.sync();
+    send(fallback, touchReport(100, 200, 0));
+    assert(fallback.wasTouchPressed());
+  }
+
+  // Every initialization, including wake after sleep, explicitly powers touch on.
+  Wire = WireStub{};
+  Wire.sync();
+  InputManager resumed;
+  resumed.begin();
+  assert(Wire.touchAwake && Wire.wakeCommands == 1);
+  assert(resumed.prepareForDeepSleep() && !resumed.hasTouch() && !Wire.touchAwake);
+  resumed.begin();
+  assert(resumed.hasTouch() && Wire.touchAwake && Wire.wakeCommands == 2);
+  send(resumed, touchReport(100, 200, 0));
+  assert(resumed.wasTouchPressed());
+
+  // Do not send an application-mode power command to an unrecognized controller mode.
+  Wire = WireStub{};
+  Wire.mode = 0x12;
+  Wire.sync();
+  InputManager unknown;
+  unknown.begin();
+  assert(!unknown.hasTouch() && Wire.wakeCommands == 0);
+
+  std::puts("Picco TMA525C touch and power-on initialization passed");
 }

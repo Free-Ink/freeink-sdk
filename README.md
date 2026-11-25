@@ -141,6 +141,7 @@ so the SD manager itself stays device-agnostic.
 | **Metalio E-Ink 4** | ESP32-S3 | SSD1677 | 800×480 B/W | CST816S touch and cover keys, TCA9555 buttons/power, 1-bit SDMMC, BQ27220 battery gauge, PCF8563 RTC; [bring-up notes and source conflicts](docs/metalio-eink4-support.md), hardware validation pending |
 | **Metalio E-Ink4-Plus** | ESP32-S31 | E0470A14-AF (raw parallel, EPDiy core) | 4.7" 1216×684, 4 grey levels used | FT6336U touch with two-contact gestures and bezel keys, TCA9555 buttons/power/motor, warm/cool frontlight, 4-bit SDMMC, BQ27220 gauge + CX25601N charger, PCF8563 RTC, SC7A20H accelerometer; needs the ESP-IDF 6.1 platform; [support notes](docs/metalio-eink4-plus-support.md), validated on hardware (sleep current, IMU readings, rotate/two-finger swipe pending) |
 | **Waveshare ESP32-S3-ePaper-3.97** | ESP32-S3 | SSD1677 | 3.97" 800×480 B/W | reuses the SSD1677 driver with the Sticky's vendor sequences, 3 side keys + BOOT (no touch), native 4-bit SDMMC, AXP2101 PMIC as EPD rail + battery gauge + power key, PCF85063 RTC, QMI8658 IMU; orientation pending hardware validation — see docs/waveshare-epaper-397-support.md |
+| **Seeed reTerminal E1001** | ESP32-S3 (32MB flash, 8MB PSRAM) | UC8179 | 7.5" 800×480 B/W | own compact UC8179 driver (Uc8179E1001Driver: OTP full refresh, windowed fast refresh with the built-in or a shorter register waveform), 3 keys (no touch, no frontlight), SPI MicroSD (shares the display bus), PCF8563 RTC, GPIO1 ADC battery; see docs/seeed-e1001-support.md |
 | **M5Stack PaperS3** | ESP32-S3 | ED047TC1 (raw parallel) | 960×540 16-gray | same LovyanGFX EPD driver class as the LilyGo T5 S3 (plain-GPIO EPD rails, no PMIC), GT911 touch (touch-only navigation — no GPIO buttons), BM8563 RTC, GPIO3 ADC battery, LEDC buzzer, SPI MicroSD; power-off is a GPIO44 pulse to the PMS150G latch (`BoardPaperS3::powerOff()`); rotation/touch-flip pending hardware validation |
 | **Onyx Picco / BOOX Tiles** (initial) | ESP32-S3 (16MB flash, 8MB octal PSRAM) | SSD1677 / SSD2677 (auto) | 3.97" 800×480 B/W (portrait) | reuses the SSD1677 driver, native 4-bit SDMMC, GPIO2 power/wake button, PCF8563/BM8563 RTC @0x51 + QMI8658 IMU @0x6A on the shared I2C bus (SDA7/SCL8); Parade TMA525C touch (I2C 0x24, multi-touch when panel GET_SYSINFO confirms it), 2-channel warm/cool I2C frontlight (@0x38), slide switch (GPIO6), SGM41562 charger (@0x03) and battery ADC (GPIO1) are wired; nav-button roles are provisional |
 
@@ -157,7 +158,7 @@ profile. In builds without an Xteink profile the helpers compile to no-ops that
 return false without touching any pins, so an unconditional call is safe on
 every device. Devices on a different MCU build their own binary, selected with a
 `-DFREEINK_DEVICE_*` flag. A build targets exactly one of the five MCU families — ESP32-C3 (X3/X4),
-ESP32-C61 (OnePage), ESP32-S3 (Silkscreen/PaperColor/Murphy/LilyGo/Sticky/X4 Pro/Paper Mono/PaperS3/Waveshare 3.97), classic ESP32 (M5Paper),
+ESP32-C61 (OnePage), ESP32-S3 (Silkscreen/PaperColor/Murphy/LilyGo/Sticky/X4 Pro/Paper Mono/PaperS3/Waveshare 3.97/E1001), classic ESP32 (M5Paper),
 or ESP32-S31 (Metalio E-Ink4-Plus);
 `BoardConfig` rejects mixing families at compile time.
 

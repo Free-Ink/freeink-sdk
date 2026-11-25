@@ -15,3 +15,11 @@ c++ -std=c++17 -Wall -Wextra -Werror ${CXXFLAGS:-} -DFREEINK_SD_SDMMC=1 -DUSE_BL
   -Istubs -I../../include test_sdmmc.cpp ../../src/SDCardManager.cpp \
   -o "$BUILD_DIR/test_sdmmc"
 "$BUILD_DIR/test_sdmmc"
+c++ -std=c++17 -Wall -Wextra -Werror ${CXXFLAGS:-} \
+  -Istubs -I../../include test_startup_error.cpp ../../src/SDCardManager.cpp \
+  -o "$BUILD_DIR/test_startup_error"
+"$BUILD_DIR/test_startup_error"
+c++ -std=c++17 -Wall -Wextra -Werror ${CXXFLAGS:-} \
+  -Istubs -I../../include test_write.cpp ../../src/SDCardManager.cpp \
+  -o "$BUILD_DIR/test_write"
+"$BUILD_DIR/test_write"

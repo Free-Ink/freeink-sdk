@@ -3,6 +3,7 @@
 #include <string_view>
 #include <utility>
 
+#include "FetchOrigin.h"
 #include "OpdsAuthDoc.h"
 #include "OpdsImplicitAuth.h"
 #include "OpdsLog.h"
@@ -78,8 +79,10 @@ void OpdsClient::resetAuthState() {
   credentialsMissingFlag = false;
 }
 
-HttpAuth OpdsClient::currentAuth() const {
+HttpAuth OpdsClient::currentAuth(const std::string& url) const {
   HttpAuth a;
+  // Login, token and custom headers belong to the configured server only.
+  if (freeink::fetchOrigin(url) != freeink::fetchOrigin(serverUrl)) return a;
   if (basicAuthLatched) {
     a.username = username;
     a.password = password;
@@ -89,7 +92,7 @@ HttpAuth OpdsClient::currentAuth() const {
   return a;
 }
 
-HttpAuth OpdsClient::downloadAuth() const { return currentAuth(); }
+HttpAuth OpdsClient::downloadAuth(const std::string& url) const { return currentAuth(url); }
 
 bool OpdsClient::authenticateDownload(const std::string& url) {
   authDirty = false;
@@ -98,6 +101,9 @@ bool OpdsClient::authenticateDownload(const std::string& url) {
 
 bool OpdsClient::handleUnauthorized(const std::string& url, const int attempt) {
   credentialsMissingFlag = false;
+  // Only the configured server may ask for the login: a 401 from another
+  // origin must not start a handshake that sends it the credentials.
+  if (freeink::fetchOrigin(url) != freeink::fetchOrigin(serverUrl)) return false;
   authDirty = true;  // token state may change or be cleared this attempt
   notify(ClientPhase::SigningIn);
   bool advanced = false;
@@ -122,8 +128,14 @@ OpdsClient::FetchStatus OpdsClient::fetchFeed(const std::string& url, OpdsFeedPa
   // Resolve localized (language-map) titles to the UI language.
   parser.setPreferredLanguage(primarySubtag(acceptLang).c_str());
   authDirty = false;
+  // A catalog with a guest view answers 200 without credentials, so no 401
+  // would ever ask for the login. Offer the configured login to the server's
+  // own origin first; a 401 still runs the handshake, which drops Basic.
+  if (!basicAuthLatched && bearerToken.empty() && !username.empty() && !password.empty() &&
+      freeink::fetchOrigin(url) == freeink::fetchOrigin(serverUrl))
+    basicAuthLatched = true;
   for (int authAttempt = 0;; ++authAttempt) {
-    const HttpResult res = http.get(url, currentAuth(), FEED_ACCEPT, orNull(acceptLang), false,
+    const HttpResult res = http.get(url, currentAuth(url), FEED_ACCEPT, orNull(acceptLang), false,
                                     [&parser](const uint8_t* data, const size_t len) {
                                       parser.write(data, len);
                                       return !parser.error();  // abort the transfer on a parse error
@@ -147,7 +159,7 @@ OpdsClient::FetchStatus OpdsClient::fetchFeed(const std::string& url, OpdsFeedPa
 bool OpdsClient::fetchPublication(const std::string& docUrl, OpdsPublication& out) {
   std::string doc;
   doc.reserve(4096);
-  http.get(docUrl, currentAuth(), PUB_ACCEPT, orNull(acceptLang), false,
+  http.get(docUrl, currentAuth(docUrl), PUB_ACCEPT, orNull(acceptLang), false,
            [&doc](const uint8_t* data, const size_t len) {
              const size_t room = doc.size() < MAX_PUB_DOC_BYTES ? MAX_PUB_DOC_BYTES - doc.size() : 0;
              doc.append(reinterpret_cast<const char*>(data), len < room ? len : room);
@@ -160,7 +172,7 @@ bool OpdsClient::fetchPublication(const std::string& docUrl, OpdsPublication& ou
 bool OpdsClient::resolveIndirect(const std::string& docUrl, std::string& outDownloadUrl, bool& outIsEpub) {
   std::string doc;
   doc.reserve(4096);
-  const bool fetched = http.get(docUrl, currentAuth(), nullptr, nullptr, false,
+  const bool fetched = http.get(docUrl, currentAuth(docUrl), nullptr, nullptr, false,
                                 [&doc](const uint8_t* data, const size_t len) {
                                   const size_t room = doc.size() < MAX_PUB_DOC_BYTES ? MAX_PUB_DOC_BYTES - doc.size() : 0;
                                   doc.append(reinterpret_cast<const char*>(data), len < room ? len : room);
@@ -180,7 +192,7 @@ bool OpdsClient::resolveIndirect(const std::string& docUrl, std::string& outDown
 bool OpdsClient::fetchSearchTemplate(const std::string& descUrl, std::string& outTemplate) {
   LOG_DBG("OPDS", "Fetching OpenSearch description: %s", descUrl.c_str());
   OpenSearchDescParser parser;
-  const bool fetched = http.get(descUrl, currentAuth(), nullptr, nullptr, false,
+  const bool fetched = http.get(descUrl, currentAuth(descUrl), nullptr, nullptr, false,
                                 [&parser](const uint8_t* data, const size_t len) {
                                   parser.write(data, len);
                                   return !parser.error();

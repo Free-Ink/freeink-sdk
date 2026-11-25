@@ -735,7 +735,8 @@ static const KeyboardRow EN_SHIFT_LANG_NUM_ROWS[] = {{NUM_SHIFT_ROW, 10, 0},
 
 // Greek. Key ids are the letters' code points (U+0386..U+03CE). The first
 // key is ς in lowercase and ";" (the Greek question mark) in uppercase, since
-// final sigma has no capital of its own.
+// final sigma has no capital of its own. Held, ";" gives ":", which the Greek
+// keyboard puts on the same key.
 static const KeyboardKey EL_ROW1[] = {K("ς", "ς", 0x3C2), KA("ε", "ε", 0x3B5, "έ"), K("ρ", "ρ", 0x3C1),
                                       K("τ", "τ", 0x3C4), KA("υ", "υ", 0x3C5, "ύ"), K("θ", "θ", 0x3B8),
                                       KA("ι", "ι", 0x3B9, "ί"), KA("ο", "ο", 0x3BF, "ό"), K("π", "π", 0x3C0),
@@ -748,7 +749,7 @@ static const KeyboardKey EL_ROW3[] = {K15(nullptr, KeyKind::Shift, QWERTY_KEY_SH
                                       K("χ", "χ", 0x3C7), K("ψ", "ψ", 0x3C8), KA("ω", "ω", 0x3C9, "ώ"),
                                       K("β", "β", 0x3B2), K("ν", "ν", 0x3BD), K("μ", "μ", 0x3BC),
                                       K15("Del", KeyKind::Delete, QWERTY_KEY_BACKSPACE)};
-static const KeyboardKey EL_SHIFT_ROW1[] = {K(";", ";", ';'), KA("Ε", "Ε", 0x395, "Έ"), K("Ρ", "Ρ", 0x3A1),
+static const KeyboardKey EL_SHIFT_ROW1[] = {KA(";", ";", ';', ":"), KA("Ε", "Ε", 0x395, "Έ"), K("Ρ", "Ρ", 0x3A1),
                                             K("Τ", "Τ", 0x3A4), KA("Υ", "Υ", 0x3A5, "Ύ"), K("Θ", "Θ", 0x398),
                                             KA("Ι", "Ι", 0x399, "Ί"), KA("Ο", "Ο", 0x39F, "Ό"), K("Π", "Π", 0x3A0),
                                             K("Ϊ", "Ϊ", 0x3AA)};
@@ -891,7 +892,7 @@ constexpr CompactLayout COMPACT_LAYOUTS[] = {
      COMPACT_ALWAYS_LANG | COMPACT_CASELESS | COMPACT_WIDE_DIGITS | COMPACT_FOOTER_DELETE},
     // GreekEl
     {{"ς εέ ρ τ υύ θ ιί οό π ϊΐ", "αά σ δ φ γ ηή ξ κ λ ϋΰ", "ζ χ ψ ωώ β ν μ"},
-     {"; ΕΈ Ρ Τ ΥΎ Θ ΙΊ ΟΌ Π Ϊ", "ΑΆ Σ Δ Φ Γ ΗΉ Ξ Κ Λ Ϋ", "Ζ Χ Ψ ΩΏ Β Ν Μ"},
+     {";: ΕΈ Ρ Τ ΥΎ Θ ΙΊ ΟΌ Π Ϊ", "ΑΆ Σ Δ Φ Γ ΗΉ Ξ Κ Λ Ϋ", "Ζ Χ Ψ ΩΏ Β Ν Μ"},
      COMPACT_ALWAYS_LANG},
 };
 static_assert(sizeof(COMPACT_LAYOUTS) / sizeof(COMPACT_LAYOUTS[0]) ==

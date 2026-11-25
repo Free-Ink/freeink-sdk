@@ -377,7 +377,8 @@ FT_BEGIN_HEADER
    *
    *   Note that the 'FOND' resource isn't checked.
    */
-#define FT_CONFIG_OPTION_MAC_FONTS
+/* FreeInkFont: off, resource-fork fonts never reach the device. */
+/* #define FT_CONFIG_OPTION_MAC_FONTS */
 
 
   /**************************************************************************
@@ -559,7 +560,8 @@ FT_BEGIN_HEADER
    *
    *   More details on the hooks can be found in file `otsvg.h`.
    */
-#define FT_CONFIG_OPTION_SVG
+/* FreeInkFont: off, no SVG renderer is registered. */
+/* #define FT_CONFIG_OPTION_SVG */
 
 
   /**************************************************************************
@@ -590,7 +592,8 @@ FT_BEGIN_HEADER
    * embedded bitmaps in all formats using the 'sfnt' module (namely
    * TrueType~& OpenType).
    */
-#define TT_CONFIG_OPTION_EMBEDDED_BITMAPS
+/* FreeInkFont: off, FtFont always loads with FT_LOAD_NO_BITMAP. */
+/* #define TT_CONFIG_OPTION_EMBEDDED_BITMAPS */
 
 
   /**************************************************************************
@@ -599,7 +602,8 @@ FT_BEGIN_HEADER
    * outlines (from the 'COLR'/'CPAL' tables) in all formats using the 'sfnt'
    * module (namely TrueType~& OpenType).
    */
-#define TT_CONFIG_OPTION_COLOR_LAYERS
+/* FreeInkFont: off, glyphs render as coverage only, never in color. */
+/* #define TT_CONFIG_OPTION_COLOR_LAYERS */
 
 
   /**************************************************************************
@@ -614,7 +618,11 @@ FT_BEGIN_HEADER
    *
    * (By default, the module uses 'psnames' to extract glyph names.)
    */
+/* FreeInkFont: only with psnames, whose cmap synthesis in ttcmap.c calls
+ * tt_face_get_ps_name. Nothing else looks glyphs up by name. */
+#ifdef FT_CONFIG_OPTION_POSTSCRIPT_NAMES
 #define TT_CONFIG_OPTION_POSTSCRIPT_NAMES
+#endif
 
 
   /**************************************************************************
@@ -772,7 +780,8 @@ FT_BEGIN_HEADER
    * Define `TT_CONFIG_OPTION_BDF` if you want to include support for an
    * embedded 'BDF~' table within SFNT-based bitmap formats.
    */
-#define TT_CONFIG_OPTION_BDF
+/* FreeInkFont: off, BDF properties are never queried. */
+/* #define TT_CONFIG_OPTION_BDF */
 
 
   /**************************************************************************

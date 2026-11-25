@@ -18,15 +18,13 @@ constexpr size_t STRING_HEADROOM_BYTES = 4096;  // left for the entries' own str
 constexpr size_t MIN_ENTRY_CAPACITY = 8;
 
 size_t affordableEntries(const size_t cap) {
-#if defined(CONFIG_SPIRAM_USE_MALLOC) && defined(CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL)
-  // The entry vector is one large block, which malloc places in PSRAM.
+#if defined(CONFIG_SPIRAM_USE_MALLOC)
+  // malloc can place the entry vector in PSRAM, so its largest block counts too.
   const size_t psramBlock = ESP.getMaxAllocPsram();
-  constexpr size_t psramMinBytes = CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL;
 #else
   const size_t psramBlock = 0;
-  constexpr size_t psramMinBytes = NO_PSRAM_MALLOC;
 #endif
-  return entriesFitting(cap, ESP.getMaxAllocHeap(), psramBlock, psramMinBytes, STRING_HEADROOM_BYTES);
+  return entriesFitting(cap, ESP.getMaxAllocHeap(), psramBlock, STRING_HEADROOM_BYTES);
 }
 }  // namespace
 

@@ -1,7 +1,6 @@
 #pragma once
 #include <algorithm>
 #include <cstddef>
-#include <cstdint>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -103,22 +102,18 @@ size_t reserveFeedEntries(std::vector<OpdsEntry>& entries);
 // Reserves up to MAX_FACET_ENTRIES facet rows (possibly none).
 void reserveFacetEntries(std::vector<OpdsEntry>& facets);
 
-// `psramMinBytes` for a board where malloc never uses PSRAM.
-constexpr size_t NO_PSRAM_MALLOC = SIZE_MAX;
-
 // How many entries (at most `cap`) a reserve can take given the largest free
-// block of internal DRAM and of PSRAM. malloc sends a request larger than
-// `psramMinBytes` to PSRAM, so the PSRAM block counts only when the entries it
-// holds clear that size; a smaller reserve lands in internal DRAM, where the
-// PSRAM block is no help and a failed reserve aborts.
+// block of internal DRAM and of PSRAM (0 where malloc never uses PSRAM).
+// With CONFIG_SPIRAM_USE_MALLOC, heap_caps_malloc_default() falls back to any
+// capable heap when its preferred one fails, so the reserve can land in either
+// block whatever its size relative to CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL.
+// `headroomBytes` is kept back from each block; the entries' strings are small
+// allocations that prefer internal DRAM, so on the PSRAM block it is only margin.
 inline size_t entriesFitting(const size_t cap, const size_t internalBlock, const size_t psramBlock,
-                             const size_t psramMinBytes, const size_t headroomBytes) {
+                             const size_t headroomBytes) {
   const auto inBlock = [&](const size_t block) {
     return std::min(cap, block > headroomBytes ? (block - headroomBytes) / sizeof(OpdsEntry) : size_t{0});
   };
-  size_t fit = inBlock(internalBlock);
-  const size_t inPsram = inBlock(psramBlock);
-  if (inPsram * sizeof(OpdsEntry) > psramMinBytes) fit = std::max(fit, inPsram);
-  return fit;
+  return std::max(inBlock(internalBlock), inBlock(psramBlock));
 }
 }  // namespace OpdsLimits

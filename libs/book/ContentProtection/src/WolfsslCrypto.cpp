@@ -31,9 +31,17 @@
 #include <wolfssl/wolfcrypt/sha256.h>
 
 #if defined(ESP_PLATFORM)
+#include <mbedtls/build_info.h>
+#if MBEDTLS_VERSION_MAJOR >= 4
+// Mbed TLS 4 (ESP-IDF 6) removed the legacy RSA API; key generation goes through PSA.
+#include <psa/crypto.h>
+#define FREEINK_RSA_KEYGEN_PSA 1
+#else
 #include <mbedtls/esp_mbedtls_random.h>
 #include <mbedtls/pk.h>
 #include <mbedtls/rsa.h>
+#define FREEINK_RSA_KEYGEN_MBEDTLS 1
+#endif
 #endif
 
 #include <stdlib.h>
@@ -259,7 +267,37 @@ bool WolfsslCrypto::rsaGenerate(RsaKeyPairDer* out) {
     lastError = "rng not initialized";
     return false;
   }
-#if defined(ESP_PLATFORM)
+#if defined(FREEINK_RSA_KEYGEN_PSA)
+  // Same reason as the mbedTLS path below. PSA exports bare PKCS#1 keys, so wrap
+  // them exactly like the wolfSSL path.
+  if (psa_crypto_init() != PSA_SUCCESS) {
+    lastError = "psa_crypto_init failed";
+    return false;
+  }
+  psa_key_attributes_t attributes = PSA_KEY_ATTRIBUTES_INIT;
+  psa_set_key_type(&attributes, PSA_KEY_TYPE_RSA_KEY_PAIR);
+  psa_set_key_bits(&attributes, 1024);
+  psa_set_key_usage_flags(&attributes, PSA_KEY_USAGE_EXPORT);
+  psa_key_id_t keyId = 0;
+  psa_status_t status = psa_generate_key(&attributes, &keyId);
+
+  uint8_t pubBuf[192];
+  uint8_t privBuf[1024];
+  size_t pubLen = 0;
+  size_t privLen = 0;
+  if (status == PSA_SUCCESS) status = psa_export_public_key(keyId, pubBuf, sizeof(pubBuf), &pubLen);
+  if (status == PSA_SUCCESS) status = psa_export_key(keyId, privBuf, sizeof(privBuf), &privLen);
+  if (keyId != 0) psa_destroy_key(keyId);
+
+  bool ok = status == PSA_SUCCESS;
+  if (ok) {
+    ok = wrapSpki(pubBuf, pubLen, &out->spki) && wrapPkcs8(privBuf, privLen, &out->pkcs8);
+    if (!ok) lastError = "der wrap failed";
+  } else {
+    lastError = "PSA RSA keygen status=" + std::to_string(status);
+  }
+  return ok;
+#elif defined(FREEINK_RSA_KEYGEN_MBEDTLS)
   // wolfSSL 5.7.2's Tom's Fast Math key-generation path is unstable on the
   // ESP32-C3 (the Miller-Rabin test faults in fp_mul_comba). ESP-IDF already
   // ships mbedTLS with RSA key generation enabled, so use it for this one

@@ -176,7 +176,15 @@ bool UsbMassStorage::begin(FsBlockDeviceInterface* dev) {
     if (!gMsc.begin(sectors, kBlockSize)) return false;
     gConfiguredSectors = sectors;
   }
-  if (!USB.begin()) return false;
+#if FREEINK_DEVICE_METALIO_EINK4_PLUS
+  if (BoardConfig::isMetalioEInk4Plus()) metalioplus::routeUsbToOtg(true);
+#endif
+  if (!USB.begin()) {
+#if FREEINK_DEVICE_METALIO_EINK4_PLUS
+    if (BoardConfig::isMetalioEInk4Plus()) metalioplus::routeUsbToOtg(false);
+#endif
+    return false;
+  }
   gDev = dev;
   gOwner = this;
   _state.store(UsbMassStorageState::WaitingForHost);
@@ -202,6 +210,9 @@ bool UsbMassStorage::end() {
   gDev = nullptr;
   // Leave Arduino's callback pointers intact. A callback already dispatched
   // inside its USBMSC wrapper must remain callable after disconnect.
+#if FREEINK_DEVICE_METALIO_EINK4_PLUS
+  if (BoardConfig::isMetalioEInk4Plus()) metalioplus::routeUsbToOtg(false);
+#endif
   _state.store(UsbMassStorageState::Idle);
   _hostSeen.store(false);
   return true;

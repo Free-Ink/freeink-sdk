@@ -4,7 +4,13 @@
 #include <SDCardManager.h>
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
+#if __has_include(<mbedtls/private/sha256.h>)
+// Mbed TLS 4 (ESP-IDF 6) hides the streaming API behind this opt-in.
+#define MBEDTLS_DECLARE_PRIVATE_IDENTIFIERS
+#include <mbedtls/private/sha256.h>
+#else
 #include <mbedtls/sha256.h>
+#endif
 #include <spi_flash_mmap.h>
 
 #include <algorithm>

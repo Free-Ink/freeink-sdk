@@ -73,6 +73,11 @@ struct Ssd1677Config {
   // halfRefreshTemp written) instead of the OTP sequences; nullptr keeps OTP.
   const unsigned char* fullLut = nullptr;
   const unsigned char* halfLut = nullptr;
+  // FULL keeps the previous frame in RED and runs with CTRL1 normal, so the OTP
+  // waveform sees each pixel's real old level instead of the bypass's all-zero
+  // plane. Falls back to the bypass when RED holds no B/W frame (cold start,
+  // just after grayscale).
+  bool fullFromPrevious = false;
   // Clean retained panel content on first paint, including turnOff requests.
   bool initialHalfRefresh = false;
   const unsigned char* readerFastLut = nullptr;  // FAST while reading; nullptr uses fastLut (stock YRD/OPM use OTP)
@@ -194,6 +199,7 @@ class Ssd1677Driver : public PanelDriver {
   // Async 0xFC updates cannot issue the separate power-off activation until the
   // display waveform completes; displayFinish() consumes this flag.
   bool _pendingPowerOff = false;
+  bool _fullFromPrevious = false;  // the refresh in progress is a FULL against RED's old frame
   // First paint after begin() (boot or deep-sleep wake) must be a full refresh to
   // clear whatever is physically on the panel (e.g. the black boot screen) and set
   // a clean differential baseline. Also applies when an incremental board opts

@@ -16,7 +16,11 @@
 // docs/freeink-ui.md and tools/gen_font.py for generating one from any TTF).
 // Gray paints are reproduced on the 1-bit panel with an ordered Bayer dither;
 // anti-aliased fonts (gen_font.py --alpha, BitmapFont::bpp == 4) reuse the
-// same dither to reproduce glyph edge coverage.
+// same dither to reproduce glyph edge coverage. On a 16-level panel,
+// setGray16() also draws into a 4-bpp frame, where grays and glyph edges are
+// real gray levels instead of a dither (see GraySettle at the end of this file).
+// That path is compiled only with -DFREEINK_UI_GRAY16=1, so builds for 1-bit
+// panels carry none of it.
 //
 // Orientation: the target draws in LOGICAL coordinates and rotates each pixel
 // into the panel's native framebuffer at draw time, so apps lay out a screen in
@@ -30,6 +34,10 @@
 
 #include <FreeInkUI.h>
 #include <FreeInkUIFont.h>
+
+#ifndef FREEINK_UI_GRAY16
+#define FREEINK_UI_GRAY16 0
+#endif
 
 namespace freeink {
 namespace ui {
@@ -93,6 +101,15 @@ class DisplayTarget final : public DrawTarget {
     w_ = isPortrait(orientation) ? ph_ : pw_;
     h_ = isPortrait(orientation) ? pw_ : ph_;
   }
+
+  // Also draw into a 16-level frame (nullptr = off): 4 bpp, row-major, panel
+  // width / 2 bytes per row, left pixel in the high nibble, 0 = white .. 15 =
+  // darkest — FreeInkDisplay::displayGray16Image()'s layout. Gray paints become a
+  // flat level and anti-aliased glyphs blend their coverage over what is under
+  // them. The 1-bpp framebuffer is still drawn, glyph edges cut at half coverage.
+#if FREEINK_UI_GRAY16
+  void setGray16(uint8_t* frame) { gray_ = frame; }
+#endif
 
   // Fallback for codepoints missing from the bitmap fonts (nullptr = off).
   void setGlyphFallback(RuntimeGlyphSource* source) { fallback_ = source; }
@@ -267,6 +284,11 @@ class DisplayTarget final : public DrawTarget {
  private:
   Rect clip_{0, 0, 32767, 32767};
   uint8_t* fb_;
+#if FREEINK_UI_GRAY16
+  uint8_t* gray_ = nullptr;  // 16-level frame (setGray16)
+#else
+  static constexpr uint8_t* gray_ = nullptr;  // every 16-level branch folds away
+#endif
   int16_t pw_;   // panel-native width (px)
   int16_t ph_;   // panel-native height (px)
   int16_t pwb_;  // panel-native bytes per row
@@ -323,13 +345,11 @@ class DisplayTarget final : public DrawTarget {
     }
   }
 
-  void plot(const int16_t x, const int16_t y, const Color color) {
-    if (!fb_ || !clip_.contains(x, y)) return;
-    if (x < 0 || y < 0 || x >= w_ || y >= h_ || color == Color::Transparent) return;
-    // Rotate the logical pixel into panel-native space. Transforms match
-    // CrossPoint's GfxRenderer::rotateCoordinates so "up" agrees across stacks.
-    int16_t px;
-    int16_t py;
+  // Clip a logical pixel and rotate it into panel-native space. Transforms match
+  // CrossPoint's GfxRenderer::rotateCoordinates so "up" agrees across stacks.
+  bool toPanel(const int16_t x, const int16_t y, int16_t& px, int16_t& py) const {
+    if (!fb_ || !clip_.contains(x, y)) return false;
+    if (x < 0 || y < 0 || x >= w_ || y >= h_) return false;
     switch (orientation_) {
       case Orientation::Portrait:  // 90° CW
         px = y;
@@ -349,6 +369,11 @@ class DisplayTarget final : public DrawTarget {
         py = y;
         break;
     }
+    return true;
+  }
+
+  // The 1-bpp pixel at panel (px, py); (x, y) is its logical position.
+  void plotBw(const int16_t px, const int16_t py, const int16_t x, const int16_t y, const Color color) {
     uint8_t& byte = fb_[static_cast<int32_t>(py) * pwb_ + (px >> 3)];
     const uint8_t mask = static_cast<uint8_t>(0x80 >> (px & 7));
     // Dither sampled in logical space so the Bayer pattern stays stable per UI.
@@ -357,6 +382,43 @@ class DisplayTarget final : public DrawTarget {
     else if (color == Color::White)
       byte = static_cast<uint8_t>(byte | mask);  // explicit white: set bit
     // gray "off" pixels leave the background untouched (dither shows through)
+  }
+
+  // Blend `color` over the 16-level pixel at panel (px, py) at `coverage` of 15.
+  __attribute__((noinline)) void blendGray(const int16_t px, const int16_t py, const Color color,
+                                           const uint8_t coverage) {
+    // The dither's ink shares: DarkGray 12 of 16 cells, LightGray 4 of 16.
+    const int target = color == Color::Black ? 15 : color == Color::DarkGray ? 11 : color == Color::LightGray ? 4 : 0;
+    uint8_t& byte = gray_[static_cast<int32_t>(py) * (pw_ / 2) + (px >> 1)];
+    const uint8_t shift = static_cast<uint8_t>((px & 1) ? 0 : 4);
+    const int under = (byte >> shift) & 0x0F;
+    const int delta = (target - under) * coverage;
+    const int level = under + (delta >= 0 ? (delta + 7) / 15 : -((7 - delta) / 15));
+    byte = static_cast<uint8_t>((byte & ~(0x0F << shift)) | (level << shift));
+  }
+
+  void plot(const int16_t x, const int16_t y, const Color color) {
+    int16_t px;
+    int16_t py;
+    if (color == Color::Transparent || !toPanel(x, y, px, py)) return;
+    plotBw(px, py, x, y, color);
+    if (gray_) blendGray(px, py, color, 15);
+  }
+
+  // A glyph pixel at `coverage` 1..15 of 15. On the 1-bit frame alone, edge
+  // coverage is thresholded against the Bayer matrix: 15 always plots (a plain
+  // coverage > bayer would drop 1 in 16 interior pixels). With a 16-level frame
+  // the coverage is blended there and the 1-bit frame is cut at half.
+  void plotCoverage(const int16_t x, const int16_t y, const Color color, const uint8_t coverage) {
+    if (!gray_) {
+      if (coverage == 15 || coverage > bayerAt(x, y)) plot(x, y, color);
+      return;
+    }
+    int16_t px;
+    int16_t py;
+    if (color == Color::Transparent || !toPanel(x, y, px, py)) return;
+    if (coverage >= 8) plotBw(px, py, x, y, color);
+    blendGray(px, py, color, coverage);
   }
 
   // True if (x,y) is inside `rect` once `radius` rounds the selected corners.
@@ -460,19 +522,16 @@ class DisplayTarget final : public DrawTarget {
                             ? (ink ? Color::Black : Color::White)
                             : inkColor;
     if (f.bpp == 4) {
-      // Anti-liased glyph: 4-bit coverage per pixel, thresholded against the
-      // Bayer matrix so edge coverage becomes an ordered dither on the 1-bit
-      // panel. Coverage 15 always plots (a plain a > bayer would drop 1 in 16
-      // interior pixels); coverage 0 never does, leaving the background as-is.
+      // Anti-aliased glyph: 4-bit coverage per pixel (see plotCoverage).
+      // Coverage 0 never plots, leaving the background as-is.
       for (int gy = 0; gy < g.height; ++gy) {
         for (int gx = 0; gx < g.width; ++gx) {
           const int idx = gy * g.width + gx;
           const uint8_t byte = f.bitmap[g.bitmapOffset + (idx >> 1)];
           const uint8_t a = (idx & 1) ? (byte & 0x0F) : (byte >> 4);
           if (a == 0) continue;
-          const int16_t px = static_cast<int16_t>(penX + g.xOffset + gx);
-          const int16_t py = static_cast<int16_t>(baseline + g.yOffset + gy);
-          if (a == 15 || a > bayerAt(px, py)) plot(px, py, color);
+          plotCoverage(static_cast<int16_t>(penX + g.xOffset + gx), static_cast<int16_t>(baseline + g.yOffset + gy),
+                       color, a);
         }
       }
       return;
@@ -509,11 +568,10 @@ class DisplayTarget final : public DrawTarget {
            for (uint16_t gy = 0; gy < rg.height; ++gy) {
              const uint8_t* row = rg.coverage + static_cast<uint32_t>(gy) * rg.width;
              for (uint16_t gx = 0; gx < rg.width; ++gx) {
-               const uint8_t a = row[gx];
+               const uint8_t a = static_cast<uint8_t>(row[gx] >> 4);
                if (a == 0) continue;
-               const int16_t px = static_cast<int16_t>(penX + rg.xoff + gx);
-               const int16_t py = static_cast<int16_t>(baseline + rg.yoff + gy);
-               if (a >= 240 || (a >> 4) > bayerAt(px, py)) plot(px, py, color);
+               plotCoverage(static_cast<int16_t>(penX + rg.xoff + gx), static_cast<int16_t>(baseline + rg.yoff + gy),
+                            color, a);
              }
            }
           penX = static_cast<int16_t>(penX + rg.advance);
@@ -550,6 +608,50 @@ class DisplayTarget final : public DrawTarget {
     return static_cast<int32_t>(px - b.x) * (a.y - b.y) - static_cast<int32_t>(a.x - b.x) * (py - b.y);
   }
 };
+
+// Gray settle: a screen is shown first as a fast B/W frame, then redrawn in 16
+// levels once it has stood unchanged for `delayMs`. Works with FreeInkDisplay
+// or any display with the same supportsGray16Image()/displayGray16Image() calls.
+// `frame` is the caller's 4-bpp buffer, panel width / 2 * height bytes.
+//
+//   present(display, hint);  settle.frameShown(millis());   // every B/W frame
+//   if (settle.due(millis())) settle.run(display, target, frame, bytes, [&] { app.render(); });
+//
+// run() returns false, drawing nothing, on a panel without 16-level images.
+#if FREEINK_UI_GRAY16
+struct GraySettle {
+  uint16_t delayMs = 1500;  // unchanged time before the 16-level redraw
+  // Every Nth settle is a full image redraw instead of a fast one, clearing
+  // what differential frames leave behind; 0 = never.
+  uint8_t cleanEvery = 8;
+
+  void frameShown(const uint32_t nowMs) {
+    armed_ = true;
+    since_ = nowMs;
+  }
+  void cancel() { armed_ = false; }
+  bool due(const uint32_t nowMs) const { return armed_ && nowMs - since_ >= delayMs; }
+
+  // `render` redraws the current screen through `target`.
+  template <typename Display, typename Render>
+  bool run(Display& display, DisplayTarget& target, uint8_t* frame, const size_t frameBytes, Render&& render) {
+    armed_ = false;
+    if (!frame || !display.supportsGray16Image()) return false;
+    for (size_t i = 0; i < frameBytes; ++i) frame[i] = 0;  // white
+    target.setGray16(frame);
+    render();
+    target.setGray16(nullptr);
+    const bool clean = cleanEvery != 0 && ++settles_ >= cleanEvery;
+    if (clean) settles_ = 0;
+    return display.displayGray16Image(frame, true, !clean);
+  }
+
+ private:
+  bool armed_ = false;
+  uint8_t settles_ = 0;
+  uint32_t since_ = 0;
+};
+#endif  // FREEINK_UI_GRAY16
 
 }  // namespace ui
 }  // namespace freeink

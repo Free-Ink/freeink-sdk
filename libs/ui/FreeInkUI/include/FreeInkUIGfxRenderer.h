@@ -22,6 +22,7 @@
 #include <GfxRenderer.h>
 
 #include <algorithm>
+#include <cmath>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -29,6 +30,26 @@
 
 namespace freeink {
 namespace ui {
+
+namespace detail {
+template <typename Renderer, typename = void>
+struct HasUiScale : std::false_type {};
+template <typename Renderer>
+struct HasUiScale<Renderer, std::void_t<decltype(std::declval<const Renderer&>().uiScale())>> : std::true_type {};
+
+// The renderer's UI scale: the factor between its glyph metrics (physical
+// pixels) and the units its rects use. A GfxRenderer without uiScale() draws
+// unscaled, so its factor is 1.
+template <typename Renderer>
+float uiScaleOf(const Renderer& renderer) {
+  if constexpr (HasUiScale<Renderer>::value) {
+    return renderer.uiScale();
+  } else {
+    (void)renderer;
+    return 1.0f;
+  }
+}
+}  // namespace detail
 
 class GfxRendererTarget final : public DrawTarget {
  public:
@@ -101,14 +122,16 @@ class GfxRendererTarget final : public DrawTarget {
 
   // Ink from glyph metrics: drawText puts the baseline `ascender` below the
   // line top, and a glyph's ink starts `top` above the baseline.
-  // ponytail: ASCII only (status labels, clocks); other text keeps the line box.
+  // ASCII only (status labels, clocks); other text keeps the line box.
   Rect inkBounds(const FontId font, const char* text, const TextStyle style) const override {
     const Rect lineBox = DrawTarget::inkBounds(font, text, style);
     const int fontId = gfxFont(font);
     const auto it = renderer.getFontMap().find(fontId);
     if (!text || it == renderer.getFontMap().end()) return lineBox;
-    const int ascender = renderer.getFontAscenderSize(fontId);
-    int top = lineBox.height;
+    // Glyph metrics are physical pixels; work in physical, return logical.
+    const float scale = detail::uiScaleOf(renderer);
+    const int ascender = it->second.getData(EpdFontFamily::REGULAR)->ascender;
+    int top = static_cast<int>(lroundf(lineBox.height * scale));
     int bottom = 0;
     for (const char* p = text; *p; ++p) {
       if (static_cast<unsigned char>(*p) >= 0x80) return lineBox;
@@ -118,7 +141,9 @@ class GfxRendererTarget final : public DrawTarget {
       bottom = std::max(bottom, ascender - static_cast<int>(glyph->top) + static_cast<int>(glyph->height));
     }
     if (top >= bottom) return lineBox;
-    return Rect{0, static_cast<int16_t>(top), lineBox.width, static_cast<int16_t>(bottom - top)};
+    const int logicalTop = static_cast<int>(lroundf(top / scale));
+    const int logicalBottom = static_cast<int>(lroundf(bottom / scale));
+    return Rect{0, static_cast<int16_t>(logicalTop), lineBox.width, static_cast<int16_t>(logicalBottom - logicalTop)};
   }
 
   void fill(const Rect rect, const Paint paint, const uint8_t radius = 0,
@@ -284,10 +309,14 @@ class GfxRendererTarget final : public DrawTarget {
         // spellings are testable for presence and read their metrics through `->`.
         if (font != fonts.end()) {
           const auto glyph = font->second.getGlyph(static_cast<uint32_t>(textLine[0]), epdStyle);
-          if (glyph && glyph->width > 0 && glyph->height > 0 && glyph->width <= rect.width &&
-              glyph->height <= rect.height) {
-            x = rect.x + (rect.width - glyph->width) / 2 - glyph->left;
-            drawY = rect.y + (rect.height - glyph->height) / 2 + glyph->top - renderer.getFontAscenderSize(fontId);
+          // Glyph metrics are physical pixels; rect and the ascender are logical.
+          const float scale = detail::uiScaleOf(renderer);
+          const auto logical = [scale](const int v) { return static_cast<int>(lroundf(v / scale)); };
+          const int glyphW = glyph ? logical(glyph->width) : 0;
+          const int glyphH = glyph ? logical(glyph->height) : 0;
+          if (glyphW > 0 && glyphH > 0 && glyphW <= rect.width && glyphH <= rect.height) {
+            x = rect.x + (rect.width - glyphW) / 2 - logical(glyph->left);
+            drawY = rect.y + (rect.height - glyphH) / 2 + logical(glyph->top) - renderer.getFontAscenderSize(fontId);
           }
         }
       }
@@ -338,6 +367,32 @@ class GfxRendererTarget final : public DrawTarget {
     // this contract; convert such assets before wrapping them in a BitmapRef.
     if (bitmap.format != BitmapFormat::BW1 && bitmap.format != BitmapFormat::Mask1) return;
     const bool black = foreground.color != Color::White;
+#ifdef GFX_RENDERER_HAS_DRAW_MASK
+    // A renderer with drawMask() scales the bitmap itself, which stays smooth
+    // under a UI scale where per-pixel plotting would repeat each source pixel
+    // as a block. Same placement as forEachBitmapPixel; tiles, rotations and
+    // Cover overflow keep the per-pixel path.
+    if (rotation == Rotation::None && mode != BitmapMode::Tile && mode != BitmapMode::TileX &&
+        mode != BitmapMode::TileY) {
+      int dstW = bitmap.width;
+      int dstH = bitmap.height;
+      if (mode == BitmapMode::Stretch) {
+        dstW = rect.width;
+        dstH = rect.height;
+      } else if (mode == BitmapMode::Contain || mode == BitmapMode::Cover) {
+        const int32_t byW = (static_cast<int32_t>(rect.width) << 8) / bitmap.width;
+        const int32_t byH = (static_cast<int32_t>(rect.height) << 8) / bitmap.height;
+        const int32_t scale = mode == BitmapMode::Contain ? (byW < byH ? byW : byH) : (byW > byH ? byW : byH);
+        dstW = static_cast<int>((bitmap.width * scale) >> 8);
+        dstH = static_cast<int>((bitmap.height * scale) >> 8);
+      }
+      if (dstW > 0 && dstH > 0 && dstW <= rect.width && dstH <= rect.height) {
+        renderer.drawMask(bitmap.data, bitmap.width, bitmap.height, bitmap.format == BitmapFormat::Mask1,
+                          rect.x + (rect.width - dstW) / 2, rect.y + (rect.height - dstH) / 2, dstW, dstH, black);
+        return;
+      }
+    }
+#endif
     forEachBitmapPixel(
         rect, bitmap, mode, [&](const int16_t px, const int16_t py) { renderer.drawPixel(px, py, black); },
         rotation);

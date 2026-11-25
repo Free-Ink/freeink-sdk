@@ -760,6 +760,29 @@ static void testMetalio() {
   driver.displayFinish(bus, bw.data());
   assert(lastPlane(bus, 0x26) == bw && lastPlane(bus, 0x24) == bw);
   assert(lastRegister(bus, 0x22) == 0xCF);
+  // FULL keeps RED's old frame (no RED write before activation) and drives
+  // with CTRL1 normal, so the OTP waveform sees each pixel's real transition.
+  const auto dark = frame(77);
+  bus.clear();
+  driver.display(bus, dark.data(), nullptr, RefreshMode::Full, false);
+  bool activated = false, redBeforeActivation = false;
+  for (const auto& w : bus.writes) {
+    if (w.command == 0x20) activated = true;
+    if (w.command == 0x26 && !activated) redBeforeActivation = true;
+    if (w.command == 0x21 && !activated) assert(w.bytes == Bytes({0x00, 0x00}));
+    if (w.command == 0x22 && !activated) assert(w.bytes == Bytes({0xF7}));
+  }
+  assert(activated && !redBeforeActivation);
+  assert(lastPlane(bus, 0x26) == dark);  // post-refresh sync for the next frame
+  // Right after grayscale RED holds the MSB plane: FULL falls back to the bypass.
+  driver.displayGray(bus, bw.data(), false, nullptr, false);
+  bus.clear();
+  driver.display(bus, dark.data(), nullptr, RefreshMode::Full, false);
+  for (const auto& w : bus.writes)
+    if (w.command == 0x21) {
+      assert(w.bytes == Bytes({0x40, 0x00}));
+      break;
+    }
   driver.deepSleep(bus);
   assert(lastRegister(bus, 0x10) == 0x03);
 }
@@ -1148,6 +1171,55 @@ static void testTextAaAllocationFailure() {
   if constexpr (!std::is_same_v<Driver, Ssd1677Driver>) free(d._grayBase);
 }
 
+// A 16-level image reaches only a driver that takes one, and not while inverted.
+static void testGray16Image() {
+  struct Gray16Driver : Ssd1677Driver {
+    int draws = 0;
+    const uint8_t* levels = nullptr;
+    bool turnOff = false, fast = false, captureFirst = false;
+    uint8_t first = 0;
+    bool supportsGray16Image() const override { return true; }
+    bool displayGray16Image(EpdBus&, const uint8_t* l, bool off, bool f) override {
+      ++draws;
+      levels = l;
+      if (captureFirst) first = l[0];
+      turnOff = off;
+      fast = f;
+      return true;
+    }
+  };
+  const uint8_t image[4] = {};
+  {
+    Ssd1677Driver plain;
+    FreeInkDisplay display(12, 11, 13, 18, 14, 6);
+    display._driver = &plain;
+    display.begin();
+    assert(!display.supportsGray16Image() && !display.displayGray16Image(image));
+    uint8_t paths[16][3] = {};
+    assert(!display.setGray16Levels(paths) && !display.getGray16Levels(paths));
+  }
+  Gray16Driver driver;
+  FreeInkDisplay display(12, 11, 13, 18, 14, 6);
+  display._driver = &driver;
+  display.begin();
+  assert(display.supportsGray16Image());
+  assert(!display.displayGray16Image(nullptr) && driver.draws == 0);
+  assert(display.displayGray16Image(image) && driver.levels == image && driver.turnOff && !driver.fast);
+  assert(display.displayGray16Image(image, false, true) && !driver.turnOff && driver.fast && driver.draws == 2);
+  // Inverted output: levels reach the driver complemented, every pixel is
+  // driven on the first frame after the change, and the caller's image is restored.
+  const size_t imageBytes = static_cast<size_t>(display.getDisplayWidth() / 2) * display.getDisplayHeight();
+  std::vector<uint8_t> big(imageBytes, 0x1E);
+  driver.captureFirst = true;
+  display.setInverted(true);
+  assert(display.supportsGray16Image());
+  assert(display.displayGray16Image(big.data(), true, true) && driver.draws == 3);
+  assert(driver.first == 0xE1 && !driver.fast && big[0] == 0x1E && big[imageBytes - 1] == 0x1E);
+  assert(display.displayGray16Image(big.data(), true, true) && driver.fast && driver.first == 0xE1);
+  display.setInverted(false);
+  assert(display.displayGray16Image(big.data(), true, true) && driver.first == 0x1E && !driver.fast);
+}
+
 int main(int argc, char** argv) {
   if (argc > 1 && std::strcmp(argv[1], "onepage") == 0) {
     testOnePage();
@@ -1164,6 +1236,7 @@ int main(int argc, char** argv) {
     std::puts("Sticky absolute capability, activation, power-down and B/W recovery passed");
     return 0;
   }
+  testGray16Image();
   testTextWaveforms();
   testLegacyTextStrips<Uc8179Driver>();
   testLegacyTextStrips<Uc8279X4Driver>();

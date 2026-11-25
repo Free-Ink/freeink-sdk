@@ -67,6 +67,32 @@ int main() {
   assert(input.hasTouch());
   Wire.failTouch = false;
   assert(touchIsr);
+  // A failed first read consumes the IRQ; retry while INT is already high.
+  Wire.touch = {1, 0, 120, 0, 200};
+  Wire.failTouch = true;
+  touchIsr();
+  assert(input.touchContactPending());
+  fakeNow += 25;
+  input.update();
+  assert(!input.touchPressed);
+  Wire.failTouch = false;
+  fakeNow += 25;
+  input.update();
+  assert(input.touchPressed);
+  assert(input.touchContactPending());
+  point(input, 120, 200, false);
+  assert(!input.touchContactPending());
+  float nx, ny;
+  assert(input.wasTouchTap(nx, ny));
+
+  // A missed interrupt must not hide an otherwise valid contact.
+  Wire.touch = {1, 0, 120, 0, 200};
+  fakeNow += 25;
+  input.update();
+  assert(input.touchPressed);
+  point(input, 120, 200, false);
+  assert(input.wasTouchTap(nx, ny));
+
   touchIsr(); // latch a pulse that has finished before update()
   point(input, 0, 0);
   assert(input.touchPressed && input.touchPoint.x == 0 && input.touchPoint.y == 479);

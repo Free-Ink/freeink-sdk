@@ -293,7 +293,9 @@ int32_t PairKernAdjustment(const uint8_t* gposBytes, size_t gposSize, uint32_t l
 
   auto processFeature = [&](unsigned featureIndex, bool& found) -> int32_t {
     found = false;
-    if (featureIndex >= featureCount || ++work > kMaxWork) return 0;
+    // Counted before the range check: a LangSys may list 65,535 indices, and
+    // out-of-range ones must not be free to walk.
+    if (++work > kMaxWork || featureIndex >= featureCount) return 0;
     const size_t record = 2 + featureIndex * 6;
     if (memcmp(features.data + record, "kern", 4) != 0) return 0;
     View feature = features.sub(features.u16(record + 4));
@@ -344,7 +346,7 @@ int32_t PairKernAdjustment(const uint8_t* gposBytes, size_t gposSize, uint32_t l
     const int32_t result = processFeature(requiredFeatureIndex, found);
     if (found) return result;
   }
-  for (unsigned i = 0; i < featureIndexCount; ++i) {
+  for (unsigned i = 0; i < featureIndexCount && work <= kMaxWork; ++i) {
     const int32_t result = processFeature(langSys.u16(6 + i * 2), found);
     if (found) return result;
   }

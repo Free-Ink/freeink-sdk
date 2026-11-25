@@ -404,6 +404,16 @@ int main(int argc, char** argv) {
   expect(freeink::font::gsub::LigatureGlyphId(listedForwardOrder.data(), listedForwardOrder.size(), syntheticPair, 2) ==
              42,
          "reversing listed feature order selects the first matching substitution");
+  // An out-of-range feature index is a step of the walk like any other: a few
+  // are skipped, and past the budget the walk stops.
+  const auto afterOutOfRange = [&](unsigned outOfRange) {
+    std::vector<uint16_t> listed(outOfRange, 0xFFFE);
+    listed.push_back(0);
+    const std::vector<uint8_t> gsub = syntheticFeatureOrderGsub(0xFFFF, listed.data(), unsigned(listed.size()));
+    return freeink::font::gsub::LigatureGlyphId(gsub.data(), gsub.size(), syntheticPair, 2);
+  };
+  expect(afterOutOfRange(8) == 42, "out-of-range feature indices are skipped");
+  expect(afterOutOfRange(4096) == 0, "out-of-range feature indices count against the walk budget");
 
   const std::vector<uint8_t> pathologicalScripts = pathologicalScriptListGsub();
   expect(freeink::font::gsub::LigatureGlyphId(pathologicalScripts.data(), pathologicalScripts.size(), syntheticPair,

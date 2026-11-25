@@ -153,8 +153,10 @@ std::vector<uint8_t> lookup(uint16_t type, const std::vector<uint8_t>& subtable,
 
 // Minimal GPOS: latn/DefaultLangSys activates one 'kern' feature that lists
 // both lookups: [0] Extension-wrapped PairPos1 (10,20)->-123, [1] PairPos2
-// (30,40)->-45.
-std::vector<uint8_t> syntheticGpos(uint16_t flags = 0, uint16_t markSet = 0, uint16_t left = 10, uint16_t right = 20) {
+// (30,40)->-45. `outOfRangeFeatures` out-of-range feature indices are listed
+// before the kern feature's.
+std::vector<uint8_t> syntheticGpos(uint16_t flags = 0, uint16_t markSet = 0, uint16_t left = 10, uint16_t right = 20,
+                                   uint16_t outOfRangeFeatures = 0) {
   const std::vector<uint8_t> lk0 = lookup(2, pairPos1(left, right, -123), /*viaExtension=*/true, flags, markSet);
   const std::vector<uint8_t> lk1 = lookup(2, pairPos2(30, 40, -45), /*viaExtension=*/false, flags, markSet);
 
@@ -166,7 +168,8 @@ std::vector<uint8_t> syntheticGpos(uint16_t flags = 0, uint16_t markSet = 0, uin
   appendU16be(scriptList, 0);       // LangSysCount
   appendU16be(scriptList, 0);       // LookupOrder
   appendU16be(scriptList, 0xFFFF);  // RequiredFeatureIndex
-  appendU16be(scriptList, 1);       // FeatureIndexCount
+  appendU16be(scriptList, uint16_t(1 + outOfRangeFeatures));  // FeatureIndexCount
+  for (unsigned i = 0; i < outOfRangeFeatures; ++i) appendU16be(scriptList, 0xFFFE);
   appendU16be(scriptList, 0);
 
   std::vector<uint8_t> featureList;
@@ -417,6 +420,16 @@ int main(int argc, char** argv) {
     (void)PairKernAdjustment(corrupt.data(), corrupt.size(), 30, 40);
   }
   expect(true, "truncation/corruption sweep completed");
+
+  // An out-of-range feature index is a step of the walk like any other. A
+  // LangSys can list 65,535 of them, and uncounted, every pair query walked
+  // them all. A few are skipped; past the budget the walk stops.
+  const auto fewOutOfRange = syntheticGpos(0, 0, 10, 20, 8);
+  expect(PairKernAdjustment(fewOutOfRange.data(), fewOutOfRange.size(), 10, 20) == -123,
+         "out-of-range feature indices are skipped");
+  const auto manyOutOfRange = syntheticGpos(0, 0, 10, 20, 4096);
+  expect(PairKernAdjustment(manyOutOfRange.data(), manyOutOfRange.size(), 10, 20) == 0,
+         "out-of-range feature indices count against the walk budget");
   testLookupFlags();
 
   // --- Real font: FtFont fallback end-to-end -------------------------------

@@ -128,7 +128,9 @@ uint32_t LigatureGlyphId(const uint8_t* gsubBytes, size_t gsubSize, const uint32
   if (!langSys.has(6, size_t(featureIndexCount) * 2)) return 0;
 
   auto processFeature = [&](unsigned featureIndex) -> uint32_t {
-    if (featureIndex >= featureCount || ++work > 4096) return 0;
+    // Counted before the range check: a LangSys may list 65,535 indices, and
+    // out-of-range ones must not be free to walk.
+    if (++work > 4096 || featureIndex >= featureCount) return 0;
     const size_t record = 2 + featureIndex * 6;
     if (memcmp(features.data + record, "liga", 4) != 0 && memcmp(features.data + record, "rlig", 4) != 0) return 0;
     View feature = features.sub(features.u16(record + 4));
@@ -179,7 +181,7 @@ uint32_t LigatureGlyphId(const uint8_t* gsubBytes, size_t gsubSize, const uint32
     const uint32_t result = processFeature(requiredFeatureIndex);
     if (result != 0) return result;
   }
-  for (unsigned i = 0; i < featureIndexCount; ++i) {
+  for (unsigned i = 0; i < featureIndexCount && work <= 4096; ++i) {
     const uint32_t result = processFeature(langSys.u16(6 + i * 2));
     if (result != 0) return result;
   }

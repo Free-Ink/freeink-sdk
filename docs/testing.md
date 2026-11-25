@@ -92,8 +92,11 @@ usage still need a Picco.
 sh libs/hardware/Imu/test/host/run.sh
 ```
 
-Compiles `Imu` with the Metalio EInk4 profile against a model SC7A20H (and
-the QMI8658 and LSM6DS3 scaling), once more with `FREEINK_CAP_IMU=0`, and with
+Compiles `Imu` with the Metalio EInk4 profile and every driver
+(`FREEINK_IMU_ALL_DRIVERS`) against a model SC7A20H (and the QMI8658 and LSM6DS3
+scaling), once more with `FREEINK_CAP_IMU=0`, with the Metalio's own driver
+alone (a QMI8658, LSM6DS3 or BMI270 that answers must be refused and get no
+register write), and with
 the Paper Mono profile against a model BMI270: `begin()` must only identify
 the part, the first `wake()` or `read()` must stream the whole configuration
 file through the INIT window in order with a longer bus timeout, a warm part

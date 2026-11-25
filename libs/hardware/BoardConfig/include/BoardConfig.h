@@ -378,10 +378,36 @@
 #ifndef FREEINK_CAP_TEMP_HUMIDITY
 #define FREEINK_CAP_TEMP_HUMIDITY (FREEINK_DEVICE_STICKY)
 #endif
+// Every device whose profile has an IMU.
+#define FREEINK_IMU_DEVICE_SELECTED                                                                  \
+  (FREEINK_DEVICE_X3 || FREEINK_DEVICE_STICKY || FREEINK_DEVICE_X4CLASSIC || FREEINK_DEVICE_WS397 || \
+   FREEINK_DEVICE_METALIO_EINK4 || FREEINK_DEVICE_PICCO || FREEINK_DEVICE_PAPERMONO)
 #ifndef FREEINK_CAP_IMU
-#define FREEINK_CAP_IMU \
-  (FREEINK_DEVICE_X3 || FREEINK_DEVICE_STICKY || FREEINK_DEVICE_X4CLASSIC || FREEINK_DEVICE_WS397 || FREEINK_DEVICE_METALIO_EINK4 || \
-   FREEINK_DEVICE_PICCO || FREEINK_DEVICE_PAPERMONO)
+#define FREEINK_CAP_IMU FREEINK_IMU_DEVICE_SELECTED
+#endif
+// IMU drivers, one flag per BoardConfig::ImuType, as FREEINK_TOUCH_* does for touch. Imu
+// dispatches on ACTIVE.sensors.imuType at runtime, so without these an IMU build carries every
+// part's driver, the BMI270's 8 KiB configuration file among them. Each flag is 1 when a selected
+// device's profile names that part. Override any with -DFREEINK_IMU_<PART>=0/1: switching off a
+// part a selected profile needs fails the static_asserts after DEFAULT_DEVICE. An IMU build whose
+// selected profiles name no part (CAP_IMU forced on) keeps every driver;
+// -DFREEINK_IMU_ALL_DRIVERS=1 forces that anywhere.
+#ifndef FREEINK_IMU_ALL_DRIVERS
+#define FREEINK_IMU_ALL_DRIVERS (!FREEINK_IMU_DEVICE_SELECTED)
+#endif
+#ifndef FREEINK_IMU_QMI8658  // X3, X4 Classic, Waveshare 3.97, Picco
+#define FREEINK_IMU_QMI8658                                                                           \
+  (FREEINK_CAP_IMU && (FREEINK_IMU_ALL_DRIVERS || FREEINK_DEVICE_X3 || FREEINK_DEVICE_X4CLASSIC || \
+                       FREEINK_DEVICE_WS397 || FREEINK_DEVICE_PICCO))
+#endif
+#ifndef FREEINK_IMU_LSM6DS3  // Sticky
+#define FREEINK_IMU_LSM6DS3 (FREEINK_CAP_IMU && (FREEINK_IMU_ALL_DRIVERS || FREEINK_DEVICE_STICKY))
+#endif
+#ifndef FREEINK_IMU_BMI270  // Paper Mono
+#define FREEINK_IMU_BMI270 (FREEINK_CAP_IMU && (FREEINK_IMU_ALL_DRIVERS || FREEINK_DEVICE_PAPERMONO))
+#endif
+#ifndef FREEINK_IMU_SC7A20H  // Metalio E-Ink 4
+#define FREEINK_IMU_SC7A20H (FREEINK_CAP_IMU && (FREEINK_IMU_ALL_DRIVERS || FREEINK_DEVICE_METALIO_EINK4))
 #endif
 // Consumer-triggered vibration output; independent of audio and input events.
 #ifndef FREEINK_CAP_HAPTIC
@@ -2319,6 +2345,53 @@ FREEINK_CHECK_TOUCH_DRIVER(FREEINK_DEVICE_WS397, WS_EPAPER_397);
 FREEINK_CHECK_TOUCH_DRIVER(FREEINK_DEVICE_PICCO, PICCO);
 FREEINK_CHECK_TOUCH_DRIVER(1, DEFAULT_DEVICE);  // a device missing above still boots as this
 #undef FREEINK_CHECK_TOUCH_DRIVER
+#endif
+
+// True when this build compiles Imu's driver for `t` (FREEINK_IMU_*).
+constexpr bool imuDriverCompiled(ImuType t) {
+  switch (t) {
+    case ImuType::None:
+      return true;
+    case ImuType::Lsm6ds3:
+      return FREEINK_IMU_LSM6DS3;
+    case ImuType::Qmi8658:
+      return FREEINK_IMU_QMI8658;
+    case ImuType::Sc7a20h:
+      return FREEINK_IMU_SC7A20H;
+    case ImuType::Bmi270:
+      return FREEINK_IMU_BMI270;
+  }
+  return false;
+}
+
+// Every profile selectDevice() can make ACTIVE in this build must find its IMU driver compiled
+// in, as for touch above. Builds with FREEINK_CAP_IMU=0 drop the IMU outright (Imu::begin() is
+// false).
+#if FREEINK_CAP_IMU
+#define FREEINK_CHECK_IMU_DRIVER(device, profile)                          \
+  static_assert(!(device) || imuDriverCompiled(profile.sensors.imuType), \
+                #profile ".sensors.imuType has no Imu driver in this build (see FREEINK_IMU_*)")
+FREEINK_CHECK_IMU_DRIVER(FREEINK_DEVICE_X4, XTEINK_X4);
+FREEINK_CHECK_IMU_DRIVER(FREEINK_DEVICE_X3, XTEINK_X3);
+FREEINK_CHECK_IMU_DRIVER(FREEINK_DEVICE_X3, XTEINK_X3_UC8279);
+FREEINK_CHECK_IMU_DRIVER(FREEINK_DEVICE_M5, M5STACK_PAPER_COLOR);
+FREEINK_CHECK_IMU_DRIVER(FREEINK_DEVICE_MURPHY, MURPHY_M3);
+FREEINK_CHECK_IMU_DRIVER(FREEINK_DEVICE_MURPHY_M4, MURPHY_M4);
+FREEINK_CHECK_IMU_DRIVER(FREEINK_DEVICE_SILKSCREEN, SILKSCREEN);
+FREEINK_CHECK_IMU_DRIVER(FREEINK_DEVICE_LILYGO, LILYGO_T5S3);
+FREEINK_CHECK_IMU_DRIVER(FREEINK_DEVICE_M5PAPER, M5PAPER_V11);
+FREEINK_CHECK_IMU_DRIVER(FREEINK_DEVICE_STICKY, STICKY);
+FREEINK_CHECK_IMU_DRIVER(FREEINK_DEVICE_X4PRO, XTEINK_X4_PRO);
+FREEINK_CHECK_IMU_DRIVER(FREEINK_DEVICE_X4CLASSIC, XTEINK_X4_CLASSIC);
+FREEINK_CHECK_IMU_DRIVER(FREEINK_DEVICE_PAPERMONO, PAPER_MONO);
+FREEINK_CHECK_IMU_DRIVER(FREEINK_DEVICE_PAPERS3, M5PAPER_S3);
+FREEINK_CHECK_IMU_DRIVER(FREEINK_DEVICE_EEGO_A4, EEGO_A4);
+FREEINK_CHECK_IMU_DRIVER(FREEINK_DEVICE_ONEPAGE, ONEPAGE);
+FREEINK_CHECK_IMU_DRIVER(FREEINK_DEVICE_METALIO_EINK4, METALIO_EINK4);
+FREEINK_CHECK_IMU_DRIVER(FREEINK_DEVICE_WS397, WS_EPAPER_397);
+FREEINK_CHECK_IMU_DRIVER(FREEINK_DEVICE_PICCO, PICCO);
+FREEINK_CHECK_IMU_DRIVER(1, DEFAULT_DEVICE);  // a device missing above still boots as this
+#undef FREEINK_CHECK_IMU_DRIVER
 #endif
 
 // Runtime-active profile. Defaults to DEFAULT_DEVICE — identical to the old

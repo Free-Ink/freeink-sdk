@@ -356,8 +356,13 @@ FT_BEGIN_HEADER
    *   in your 'psnames' module.  The Type~1 driver will not be able to
    *   synthesize a Unicode charmap out of the glyphs found in the fonts.
    */
-/* FreeInkFont: the AGL is the bulk of psnames' ~64KB; it goes with it. */
-#if FREEINK_FONT_ENABLE_PSNAMES || FREEINK_FONT_ENABLE_CFF
+/* FreeInkFont: the AGL is the bulk of psnames' ~64KB (a 55,997-byte table).
+ * It only serves glyph-NAME lookups and synthesizing a Unicode cmap for fonts
+ * that ship without one, so it follows FREEINK_FONT_ENABLE_PSNAMES alone.
+ * CFF still links psnames for the CFF standard strings, but OpenType CFF
+ * fonts carry their own cmap, and cff_face_init tolerates the missing AGL
+ * (Unimplemented_Feature) when it would otherwise synthesize one. */
+#if FREEINK_FONT_ENABLE_PSNAMES
 #define FT_CONFIG_OPTION_ADOBE_GLYPH_LIST
 #endif
 

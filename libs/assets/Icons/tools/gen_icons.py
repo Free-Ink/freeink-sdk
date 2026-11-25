@@ -90,7 +90,10 @@ def main():
     ap.add_argument("--svgdir", required=True)
     ap.add_argument("--sizes", default="24,32,40,48")
     ap.add_argument("--out", required=True)
+    ap.add_argument("--shared", action="store_true",
+                    help="Emit C++17 inline assets; icon names and sizes must be unique across the program")
     args = ap.parse_args()
+    storage = "inline constexpr" if args.shared else "static const"
     sizes = [int(s) for s in args.sizes.split(",")]
     entries = parse_manifest(args.manifest)
 
@@ -113,9 +116,9 @@ def main():
             data, center = pack(rasterize(svg, px), px)
             arr = f"icon_{ident(alias)}_{px}_bits"
             body = ", ".join(f"0x{b:02X}" for b in data)
-            out.append(f"static const uint8_t {arr}[] = {{{body}}};")
+            out.append(f"{storage} uint8_t {arr}[] = {{{body}}};")
             out.append(
-                f"static const freeink::Icon icon_{ident(alias)}_{px} = "
+                f"{storage} freeink::Icon icon_{ident(alias)}_{px} = "
                 f"{{{px}, {px}, {center}, {arr}}};"
             )
         out.append("")

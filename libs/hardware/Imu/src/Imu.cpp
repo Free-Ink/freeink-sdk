@@ -75,6 +75,12 @@ constexpr uint8_t SC7_100HZ = 0x57;  // XYZ on, LPen off
 constexpr uint8_t SC7_DIG_CTRL = 0x57;
 constexpr float SC7_G_PER_RAW_LSB = 1.0f / 16384.0f;  // section 13.13: 0x4000 = 1 g at ±2 g
 
+// Paper Mono is the only stock profile with a BMI270. Custom board builds can
+// opt in; other IMU builds discard the upload code and its 8 KiB configuration.
+#ifndef FREEINK_IMU_BMI270
+#define FREEINK_IMU_BMI270 FREEINK_DEVICE_PAPERMONO
+#endif
+
 // BMI270 register map (datasheet BST-BMI270-DS000; Bosch BMI270_SensorAPI
 // bmi2_defs.h). SDO selects 0x68 / 0x69.
 constexpr uint8_t BMI270_REG_CHIP_ID = 0x00;
@@ -343,6 +349,7 @@ bool Imu::begin() {
       break;
     }
     case BoardConfig::ImuType::Bmi270: {
+      if (!FREEINK_IMU_BMI270) return false;
       if (configuredAddr != BMI270_ADDR_68 && configuredAddr != BMI270_ADDR_69) return false;
       const uint8_t alternate = configuredAddr == BMI270_ADDR_68 ? BMI270_ADDR_69 : BMI270_ADDR_68;
       if (bmi270PresentAt(configuredAddr)) addr_ = configuredAddr;
@@ -370,7 +377,7 @@ bool Imu::begin() {
 bool Imu::hasGyroscope() const {
   const auto type = BoardConfig::ACTIVE.sensors.imuType;
   return begun_ && (type == BoardConfig::ImuType::Lsm6ds3 || type == BoardConfig::ImuType::Qmi8658 ||
-                    type == BoardConfig::ImuType::Bmi270);
+                    (FREEINK_IMU_BMI270 && type == BoardConfig::ImuType::Bmi270));
 }
 
 bool Imu::read(Sample& out) {
@@ -397,7 +404,7 @@ bool Imu::read(Sample& out) {
   } else if (s.imuType == BoardConfig::ImuType::Qmi8658) {
     if (!readRegs(addr, QMI8658_REG_GX_L, g, sizeof(g))) return false;
     if (!readRegs(addr, QMI8658_REG_AX_L, a, sizeof(a))) return false;
-  } else if (s.imuType == BoardConfig::ImuType::Bmi270) {
+  } else if (FREEINK_IMU_BMI270 && s.imuType == BoardConfig::ImuType::Bmi270) {
     if (sleeping_) return false;
     if (!configured_) {
       // A failed start has already switched advanced power save off.
@@ -427,7 +434,7 @@ bool Imu::read(Sample& out) {
   if (s.imuType == BoardConfig::ImuType::Qmi8658) {
     accelScale = QMI8658_ACCEL_G_PER_LSB;
     gyroScale = QMI8658_GYRO_DPS_PER_LSB;
-  } else if (s.imuType == BoardConfig::ImuType::Bmi270) {
+  } else if (FREEINK_IMU_BMI270 && s.imuType == BoardConfig::ImuType::Bmi270) {
     accelScale = BMI270_ACCEL_G_PER_LSB;
     gyroScale = BMI270_GYRO_DPS_PER_LSB;
   }
@@ -474,6 +481,7 @@ bool Imu::sleep() {
       sleeping_ = true;
       return true;
     case BoardConfig::ImuType::Bmi270:
+      if (!FREEINK_IMU_BMI270) return false;
       // Not configured yet: still in its power-on suspend state.
       if (configured_ && !powerDownBmi270(addr)) return false;
       sleeping_ = true;
@@ -500,6 +508,7 @@ bool Imu::wake() {
       sleeping_ = false;
       return true;
     case BoardConfig::ImuType::Bmi270:
+      if (!FREEINK_IMU_BMI270) return false;
       if (configured_) {
         if (!writeReg(addr, BMI270_REG_PWR_CONF, BMI270_PWR_CONF_ACTIVE)) return false;
         delayMicroseconds(BMI270_POWER_SAVE_WRITE_US);

@@ -7,6 +7,7 @@
 // BoardConfig::ACTIVE.sensors (imuAddr / sensor bus). Dependency-free Wire
 // access, mirroring BatteryMonitor. Boards without an IMU (FREEINK_CAP_IMU off,
 // or imuAddr == 0) link stub bodies and present() returns false.
+// Custom profiles with a BMI270 must also build with -DFREEINK_IMU_BMI270=1.
 
 #include <Arduino.h>
 

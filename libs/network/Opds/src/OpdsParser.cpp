@@ -3,6 +3,9 @@
 #include <Arduino.h>
 #include <OpdsLog.h>
 #include <XmlParserUtils.h>
+#if __has_include(<sdkconfig.h>)
+#include <sdkconfig.h>
+#endif
 
 #include <algorithm>
 #include <cstdlib>
@@ -15,8 +18,13 @@ constexpr size_t STRING_HEADROOM_BYTES = 4096;  // left for the entries' own str
 constexpr size_t MIN_ENTRY_CAPACITY = 8;
 
 size_t affordableEntries(const size_t cap) {
-  const size_t block = ESP.getMaxAllocHeap();
-  return std::min(cap, block > STRING_HEADROOM_BYTES ? (block - STRING_HEADROOM_BYTES) / sizeof(OpdsEntry) : 0);
+#if defined(CONFIG_SPIRAM_USE_MALLOC)
+  // malloc can place the entry vector in PSRAM, so its largest block counts too.
+  const size_t psramBlock = ESP.getMaxAllocPsram();
+#else
+  const size_t psramBlock = 0;
+#endif
+  return entriesFitting(cap, ESP.getMaxAllocHeap(), psramBlock, STRING_HEADROOM_BYTES);
 }
 }  // namespace
 

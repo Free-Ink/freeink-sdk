@@ -8,3 +8,5 @@ c++ -std=c++17 -Wall -Wextra ${CXXFLAGS:-} -fsanitize=address,undefined \
   ../../src/*.cpp ../../../JsonSax/src/StreamingJsonParser.cpp \
   test_client.cpp -lexpat -o "$BUILD_DIR/test_client"
 "$BUILD_DIR/test_client"
+c++ -std=c++17 -Wall -Wextra -Werror -I../../include test_entries_fitting.cpp -o "$BUILD_DIR/test_entries_fitting"
+"$BUILD_DIR/test_entries_fitting"

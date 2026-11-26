@@ -300,6 +300,32 @@ static void expectIdlePower(Ssd1677Driver& d) {
   assert(!d._isScreenOn && d._needsGrayClear);
 }
 
+static void expectShadowBaseline(Ssd1677Driver& driver) {
+  EpdBus bus;
+  const Bytes before(48000, 0xAA), submitted(48000, 0x55), after(48000, 0x33);
+  driver.begin(bus);
+  driver.display(bus, before.data(), nullptr, RefreshMode::Full, false);
+
+  assert(driver.displayStart(bus, submitted.data(), nullptr, RefreshMode::Fast, false));
+  bus.clear();
+  driver.displayFinishWithShadow(bus, submitted.data());
+  assert(bus.writes.empty());
+  assert(std::equal(submitted.begin(), submitted.end(), driver._piccoOld));
+
+  // With no host history, each refresh must leave RED ready for the next one.
+  auto* history = driver._piccoOld;
+  driver._piccoOld = nullptr;
+  driver.display(bus, before.data(), nullptr, RefreshMode::Fast, false);
+  assert(bus.writes.back().command == 0x26 && bus.writes.back().bytes == before);
+  assert(driver.displayStart(bus, submitted.data(), nullptr, RefreshMode::Fast, false));
+  bus.clear();
+  driver.displayFinishWithShadow(bus, submitted.data());
+  assert(bus.writes.back().command == 0x26 && bus.writes.back().bytes == submitted);
+  driver.display(bus, after.data(), nullptr, RefreshMode::Fast, false);
+  assert(bus.writes.back().command == 0x26 && bus.writes.back().bytes == after);
+  driver._piccoOld = history;
+}
+
 static void expectSsd2677NightMode(Ssd2677Driver& driver) {
   for (bool reading : {false, true}) {
     for (auto mode : {FreeInkDisplay::FAST_REFRESH, FreeInkDisplay::HALF_REFRESH, FreeInkDisplay::FULL_REFRESH}) {
@@ -945,6 +971,7 @@ int main(int argc, char** argv) {
   if (variant == PiccoDepg0397) { expectCustomDepg(d); expectStickyAaPower(d); }
   expectNightGray(d);
   expectIdlePower(d);
+  if (d._cfg.piccoWaveforms) expectShadowBaseline(d);
   std::printf("Picco %s: probe, config and refresh sequences passed\n", which);
   return 0;
 }

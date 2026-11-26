@@ -74,7 +74,7 @@ class Uc8179Driver : public PanelDriver {
   void display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) override;
   bool displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) override;
   void displayFinish(EpdBus& bus, const uint8_t* fb) override;
-  bool supportsAsyncDisplay() const override { return true; }
+  bool supportsAsyncDisplay() const override;
 
   void requestResync(uint8_t settlePasses) override;
   void skipInitialResync() override;

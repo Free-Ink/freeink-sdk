@@ -230,17 +230,12 @@ void Uc8179Driver::begin(EpdBus& bus) {
   initController(bus);
 }
 
+bool Uc8179Driver::supportsAsyncDisplay() const {
+  return !(_redriveAfterGray && _grayRefreshedOnce && _oldPlaneValid && !_needFullClear);
+}
+
 void Uc8179Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
-  // CrossPoint's whole-plane text-AA path calls ordinary displayBuffer(FAST)
-  // for its B/W base. After an AA page, route that base through stock's
-  // non-flashing previous->current transition; promoting it to GC fixed the
-  // charge but caused a full flash on every page.
-  if (mode == RefreshMode::Fast && _redriveAfterGray && _grayRefreshedOnce && _oldPlaneValid && !_needFullClear) {
-    transitionGrayscaleBase(bus, fb, turnOff);
-    return;
-  }
-  displayStart(bus, fb, prev, mode, turnOff);
-  displayFinish(bus, fb);
+  if (displayStart(bus, fb, prev, mode, turnOff)) displayFinish(bus, fb);
 }
 
 void Uc8179Driver::transitionGrayscaleBase(EpdBus& bus, const uint8_t* fb, bool turnOff) {
@@ -361,6 +356,12 @@ void Uc8179Driver::streamPlaneXor(EpdBus& bus, uint8_t ramCmd, const uint8_t* lh
 }
 
 bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
+  const bool finishInline = !supportsAsyncDisplay();
+  // The stock Fast transition clears the remaining grayscale charge without a full flash.
+  if (mode == RefreshMode::Fast && finishInline) {
+    transitionGrayscaleBase(bus, fb, turnOff);
+    return false;
+  }
   _textAa.invalidate();
   const bool paintDestination = _directGrayOnPanel;
   _directGrayOnPanel = false;
@@ -394,8 +395,6 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
   // KW (black->white) NEVER runs and last page's text is never erased = heavy
   // ghosting. Feeding the previous frame lets KW clear it. (0x10 is synced to the
   // just-displayed frame in displayFinish; a full refresh reseeds it to white.)
-  // Half is the explicit strong scrub. Post-AA Fast paints are intercepted by
-  // display() and use stock's non-flashing XTF_PRE_BW_MID transition instead.
   const bool scrub = (mode == RefreshMode::Half);
   const bool fast = (mode == RefreshMode::Fast) && !scrub && !_needFullClear && _oldPlaneValid;
 
@@ -427,6 +426,10 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
   _pendingPartial = fast;
   _pendingTurnOff = turnOff;
   _pendingRefresh = true;
+  if (finishInline) {
+    displayFinish(bus, fb);
+    return false;
+  }
   return true;
 }
 

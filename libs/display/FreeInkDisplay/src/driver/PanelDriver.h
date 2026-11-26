@@ -70,13 +70,9 @@ class PanelDriver {
   virtual bool supportsAsyncDisplay() const { return false; }
 
   // Two-call refresh split (CrossPoint EInkDisplay::triggerDisplay/completeDisplay).
-  // For the shadowed async path the facade passes its own baseline copy as
-  // `prev`, so the live fb may be redrawn immediately; otherwise `fb` must
-  // stay intact until displayFinish() returns:
-  // controllers whose post-waveform pipeline re-reads the host frame (UC8253 X3
-  // syncs DTM1 and runs conditioning passes after BUSY) need it. The contract is
-  // the caller does non-SPI CPU work in the gap and issues no other bus op until
-  // displayFinish().
+  // The caller may do CPU work in the gap and must wait for displayFinish()
+  // before accessing the panel bus again. The facade supplies a stable copy of
+  // the submitted pixels at finish if the caller can redraw the live buffer.
   //
   // displayStart() loads RAM, fires the waveform, and either:
   //   - returns true  -> a waveform is in flight; displayFinish() must run to
@@ -84,9 +80,7 @@ class PanelDriver {
   //   - returns false -> the refresh completed synchronously (nothing deferred);
   //                      displayFinish() is then a no-op.
   // The default is the fully-blocking display() (returns false), so a driver
-  // gains the split only by overriding both. SSD1677 (X4) keeps the default:
-  // its refresh is short and its post-waveform RED re-seed already lives inside
-  // display(), matching CrossPoint's "X4 completes inline" behavior.
+  // gains the split by overriding the start and finish methods.
   virtual bool displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
     display(bus, fb, prev, mode, turnOff);
     return false;
@@ -98,6 +92,9 @@ class PanelDriver {
     (void)bus;
     (void)fb;
   }
+  // Finish a single-buffer refresh with a facade-owned copy. Leave the
+  // differential baseline ready for the next update with prev == nullptr.
+  virtual void displayFinishWithShadow(EpdBus& bus, const uint8_t* fb) { displayFinish(bus, fb); }
 
   // Re-seed the controller's host-managed previous-frame plane (SSD1677 RED RAM)
   // with `buf`, WITHOUT triggering a refresh. A dual-buffer fast refresh only

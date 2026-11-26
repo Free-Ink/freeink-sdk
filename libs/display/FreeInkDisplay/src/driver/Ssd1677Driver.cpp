@@ -792,14 +792,16 @@ void Ssd1677Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev,
   displayImpl(bus, fb, prev, mode, turnOff, /*async=*/false);
 }
 
-// Deferred refresh: fire the update and return; displayFinish() waits it out.
-// Skips the single-buffer post-refresh baseline resync — the facade supplies
-// `prev` (its shadow) on shadowed updates, and the no-shadow/grayscale flow
-// re-seeds the baseline itself (cleanupGrayscaleBuffers).
 bool Ssd1677Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode,
                                  bool turnOff) {
   displayImpl(bus, fb, prev, mode, turnOff, /*async=*/true);
   return true;
+}
+
+void Ssd1677Driver::displayFinishWithShadow(EpdBus& bus, const uint8_t* fb) {
+  // Picco normally keeps its own baseline. Use controller RAM if that allocation failed.
+  _pendingFrameSync |= !_piccoOld;
+  displayFinish(bus, fb);
 }
 
 void Ssd1677Driver::displayFinish(EpdBus& bus, const uint8_t* fb) {
@@ -938,10 +940,7 @@ void Ssd1677Driver::displayImpl(EpdBus& bus, const uint8_t* fb, const uint8_t* p
   // Stock X4 syncs both controller RAM planes after activation. Do the same in
   // single-buffer mode so the next differential update starts from a matched
   // BW/RED baseline instead of assuming BW survived the refresh unchanged.
-  // (Async updates always come with a facade-owned prev, so this never runs
-  // while a refresh is still in flight.)
-  if ((prev == nullptr || _cfg.blackPulseClean || grayRecovery) && !async &&
-      (!_cfg.piccoWaveforms || grayRecovery)) {
+  if (!async && (prev == nullptr || _cfg.blackPulseClean || grayRecovery)) {
     setRamArea(bus, 0, 0, _w, _h);
     writeRam(bus, CMD_WRITE_RAM_BW, fb, _bufferSize);
     writeRam(bus, CMD_WRITE_RAM_RED, fb, _bufferSize);

@@ -174,9 +174,8 @@ class FreeInkDisplay {
   // refreshBusy(); the framebuffer is free to redraw the moment this returns
   // (the panel refreshes from its own RAM copy). Any blocking display call
   // waits out a pending async refresh first. In single-buffer mode this costs
-  // one extra frame buffer (lazily heap-allocated) holding the last-displayed
-  // frame as the differential baseline; if that allocation fails it falls
-  // back to the blocking path.
+  // one lazily allocated copy of the submitted frame for display completion.
+  // If that allocation fails, the refresh runs on the blocking path.
   void displayBufferAsync(RefreshMode mode = FAST_REFRESH);
   // Async refresh without the single-buffer shadow (no extra RAM). The caller
   // promises (a) not to touch the framebuffer until the refresh completes
@@ -200,6 +199,13 @@ class FreeInkDisplay {
   // can skip overlap scaffolding (e.g. whole-plane grayscale buffers) when
   // there is nothing to overlap.
   bool supportsAsyncRefresh() const;
+  // True when the driver can defer and redraw-safe storage is available or
+  // can be allocated in PSRAM. Allocation can still fail at submission.
+#if defined(EINK_DISPLAY_SINGLE_BUFFER_MODE) && !FREEINK_FB_PSRAM
+  constexpr bool supportsAsyncShadowRefresh() const { return false; }
+#else
+  bool supportsAsyncShadowRefresh() const;
+#endif
   // End-of-frame idle power policy, currently Picco only. Call under the same
   // bus/render lock as drawing, after ALL grayscale uploads and cleanup.
   // Completes pending refreshes, then powers down analog circuitry, not RAM.
@@ -449,22 +455,14 @@ class FreeInkDisplay {
   EpdBus _bus;
   PanelDriver* _driver = nullptr;
 
-  // Async refresh state: pending flag + (single-buffer mode) a lazily
-  // allocated shadow of the last-displayed frame, used as the differential
-  // baseline while the app redraws the live framebuffer. _shadowValid drops
-  // whenever a blocking display path runs (the controller RAM then holds the
-  // baseline again).
-  // One pending flag for every deferred refresh (X4 async fire, X3 split);
-  // drained by syncPendingAsync() through the driver's displayFinish().
   GrayscaleMode _grayscaleMode = GrayscaleMode::Overlay;
   uint16_t _grayRows[2] = {0, 0};
   bool _grayPassFailed = false;
   void cancelGrayscalePass();
   bool acceptGrayscaleRows(unsigned plane, const uint8_t* data, uint16_t y, uint16_t rows);
   bool _refreshPending = false;
-  uint8_t* _asyncShadow = nullptr;
-  bool _shadowValid = false;
 #ifdef EINK_DISPLAY_SINGLE_BUFFER_MODE
+  uint8_t* _asyncShadow = nullptr;
   // Frame submitted to the pending update: the shadow for redraw-safe async,
   // or the live frame for entry points requiring it to remain untouched.
   const uint8_t* _pendingSingleBufferFrame = nullptr;

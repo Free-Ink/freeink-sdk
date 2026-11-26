@@ -105,10 +105,10 @@ class Ssd1677Driver : public PanelDriver {
   void display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) override;
   // Deferred refresh: displayStart() runs the full update (RAM writes,
   // MASTER_ACTIVATION) and returns while the waveform runs; displayFinish()
-  // sleeps out the remainder on the BUSY completion edge. No post-waveform
-  // host-frame work on X4 (RED handling is inside displayImpl's async path).
+  // waits for BUSY to clear before any post-waveform RAM updates.
   bool displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) override;
   void displayFinish(EpdBus& bus, const uint8_t* fb) override;
+  void displayFinishWithShadow(EpdBus& bus, const uint8_t* fb) override;
   bool supportsAsyncDisplay() const override { return true; }
   void displayWindow(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, uint16_t x, uint16_t y, uint16_t w,
                      uint16_t h, bool turnOff) override;

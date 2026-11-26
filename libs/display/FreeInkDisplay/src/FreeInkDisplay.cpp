@@ -409,7 +409,6 @@ void FreeInkDisplay::setInverted(const bool inverted) {
   syncPendingAsync();
   _inverted = inverted;
   _inversionDirty = true;
-  _shadowValid = false;
   _redRamSynced = false;
   if (_driver) _driver->setBackgroundHint(inverted);
 }
@@ -486,12 +485,10 @@ void FreeInkDisplay::releaseBuffers() {
   free(frameBuffer1);
   frameBuffer1 = nullptr;
   frameBufferActive = nullptr;
-#endif
-  // The lazily-allocated async baseline is framebuffer-sized too; hand it
-  // back as well. It re-allocates (and re-seeds) on the next async display.
+#else
   free(_asyncShadow);
   _asyncShadow = nullptr;
-  _shadowValid = false;
+#endif
 }
 
 bool FreeInkDisplay::reallocBuffers() {
@@ -522,7 +519,6 @@ uint8_t* FreeInkDisplay::lendBuildStorage(uint32_t* sizeOut) {
   syncPendingAsync();  // a refresh in flight was reading these bytes
   _buildLent = true;
   frameBuffer = nullptr;                          // rendering is unavailable while the bytes are lent
-  _shadowValid = false;                           // controller baseline no longer matches
   if (sizeOut != nullptr) *sizeOut = bufferSize;  // full alloc is usable as scratch
   return frameBuffer0;                            // the allocation itself is never freed, so it never moves
 }
@@ -532,7 +528,6 @@ void FreeInkDisplay::returnBuildStorage() {
   _buildLent = false;
   frameBuffer = frameBuffer0;
   if (frameBuffer0 != nullptr) memset(frameBuffer0, 0xFF, bufferSize);  // build clobbered it
-  _shadowValid = false;
 }
 
 #ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
@@ -654,7 +649,11 @@ void FreeInkDisplay::syncPendingAsync() {
   if (!_refreshPending) return;
   DisplayPmLock pmLock;
 #ifdef EINK_DISPLAY_SINGLE_BUFFER_MODE
-  _driver->displayFinish(_bus, _pendingSingleBufferFrame);
+  if (_pendingSingleBufferFrame == _asyncShadow && _asyncShadow) {
+    _driver->displayFinishWithShadow(_bus, _asyncShadow);
+  } else {
+    _driver->displayFinish(_bus, _pendingSingleBufferFrame);
+  }
   _pendingSingleBufferFrame = nullptr;
 #else
   _driver->displayFinish(_bus, frameBufferActive ? frameBufferActive : frameBuffer);
@@ -674,6 +673,16 @@ void FreeInkDisplay::powerOffBetweenFrames() {
 bool FreeInkDisplay::supportsAsyncRefresh() const {
   return !_inverted && !_inversionDirty && _driver != nullptr && _driver->supportsAsyncDisplay();
 }
+
+#if !defined(EINK_DISPLAY_SINGLE_BUFFER_MODE) || FREEINK_FB_PSRAM
+bool FreeInkDisplay::supportsAsyncShadowRefresh() const {
+#ifdef EINK_DISPLAY_SINGLE_BUFFER_MODE
+  return _panelSel != PanelSel::X3 && supportsAsyncRefresh();
+#else
+  return frameBufferActive && supportsAsyncRefresh();
+#endif
+}
+#endif
 
 bool FreeInkDisplay::grayAllowed() const {
   return !_inverted || (_driver && _driver->grayscaleWhileInverted());
@@ -714,9 +723,6 @@ void FreeInkDisplay::displayBuffer(RefreshMode mode, bool turnOffScreen) {
   if (_inverted) invertBytes(frameBuffer, bufferSize);
   _driver->display(_bus, frameBuffer, nullptr, toInternal(mode), turnOffScreen);
   if (_inverted) invertBytes(frameBuffer, bufferSize);
-  // The blocking path resynced the controller's baseline from the live
-  // framebuffer; the async shadow no longer matches what is displayed.
-  _shadowValid = false;
 #else
   const RefreshMode effMode = resolveReleasedMode(mode);
   uint8_t* const next = frameBuffer;
@@ -749,15 +755,13 @@ void FreeInkDisplay::displayAsyncImpl(RefreshMode mode, bool turnOffScreen, bool
     displayBuffer(mode, turnOffScreen);
     return;
   }
-  // Blocking-fallback drivers finish the refresh inside displayAsync(); marking
-  // it pending would make the next BUSY sync spin an edge-detect timeout
-  // against an idle panel (X3TwoPhase: 1 s). Take the blocking path outright.
+  DisplayPmLock pmLock;
+  syncPendingAsync();
+  // Finishing a pending refresh can change whether the next update can defer.
   if (!_driver->supportsAsyncDisplay()) {
     displayBuffer(mode, turnOffScreen);
     return;
   }
-  DisplayPmLock pmLock;
-  syncPendingAsync();
 #ifdef EINK_DISPLAY_SINGLE_BUFFER_MODE
   if (noShadow) {
     // Shadow-free contract: the caller keeps the framebuffer untouched until
@@ -765,14 +769,10 @@ void FreeInkDisplay::displayAsyncImpl(RefreshMode mode, bool turnOffScreen, bool
     // (e.g. the tiled-grayscale cleanup), so controller RAM stays the
     // baseline (prev = nullptr) and no 48 KB shadow is allocated.
     _refreshPending = _driver->displayStart(_bus, frameBuffer, nullptr, toInternal(mode), turnOffScreen);
-    _pendingSingleBufferFrame = frameBuffer;
-    _shadowValid = false;
+    _pendingSingleBufferFrame = _refreshPending ? frameBuffer : nullptr;
     return;
   }
-  // The shadow contract lets the caller redraw the framebuffer immediately —
-  // a panel whose displayFinish() re-reads the frame (X3 DTM1 sync) cannot
-  // honor that; take the blocking path there. Use the noShadow entry (with its
-  // frame-intact contract) or triggerDisplay() for X3 overlap.
+  // X3 uses the frame-intact entry points for overlap.
   if (_panelSel == PanelSel::X3) {
     displayBuffer(mode, turnOffScreen);
     return;
@@ -784,20 +784,17 @@ void FreeInkDisplay::displayAsyncImpl(RefreshMode mode, bool turnOffScreen, bool
 #else
     _asyncShadow = static_cast<uint8_t*>(malloc(bufferSize));
 #endif
-    _shadowValid = false;
   }
   if (_asyncShadow == nullptr) {  // allocation failed: blocking fallback
     displayBuffer(mode, turnOffScreen);
     return;
   }
-  // First async update after boot or a blocking display: the controller's RED
-  // plane still holds the displayed frame (single-buffer prev = nullptr path);
-  // from then on the shadow supplies the baseline on every update.
-  _refreshPending =
-      _driver->displayStart(_bus, frameBuffer, _shadowValid ? _asyncShadow : nullptr, toInternal(mode), turnOffScreen);
-  memcpy(_asyncShadow, frameBuffer, bufferSize);
-  _pendingSingleBufferFrame = _asyncShadow;
-  _shadowValid = true;
+  // Keep the submitted frame for finish even if the caller redraws before then.
+  _refreshPending = _driver->displayStart(_bus, frameBuffer, nullptr, toInternal(mode), turnOffScreen);
+  if (_refreshPending) {
+    memcpy(_asyncShadow, frameBuffer, bufferSize);
+    _pendingSingleBufferFrame = _asyncShadow;
+  }
 #else
   (void)noShadow;  // dual-buffer: the secondary buffer is the baseline; no shadow exists
   const RefreshMode effMode = resolveReleasedMode(mode);
@@ -825,8 +822,7 @@ void FreeInkDisplay::triggerDisplay(RefreshMode mode, bool turnOffScreen) {
   syncPendingAsync();  // finish any prior split/async refresh before starting another
 #ifdef EINK_DISPLAY_SINGLE_BUFFER_MODE
   const bool deferred = _driver->displayStart(_bus, frameBuffer, nullptr, toInternal(mode), turnOffScreen);
-  _pendingSingleBufferFrame = frameBuffer;
-  _shadowValid = false;
+  _pendingSingleBufferFrame = deferred ? frameBuffer : nullptr;
 #else
   // Pass frameBufferActive as the previous frame, then swap so the caller draws
   // into the inactive buffer while the just-displayed frame is preserved for the
@@ -918,7 +914,6 @@ void FreeInkDisplay::displayWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t 
   syncPendingAsync();
 #ifdef EINK_DISPLAY_SINGLE_BUFFER_MODE
   _driver->displayWindow(_bus, frameBuffer, nullptr, x, y, w, h, turnOffScreen);
-  _shadowValid = false;
 #else
   _driver->displayWindow(_bus, frameBuffer, frameBufferActive, x, y, w, h, turnOffScreen);
 #endif
@@ -935,7 +930,6 @@ bool FreeInkDisplay::displayGrayscaleWindow(uint16_t x, uint16_t y, uint16_t w, 
   DisplayPmLock pmLock;
   syncPendingAsync();
   if (!_driver->displayGrayscaleWindow(_bus, frameBuffer, x, y, w, h)) return false;
-  _shadowValid = false;
   _redRamSynced = false;
   return true;
 }
@@ -956,7 +950,6 @@ void FreeInkDisplay::displayGrayBuffer(bool turnOffScreen, const unsigned char* 
   if (!grayAllowed()) return;
   DisplayPmLock pmLock;
   syncPendingAsync();
-  _shadowValid = false;
   _redRamSynced = false;  // grayscale leaves RED holding a gray plane, not the BW baseline
   if (_grayPassFailed) return;
   if (_grayscaleMode != GrayscaleMode::Overlay) {
@@ -977,7 +970,6 @@ void FreeInkDisplay::displayGrayCalibration(uint16_t customX, uint16_t customY, 
   if (_inverted) return;
   DisplayPmLock pmLock;
   syncPendingAsync();
-  _shadowValid = false;
   _redRamSynced = false;
   _driver->displayGrayCalibration(_bus, frameBuffer, customX, customY, customW, customH);
 }
@@ -990,7 +982,6 @@ bool FreeInkDisplay::displayRetainedGrayscaleOverlay(uint16_t x, uint16_t y, uin
   syncPendingAsync();
   cancelGrayscalePass();
   if (!_driver->displayRetainedGrayscaleOverlay(_bus, restore ? nullptr : frameBuffer, x, y, w, h)) return false;
-  _shadowValid = false;
   _redRamSynced = false;
   return true;
 }
@@ -1040,7 +1031,6 @@ bool FreeInkDisplay::displayGrayscaleBase(GrayscaleMode mode, RefreshMode fallba
   if (dirtyBase && fallback == FAST_REFRESH) fallback = HALF_REFRESH;
   DisplayPmLock pmLock;
   syncPendingAsync();
-  _shadowValid = false;
   _grayPassFailed = false;
   // The inverted B/W base is already on the panel; only its masks follow.
   if (!_inverted) _driver->beginGrayscale(_bus, frameBuffer, mode, toInternal(fallback), turnOffScreen);
@@ -1059,7 +1049,6 @@ void FreeInkDisplay::displayGrayscaleBase(RefreshMode fallback, bool turnOffScre
   }
   DisplayPmLock pmLock;
   syncPendingAsync();
-  _shadowValid = false;
   _driver->beginGrayscale(_bus, frameBuffer, GrayscaleMode::Overlay, toInternal(fallback), turnOffScreen);
 }
 
@@ -1080,7 +1069,6 @@ bool FreeInkDisplay::displayGrayscaleBaseAsync(RefreshMode fallback) {
     cancelGrayscalePass();
     syncPendingAsync();
     _grayPassFailed = false;
-    _shadowValid = false;
     _grayscaleMode = GrayscaleMode::Overlay;
     _grayRows[0] = _grayRows[1] = 0;
     _refreshPending = _driver->displayGrayscaleBaseStart(_bus, frameBuffer, toInternal(fallback), false);

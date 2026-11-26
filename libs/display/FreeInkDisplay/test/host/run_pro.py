@@ -30,7 +30,7 @@ with tempfile.TemporaryDirectory(prefix="freeink-pro-test-") as directory:
     for single in (False, True):
         exe = root / ("single" if single else "dual")
         command = [os.environ.get("CXX", "c++"), "-std=c++17", "-Wall", "-Wextra",
-                   "-Wno-unused-parameter", "-Wno-unused-function", "-DBOARD_HAS_PSRAM=1",
+                   "-Wno-unused-parameter", "-Wno-unused-function", "-DBOARD_HAS_PSRAM=1", "-DFREEINK_FB_PSRAM=1",
                    "-DARDUINO=1", "-DFREEINK_DEVICE_METALIO_EINK4=1", "-DFREEINK_DEVICE_ONEPAGE=1",
                    "-I"+str(root), "-I"+str(root / "include")]
         if single:

@@ -139,6 +139,7 @@ static void testAsyncFrame() {
   FreeInkDisplay display(12, 11, 13, 18, 14, 6);
   display._driver = &driver;
   display.begin();
+  assert(display.supportsAsyncShadowRefresh());
   const auto submitted = frame(27), redrawn = frame(94);
   std::memcpy(display.getFrameBuffer(), submitted.data(), submitted.size());
   display.displayBufferAsync(FreeInkDisplay::FAST_REFRESH);
@@ -177,6 +178,85 @@ static void testAsyncFrame() {
   display.releaseBuffers();
   free(driver._grayBase);
 }
+
+static void testUc8179AsyncGrayRecovery() {
+  Uc8179Driver driver;
+  FreeInkDisplay display(12, 11, 13, 18, 14, 6);
+  display._driver = &driver;
+  display.begin();
+  const auto page = frame(38);
+  for (bool split : {false, true}) {
+    driver._redriveAfterGray = true;
+    driver._grayRefreshedOnce = true;
+    driver._oldPlaneValid = true;
+    driver._needFullClear = false;
+    assert(!display.supportsAsyncShadowRefresh());
+    std::memcpy(display.getFrameBuffer(), page.data(), page.size());
+    display._bus.clear();
+    if (split)
+      display.triggerDisplay(FreeInkDisplay::FAST_REFRESH, false);
+    else
+      display.displayBufferAsync(FreeInkDisplay::FAST_REFRESH);
+    assert(!display.isRefreshPending() && !driver._redriveAfterGray && driver._bwPlanesSynced);
+    // The stock grayscale transition writes the LUT and then restores DTM1.
+    assert(lastPlane(display._bus, 0x20).size() == 42);
+    const auto& oldPlane = lastPlane(display._bus, 0x10);
+    assert(std::equal(page.end() - 100, page.end(), oldPlane.begin()));
+    assert(display.supportsAsyncShadowRefresh());
+  }
+  display.releaseBuffers();
+  free(driver._grayBase);
+}
+
+#ifdef EINK_DISPLAY_SINGLE_BUFFER_MODE
+static void testSsdAsyncShadow() {
+  Ssd1677Driver driver;
+  FreeInkDisplay display(12, 11, 13, 18, 14, 6);
+  display._driver = &driver;
+  display.begin();
+  const auto first = frame(11), submitted = frame(27), next = frame(94);
+  const auto draw = [&](const Bytes& pixels) { std::memcpy(display.getFrameBuffer(), pixels.data(), pixels.size()); };
+  const auto fast = FreeInkDisplay::FAST_REFRESH;
+
+  draw(first);
+  display.displayBuffer(fast);
+  draw(submitted);
+  fakeHeapCapsFail = true;
+  display.displayBufferAsync(fast);
+  fakeHeapCapsFail = false;
+  assert(!display.isRefreshPending() && display._asyncShadow == nullptr);
+  assert(lastPlane(display._bus, 0x26) == submitted);
+
+  draw(first);
+  display._bus.clear();
+  display.displayBufferAsync(fast);
+  assert(display.isRefreshPending());
+  assert(std::none_of(display._bus.writes.begin(), display._bus.writes.end(),
+                      [](const auto& w) { return w.command == 0x26; }));
+  draw(submitted);
+  display._bus.clear();
+  display.displayBufferAsync(fast);
+  assert(display.isRefreshPending() && lastPlane(display._bus, 0x26) == first);
+  draw(next);
+  display._bus.clear();
+  display.displayBuffer(fast);
+  assert(!display.isRefreshPending());
+  std::vector<Bytes> redWrites;
+  for (const auto& write : display._bus.writes) {
+    if (write.command == 0x20) assert((redWrites == std::vector<Bytes>{submitted}));
+    if (write.command == 0x26) redWrites.push_back(write.bytes);
+  }
+  assert((redWrites == std::vector<Bytes>{submitted, next}));
+
+  draw(first);
+  display.displayBufferAsyncNoShadow(fast);
+  assert(display.isRefreshPending());
+  display._bus.clear();
+  display.waitRefreshComplete();
+  assert(display._bus.writes.empty());
+  display.releaseBuffers();
+}
+#endif
 
 #ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
 // cleanupGrayscaleWithPreviousBuffer() only ever runs at the tail (or abort point) of a
@@ -255,8 +335,10 @@ class CombinedGrayDriver : public BwOnlyDriver {
 static void testCapabilities() {
   FreeInkDisplay display(1, 2, 3, 4, 5, 6);
   assert(!display.grayscaleCapabilities().supported());
+  assert(!display.supportsAsyncShadowRefresh());
   BwOnlyDriver bw;
   display._driver = &bw;
+  assert(!display.supportsAsyncShadowRefresh());
   assert(!display.grayscaleCapabilities().supported());
   assert(!display.supportsStripGrayscale());
 
@@ -271,6 +353,7 @@ static void testCapabilities() {
   assert(display.grayscaleCapabilities(GrayscaleMode::Absolute).supported());
   assert(!display.grayscaleCapabilities(static_cast<GrayscaleMode>(255)).supported());
   display._inversionDirty = true;
+  assert(!display.supportsAsyncShadowRefresh());
   assert(!display.grayscaleCapabilities().asyncBase);
   assert(display.grayscaleCapabilities().stripUploads);
   assert(!display.supportsAsyncGrayscaleBase());
@@ -1200,7 +1283,10 @@ int main(int argc, char** argv) {
   testSsd();
   testAsyncFrame<Uc8179Driver>();
   testAsyncFrame<Uc8279X4Driver>();
-#ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
+  testUc8179AsyncGrayRecovery();
+#ifdef EINK_DISPLAY_SINGLE_BUFFER_MODE
+  testSsdAsyncShadow();
+#else
   testGrayCleanupBaseline();
 #endif
   std::puts("Pro plane bytes, transaction counts, clean refreshes, power state and async frame ownership passed");

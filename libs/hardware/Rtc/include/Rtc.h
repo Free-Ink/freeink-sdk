@@ -6,6 +6,12 @@
 // BoardConfig::ACTIVE.sensors (rtcAddr / sensor bus pins). Dependency-free
 // Wire access, mirroring BatteryMonitor. Boards without an RTC (FREEINK_CAP_RTC
 // off, or rtcAddr == 0) link stub bodies and present() returns false.
+//
+// RtcType::Cw32L010Pmu (Read Pico) is NOT a register map: the CW32L010 answers a
+// length-prefixed CRC frame protocol (PMU_CMD_TIME_GET / TIME_SYNC,
+// read_pico_pmu_protocol.h), so the board installs the PMU time hooks below
+// instead of this library reaching into the PMU itself (dependency direction:
+// board -> libs).
 
 #include <Arduino.h>
 
@@ -52,6 +58,26 @@ class Rtc {
   // when given, receives the new time so callers can refresh UI state in one
   // call. Returns false when the RTC is absent or the read/write fails.
   bool adjust(int32_t seconds, DateTime* out = nullptr);
+
+#if FREEINK_DEVICE_READPICO
+  // --- PMU time source (BoardConfig::RtcType::Cw32L010Pmu) --------------------
+  // Boards whose RTC is reached through a device protocol rather than an I2C
+  // register map register these hooks. The board is the side that already talks
+  // to the PMU (BoardReadPico::pmuTimeGet / pmuTimeSet on Read Pico), so this
+  // library stays device-agnostic — the same split as
+  // BatteryMonitor::setPmuBatteryHook and SDCardManager::setPowerHook.
+  //
+  //   * getUnix: read the device's unix seconds into `unixSec` and its own
+  //     calibrated flag into `synced`. Returns false when the device does not
+  //     answer the request at all.
+  //   * setUnix: write `unixSec` (UTC) into the device. Returns false on any
+  //     transfer or device error; the caller keeps the system clock either way.
+  struct PmuTimeHooks {
+    bool (*getUnix)(uint32_t& unixSec, bool& synced);
+    bool (*setUnix)(uint32_t unixSec);
+  };
+  static void setPmuTimeHooks(const PmuTimeHooks& hooks);
+#endif
 
  private:
   bool begun_ = false;

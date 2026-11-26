@@ -1,0 +1,21 @@
+epdiy — parallel e-paper driver
+Upstream: https://github.com/vroland/epdiy
+License: LGPL-3.0-or-later (see COPYING.LESSER in this directory)
+
+本目录是 epdiy 的 fork，按 upstream 的 v2.0.0 裁剪而来，只保留 ESP32-S3 的 LCD 外设输出路径与本板需要的显示定义，本地改动包括：
+
+- 删除 ESP32 的 I2S 输出路径（src/output_i2s/）、社区波形表与示例图片
+- src/board/ 换成本板定义（引脚在 components/read_pico/read_pico_board.c 里注册）
+- src/displays.c 只保留 4.7" 1216x684 单色面板（E0470_DISPLAY）
+- 波形表改为从 components/e0470_epaper_waveform 取
+- src/render.c / highlevel.c：差分按列裁剪、按 (from,to) 直方图无损跳过前导空相位、
+  统计各阶段耗时；output_lcd/render_lcd.c：可配置的帧前预填行数
+
+This directory is a trimmed fork of epdiy v2.0.0: only the ESP32-S3 LCD render
+path and the display definition for this board are kept. Local changes are
+listed above.
+
+The full text of the GNU Lesser General Public License version 3 ships with this
+directory as COPYING.LESSER, together with COPYING for the GNU General Public
+License version 3 that it incorporates by reference. That licence applies to all
+files in this directory unless a file states otherwise. 上游文件头部的版权声明保持原样。

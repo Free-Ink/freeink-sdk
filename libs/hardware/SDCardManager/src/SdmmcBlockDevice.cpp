@@ -65,6 +65,13 @@ bool SdmmcBlockDevice::begin(const BoardConfig::SdmmcPins& pins) {
   slot.d3 = static_cast<gpio_num_t>(pins.d3);
   slot.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
 
+#if FREEINK_DEVICE_READPICO
+  if (BoardConfig::isReadPico()) {
+    gpio_pullup_en(slot.cmd);
+    gpio_pullup_en(slot.d0);
+  }
+#endif
+
   if (sdmmc_host_init() != ESP_OK) return false;
   if (sdmmc_host_init_slot(host.slot, &slot) != ESP_OK) {
     sdmmc_host_deinit();
@@ -114,6 +121,9 @@ bool SdmmcBlockDevice::begin(const BoardConfig::SdmmcPins& pins) {
   esp_err_t mountErr = ESP_FAIL;
   bool lastFailureWasCardInit = false;
   for (int attempt = 0; attempt < 4; attempt++) {
+#if FREEINK_DEVICE_READPICO
+    if (BoardConfig::isReadPico() && attempt > 0) delay(200);
+#endif
     if (sdPwr >= 0 && BoardConfig::ACTIVE.sd.powerCycleOnMount) {
       digitalWrite(sdPwr, HIGH);
       delay(80);

@@ -6,14 +6,14 @@
 // The Metalio enables it (see metalio::ensureBooted()), and EEGO A4 enables it before its
 // touch controller boots in a background task; on every other board it does nothing until
 // it has been tested there.
-#if defined(ESP_PLATFORM) && (FREEINK_DEVICE_METALIO_EINK4 || FREEINK_DEVICE_EEGO_A4)
+#if defined(ESP_PLATFORM) && (FREEINK_DEVICE_METALIO_EINK4 || FREEINK_DEVICE_EEGO_A4 || FREEINK_DEVICE_READPICO)
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #endif
 
 namespace freeink {
 
-#if defined(ESP_PLATFORM) && (FREEINK_DEVICE_METALIO_EINK4 || FREEINK_DEVICE_EEGO_A4)
+#if defined(ESP_PLATFORM) && (FREEINK_DEVICE_METALIO_EINK4 || FREEINK_DEVICE_EEGO_A4 || FREEINK_DEVICE_READPICO)
 inline bool& i2cBusLockEnabled() {
   static bool enabled = false;
   return enabled;

@@ -1,7 +1,8 @@
 FreeInk SDK
 Copyright (c) 2026 FreeInk
 
-This product is licensed under the MIT License (see LICENSE).
+FreeInk SDK code is licensed under MIT (see LICENSE). This file identifies
+components that carry their own licenses.
 
 -----------------------------------------------------------------------------
 Third-party attribution
@@ -47,3 +48,14 @@ file from Bosch Sensortec's BMI270_SensorAPI
 BSD-3-Clause license reproduced in that file:
 
     Copyright (c) 2023 Bosch Sensortec GmbH. All rights reserved.
+
+
+Read Pico display and board support
+-----------------------------------
+
+Read Pico board code and the E0470 waveform sources derive from MindReset's
+Apache-2.0 reference firmware. Copyright notices accompany the sources under libs/hardware/BoardReadPico and
+libs/display/EpdiyLcd/src/e0470. See libs/hardware/BoardReadPico/LICENSE for the
+Apache-2.0 license text.
+The LCD renderer under libs/display/EpdiyLcd/src/epdiy derives from epdiy and
+carries its LGPL-3.0-or-later license and corresponding source.

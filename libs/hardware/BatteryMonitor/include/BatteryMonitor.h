@@ -121,6 +121,23 @@ public:
     // Returns false (and changes nothing) on other boards, or if the charger
     // can't be reached.
     static bool configureCharger();
+#if FREEINK_DEVICE_READPICO
+    // --- PMU battery source (BoardConfig::GaugeType::Cw32L010Pmu) --------------
+    // Boards whose battery telemetry is not a gauge register map but a device
+    // protocol register this hook; the board support library owns the transfer
+    // (BoardReadPico::pmuBattery on Read Pico) so this class stays
+    // device-agnostic — the same split as Rtc::setPmuTimeHooks.
+    //
+    //   * batteryMv: pack voltage in mV.
+    //   * socPermille: state of charge, 0..1000, or 0xFFFF for an unknown level.
+    //   * chargeState: the device's own charge-state code — 0 unknown,
+    //     1 not charging, 2 charging, 3 full, 4 fault.
+    // Returns false when the device is absent, the frame fails its checksum, or
+    // it flags the value invalid. A false return is never turned into a
+    // fabricated level: the field is reported unknown instead.
+    using PmuBatteryHook = bool (*)(uint16_t& batteryMv, uint16_t& socPermille, uint8_t& chargeState);
+    static void setPmuBatteryHook(PmuBatteryHook hook);
+#endif
 
 private:
     bool hasAdcBackend() const;

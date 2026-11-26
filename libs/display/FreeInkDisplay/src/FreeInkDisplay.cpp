@@ -60,6 +60,9 @@
 #if FREEINK_DRIVER_LGFX_EPD
 #include "driver/LgfxEpdDriver.h"
 #endif
+#if FREEINK_DRIVER_EPDIY_LCD
+#include "driver/EpdiyLcdDriver.h"
+#endif
 #if FREEINK_DRIVER_IT8951
 #include "driver/It8951Driver.h"
 #endif
@@ -245,6 +248,10 @@ void FreeInkDisplay::selectDriver() {
       _driver = &ed2208M5Driver();
 #elif FREEINK_DRIVER_UC8253_X3
       _driver = &uc8253X3Driver();
+#elif FREEINK_DRIVER_EPDIY_LCD
+      // Raw-parallel panels whose timing the LCD_CAM must generate (DE/HSYNC on
+      // hardware plus an RMT gate clock) instead of LovyanGFX's i80 bus.
+      _driver = &epdiyLcdDriver();
 #elif FREEINK_DRIVER_LGFX_EPD
       _driver = &lgfxEpdDriver();
 #elif FREEINK_DRIVER_IT8951
@@ -989,6 +996,24 @@ bool FreeInkDisplay::displayRetainedGrayscaleOverlay(uint16_t x, uint16_t y, uin
   _redRamSynced = false;
   return true;
 }
+
+#if FREEINK_DRIVER_EPDIY_LCD
+uint8_t* FreeInkDisplay::beginGrayscale16() {
+  if (_driver != &epdiyLcdDriver() || !frameBuffer || _inverted) return nullptr;
+  cancelGrayscalePass();
+  syncPendingAsync();
+  return epdiyLcdDriver().beginGrayscale16();
+}
+
+bool FreeInkDisplay::commitGrayscale16() {
+  DisplayPmLock pmLock;
+  _shadowValid = false;
+  _redRamSynced = false;
+  return epdiyLcdDriver().commitGrayscale16(frameBuffer);
+}
+
+void FreeInkDisplay::cancelGrayscale16() { epdiyLcdDriver().cancelGrayscale16(); }
+#endif
 
 void FreeInkDisplay::refreshDisplay(RefreshMode mode, bool turnOffScreen) { displayBuffer(mode, turnOffScreen); }
 

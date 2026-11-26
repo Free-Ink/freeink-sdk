@@ -48,6 +48,19 @@ checks skip when those converters are unavailable. It builds layout tests for
 the default, SMALL, and LARGE memory profiles. Build outputs go under the system
 temporary directory.
 
+## Read Pico
+
+```sh
+sh libs/hardware/InputManager/test/host/run_readpico_touch.sh
+python3 libs/display/EpdiyLcd/test/host/test_transactions.py
+python3 libs/display/FreeInkDisplay/test/host/run_epdiy_contract.py
+```
+
+The touch test covers portrait scan mapping, release, multi-touch suppression,
+the capacitive strip, and the PMU power button input. The display suites cover
+refresh transactions, allocation failures, rail failures, waveform generation
+and concurrent PMU requests.
+
 ## Progressive JPEG
 
 ```sh

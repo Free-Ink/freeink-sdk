@@ -27,6 +27,9 @@
 #include <Logging.h>
 #endif
 #endif
+#if FREEINK_DEVICE_READPICO
+#include <BoardReadPico.h>
+#endif
 #if FREEINK_DEVICE_PAPERMONO
 #include <PaperMonoBoard.h>
 #endif
@@ -279,6 +282,13 @@ bool piccoWaitInt(int8_t irq, unsigned long timeoutMs);
 #endif
 
 bool InputManager::prepareForDeepSleep() {
+#if FREEINK_TOUCH_CST836U
+  if (BoardConfig::ACTIVE.touch.controller == BoardConfig::TouchController::Cst836u) {
+    touchDataEnabled = false;
+    cst836uButtons = 0;
+    return BoardReadPico::touchSleep();
+  }
+#endif
 #if FREEINK_DEVICE_EEGO_A4 && FREEINK_TOUCH_GSLX680
   if (const auto& t = BoardConfig::ACTIVE.touch; t.controller == BoardConfig::TouchController::Gslx680) {
     waitForTouchInit();  // a charger-only boot can sleep while the controller still boots
@@ -700,6 +710,9 @@ void InputManager::updateToggleSwitch(const unsigned long now) {
 bool InputManager::isPressed(const uint8_t buttonIndex) const { return currentState & (1 << buttonIndex); }
 
 bool InputManager::isPowerButtonPhysicallyPressed() const {
+#if FREEINK_DEVICE_READPICO
+  if (BoardConfig::isReadPico()) return BoardReadPico::powerKeyPressed();
+#endif
   const int8_t pin = BoardConfig::ACTIVE.input.power;
   if (pin < 0) return false;
   const int activeLevel = BoardConfig::ACTIVE.input.powerActiveHigh ? HIGH : LOW;
@@ -799,7 +812,8 @@ bool InputManager::supportsMultiTouch() const {
   if (BoardConfig::ACTIVE.touch.controller == BoardConfig::TouchController::Tma525c) return piccoMaxContacts >= 2;
 #endif
   const auto controller = BoardConfig::ACTIVE.touch.controller;
-  return controller == BoardConfig::TouchController::Gt911 || controller == BoardConfig::TouchController::Gslx680;
+  return controller == BoardConfig::TouchController::Gt911 || controller == BoardConfig::TouchController::Gslx680 ||
+         controller == BoardConfig::TouchController::Cst836u;
 #else
   return false;
 #endif
@@ -1398,6 +1412,12 @@ void InputManager::beginTouch() {
     return;
   }
   // Each driver is compiled only when its FREEINK_TOUCH_* flag is set (BoardConfig.h).
+#if FREEINK_TOUCH_CST836U
+  if (t.controller == BoardConfig::TouchController::Cst836u) {
+    beginCst836u();
+    return;
+  }
+#endif
 #if FREEINK_TOUCH_CST816S
   if (t.controller == BoardConfig::TouchController::Cst816s) {
     beginCst816s();
@@ -1478,6 +1498,11 @@ uint8_t InputManager::serviceTouch() {
   }
 
   switch (t.controller) {
+#if FREEINK_TOUCH_CST836U
+    case BoardConfig::TouchController::Cst836u:
+      pollCst836u(now);
+      break;
+#endif
 #if FREEINK_TOUCH_CST816S
     case BoardConfig::TouchController::Cst816s:
       pollCst816s(now);
@@ -1530,6 +1555,9 @@ uint8_t InputManager::serviceTouch() {
 #if FREEINK_TOUCH_CST816S
   if (t.controller == BoardConfig::TouchController::Cst816s) return cstVirtualButtons;
 #endif
+#if FREEINK_TOUCH_CST836U
+  if (t.controller == BoardConfig::TouchController::Cst836u) return cst836uButtons;
+#endif
   return (t.synthesizeConfirm && now < touchIrqPulseUntil) ? (1 << BTN_CONFIRM) : 0;
 #else
   return 0;
@@ -1537,6 +1565,154 @@ uint8_t InputManager::serviceTouch() {
 }
 
 #if FREEINK_CAP_TOUCH
+
+#if FREEINK_TOUCH_CST836U
+namespace {
+constexpr uint8_t CST836U_REG_TOUCH_DATA = 0x00;
+constexpr uint8_t CST836U_REG_INFO = 0xA6;
+constexpr uint8_t CST836U_RAW_LEN = 15;
+constexpr uint8_t CST836U_MAX_POINTS = 2;
+constexpr uint8_t CST836U_FRAME_ATTEMPTS = 3;
+constexpr unsigned long CST836U_RETRY_MS = 2000;
+}  // namespace
+
+void InputManager::beginCst836u() {
+  const auto &t = BoardConfig::ACTIVE.touch;
+  if (t.sda < 0 || t.scl < 0 || t.i2cAddress == 0)
+    return;
+
+  // Reset through the board callback. This is also the ONLY way back from the
+  // chip's own deep sleep, where it stops ACKing I2C entirely (cst836u.h), so
+  // it runs on every bring-up rather than only after a scheduled sleep.
+  if (!BoardReadPico::touchReset()) {
+    esp_rom_printf("[touch] CST836U reset pulse failed; touch disabled\r\n");
+    touchDataEnabled = false;
+    return;
+  }
+  delay(50); // RST_BOOT_MS: the chip needs ~50 ms to boot before it answers I2C
+
+  if (t.irq >= 0)
+    pinMode(t.irq, INPUT_PULLUP); // open-drain INT#, 10k pull-up on the FPC
+
+  // Bring-up probe: read the info register (0xA6, 6 bytes — cst836u_get_info).
+  // Gate on the transaction, not the payload: those bytes are firmware / module
+  // / project identifiers, not a fixed part ID, so a content check would be an
+  // invention.
+  uint8_t info[6] = {};
+  touchDataEnabled = cst836uReadReg(CST836U_REG_INFO, info, sizeof(info));
+  if (!touchDataEnabled)
+    esp_rom_printf("[touch] CST836U not answering at 0x%02X\r\n", t.i2cAddress);
+}
+
+bool InputManager::cst836uReadReg(const uint8_t reg, uint8_t *out,
+                                  const uint8_t len) {
+  // cst836u.c read_regs(): transmit the register byte, a ~5 µs gap, then
+  // receive. That is a STOP followed by a fresh START, not the repeated START
+  // the other backends use here — it is the only transaction shape verified for
+  // this part.
+  const uint8_t addr = BoardConfig::ACTIVE.touch.i2cAddress;
+  const freeink::I2cBusLock busLock;
+  Wire.beginTransmission(addr);
+  Wire.write(reg);
+  if (Wire.endTransmission(true) != 0)
+    return false;
+  delayMicroseconds(5);
+  if (Wire.requestFrom(addr, len, static_cast<uint8_t>(true)) != len) {
+    while (Wire.available())
+      Wire.read();
+    return false;
+  }
+  for (uint8_t i = 0; i < len; ++i)
+    out[i] = static_cast<uint8_t>(Wire.read());
+  return true;
+}
+
+bool InputManager::cst836uReadFrame(uint8_t* out) {
+  for (uint8_t attempt = 0; attempt < CST836U_FRAME_ATTEMPTS; ++attempt) {
+    if (!cst836uReadReg(CST836U_REG_TOUCH_DATA, out, CST836U_RAW_LEN)) return false;
+    if (out[2] < 3) return true;
+  }
+  return false;
+}
+
+void InputManager::pollCst836u(const unsigned long now) {
+  if (static_cast<int32_t>(now - cst836uReadAt) < 0) return;
+
+  uint8_t raw[CST836U_RAW_LEN] = {};
+  if (!cst836uReadFrame(raw)) {
+    cst836uButtons = 0;
+    // Drop a contact without emitting a tap after a transport failure.
+    touchPressed = false;
+    touchSnapshot = {};
+    resetMultiTouchGesture();
+    cst836uReadAt = now + CST836U_RETRY_MS;
+    return;
+  }
+  cst836uReadAt = now + TOUCH_SAMPLE_DELAY_MS;
+  cst836uDecodeFrame(raw, now);
+}
+
+void InputManager::cst836uDecodeFrame(const uint8_t* data, const unsigned long now) {
+  // The two six-byte records begin at byte 3. The controller may report an
+  // up/invalid record in either slot, so inspect both as the OEM driver does.
+  touchSnapshot = {};
+  cst836uButtons = 0;
+  const auto& t = BoardConfig::ACTIVE.touch;
+  const uint16_t width = t.rawMaxX - t.rawMinX;
+  const uint16_t height = t.rawMaxY - t.rawMinY;
+  for (uint8_t i = 0; i < CST836U_MAX_POINTS; ++i) {
+    const uint8_t* src = data + 3 + i * 6;
+    const uint8_t event = src[0] >> 6;
+    const uint8_t id = src[2] >> 4;
+    if (id > 1 || event == 1 || event == 3) continue;
+
+    const uint16_t rawX = static_cast<uint16_t>((src[0] & 0x0F) << 8) | src[1];
+    const uint16_t rawY = static_cast<uint16_t>((src[2] & 0x0F) << 8) | src[3];
+    if (rawY > READPICO_KEY_AREA_TOP) {
+      // Keep contacts in the capacitive key strip out of screen gestures.
+      if (!cst836uButtons) cst836uButtons = BoardReadPico::stripButtonMask(rawX);
+      continue;
+    }
+    const uint16_t sx = t.swapXY ? rawY : rawX;
+    const uint16_t sy = t.swapXY ? rawX : rawY;
+    if (sx > t.rawMaxX || sy > t.rawMaxY) continue;
+    const uint16_t x = mapTouchAxis(sx, t.rawMinX, t.rawMaxX, width);
+    const uint16_t y = mapTouchAxis(sy, t.rawMinY, t.rawMaxY, height);
+    auto& contact = touchSnapshot.points[touchSnapshot.count++];
+    contact.id = id;
+    contact.point = {true, t.flipX ? static_cast<uint16_t>(width - x) : x,
+                     t.flipY ? static_cast<uint16_t>(height - y) : y, now};
+  }
+  touchSnapshot.reportedCount = touchSnapshot.count;
+  updateMultiTouchGesture(touchSnapshot, now);
+
+  if (touchSnapshot.count == 0) {
+    if (touchPressed) {
+      touchPressed = false;
+      touchReleasedEvent = true;
+      touchPoint.valid = false;
+      lastTouchHeldDurationMs = now - touchDownPoint.timestamp;
+    }
+    return;
+  }
+
+  touchPoint = touchSnapshot.points[0].point;
+  if (!touchPressed) {
+    touchPressedEvent = true;
+    touchDownPoint = touchPoint;
+    touchMovedBeyondTapSlop = false;
+    touchMovedBeyondTapReleaseSlop = false;
+  }
+  touchUpPoint = touchPoint;
+  const int dx = absInt(static_cast<int>(touchPoint.x) - touchDownPoint.x);
+  const int dy = absInt(static_cast<int>(touchPoint.y) - touchDownPoint.y);
+  const int movement = std::max(dx, dy);
+  const bool multiple = touchSnapshot.count > 1;
+  touchMovedBeyondTapSlop |= multiple || movement > TOUCH_TAP_SLOP_PX;
+  touchMovedBeyondTapReleaseSlop |= multiple || movement > TOUCH_TAP_RELEASE_SLOP_PX;
+  touchPressed = true;
+}
+#endif
 
 #if FREEINK_TOUCH_CHSC6X
 void InputManager::updateTouchFromIrq(const unsigned long now, const int irqRaw) {

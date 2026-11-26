@@ -1,0 +1,17 @@
+{
+  "name": "BoardReadPico",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "description": "FreeInk board support for Read Pico (小纸 Pico, RDP-G01-W): FCA9555 expander, SY7636A EPD rails, CW32L010 PMU (battery/RTC/power-off), CST836U touch reset, SD card detect, buzzer idle, and the epdiy LCD configuration for the 16-bit E0470A01 bus.",
+  "keywords": "mindreset, read-pico, rdp-g01-w, epaper, board, esp32-s3",
+  "authors": [{"name": "FreeInk SDK Contributors"}],
+  "dependencies": {
+    "BoardConfig": "*",
+    "EInkDisplay": "*",
+    "InputManager": "*",
+    "BatteryMonitor": "*",
+    "Rtc": "*"
+  },
+  "platforms": "espressif32",
+  "frameworks": ["arduino"]
+}

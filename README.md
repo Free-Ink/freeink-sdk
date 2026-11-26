@@ -59,10 +59,9 @@ architecture — but the inherited waveforms are the upstream's, and the
 re-architecture itself is comparatively new code that has had less multi-person
 field testing than the upstream.
 
-> License note: this repository is distributed under the **MIT License** (see
-> `LICENSE`) — the same permissive, open-source terms as the upstream. Portions
-> are derived from MIT-licensed upstream code; that attribution is preserved in
-> `NOTICE`.
+> FreeInk's SDK code uses the MIT License. The Read Pico package includes
+> Apache-2.0 board and waveform code and an LGPL-3.0-or-later renderer.
+> See [NOTICE](NOTICE) for attribution and the applicable license files.
 
 ## Architecture
 
@@ -140,6 +139,7 @@ so the SD manager itself stays device-agnostic.
 | **Metalio E-Ink 4** | ESP32-S3 | SSD1677 | 800×480 B/W | CST816S touch and cover keys, TCA9555 buttons/power, 1-bit SDMMC, BQ27220 battery gauge, PCF8563 RTC; [bring-up notes and source conflicts](docs/metalio-eink4-support.md), hardware validation pending |
 | **Waveshare ESP32-S3-ePaper-3.97** | ESP32-S3 | SSD1677 | 3.97" 800×480 B/W | reuses the SSD1677 driver with the Sticky's vendor sequences, 3 side keys + BOOT (no touch), native 4-bit SDMMC, AXP2101 PMIC as EPD rail + battery gauge + power key, PCF85063 RTC, QMI8658 IMU; orientation pending hardware validation — see docs/waveshare-epaper-397-support.md |
 | **Seeed reTerminal E1001** | ESP32-S3 (32MB flash, 8MB PSRAM) | UC8179 | 7.5" 800×480 B/W | own compact UC8179 driver (Uc8179E1001Driver: OTP full refresh, windowed fast refresh with the built-in or a shorter register waveform), 3 keys (no touch, no frontlight), SPI MicroSD (shares the display bus), PCF8563 RTC, GPIO1 ADC battery; see docs/seeed-e1001-support.md |
+| **MindReset Read Pico** | ESP32-S3 (16MB flash, 8MB octal PSRAM) | E0470A01 (raw parallel) | 684×1216 portrait | LCD_CAM, 16-level image output, CST836U touch and strip keys, 1-bit SDMMC, CW32L010 power/battery/RTC, SC7A20H accelerometer; [board notes](docs/read-pico-support.md) |
 | **M5Stack PaperS3** | ESP32-S3 | ED047TC1 (raw parallel) | 960×540 16-gray | same LovyanGFX EPD driver class as the LilyGo T5 S3 (plain-GPIO EPD rails, no PMIC), GT911 touch (touch-only navigation — no GPIO buttons), BM8563 RTC, GPIO3 ADC battery, LEDC buzzer, SPI MicroSD; power-off is a GPIO44 pulse to the PMS150G latch (`BoardPaperS3::powerOff()`); rotation/touch-flip pending hardware validation |
 | **Onyx Picco / BOOX Tiles** (initial) | ESP32-S3 (16MB flash, 8MB octal PSRAM) | SSD1677 / SSD2677 (auto) | 3.97" 800×480 B/W (portrait) | reuses the SSD1677 driver, native 4-bit SDMMC, GPIO2 power/wake button, PCF8563/BM8563 RTC @0x51 + QMI8658 IMU @0x6A on the shared I2C bus (SDA7/SCL8); Parade TMA525C touch (I2C 0x24, multi-touch when panel GET_SYSINFO confirms it), 2-channel warm/cool I2C frontlight (@0x38), slide switch (GPIO6), SGM41562 charger (@0x03) and battery ADC (GPIO1) are wired; nav-button roles are provisional |
 
@@ -928,16 +928,15 @@ an issue or email hello@freeink.org.
 
 ## License
 
-**MIT License** (`LICENSE`) — open source and permissive: use, modify, and ship
-closed-source or commercial derivatives freely.
+The core SDK uses the [MIT License](LICENSE). See [NOTICE](NOTICE) for
+separately licensed components, including the Read Pico port.
 
 Derived in part from the MIT-licensed OpenX4 E-Paper Community SDK; that
 attribution is retained in `NOTICE`.
 
 ### Commercial use & sponsorship
 
-Commercial use is welcome and completely free — the MIT license asks nothing of
-you. That said, if FreeInk powers a product you sell, please consider
+Commercial use is welcome under the terms in [LICENSE](LICENSE) and [NOTICE](NOTICE). That said, if FreeInk powers a product you sell, please consider
 **[sponsoring the project](https://opencollective.com/freeink)** to
 help fund ongoing maintenance, new device support, and waveform tuning. It's
 entirely voluntary and always appreciated. Sponsorship or support enquiries:

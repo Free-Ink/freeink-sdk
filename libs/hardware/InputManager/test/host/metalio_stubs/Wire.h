@@ -6,6 +6,9 @@
 struct WireStub {
   std::array<uint8_t,8> expander{255,255,255,255,0,0,255,255};
   std::array<uint8_t,5> touch{};
+#if FREEINK_DEVICE_READPICO
+  std::array<uint8_t,15> cst836uFrame{};
+#endif
   std::vector<std::vector<uint8_t>> writes;
   std::vector<uint8_t> tx,rx;
   uint8_t address=0,reg=0;
@@ -34,6 +37,10 @@ struct WireStub {
     rx.clear(); offset=0;
     if(a==0x20 && !expanderDown()) for(unsigned i=0;i<n;++i) rx.push_back(expander.at(reg+i));
     if(a==0x15 && !failTouch && reg==2) rx.assign(touch.begin(),touch.end());
+#if FREEINK_DEVICE_READPICO
+    if (a == 0x15 && !failTouch && reg == 0xA6) rx.resize(n);
+    if (a == 0x15 && !failTouch && reg == 0x00) rx.assign(cst836uFrame.begin(), cst836uFrame.end());
+#endif
     return rx.size();
   }
   int available() { return rx.size()-offset; }

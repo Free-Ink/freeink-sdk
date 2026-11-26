@@ -289,6 +289,11 @@ class FreeInkDisplay {
   void displayGrayBuffer(bool turnOffScreen = false, const unsigned char* lut = nullptr, bool factoryMode = false);
   void displayGrayCalibration(uint16_t customX, uint16_t customY, uint16_t customW, uint16_t customH);
 
+#if FREEINK_DRIVER_EPDIY_LCD
+  uint8_t* beginGrayscale16();
+  bool commitGrayscale16();
+  void cancelGrayscale16();
+#endif
   void refreshDisplay(RefreshMode mode = FAST_REFRESH, bool turnOffScreen = false);
 
   // Hint the X3 policy to run a one-shot full resync on next update.

@@ -778,7 +778,12 @@ void FreeInkDisplay::displayAsyncImpl(RefreshMode mode, bool turnOffScreen, bool
     return;
   }
   if (_asyncShadow == nullptr) {
+#if FREEINK_FB_PSRAM
+    // A full screen copy must not consume the internal heap on PSRAM boards.
+    _asyncShadow = static_cast<uint8_t*>(heap_caps_malloc(bufferSize, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+#else
     _asyncShadow = static_cast<uint8_t*>(malloc(bufferSize));
+#endif
     _shadowValid = false;
   }
   if (_asyncShadow == nullptr) {  // allocation failed: blocking fallback

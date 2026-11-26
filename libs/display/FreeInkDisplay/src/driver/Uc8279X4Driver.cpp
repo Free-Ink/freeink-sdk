@@ -312,16 +312,12 @@ void Uc8279X4Driver::begin(EpdBus& bus) {
   _absoluteGrayPlanes = false;
 }
 
+bool Uc8279X4Driver::supportsAsyncDisplay() const {
+  // The first Fast update after grayscale needs the blocking transition.
+  return !(_redriveAfterGray && _grayRefreshedOnce && _oldPlaneValid && !_needFullClear);
+}
+
 void Uc8279X4Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
-  // CrossPoint's AA path draws its B/W base with an ordinary Fast paint. Right
-  // after an AA page, route that base through stock's non-flashing prev->current
-  // transition instead of a plain DU — this keeps the gray edge charge in check
-  // continuously (like the UC8179 sibling), so the periodic Half scrub works
-  // without a full flash. Same guard as UC8179.
-  if (mode == RefreshMode::Fast && _redriveAfterGray && _grayRefreshedOnce && _oldPlaneValid && !_needFullClear) {
-    transitionGrayscaleBase(bus, fb, turnOff);
-    return;
-  }
   displayStart(bus, fb, prev, mode, turnOff);
   displayFinish(bus, fb);
 }
@@ -398,6 +394,12 @@ void Uc8279X4Driver::powerOnIfNeeded(EpdBus& bus, const char* tag) {
 }
 
 bool Uc8279X4Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
+  const bool finishInline = !supportsAsyncDisplay();
+  // Preserve the stock Fast transition while grayscale charge remains.
+  if (mode == RefreshMode::Fast && finishInline) {
+    transitionGrayscaleBase(bus, fb, turnOff);
+    return false;
+  }
   _textAa.invalidate();
   const bool paintDestination = _directGrayOnPanel;
   _directGrayOnPanel = false;
@@ -460,6 +462,10 @@ bool Uc8279X4Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t*
   _pendingPartial = fast;
   _pendingTurnOff = turnOff;
   _pendingRefresh = true;
+  if (finishInline) {
+    displayFinish(bus, fb);
+    return false;
+  }
   return true;
 }
 

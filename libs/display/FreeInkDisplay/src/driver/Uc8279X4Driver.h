@@ -86,7 +86,7 @@ class Uc8279X4Driver : public PanelDriver {
   // pending full clear, or a non-byte-aligned x/w).
   void displayWindow(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, uint16_t x, uint16_t y, uint16_t w,
                      uint16_t h, bool turnOff) override;
-  bool supportsAsyncDisplay() const override { return true; }
+  bool supportsAsyncDisplay() const override;
 
   void requestResync(uint8_t settlePasses) override;
   void skipInitialResync() override;

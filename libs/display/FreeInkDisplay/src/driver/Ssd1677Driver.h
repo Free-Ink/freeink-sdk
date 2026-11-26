@@ -82,6 +82,11 @@ struct Ssd1677Config {
   const unsigned char* textAaLut = nullptr;
   bool piccoStockGrayscale = false;  // YRD/OPM: 105-byte gray tables and OTP reader waveform.
   bool piccoWaveforms = false;  // BOOX panel-specific power sequences.
+  // Power the rails down after the overlay gray pass even when the caller keeps
+  // power. 0xCC carries no disable bits, so otherwise the gray LUT's VCOM (which
+  // overrides the panel's OTP value) stays applied as a DC bias until the next
+  // page turn.
+  bool grayPowerDownAfter = false;
 };
 
 // Standard config (Xteink X4 / GDEQ0426T82). Panel mounting (mirror/180°) is NOT

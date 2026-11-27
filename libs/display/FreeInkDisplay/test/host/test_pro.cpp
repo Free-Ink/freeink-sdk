@@ -1119,6 +1119,21 @@ static void testOnePassText() {
   bus.clear();
   d.display(bus, base.data(), nullptr, RefreshMode::Fast, true);
   assert(!d._textAa.onPanel() && !bus.writes.empty());
+  if constexpr (!std::is_same_v<Driver, Ssd1677Driver>) {
+    // Leaving one-pass text re-drives every pixel (OLD = ~target), not the
+    // external-LUT transition that leaves white residue in place.
+    const unsigned row = std::is_same_v<Driver, Uc8179Driver> ? 479 : 120;
+    bool oldPlaneSent = false;
+    for (const auto& w : bus.writes) {
+      assert(w.command < 0x20 || w.command > 0x24);
+      if (w.command == 0x10 && !oldPlaneSent) {
+        oldPlaneSent = true;
+        assert(w.bytes[row * 100] == static_cast<uint8_t>(~base[0]));
+        assert(w.bytes[row * 100 + 1] == static_cast<uint8_t>(~base[1]));
+      }
+    }
+    assert(oldPlaneSent);
+  }
   d.setReaderRefresh(true);
   d.beginGrayscale(bus, base.data(), GrayscaleMode::Overlay, RefreshMode::Fast, false);
   bus.clear();
@@ -1133,6 +1148,34 @@ static void testOnePassText() {
   d.display(bus, base.data(), nullptr, RefreshMode::Fast, true);
   assert(!d._textAa.onPanel());
   if constexpr (!std::is_same_v<Driver, Ssd1677Driver>) free(d._grayBase);
+}
+
+static void testTextAaRedrive() {
+  X4ProTextAa aa;
+  aa.allocate(true, 100, 480);
+  Bytes white(48000, 0xff), zero(48000, 0);
+  auto page = [&](uint8_t period) {
+    aa.begin(white.data());
+    aa.stage(0, zero.data(), 0, 480);
+    aa.stage(1, zero.data(), 0, 480);
+    assert(aa.compose(period));
+    const uint8_t low = aa.low()[1];
+    aa.finish(17, -2, -2, -24);
+    return low;
+  };
+  // Period 3: the first page and every third page drive all white pixels.
+  const uint8_t expected[] = {0xff, 0, 0, 0xff, 0, 0, 0xff};
+  for (uint8_t low : expected) assert(page(3) == low);
+  // Period 0 keeps the stock hold forever.
+  for (int i = 0; i < 10; ++i) assert(page(0) == 0);
+  // A window update is not a page and does not advance the count.
+  aa.invalidate();
+  assert(page(2) == 0xff);
+  assert(aa.beginWindow(white.data(), 0, 0, 8, 1));
+  assert(aa.compose(2));
+  aa.finish(17, -2, -2, -24);
+  assert(page(2) == 0);
+  assert(page(2) == 0xff);
 }
 
 template<class Driver>
@@ -1168,6 +1211,7 @@ int main(int argc, char** argv) {
   testLegacyTextStrips<Uc8179Driver>();
   testLegacyTextStrips<Uc8279X4Driver>();
   testTextAaCharge();
+  testTextAaRedrive();
   for (auto board : {BoardConfig::Board::XteinkX4Pro, BoardConfig::Board::XteinkX4Classic}) {
     BoardConfig::ACTIVE.board = board;
     testOnePassText<Ssd1677Driver>();

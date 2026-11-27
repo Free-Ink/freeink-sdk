@@ -722,7 +722,7 @@ bool Uc8279X4Driver::displayGrayscaleWindow(EpdBus& bus, const uint8_t* fb, uint
 void Uc8279X4Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut,
                                  bool factoryMode) {
   if (_textAa.active()) {
-    if (!_textAa.compose()) { _textAa.invalidate(); _needFullClear = true; return; }
+    if (!_textAa.compose(FREEINK_X4PRO_TEXT_REDRIVE_PAGES)) { _textAa.invalidate(); _needFullClear = true; return; }
     bus.waitBusy("8279 text ready");
     const uint8_t variant = BoardConfig::ACTIVE.displayControllerVariant;
     // Firmware 26110201/26112401 write this block once, with the panel powered

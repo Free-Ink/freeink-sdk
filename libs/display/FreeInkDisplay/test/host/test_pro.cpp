@@ -1150,6 +1150,34 @@ static void testOnePassText() {
   if constexpr (!std::is_same_v<Driver, Ssd1677Driver>) free(d._grayBase);
 }
 
+static void testTextAaRedrive() {
+  X4ProTextAa aa;
+  aa.allocate(true, 100, 480);
+  Bytes white(48000, 0xff), zero(48000, 0);
+  auto page = [&](uint8_t period) {
+    aa.begin(white.data());
+    aa.stage(0, zero.data(), 0, 480);
+    aa.stage(1, zero.data(), 0, 480);
+    assert(aa.compose(period));
+    const uint8_t low = aa.low()[1];
+    aa.finish(17, -2, -2, -24);
+    return low;
+  };
+  // Period 3: the first page and every third page drive all white pixels.
+  const uint8_t expected[] = {0xff, 0, 0, 0xff, 0, 0, 0xff};
+  for (uint8_t low : expected) assert(page(3) == low);
+  // Period 0 keeps the stock hold forever.
+  for (int i = 0; i < 10; ++i) assert(page(0) == 0);
+  // A window update is not a page and does not advance the count.
+  aa.invalidate();
+  assert(page(2) == 0xff);
+  assert(aa.beginWindow(white.data(), 0, 0, 8, 1));
+  assert(aa.compose(2));
+  aa.finish(17, -2, -2, -24);
+  assert(page(2) == 0);
+  assert(page(2) == 0xff);
+}
+
 template<class Driver>
 static void testTextAaAllocationFailure() {
   Driver d;
@@ -1183,6 +1211,7 @@ int main(int argc, char** argv) {
   testLegacyTextStrips<Uc8179Driver>();
   testLegacyTextStrips<Uc8279X4Driver>();
   testTextAaCharge();
+  testTextAaRedrive();
   for (auto board : {BoardConfig::Board::XteinkX4Pro, BoardConfig::Board::XteinkX4Classic}) {
     BoardConfig::ACTIVE.board = board;
     testOnePassText<Ssd1677Driver>();

@@ -7,6 +7,14 @@
 #include <esp_heap_caps.h>
 #endif
 
+// X4 Pro and Classic UltraChip text pages: every Nth one-pass page drives all
+// white pixels; 0 disables it. The count restarts after any B/W refresh.
+#ifndef FREEINK_X4PRO_TEXT_REDRIVE_PAGES
+#define FREEINK_X4PRO_TEXT_REDRIVE_PAGES 4
+#endif
+static_assert(FREEINK_X4PRO_TEXT_REDRIVE_PAGES >= 0 && FREEINK_X4PRO_TEXT_REDRIVE_PAGES <= 255,
+              "FREEINK_X4PRO_TEXT_REDRIVE_PAGES must fit in uint8_t");
+
 namespace freeink {
 
 // Full-target text path: black, one AA gray, and charge-aware white.
@@ -45,6 +53,7 @@ public:
   void invalidate() {
     _active = _onPanel = _history = _chargeValid = false;
     _window = {};
+    _heldPages = 0;
     _median = 0;
     _rows[0] = _rows[1] = 0;
     _failed = false;
@@ -113,7 +122,10 @@ public:
     for (uint32_t i = 0; i < _size; ++i) output[i] = low()[i] & ~high()[i];
   }
 
-  bool compose() {
+  // Held white pixels get only a short pulse, so residue the model cannot see
+  // (from menus, covers or a weak clean) stays under them. With a nonzero
+  // redrivePeriod, every redrivePeriod-th page drives all white pixels.
+  bool compose(uint8_t redrivePeriod = 0) {
     if (_window.endRow != 0) return _active;
     if (!_active || _failed || _rows[0] != _h || _rows[1] != _h)
       return false;
@@ -123,11 +135,12 @@ public:
     const auto *charge = reinterpret_cast<const int8_t *>(_storage + _size * 4);
     const int threshold =
         _median + 11; // ceil(10 * 1024 / 998), stock threshold mask.
+    _redrivePage = !_history || (redrivePeriod != 0 && _heldPages + 1u >= redrivePeriod);
     for (uint32_t i = 0; i < _size; ++i) {
       const uint8_t gray = lo[i] | hi[i];
       const uint8_t white = _storage[i] & ~gray;
-      uint8_t hold = _history ? static_cast<uint8_t>(white & ~ink[i]) : 0;
-      if (_chargeValid) {
+      uint8_t hold = _redrivePage ? 0 : static_cast<uint8_t>(white & ~ink[i]);
+      if (_chargeValid && hold) {
         for (unsigned bit = 0; bit < 8; ++bit)
           if (charge[i * 8 + bit] > threshold)
             hold &= static_cast<uint8_t>(~(0x80 >> bit));
@@ -196,6 +209,7 @@ public:
         break;
       }
     }
+    if (_window.endRow == 0) _heldPages = _redrivePage ? 0 : static_cast<uint8_t>(_heldPages + 1);
     _active = false;
     _history = _chargeValid = _onPanel = true;
   }
@@ -224,6 +238,9 @@ private:
   uint16_t _wb = 0, _h = 0;
   uint16_t _rows[2] = {};
   int _median = 0;
+  // Whole-screen text pages since every white pixel was last driven.
+  uint8_t _heldPages = 0;
+  bool _redrivePage = false;
   bool _enabled = false;
   bool _active = false, _onPanel = false, _history = false,
        _chargeValid = false, _failed = false;

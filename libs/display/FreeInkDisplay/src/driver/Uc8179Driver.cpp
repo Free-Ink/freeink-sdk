@@ -725,7 +725,7 @@ bool Uc8179Driver::displayGrayscaleWindow(EpdBus& bus, const uint8_t* fb, uint16
 void Uc8179Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut,
                                bool factoryMode) {
   if (_textAa.active()) {
-    if (!_textAa.compose()) { _textAa.invalidate(); _needFullClear = true; return; }
+    if (!_textAa.compose(FREEINK_X4PRO_TEXT_REDRIVE_PAGES)) { _textAa.invalidate(); _needFullClear = true; return; }
     bus.waitBusy("8179 text ready");
     streamPlane(bus, CMD_DTM1, _textAa.low());
     streamPlane(bus, CMD_DTM2, _textAa.high());

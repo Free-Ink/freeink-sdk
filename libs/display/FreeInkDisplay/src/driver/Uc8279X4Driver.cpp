@@ -86,7 +86,9 @@ const uint8_t* selectImagePacket() {
 }
 
 const GrayLut* selectAaLuts() {
-  // Pro 0x02/0x03 use QY; Firmware 26110201 maps 0x67..0x69 to ZHX.
+  // Pro 0x02/0x03 use QY; Firmware 26110201 maps 0x67..0x69 to ZHX. X4C
+  // V7.1.21 points BOE 4.28 D/E (0x41/0x42) at the ZHX bank too, which the
+  // X4 Pro's BOE units also get here (not yet checked on X4 Pro glass).
   // Keep the established ZHX fallback for other boards and unknown IDs.
   const uint8_t v = BoardConfig::ACTIVE.displayControllerVariant;
   return (v == 0x02 || v == 0x03) ? kXtfAa02 : kXtfAa68;

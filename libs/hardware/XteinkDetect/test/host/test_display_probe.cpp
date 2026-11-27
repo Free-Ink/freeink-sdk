@@ -32,7 +32,7 @@ void reset(BoardConfig::Board board, std::vector<uint8_t> ver, bool high = true)
   replies = {{0x70, ver}, {0x71, {0x13}}, {0xA2, std::vector<uint8_t>(49, 0)}};
 }
 
-void checkX3Wire() {
+[[maybe_unused]] void checkX3Wire() {
   assert(commands == std::vector<int>{0x70});
   assert(samples == 24);
   assert(resets == (std::vector<unsigned long>{0, 10, 60}));
@@ -80,9 +80,10 @@ unsigned long millis() { return now; }
 int main() {
   using namespace freeink;
   using B = BoardConfig::Board;
+
+#if FREEINK_DEVICE_X3 && FREEINK_DEVICE_X4
   using V = DisplayControllerVerdict;
   uint8_t ver[5] = {9,9,9,9,9}, flg = 9;
-
   reset(B::XteinkX3, {0,0,0x66});
   assert(detectXteinkDisplayController(ver, &flg) == V::Uc81xxConfirmed);
   assert(ver[2] == 0x66 && ver[3] == 0 && ver[4] == 0 && flg == 0);
@@ -145,4 +146,43 @@ int main() {
   assert(detectXteinkDisplayController() == V::Uc81xxConfirmed);
   checkX3Wire();  // previous X4 MTP/status must not leak into the X3 snapshot
   std::puts("X3 stock protocol and X4 regression checks passed");
+#endif
+
+#if FREEINK_DEVICE_X4PRO
+  // X4 Pro, BOE 4.28" panels (Xteink, Nov 2026): VER = 00 00 <id>; 0x40 is a
+  // UC8179, 0x41/0x42 a UC8279. Promotion must not depend on FLG, which
+  // Xteink's identification does not read.
+  using DC = BoardConfig::DisplayController;
+  for (uint8_t status : {uint8_t(0x13), uint8_t(0xff), uint8_t(0x00), uint8_t(0x12)}) {
+    for (uint8_t id : {uint8_t(0x40), uint8_t(0x41), uint8_t(0x42)}) {
+      reset(B::XteinkX4Pro, {0,0,id,0xff,0xff}, false);
+      replies[0x71] = {status};
+      assert(BoardConfig::ACTIVE.displayController == DC::SSD1677);
+      assert(applyXteinkDisplayController());
+      assert(BoardConfig::ACTIVE.displayController == (id == 0x40 ? DC::UC8179 : DC::UC8279));
+      assert(BoardConfig::ACTIVE.displayControllerVariant == id);
+      assert(getXteinkDisplayProbeDiag().promoted);
+      assert(getXteinkDisplayProbeDiag().ver[2] == id);
+      // Pass 2 resets with the 50 ms vendor timing once pass 1 shows a stock ID.
+      assert(resets.size() == 6 && resets[5] - resets[4] == 50);
+    }
+  }
+  // Without a matching FLG, only the 00 00 <stock id> shape promotes: unknown
+  // IDs, a non-zero prefix and a floating bus keep the SSD1677 default.
+  for (auto v : {std::vector<uint8_t>{0,0,0x55,0xff,0xff}, std::vector<uint8_t>{0xff,0xff,0x41,0xff,0xff},
+                 std::vector<uint8_t>(5, 0xff), std::vector<uint8_t>(5, 0x00)}) {
+    reset(B::XteinkX4Pro, v, false);
+    replies[0x71] = {0xff};
+    replies[0xA2] = std::vector<uint8_t>(49, 0xff);
+    assert(!applyXteinkDisplayController());
+    assert(BoardConfig::ACTIVE.displayController == DC::SSD1677);
+    assert(!getXteinkDisplayProbeDiag().promoted);
+  }
+  // Existing X4 Pro UC8179 unit (VER 00 00 01 FF FF, FLG 0x13) is unchanged.
+  reset(B::XteinkX4Pro, {0,0,1,0xff,0xff}, false);
+  assert(applyXteinkDisplayController());
+  assert(BoardConfig::ACTIVE.displayController == DC::UC8179);
+  assert(commands == (std::vector<int>{0x71,0x70,0x71,0x70,0xA2}));
+  std::puts("X4 Pro panel ID checks passed");
+#endif
 }

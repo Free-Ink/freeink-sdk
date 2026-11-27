@@ -30,6 +30,38 @@ Call `applyXteinkDisplayController()` from `XteinkDetect.h` before
 profile's default controller. The OEM NVS `hw_calib/screenType` value is used
 only for diagnostics, because flashing an image from another unit can overwrite it.
 
+The probe resets the panel, reads FLG (`0x71`) and five VER (`0x70`) bytes,
+twice. Byte 2 of VER identifies the panel. Xteink's own identification (Nov 2026)
+reads VER only: ignore the two leading `0x00` bytes and check byte 2.
+
+| VER byte 2 | Panel | Driver | Source |
+|---|---|---|---|
+| 0x01 | QY 4.28 | UC8179 | stock table, field unit |
+| 0x40 | BOE 4.28 | UC8179 | Xteink, X4 Pro |
+| 0x02 / 0x03 | QY 4.28 | UC8279 | stock table, 260917 registry |
+| 0x41 / 0x42 | BOE 4.28 D / E | UC8279 | Xteink, X4 Pro |
+| 0x67 | UC8279, OTP waveforms only (no grayscale) | UC8279 | 260917 registry |
+| 0x68 / 0x69 | ZHX 4.28 / 4.42 | UC8279 | stock table |
+
+A UC81xx answer is normally confirmed by a driven FLG status (BUSY_N set) plus a
+non-uniform VER that both passes agree on. A VER of `00 00 <id>` with an `<id>`
+from this table is also accepted on its own when both passes agree, because
+that is what stock decides on; FLG is not required for it. A floating bus reads
+a uniform `00` or `FF` pattern and can't produce that shape. A confirmed UC81xx
+with an unlisted ID falls back to the UC8179 driver; anything else keeps the
+SSD1677.
+
+**BOE 4.28 panels (0x40, 0x41, 0x42) — Pending hardware validation.** Xteink
+says these 480×800 panels carry built-in waveforms and that units ship from the
+end of November 2026. Both UltraChip drivers already run every B/W refresh from
+the panel's OTP waveform (PSR `REG=0` before power-on) and upload no B/W LUT.
+The grayscale paths still upload external LUTs that were taken for other glass:
+on the UC8279, 0x41/0x42 get the ZHX overlay bank (as X4C V7.1.21 does for the
+same IDs), the QY one-pass text bank without its voltage block, and the
+generated quality bank for images; on the UC8179, 0x40 gets the same gray LUTs
+as 0x01. Check AA text, images and ghosting on real units before relying on
+them.
+
 The SSD1677 bring-up notes below describe that controller specifically. See
 [grayscale capabilities](grayscale-capabilities.md) for the current upload
 contracts and the [Licorice firmware audit](xteink-x4pro-licorice-analysis.md)

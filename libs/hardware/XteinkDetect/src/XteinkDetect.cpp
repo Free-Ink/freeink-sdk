@@ -118,6 +118,26 @@ bool matchUc81xx(const uint8_t ver[5], uint8_t flg) {
   return !verIsFloating(ver);
 }
 
+// VER LUT_VER byte (ver[2]) -> UltraChip part, from the stock panel table (X4C
+// V7.1.21 @DROM 0x3c265930, keys 0x100|id): 0x01 QY / 0x40 BOE 4.28 = UC8179;
+// 0x02 QY / 0x68 ZHX 4.28 / 0x69 ZHX 4.42 / 0x41 BOE 4.28 D / 0x42 BOE 4.28 E =
+// UC8279. 0x03 and 0x67 come from the X4 Pro 260917 registry: 0x03 is a QY-class
+// UC8279 sharing the 0x02 tables; 0x67 is a UC8279 stock drives from OTP only.
+// Xteink confirmed the BOE IDs for the X4 Pro (Nov 2026): send VER, read five
+// bytes, ignore the two leading 0x00 bytes; byte 2 = 0x40 is a UC8179, 0x41 or
+// 0x42 a UC8279. These panels carry their own waveforms in OTP.
+bool verIdIsUc8179(uint8_t id) { return id == 0x01 || id == 0x40; }
+bool verIdIsUc8279(uint8_t id) {
+  return id == 0x02 || id == 0x03 || id == 0x41 || id == 0x42 || id == 0x67 || id == 0x68 || id == 0x69;
+}
+
+// Vendor identification as Xteink describes it for the X4 family: VER reads
+// 00 00 <panel id> with a panel id from the stock table. A floating line reads
+// a uniform 00 or FF pattern, so it cannot produce this shape.
+bool verIsStockPanelId(const uint8_t ver[5]) {
+  return ver[0] == 0x00 && ver[1] == 0x00 && (verIdIsUc8179(ver[2]) || verIdIsUc8279(ver[2]));
+}
+
 bool runDisplayProbePass(const EpdProbePins& p, uint8_t ver[5], uint8_t* flg, uint8_t rstLowMs) {
   pinMode(p.cs, OUTPUT);
   digitalWrite(p.cs, HIGH);
@@ -267,10 +287,19 @@ DisplayControllerVerdict probeDisplayController(const EpdProbePins& p, uint8_t v
   uint8_t flg1 = 0;
   const bool pass1 = runDisplayProbePass(p, ver1, &flg1, /*rstLowMs=*/1);
   delay(2);
-  const bool pass2 = runDisplayProbePass(p, ver2, nullptr, /*rstLowMs=*/pass1 ? 50 : 1);
+  // A stock panel ID on pass 1 also earns the vendor reset timing on pass 2,
+  // even when FLG did not match: the ID alone is what stock decides on.
+  const bool pass2 =
+      runDisplayProbePass(p, ver2, nullptr, /*rstLowMs=*/(pass1 || verIsStockPanelId(ver1)) ? 50 : 1);
 
   const bool verAgree = memcmp(ver1, ver2, 5) == 0;
   bool confirmed = pass1 && pass2 && verAgree;
+  // Stock-ID match: Xteink's identification reads VER only, with no FLG check.
+  // A new panel whose FLG reads 00/FF or BUSY_N clear right after reset would
+  // otherwise fail the signature above and be driven as an SSD1677 (blank
+  // screen). Two agreeing 00 00 <stock id> reads are positive evidence.
+  const bool stockId = !confirmed && verAgree && verIsStockPanelId(ver1);
+  if (stockId) confirmed = true;
   // FLG is a driven idle status (not a floating 0xFF / dead 0x00, BUSY_N set).
   const bool flgDriven = flg1 != 0x00 && flg1 != 0xFF && (flg1 & 0x01) == 0x01;
 
@@ -278,7 +307,7 @@ DisplayControllerVerdict probeDisplayController(const EpdProbePins& p, uint8_t v
   g_probeDiag = {};
   g_probeDiag.valid = true;
   g_probeDiag.verBytesRead = 5;
-  memcpy(g_probeDiag.ver, pass1 && pass2 ? ver2 : ver1, 5);
+  memcpy(g_probeDiag.ver, (pass1 && pass2) || stockId ? ver2 : ver1, 5);
   g_probeDiag.flg = flg1;
   g_probeDiag.promoted = false;
   g_probeDiag.mtpValid = false;
@@ -375,16 +404,6 @@ bool readOemScreenType(uint8_t* out) {
 }
 
 bool screenTypeIsUltraChip(uint8_t st) { return st == 1 || st == 2 || st == 0x0B || st == 0x0C; }
-
-// VER LUT_VER byte (ver[2]) -> UltraChip part, from the stock panel table (X4C
-// V7.1.21 @DROM 0x3c265930, keys 0x100|id): 0x01 QY / 0x40 BOE 4.28 = UC8179;
-// 0x02 QY / 0x68 ZHX 4.28 / 0x69 ZHX 4.42 / 0x41 BOE 4.28 D / 0x42 BOE 4.28 E =
-// UC8279. 0x03 and 0x67 come from the X4 Pro 260917 registry: 0x03 is a QY-class
-// UC8279 sharing the 0x02 tables; 0x67 is a UC8279 stock drives from OTP only.
-bool verIdIsUc8179(uint8_t id) { return id == 0x01 || id == 0x40; }
-bool verIdIsUc8279(uint8_t id) {
-  return id == 0x02 || id == 0x03 || id == 0x41 || id == 0x42 || id == 0x67 || id == 0x68 || id == 0x69;
-}
 
 // Run the display-bus probe and report the verdict with a diagnostic log line.
 // On a confirmed UltraChip part, `verOut` receives the 5 VER bytes (byte2 is

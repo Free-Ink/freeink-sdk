@@ -234,8 +234,11 @@ void Uc8179Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, 
   // CrossPoint's whole-plane text-AA path calls ordinary displayBuffer(FAST)
   // for its B/W base. After an AA page, route that base through stock's
   // non-flashing previous->current transition; promoting it to GC fixed the
-  // charge but caused a full flash on every page.
-  if (mode == RefreshMode::Fast && _redriveAfterGray && _grayRefreshedOnce && _oldPlaneValid && !_needFullClear) {
+  // charge but caused a full flash on every page. After a one-pass text page the
+  // transition barely drives white-to-white pixels and leaves their residue on
+  // Home or a menu; displayStart re-drives every pixel instead.
+  if (mode == RefreshMode::Fast && _redriveAfterGray && _grayRefreshedOnce && _oldPlaneValid && !_needFullClear &&
+      !_textAa.onPanel()) {
     transitionGrayscaleBase(bus, fb, turnOff);
     return;
   }
@@ -361,6 +364,7 @@ void Uc8179Driver::streamPlaneXor(EpdBus& bus, uint8_t ramCmd, const uint8_t* lh
 }
 
 bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
+  const bool textOnPanel = _textAa.onPanel();
   _textAa.invalidate();
   const bool paintDestination = _directGrayOnPanel;
   _directGrayOnPanel = false;
@@ -395,7 +399,8 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
   // ghosting. Feeding the previous frame lets KW clear it. (0x10 is synced to the
   // just-displayed frame in displayFinish; a full refresh reseeds it to white.)
   // Half is the explicit strong scrub. Post-AA Fast paints are intercepted by
-  // display() and use stock's non-flashing XTF_PRE_BW_MID transition instead.
+  // display() and use stock's non-flashing XTF_PRE_BW_MID transition instead,
+  // except after one-pass text (below).
   const bool scrub = (mode == RefreshMode::Half);
   const bool fast = (mode == RefreshMode::Fast) && !scrub && !_needFullClear && _oldPlaneValid;
 
@@ -418,6 +423,10 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
       // Full/forced-first flash retains the known absolute-from-white behavior.
       bus.fillPlane(CMD_DTM1, 0xFF, _tresH, _wb);
     }
+  } else if (textOnPanel) {
+    // One-pass text leaves residue under held white pixels: OLD = ~target
+    // drives every pixel once, without the GC flash.
+    streamPlane(bus, CMD_DTM1, fb, /*invert=*/true);
   }
   // (Ordinary Fast: OLD still holds the previous frame from displayFinish.)
   // A completed ordinary refresh supersedes any pending post-AA transition.

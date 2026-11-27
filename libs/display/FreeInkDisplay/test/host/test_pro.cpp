@@ -1119,6 +1119,21 @@ static void testOnePassText() {
   bus.clear();
   d.display(bus, base.data(), nullptr, RefreshMode::Fast, true);
   assert(!d._textAa.onPanel() && !bus.writes.empty());
+  if constexpr (!std::is_same_v<Driver, Ssd1677Driver>) {
+    // Leaving one-pass text re-drives every pixel (OLD = ~target), not the
+    // external-LUT transition that leaves white residue in place.
+    const unsigned row = std::is_same_v<Driver, Uc8179Driver> ? 479 : 120;
+    bool oldPlaneSent = false;
+    for (const auto& w : bus.writes) {
+      assert(w.command < 0x20 || w.command > 0x24);
+      if (w.command == 0x10 && !oldPlaneSent) {
+        oldPlaneSent = true;
+        assert(w.bytes[row * 100] == static_cast<uint8_t>(~base[0]));
+        assert(w.bytes[row * 100 + 1] == static_cast<uint8_t>(~base[1]));
+      }
+    }
+    assert(oldPlaneSent);
+  }
   d.setReaderRefresh(true);
   d.beginGrayscale(bus, base.data(), GrayscaleMode::Overlay, RefreshMode::Fast, false);
   bus.clear();

@@ -317,8 +317,11 @@ void Uc8279X4Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev
   // after an AA page, route that base through stock's non-flashing prev->current
   // transition instead of a plain DU — this keeps the gray edge charge in check
   // continuously (like the UC8179 sibling), so the periodic Half scrub works
-  // without a full flash. Same guard as UC8179.
-  if (mode == RefreshMode::Fast && _redriveAfterGray && _grayRefreshedOnce && _oldPlaneValid && !_needFullClear) {
+  // without a full flash. Same guard as UC8179. After a one-pass text page the
+  // transition barely drives white-to-white pixels and leaves their residue on
+  // Home or a menu; displayStart re-drives every pixel instead.
+  if (mode == RefreshMode::Fast && _redriveAfterGray && _grayRefreshedOnce && _oldPlaneValid && !_needFullClear &&
+      !_textAa.onPanel()) {
     transitionGrayscaleBase(bus, fb, turnOff);
     return;
   }

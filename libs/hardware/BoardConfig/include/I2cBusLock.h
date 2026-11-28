@@ -3,17 +3,18 @@
 // the battery gauge here). Two transfers in flight at once fail with ESP_ERR_INVALID_STATE, so
 // every helper holds this lock for one complete transfer. Recursive: helpers may nest.
 //
-// The Metalio enables it (see metalio::ensureBooted()), and EEGO A4 enables it before its
-// touch controller boots in a background task; on every other board it does nothing until
+// The Metalio enables it (see metalio::ensureBooted()), EEGO A4 enables it before its
+// touch controller boots in a background task, and the LilyGo T5S3 in BoardT5S3::beginI2C(),
+// whose own PCA9535/TPS65185 lock is this mutex; on every other board it does nothing until
 // it has been tested there.
-#if defined(ESP_PLATFORM) && (FREEINK_DEVICE_METALIO_EINK4 || FREEINK_DEVICE_EEGO_A4)
+#if defined(ESP_PLATFORM) && (FREEINK_DEVICE_METALIO_EINK4 || FREEINK_DEVICE_EEGO_A4 || FREEINK_DEVICE_LILYGO)
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #endif
 
 namespace freeink {
 
-#if defined(ESP_PLATFORM) && (FREEINK_DEVICE_METALIO_EINK4 || FREEINK_DEVICE_EEGO_A4)
+#if defined(ESP_PLATFORM) && (FREEINK_DEVICE_METALIO_EINK4 || FREEINK_DEVICE_EEGO_A4 || FREEINK_DEVICE_LILYGO)
 inline bool& i2cBusLockEnabled() {
   static bool enabled = false;
   return enabled;

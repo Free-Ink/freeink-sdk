@@ -2564,6 +2564,7 @@ void InputManager::beginGt911() {
   }
 
   if (t.sda >= 0 && t.scl >= 0) {
+    const freeink::I2cBusLock busLock;
     Wire.begin(t.sda, t.scl, 400000);
     Wire.setTimeOut(10);
   }
@@ -2587,6 +2588,7 @@ void InputManager::beginGt911() {
     const uint8_t candidates[2] = {t.i2cAddress, t.i2cAddressAlt};
     for (uint8_t a : candidates) {
       if (a == 0) continue;
+      const freeink::I2cBusLock busLock;
       Wire.beginTransmission(a);
       if (Wire.endTransmission() == 0) {
         gt911Addr = a;
@@ -2627,6 +2629,7 @@ void InputManager::beginGt911() {
 }
 
 bool InputManager::gt911ReadReg(const uint16_t reg, uint8_t* buf, const uint8_t len) {
+  const freeink::I2cBusLock busLock;
   Wire.beginTransmission(gt911Addr);
   Wire.write(static_cast<uint8_t>(reg >> 8));
   Wire.write(static_cast<uint8_t>(reg & 0xFF));
@@ -2645,6 +2648,7 @@ bool InputManager::gt911ReadReg(const uint16_t reg, uint8_t* buf, const uint8_t 
 }
 
 bool InputManager::gt911ClearStatus() {
+  const freeink::I2cBusLock busLock;
   Wire.beginTransmission(gt911Addr);
   Wire.write(0x81);
   Wire.write(0x4E);
@@ -2681,6 +2685,7 @@ constexpr uint8_t GT911_STATUS_RETRY_MS = 2;
 }  // namespace
 
 bool InputManager::gt911WriteReg(const uint16_t reg, const uint8_t* buf, const uint8_t len) {
+  const freeink::I2cBusLock busLock;
   Wire.beginTransmission(gt911Addr);
   Wire.write(static_cast<uint8_t>(reg >> 8));
   Wire.write(static_cast<uint8_t>(reg & 0xFF));

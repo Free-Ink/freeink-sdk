@@ -2,6 +2,7 @@
 // NimBLE stack in this directory. No radio: these check the host's own state
 // machine, report decode and teardown order, not on-air behaviour.
 
+#include "ConnParamsPolicy.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -1172,7 +1173,42 @@ void testRemoteButtonProfiles() {
   }
 }
 
+// A remote that naps between presses (a Free2 on its Kobo/PC firmware) asks for
+// latency 10 and a 6 s timeout: the interval and latency are taken, the timeout is
+// the host's 8 s.
+void testPeerConnParamsAcceptedWithHostTimeout() {
+  freeink::ConnParamsRequest free2{16, 24, 10, 600};
+  CHECK(freeink::acceptPeerConnParams(free2));
+  CHECK(free2.itvlMin == 16 && free2.itvlMax == 24 && free2.latency == 10);
+  CHECK(free2.supervisionTimeout == freeink::kHostSupervisionTimeout);
+  freeink::ConnParamsRequest longer{16, 24, 10, 2000};
+  CHECK(freeink::acceptPeerConnParams(longer));
+  CHECK(longer.supervisionTimeout == 2000);
+  freeink::ConnParamsRequest beyondSpec{16, 24, 10, 5000};
+  CHECK(freeink::acceptPeerConnParams(beyondSpec));
+  CHECK(beyondSpec.supervisionTimeout == freeink::kMaxSupervisionTimeout);
+  freeink::ConnParamsRequest edge{freeink::kMinInterval, freeink::kMaxAcceptedInterval,
+                                  freeink::kMaxAcceptedLatency, 0};
+  CHECK(freeink::acceptPeerConnParams(edge));
+}
+
+// Outside the bounds the request is refused and left as it came.
+void testPeerConnParamsOutOfBoundsRejected() {
+  freeink::ConnParamsRequest slow{80, 400, 0, 800};  // a 500 ms interval
+  CHECK(!freeink::acceptPeerConnParams(slow));
+  CHECK(slow.itvlMax == 400 && slow.supervisionTimeout == 800);
+  freeink::ConnParamsRequest sleepy{16, 24, 100, 600};
+  CHECK(!freeink::acceptPeerConnParams(sleepy));
+  CHECK(sleepy.supervisionTimeout == 600);
+  freeink::ConnParamsRequest inverted{24, 16, 0, 800};
+  CHECK(!freeink::acceptPeerConnParams(inverted));
+  freeink::ConnParamsRequest tooFast{4, 8, 0, 800};
+  CHECK(!freeink::acceptPeerConnParams(tooFast));
+}
+
 int main() {
+  testPeerConnParamsAcceptedWithHostTimeout();
+  testPeerConnParamsOutOfBoundsRejected();
   testRemoteButtonProfiles();
   testKeyboardPressIsOneKeyEvent();
   testHidFoundByListingWhenUuidSearchFails();

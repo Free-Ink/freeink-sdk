@@ -22,7 +22,14 @@
 #define BLE_HS_IO_DISPLAY_ONLY 0
 #define BLE_SM_PAIR_KEY_DIST_ENC 0x01
 
-struct ble_gap_upd_params;
+struct ble_gap_upd_params {
+  uint16_t itvl_min;
+  uint16_t itvl_max;
+  uint16_t latency;
+  uint16_t supervision_timeout;
+  uint16_t min_ce_len;
+  uint16_t max_ce_len;
+};
 
 namespace fakeble {
 struct FakeState;

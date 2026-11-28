@@ -29,6 +29,7 @@ BleKeyboardHost& BleKeyboardHost::getInstance() {
 #include <cstring>
 #include <string>
 
+#include "ConnParamsPolicy.h"
 #include "HidKeymap.h"
 
 namespace freeink {
@@ -572,9 +573,23 @@ class ClientCB : public NimBLEClientCallbacks {
   void onConfirmPasskey(NimBLEConnInfo& connInfo, uint32_t) override {
     NimBLEDevice::injectConfirmPasskey(connInfo, true);
   }
-  // Reject peripheral connection-parameter updates — some keyboards request one
-  // on the first keypress and drop the link if it's negotiated.
-  bool onConnParamsUpdateRequest(NimBLEClient*, const ble_gap_upd_params*) override { return false; }
+  // A peripheral's request (acceptPeerConnParams): a sane one is accepted with its
+  // interval and latency, and the supervision timeout raised to the host's own.
+  // NimBLE answers an L2CAP request (ble_l2cap_sig_update_req_rx) by applying the
+  // very struct it hands this callback, so the raised timeout is the one that takes
+  // effect; for a link-layer request NimBLE-Arduino applies the host's own
+  // parameters either way. Requests outside the bounds are still rejected: blanket
+  // rejection used to stand against keyboards that drop the link once one is
+  // negotiated.
+  bool onConnParamsUpdateRequest(NimBLEClient*, const ble_gap_upd_params* params) override {
+    if (params == nullptr) return false;
+    ConnParamsRequest req{params->itvl_min, params->itvl_max, params->latency,
+                          params->supervision_timeout};
+    if (!acceptPeerConnParams(req)) return false;
+    // The object is NimBLE's own non-const local; only the timeout changes.
+    const_cast<ble_gap_upd_params*>(params)->supervision_timeout = req.supervisionTimeout;
+    return true;
+  }
 };
 
 ScanCB g_scanCb;
@@ -678,9 +693,9 @@ bool BleKeyboardHost::begin(const char* hostName) {
   // auto-reconnect (HCI 0x08 "Connection Timeout" -> BLE_HS err 520). Request a low
   // interval for keypress responsiveness with an 8s supervision timeout (units:
   // interval 1.25ms, timeout 10ms) so a slow page render can't sever the connection.
-  // Peripheral-initiated updates are still rejected (see onConnParamsUpdateRequest), so
-  // these host-chosen params hold for the life of the link.
-  g_client->setConnectionParams(/*minInterval=*/12, /*maxInterval=*/24, /*latency=*/0, /*timeout=*/800);
+  // A peripheral may later ask for its own interval and latency
+  // (onConnParamsUpdateRequest); the supervision timeout never goes under this one.
+  g_client->setConnectionParams(kHostItvlMin, kHostItvlMax, kHostLatency, kHostSupervisionTimeout);
   g_client->setClientCallbacks(&g_clientCb, false);
 
   xTaskCreate(connTaskFn, "ble-conn", 4096, nullptr, 3, &g_connTask);
